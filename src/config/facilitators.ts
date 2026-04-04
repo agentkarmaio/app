@@ -1,0 +1,47 @@
+/**
+ * Known x402 facilitator addresses on Solana
+ * Source: github.com/Merit-Systems/x402scan
+ */
+
+export const SOLANA_FACILITATORS: Record<string, string[]> = {
+  coinbase: [
+    'L54zkaPQFeTn1UsEqieEXBqWrPShiaZEPD7mS5WXfQg',
+    'BENrLoUbndxoNMUS5JXApGMtNykLjFXXixMtpDwDR9SP',
+    'BFK9TLC3edb13K6v4YyH3DwPb5DSUpkWvb7XnqCL9b4F',
+    'D6ZhtNQ5nT9ZnTHUbqXZsTx5MH2rPFiBBggX4hY1WePM',
+    'GVJJ7rdGiXr5xaYbRwRbjfaJL7fmwRygFi1H6aGqDveb',
+    'Hc3sdEAsCGQcpgfivywog9uwtk8gUBUZgsxdME1EJy88',
+  ],
+  dexter: ['DEXVS3su4dZQWTvvPnLDJLRK1CeeKG6K3QqdzthgAkNV'],
+  payai: [
+    '2wKupLR9q6wXYppw8Gr2NvWxKBUqm4PPJKkQfoxHDBg4',
+    'CjNFTjvBhbJJd2B5ePPMHRLx1ELZpa8dwQgGL727eKww',
+    '8B5UKhwfAyFW67h58cBkQj1Ur6QXRgwWJJcQp8ZBsDPa',
+  ],
+  anyspend: ['34DmdeSbEnng2bmbSj9ActckY49km2HdhiyAwyXZucqP'],
+  aurracloud: ['8x8CzkTHTYkW18frrTR7HdCV6fsjenvcykJAXWvoPQW'],
+  bitrefill: ['PcTZWki36z5Y82TAATKK48XUdfsgmS5oLkw2Ta7vWyK'],
+  cascade: ['7NetKx8TuRMBpqYFKZCVetkNuvWCPTrgekmGrsJwTmfN'],
+  codenut: ['HsozMJWWHNADoZRmhDGKzua6XW6NNfNDdQ4CkE9i5wHt'],
+  corbits: ['AepWpq3GQwL8CeKMtZyKtKPa7W91Coygh3ropAJapVdU'],
+  daydreams: ['DuQ4jFMmVABWGxabYHFkGzdyeJgS1hp4wrRuCtsJgT9a'],
+  openfacilitator: ['Hbe1vdFs4EQVVAzcV12muHhr6DEKwrT9roMXGPLxLBLP'],
+  openx402: ['5xvht4fYDs99yprfm4UeuHSLxMBRpotfBtUCQqM3oDNG'],
+  relai: ['4x4ZhcqiT1FnirM8Ne97iVupkN4NcQgc2YYbE2jDZbZn'],
+  ultravioletadao: ['F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq'],
+  x402jobs: ['561oabzy81vXYYbs1ZHR1bvpiEr6Nbfd6PGTxPshoz4p'],
+};
+
+export const ALL_FACILITATOR_ADDRESSES = Object.values(SOLANA_FACILITATORS).flat();
+export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+export function isX402Payment(recipient: string): boolean {
+  return ALL_FACILITATOR_ADDRESSES.includes(recipient);
+}
+
+export function getFacilitatorName(address: string): string | null {
+  for (const [name, addresses] of Object.entries(SOLANA_FACILITATORS)) {
+    if (addresses.includes(address)) return name;
+  }
+  return null;
+}
