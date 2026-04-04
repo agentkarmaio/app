@@ -1,8 +1,8 @@
-# Karma — Behavioral Reputation for x402 Agents
+# Karma — The Credit Bureau for AI Agents
 
 > Check their Karma.
 
-Behavioral reputation layer for x402 AI agents on Solana. Built on 8004 Agent Registry.
+The credit bureau for AI agents. Built on 8004 Agent Registry.
 
 ## Status
 
