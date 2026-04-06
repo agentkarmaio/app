@@ -9,20 +9,31 @@
  *
  * TrustTier thresholds:
  *   0–20   → Unrated
- *   21–50  → Bronze
- *   51–75  → Silver
- *   76–90  → Gold
- *   91–100 → Platinum
+ *   21–40  → Poor
+ *   41–60  → Fair
+ *   61–75  → Good
+ *   76–90  → Very Good
+ *   91–100 → Excellent
  */
 
-import type { Transaction } from '../db/schema';
+// Accepts Transaction with timestamp as string or Date
+interface ScoringTransaction {
+  wallet_address: string;
+  facilitator: string;
+  amount: number;
+  timestamp: string | Date;
+  success: boolean;
+  tx_signature: string;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+export type TrustTier = 'Unrated' | 'Poor' | 'Fair' | 'Good' | 'Very Good' | 'Excellent';
 
 export interface WalletScore {
   address: string;
   score: number;       // 0–100 (rounded to 2 decimal places)
-  trustTier: string;   // Unrated | Bronze | Silver | Gold | Platinum
+  trustTier: TrustTier;
   metrics: {
     successRate: number;  // 0–1
     diversity: number;    // normalized unique facilitator count (0–1)
@@ -54,12 +65,13 @@ const MS_PER_DAY = 1000 * 60 * 60 * 24;
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Map a raw 0–100 score to a trust tier label */
-export function getTrustTier(score: number): string {
+export function getTrustTier(score: number): TrustTier {
   if (score <= 20) return 'Unrated';
-  if (score <= 50) return 'Bronze';
-  if (score <= 75) return 'Silver';
-  if (score <= 90) return 'Gold';
-  return 'Platinum';
+  if (score <= 40) return 'Poor';
+  if (score <= 60) return 'Fair';
+  if (score <= 75) return 'Good';
+  if (score <= 90) return 'Very Good';
+  return 'Excellent';
 }
 
 function cap(value: number, max: number): number {
@@ -72,7 +84,7 @@ function cap(value: number, max: number): number {
  * Calculate a WalletScore for a single wallet given its transactions.
  * All transactions must belong to the same wallet (wallet_address).
  */
-export function calculateScore(transactions: Transaction[]): WalletScore {
+export function calculateScore(transactions: ScoringTransaction[]): WalletScore {
   if (transactions.length === 0) {
     throw new Error('calculateScore requires at least one transaction');
   }
@@ -92,7 +104,7 @@ export function calculateScore(transactions: Transaction[]): WalletScore {
   const volume = cap(txCount, NORMALIZE.volumeMax);
 
   // Age: days since first transaction
-  const timestamps = transactions.map((tx) => tx.timestamp.getTime());
+  const timestamps = transactions.map((tx) => new Date(tx.timestamp).getTime());
   const firstTs = Math.min(...timestamps);
   const lastTs = Math.max(...timestamps);
   const daysActive = (Date.now() - firstTs) / MS_PER_DAY;
@@ -132,10 +144,10 @@ export function calculateScore(transactions: Transaction[]): WalletScore {
  * Returns a map of address → WalletScore.
  */
 export function calculateScores(
-  allTransactions: Transaction[]
+  allTransactions: ScoringTransaction[]
 ): Map<string, WalletScore> {
   // Group transactions by wallet
-  const byWallet = new Map<string, Transaction[]>();
+  const byWallet = new Map<string, ScoringTransaction[]>();
   for (const tx of allTransactions) {
     const group = byWallet.get(tx.wallet_address) ?? [];
     group.push(tx);

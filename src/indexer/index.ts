@@ -9,6 +9,8 @@
 import {
   Connection,
   PublicKey,
+} from '@solana/web3.js';
+import type {
   ParsedTransactionWithMeta,
   ConfirmedSignatureInfo,
 } from '@solana/web3.js';
@@ -18,6 +20,8 @@ import {
   getFacilitatorName,
 } from '../config/facilitators';
 import type { Transaction } from '../db/schema';
+import { insertTransactions, upsertWallet, insertScoreSnapshot } from '../db/client';
+import { calculateScores } from '../scoring';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -48,7 +52,7 @@ export function parseX402Transaction(
 
   const signature = tx.transaction.signatures[0];
   const success = meta.err === null;
-  const timestamp = new Date(tx.blockTime * 1000);
+  const timestamp = new Date(tx.blockTime * 1000).toISOString();
 
   // Walk through post token balances to find USDC transfers to the facilitator
   const preTokenBalances = meta.preTokenBalances ?? [];
@@ -172,4 +176,44 @@ export async function fetchAllX402Transactions(
 
   console.log(`[indexer] Total x402 transactions fetched: ${all.length}`);
   return all;
+}
+
+/**
+ * Full indexer run: fetch all x402 transactions, persist to DB,
+ * recalculate scores, and update wallet records.
+ */
+export async function runIndexer(limit: number = DEFAULT_LIMIT): Promise<{
+  fetched: number;
+  inserted: number;
+  scored: number;
+}> {
+  console.log('[indexer] Starting full indexer run...');
+
+  const transactions = await fetchAllX402Transactions(limit);
+  if (transactions.length === 0) {
+    console.log('[indexer] No transactions found');
+    return { fetched: 0, inserted: 0, scored: 0 };
+  }
+
+  const inserted = await insertTransactions(transactions);
+  console.log(`[indexer] Inserted ${inserted}/${transactions.length} transactions`);
+
+  const scores = calculateScores(transactions);
+
+  let scored = 0;
+  for (const [address, walletScore] of scores) {
+    await upsertWallet(address, walletScore.score, walletScore.trustTier, walletScore.txCount);
+    await insertScoreSnapshot(
+      address,
+      walletScore.score,
+      walletScore.metrics.successRate,
+      walletScore.metrics.diversity,
+      walletScore.metrics.volume,
+      walletScore.metrics.age,
+    );
+    scored++;
+  }
+
+  console.log(`[indexer] Scored ${scored} wallets`);
+  return { fetched: transactions.length, inserted, scored };
 }

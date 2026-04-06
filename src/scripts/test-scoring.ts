@@ -67,7 +67,7 @@ function generateMockTransactions(): Transaction[] {
     for (let i = 0; i < count; i++) {
       // Spread timestamps over the past 90 days
       const daysAgo = randomBetween(0, 90);
-      const timestamp = new Date(now - daysAgo * 24 * 60 * 60 * 1000);
+      const timestamp = new Date(now - daysAgo * 24 * 60 * 60 * 1000).toISOString();
 
       transactions.push({
         id: `mock-${sigIndex}`,
