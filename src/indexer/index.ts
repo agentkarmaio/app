@@ -40,68 +40,109 @@ function getConnection(): Connection {
   return new Connection(rpcUrl, 'confirmed');
 }
 
-/** Extract USDC token transfer details from a parsed transaction */
+/** Extract USDC payment from a parsed x402 transaction.
+ *
+ * x402 pattern: facilitator is the tx signer (accountKeys[0]).
+ * USDC transfer is a `transferChecked` instruction with:
+ *   - authority = agent wallet (sender)
+ *   - mint = USDC
+ *   - tokenAmount = payment amount
+ *
+ * Fallback: if no instruction match, check token balance diffs.
+ */
 export function parseX402Transaction(
   tx: ParsedTransactionWithMeta,
   facilitatorAddress: string
 ): Omit<Transaction, 'id'> | null {
   if (!tx.blockTime || !tx.transaction) return null;
-
-  const meta = tx.meta;
-  if (!meta) return null;
+  if (!tx.meta) return null;
 
   const signature = tx.transaction.signatures[0];
-  const success = meta.err === null;
+  const success = tx.meta.err === null;
   const timestamp = new Date(tx.blockTime * 1000).toISOString();
 
-  // Walk through post token balances to find USDC transfers to the facilitator
-  const preTokenBalances = meta.preTokenBalances ?? [];
-  const postTokenBalances = meta.postTokenBalances ?? [];
+  // Strategy 1: Look for USDC transferChecked in top-level + inner instructions
+  const allInstructions = [
+    ...tx.transaction.message.instructions,
+    ...(tx.meta.innerInstructions ?? []).flatMap((g) => g.instructions),
+  ];
 
-  // Build a map of account index → owner for post balances
-  const accountKeys = tx.transaction.message.accountKeys.map((k) =>
-    typeof k === 'string' ? k : k.pubkey.toBase58()
-  );
+  for (const ix of allInstructions) {
+    if (!('parsed' in ix) || !ix.parsed || typeof ix.parsed !== 'object') continue;
 
-  // Find USDC accounts owned by the facilitator (receiver) and sender
-  let facilitatorPreBalance = 0;
-  let facilitatorPostBalance = 0;
+    const parsed = ix.parsed as { type?: string; info?: Record<string, unknown> };
+    if (parsed.type !== 'transfer' && parsed.type !== 'transferChecked') continue;
+
+    const info = parsed.info;
+    if (!info) continue;
+
+    const mint = info.mint as string | undefined;
+    const authority = info.authority as string | undefined;
+
+    // For transferChecked, mint is explicit. For transfer, check via token balances.
+    if (parsed.type === 'transferChecked' && mint !== USDC_MINT) continue;
+
+    const tokenAmount = info.tokenAmount as { uiAmount?: number } | undefined;
+    const rawAmount = info.amount as string | undefined;
+
+    let amount = 0;
+    if (tokenAmount?.uiAmount) {
+      amount = tokenAmount.uiAmount;
+    } else if (rawAmount && parsed.type === 'transferChecked') {
+      amount = parseInt(rawAmount, 10) / 1_000_000; // USDC has 6 decimals
+    }
+
+    if (amount <= 0 || !authority) continue;
+
+    // For plain 'transfer' (no mint field), verify it's USDC via token balance mints
+    if (parsed.type === 'transfer') {
+      const postBalances = tx.meta?.postTokenBalances ?? [];
+      const source = info.source as string | undefined;
+      const sourceBalance = postBalances.find(
+        (b) => {
+          const accountKeys = tx.transaction.message.accountKeys;
+          const key = typeof accountKeys[b.accountIndex] === 'string'
+            ? accountKeys[b.accountIndex]
+            : (accountKeys[b.accountIndex] as { pubkey: PublicKey }).pubkey.toBase58();
+          return key === source;
+        }
+      );
+      if (!sourceBalance || sourceBalance.mint !== USDC_MINT) continue;
+      amount = parseInt(rawAmount ?? '0', 10) / 1_000_000;
+    }
+
+    return {
+      wallet_address: authority,
+      facilitator: facilitatorAddress,
+      amount,
+      timestamp,
+      success,
+      tx_signature: signature,
+    };
+  }
+
+  // Strategy 2: Fallback — check USDC balance diffs
+  const pre = tx.meta.preTokenBalances ?? [];
+  const post = tx.meta.postTokenBalances ?? [];
+
   let senderAddress: string | null = null;
   let transferAmount = 0;
 
-  for (const post of postTokenBalances) {
-    if (
-      post.mint === USDC_MINT &&
-      post.owner === facilitatorAddress
-    ) {
-      facilitatorPostBalance = post.uiTokenAmount.uiAmount ?? 0;
-      const pre = preTokenBalances.find((p) => p.accountIndex === post.accountIndex);
-      facilitatorPreBalance = pre?.uiTokenAmount.uiAmount ?? 0;
-      transferAmount = facilitatorPostBalance - facilitatorPreBalance;
-    }
-  }
+  for (const postBal of post) {
+    if (postBal.mint !== USDC_MINT) continue;
+    const preBal = pre.find((p) => p.accountIndex === postBal.accountIndex);
+    const preAmt = preBal?.uiTokenAmount.uiAmount ?? 0;
+    const postAmt = postBal.uiTokenAmount.uiAmount ?? 0;
+    const delta = postAmt - preAmt;
 
-  // If no USDC flow to facilitator detected, skip
-  if (transferAmount <= 0) return null;
-
-  // Find the sender: look for USDC account where balance decreased
-  for (const pre of preTokenBalances) {
-    if (pre.mint !== USDC_MINT) continue;
-    const post = postTokenBalances.find((p) => p.accountIndex === pre.accountIndex);
-    const preAmt = pre.uiTokenAmount.uiAmount ?? 0;
-    const postAmt = post?.uiTokenAmount.uiAmount ?? 0;
-    if (preAmt > postAmt && pre.owner) {
-      senderAddress = pre.owner;
+    if (delta < 0 && postBal.owner) {
+      senderAddress = postBal.owner;
+      transferAmount = Math.abs(delta);
       break;
     }
   }
 
-  // Fall back to fee payer if we couldn't find a USDC sender
-  if (!senderAddress && accountKeys.length > 0) {
-    senderAddress = accountKeys[0];
-  }
-
-  if (!senderAddress) return null;
+  if (!senderAddress || transferAmount <= 0) return null;
 
   return {
     wallet_address: senderAddress,
@@ -193,6 +234,13 @@ export async function runIndexer(limit: number = DEFAULT_LIMIT): Promise<{
   if (transactions.length === 0) {
     console.log('[indexer] No transactions found');
     return { fetched: 0, inserted: 0, scored: 0 };
+  }
+
+  // Ensure wallet records exist before inserting transactions (FK constraint)
+  const uniqueWallets = [...new Set(transactions.map((tx) => tx.wallet_address))];
+  console.log(`[indexer] Creating ${uniqueWallets.length} wallet records...`);
+  for (const addr of uniqueWallets) {
+    await upsertWallet(addr, 0, 'Unrated', 0);
   }
 
   const inserted = await insertTransactions(transactions);

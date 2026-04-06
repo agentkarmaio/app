@@ -42,7 +42,7 @@ async function fetchRealSignatures(): Promise<{ sig: string; facilitator: string
         { limit: 200 },
       );
       for (const s of sigs) {
-        all.push({ sig: s.signature, facilitator: addr, blockTime: s.blockTime });
+        all.push({ sig: s.signature, facilitator: addr, blockTime: s.blockTime ?? null });
       }
       const name = getFacilitatorName(addr) ?? addr.slice(0, 8);
       if (sigs.length > 0) console.log(`  ${name}: ${sigs.length}`);
