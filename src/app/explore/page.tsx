@@ -204,9 +204,14 @@ function RecentActivity({
                     day: 'numeric',
                   })}
                 </span>
-                <span className="font-mono text-[11px] text-[#62666d]">
+                <a
+                  href={`https://solscan.io/tx/${tx.tx_signature}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-[11px] text-[#62666d] hover:text-[#8a8f98] transition-colors"
+                >
                   {tx.tx_signature.slice(0, 8)}..
-                </span>
+                </a>
               </div>
             </div>
           ))}
