@@ -36,7 +36,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function getConnection(): Connection {
-  const rpcUrl = process.env.SOLANA_RPC_URL ?? DEFAULT_RPC;
+  const rpcUrl = process.env.HELIUS_RPC_URL ?? process.env.SOLANA_RPC_URL ?? DEFAULT_RPC;
   return new Connection(rpcUrl, 'confirmed');
 }
 

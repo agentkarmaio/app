@@ -162,7 +162,7 @@ export async function insertScoreSnapshot(
       success_rate: successRate,
       diversity,
       volume,
-      age,
+      age: Math.round(age * 180), // denormalize 0–1 back to days (cap 180)
     });
 
   if (error) throw error;
@@ -197,4 +197,70 @@ export async function getStats() {
     totalVolumeUsdc: totalVolume,
     tierDistribution,
   };
+}
+
+// ─── Explore Queries ─────────────────────────────────────────────────────────
+
+export async function getFacilitatorStats(): Promise<{
+  facilitator: string;
+  txCount: number;
+  uniqueAgents: number;
+  totalVolume: number;
+  lastActive: string | null;
+}[]> {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('facilitator, wallet_address, amount, timestamp');
+
+  if (error) throw error;
+
+  const map = new Map<string, {
+    txCount: number;
+    agents: Set<string>;
+    volume: number;
+    lastTs: string;
+  }>();
+
+  for (const tx of (data ?? []) as { facilitator: string; wallet_address: string; amount: number; timestamp: string }[]) {
+    const entry = map.get(tx.facilitator) ?? {
+      txCount: 0,
+      agents: new Set<string>(),
+      volume: 0,
+      lastTs: tx.timestamp,
+    };
+    entry.txCount++;
+    entry.agents.add(tx.wallet_address);
+    entry.volume += Number(tx.amount);
+    if (tx.timestamp > entry.lastTs) entry.lastTs = tx.timestamp;
+    map.set(tx.facilitator, entry);
+  }
+
+  return Array.from(map.entries())
+    .map(([facilitator, s]) => ({
+      facilitator,
+      txCount: s.txCount,
+      uniqueAgents: s.agents.size,
+      totalVolume: s.volume,
+      lastActive: s.lastTs,
+    }))
+    .sort((a, b) => b.txCount - a.txCount);
+}
+
+export async function getRecentTransactions(
+  facilitator?: string,
+  limit = 30,
+): Promise<Transaction[]> {
+  let query = supabase
+    .from('transactions')
+    .select('*')
+    .order('timestamp', { ascending: false })
+    .limit(limit);
+
+  if (facilitator) {
+    query = query.eq('facilitator', facilitator);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data ?? []) as Transaction[];
 }

@@ -13,6 +13,27 @@ interface TxRow {
   tx_signature: string;
 }
 
+function TxSignature({ signature }: { signature: string }) {
+  const display = `${signature.slice(0, 8)}...`;
+  // Real Solana signatures are 88 chars base58 and don't start with known demo prefixes
+  const isOnChain = signature.length === 88 && !signature.startsWith('demo_');
+
+  if (!isOnChain) {
+    return <span className="font-mono text-xs text-[#62666d]">{display}</span>;
+  }
+
+  return (
+    <a
+      href={`https://solscan.io/tx/${signature}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="font-mono text-xs text-[#62666d] hover:text-[#8a8f98] transition-colors"
+    >
+      {display}
+    </a>
+  );
+}
+
 export function TransactionList({ transactions }: { transactions: TxRow[] }) {
   if (transactions.length === 0) {
     return (
@@ -62,14 +83,7 @@ export function TransactionList({ transactions }: { transactions: TxRow[] }) {
               })}
             </TableCell>
             <TableCell className="text-right hidden md:table-cell">
-              <a
-                href={`https://solscan.io/tx/${tx.tx_signature}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-mono text-xs text-muted-foreground hover:text-foreground"
-              >
-                {tx.tx_signature.slice(0, 8)}...
-              </a>
+              <TxSignature signature={tx.tx_signature} />
             </TableCell>
           </TableRow>
         ))}

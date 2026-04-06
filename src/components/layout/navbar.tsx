@@ -3,36 +3,41 @@ import Image from 'next/image';
 
 export function Navbar() {
   return (
-    <header className="sticky top-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-lg">
-      <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
-        <Link href="/" className="flex items-center gap-2.5">
+    <header className="sticky top-0 z-50 border-b border-[rgb(255_255_255/0.05)] bg-[#0f1011]/80 backdrop-blur-xl">
+      <div className="mx-auto flex h-12 max-w-5xl items-center justify-between px-4">
+        <Link href="/" className="flex items-center gap-2">
           <Image
             src="/brand/agent-karma-symbol.svg"
             alt="Karma"
-            width={26}
-            height={26}
+            width={22}
+            height={22}
             className="dark:hidden"
           />
           <Image
             src="/brand/agent-karma-symbol-inverse.svg"
             alt="Karma"
-            width={26}
-            height={26}
+            width={22}
+            height={22}
             className="hidden dark:block"
           />
-          <span className="text-lg font-bold tracking-tight">Karma</span>
+          <span className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
+            Karma
+          </span>
         </Link>
-        <nav className="flex items-center gap-6 text-sm text-muted-foreground">
-          <Link href="/" className="hover:text-foreground transition-colors">
+        <nav className="flex items-center gap-5 text-[13px] font-[510] text-[#8a8f98]">
+          <Link href="/" className="transition-colors hover:text-[#f7f8f8]">
             Leaderboard
+          </Link>
+          <Link href="/explore" className="transition-colors hover:text-[#f7f8f8]">
+            Explore
           </Link>
           <a
             href="https://github.com/8004-protocol/8004-solana"
             target="_blank"
             rel="noopener noreferrer"
-            className="hover:text-foreground transition-colors"
+            className="transition-colors hover:text-[#f7f8f8]"
           >
-            8004 Docs
+            Docs
           </a>
         </nav>
       </div>

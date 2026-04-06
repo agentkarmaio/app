@@ -1,4 +1,3 @@
-import { Card, CardContent } from '@/components/ui/card';
 import { Users, ArrowLeftRight, DollarSign, Shield } from 'lucide-react';
 
 interface StatsData {
@@ -56,19 +55,22 @@ export function StatsCards({ data }: { data: StatsData }) {
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       {STAT_ITEMS.map((item) => (
-        <Card key={item.key} className="border-border/50">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted">
-              <item.icon className="size-5 text-muted-foreground" />
+        <div
+          key={item.key}
+          className="rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] p-4"
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-[rgb(255_255_255/0.04)]">
+              <item.icon className="size-4 text-[#8a8f98]" />
             </div>
             <div className="min-w-0">
-              <p className="text-2xl font-bold tabular-nums leading-none">
+              <p className="text-xl font-[510] tabular-nums leading-none tracking-[-0.288px] text-[#f7f8f8]">
                 {item.getValue(data)}
               </p>
-              <p className="mt-1 text-xs text-muted-foreground">{item.label}</p>
+              <p className="mt-1 text-xs font-[510] text-[#62666d]">{item.label}</p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       ))}
     </div>
   );

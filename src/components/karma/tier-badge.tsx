@@ -5,34 +5,34 @@ import type { TrustTier } from '@/db/schema';
 const TIER_CONFIG: Record<TrustTier, { label: string; className: string }> = {
   Unrated: {
     label: 'Unrated',
-    className: 'bg-zinc-100 text-zinc-500 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:border-zinc-700',
+    className: 'bg-[rgb(255_255_255/0.04)] text-[#62666d] border-[rgb(255_255_255/0.08)]',
   },
   Poor: {
     label: 'Poor',
-    className: 'bg-red-50 text-red-600 border-red-200 dark:bg-red-950 dark:text-red-400 dark:border-red-800',
+    className: 'bg-[rgb(229_72_77/0.12)] text-[#e5484d] border-[rgb(229_72_77/0.2)]',
   },
   Fair: {
     label: 'Fair',
-    className: 'bg-orange-50 text-orange-600 border-orange-200 dark:bg-orange-950 dark:text-orange-400 dark:border-orange-800',
+    className: 'bg-[rgb(255_165_0/0.12)] text-[#f5a623] border-[rgb(255_165_0/0.2)]',
   },
   Good: {
     label: 'Good',
-    className: 'bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-950 dark:text-blue-400 dark:border-blue-800',
+    className: 'bg-[rgb(94_106_210/0.12)] text-[#828fff] border-[rgb(94_106_210/0.2)]',
   },
   'Very Good': {
     label: 'Very Good',
-    className: 'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-400 dark:border-emerald-800',
+    className: 'bg-[rgb(16_185_129/0.12)] text-[#10b981] border-[rgb(16_185_129/0.2)]',
   },
   Excellent: {
     label: 'Excellent',
-    className: 'bg-violet-50 text-violet-600 border-violet-200 dark:bg-violet-950 dark:text-violet-400 dark:border-violet-800',
+    className: 'bg-[rgb(113_112_255/0.12)] text-[#7170ff] border-[rgb(113_112_255/0.2)]',
   },
 };
 
 export function TierBadge({
   tier,
   size = 'default',
-  className,
+  className: extraClass,
 }: {
   tier: TrustTier;
   size?: 'sm' | 'default';
@@ -44,10 +44,10 @@ export function TierBadge({
     <Badge
       variant="outline"
       className={cn(
-        'font-medium',
+        'font-[510] tracking-[-0.13px]',
         size === 'sm' && 'text-[10px] px-1.5 py-0',
         config.className,
-        className,
+        extraClass,
       )}
     >
       {config.label}

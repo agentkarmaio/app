@@ -2,12 +2,12 @@ import { cn } from '@/lib/utils';
 import type { TrustTier } from '@/db/schema';
 
 const TIER_RING_COLOR: Record<TrustTier, string> = {
-  Unrated: 'stroke-zinc-300 dark:stroke-zinc-600',
-  Poor: 'stroke-red-400',
-  Fair: 'stroke-orange-400',
-  Good: 'stroke-blue-400',
-  'Very Good': 'stroke-emerald-400',
-  Excellent: 'stroke-violet-500',
+  Unrated: 'stroke-[#62666d]',
+  Poor: 'stroke-[#e5484d]',
+  Fair: 'stroke-[#f5a623]',
+  Good: 'stroke-[#5e6ad2]',
+  'Very Good': 'stroke-[#10b981]',
+  Excellent: 'stroke-[#7170ff]',
 };
 
 export function ScoreRing({
@@ -39,7 +39,7 @@ export function ScoreRing({
           r={radius}
           fill="none"
           strokeWidth={strokeWidth}
-          className="stroke-muted"
+          className="stroke-[rgb(255_255_255/0.05)]"
         />
         <circle
           cx={size / 2}
@@ -53,7 +53,7 @@ export function ScoreRing({
           className={cn('transition-all duration-700 ease-out', color)}
         />
       </svg>
-      <span className="absolute text-lg font-bold tabular-nums">
+      <span className="absolute text-lg font-[510] tabular-nums text-[#f7f8f8]">
         {score.toFixed(0)}
       </span>
     </div>

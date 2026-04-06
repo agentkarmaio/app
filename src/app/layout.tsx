@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import { cn } from "@/lib/utils";
 import { Navbar } from "@/components/layout/navbar";
 
-const geist = Geist({ subsets: ['latin'], variable: '--font-sans' });
-const geistMono = Geist_Mono({ subsets: ['latin'], variable: '--font-mono' });
+const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
+const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono' });
 
 export const metadata: Metadata = {
   title: "Karma — The Credit Bureau for AI Agents",
@@ -18,7 +18,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={cn("dark font-sans", geist.variable, geistMono.variable)}>
+    <html lang="en" className={cn("dark font-sans", inter.variable, mono.variable)}>
       <body className="min-h-screen bg-background antialiased">
         <Navbar />
         <main className="mx-auto max-w-5xl px-4 py-8">

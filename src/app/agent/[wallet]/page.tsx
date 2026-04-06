@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
 import { getWallet, getTransactions } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
+import { readAttestation } from '@/integrations/attestation';
 import { ScoreRing } from '@/components/karma/score-ring';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { WalletAddress } from '@/components/karma/wallet-address';
@@ -34,13 +35,16 @@ export default async function AgentProfilePage({
 
   if (!walletRow && transactions.length === 0) notFound();
 
+  let attestation = 0;
+  try { attestation = await readAttestation(wallet); } catch { /* no on-chain feedback */ }
+
   const liveScore = transactions.length > 0
-    ? calculateScore(transactions)
+    ? calculateScore(transactions, attestation)
     : null;
 
   const score = liveScore?.score ?? Number(walletRow?.score ?? 0);
   const tier = (liveScore?.trustTier ?? walletRow?.trust_tier ?? 'Unrated') as TrustTier;
-  const metrics = liveScore?.metrics ?? { successRate: 0, diversity: 0, volume: 0, age: 0 };
+  const metrics = liveScore?.metrics ?? { successRate: 0, diversity: 0, volume: 0, age: 0, attestation: 0 };
   const txCount = liveScore?.txCount ?? walletRow?.tx_count ?? 0;
 
   return (
@@ -56,7 +60,7 @@ export default async function AgentProfilePage({
       <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-2">
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold tracking-tight">Agent Profile</h1>
+            <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">Agent Profile</h1>
             <TierBadge tier={tier} />
           </div>
           <div className="flex items-center gap-2">
@@ -77,22 +81,22 @@ export default async function AgentProfilePage({
       <Separator />
 
       <div className="grid gap-6 md:grid-cols-2">
-        <Card className="border-border/50">
+        <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
           <CardHeader className="pb-4">
-            <CardTitle className="text-base">Score Breakdown</CardTitle>
+            <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">Score Breakdown</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <MetricBar label="Success Rate" value={metrics.successRate} weight="35%" />
             <MetricBar label="Facilitator Diversity" value={metrics.diversity} weight="25%" maxLabel="Unique facilitators / 10" />
             <MetricBar label="Volume" value={metrics.volume} weight="20%" maxLabel="Transactions / 500" />
             <MetricBar label="Account Age" value={metrics.age} weight="10%" maxLabel="Days active / 180" />
-            <MetricBar label="8004 Attestation" value={0} weight="10%" maxLabel="Reserved for future integration" />
+            <MetricBar label="8004 Attestation" value={metrics.attestation ?? 0} weight="10%" maxLabel="On-chain feedback via 8004 protocol" />
           </CardContent>
         </Card>
 
-        <Card className="border-border/50">
+        <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
           <CardHeader className="pb-4">
-            <CardTitle className="text-base">Summary</CardTitle>
+            <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">Summary</CardTitle>
           </CardHeader>
           <CardContent>
             <dl className="space-y-3 text-sm">
@@ -133,9 +137,9 @@ export default async function AgentProfilePage({
         </Card>
       </div>
 
-      <Card className="border-border/50">
+      <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Recent Transactions</CardTitle>
+          <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">Recent Transactions</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <TransactionList
