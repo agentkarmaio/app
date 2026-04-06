@@ -11,7 +11,7 @@
 import { SolanaSDK } from '8004-solana';
 import { PublicKey, Keypair } from '@solana/web3.js';
 import type { Cluster } from '8004-solana';
-import type { WalletScore } from '../scoring/index';
+import type { WalletScore, TrustTier } from '../scoring/index';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,7 +19,7 @@ export interface FeedbackResult {
   dryRun: boolean;
   agentAsset: string;
   score: number;
-  trustTier: string;
+  trustTier: TrustTier;
   signature?: string;
 }
 
