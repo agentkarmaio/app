@@ -21,6 +21,24 @@ export async function GET(
     return NextResponse.json({ error: 'Wallet not found' }, { status: 404 });
   }
 
+  const identity = walletRow?.claimed ? {
+    displayName: walletRow.display_name ?? null,
+    description: walletRow.description ?? null,
+    website: walletRow.website ?? null,
+    category: walletRow.category ?? null,
+    claimed: true,
+  } : { claimed: false };
+
+  const entity = walletRow ? {
+    name: walletRow.entity_name ?? null,
+    category: walletRow.entity_category ?? null,
+  } : null;
+
+  const fundedBy = walletRow?.funded_by ? {
+    address: walletRow.funded_by,
+    name: walletRow.funded_by_name ?? null,
+  } : null;
+
   if (transactions.length === 0) {
     return NextResponse.json({
       address: wallet,
@@ -29,9 +47,19 @@ export async function GET(
       metrics: { successRate: 0, diversity: 0, volume: 0, age: 0 },
       txCount: 0,
       lastActive: walletRow?.last_seen ?? null,
+      identity,
+      entity,
+      fundedBy,
+      sybilRisk: walletRow?.sybil_risk ?? false,
     });
   }
 
   const score = calculateScore(transactions);
-  return NextResponse.json(score);
+  return NextResponse.json({
+    ...score,
+    identity,
+    entity,
+    fundedBy,
+    sybilRisk: walletRow?.sybil_risk ?? false,
+  });
 }

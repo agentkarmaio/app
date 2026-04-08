@@ -12,7 +12,11 @@
     "db:sql": "servel infra sql @agentkarma-db --remote KN",
     "db:generate": "bun drizzle-kit generate",
     "indexer": "bun run src/indexer/run.ts",
-    "indexer:full": "bun run src/indexer/run.ts 200"
+    "indexer:full": "bun run src/indexer/run.ts 200",
+    "indexer:backfill": "bun run src/indexer/run.ts 200 --backfill",
+    "enrich": "bun run src/scripts/enrich-wallets.ts",
+    "publish": "bun run src/scripts/publish-scores.ts",
+    "webhook:setup": "bun run src/scripts/setup-webhook.ts"
   },
   "dependencies": {
     "8004-solana": "^0.8.3",
@@ -28,7 +32,8 @@
     "react-dom": "^19.2.4",
     "shadcn": "^4.1.2",
     "tailwind-merge": "^3.5.0",
-    "tw-animate-css": "^1.4.0"
+    "tw-animate-css": "^1.4.0",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.2",

@@ -1,238 +1,156 @@
 /**
  * Karma Indexer — Fetches x402 USDC payment transactions from Solana
- * for all known facilitator addresses using the Solana RPC API.
+ * for all known facilitator addresses.
+ *
+ * Uses Helius Enhanced Transactions API for batch parsing (fast),
+ * with cursor-based incremental indexing and parallel facilitator fetching.
  *
  * Env:
- *   SOLANA_RPC_URL — Helius/Shyft/custom endpoint (falls back to public mainnet)
+ *   HELIUS_RPC_URL — Helius endpoint with api-key (required for batch parsing)
+ *   SOLANA_RPC_URL — Fallback Solana RPC endpoint
  */
 
 import {
   Connection,
   PublicKey,
 } from '@solana/web3.js';
-import type {
-  ParsedTransactionWithMeta,
-  ConfirmedSignatureInfo,
-} from '@solana/web3.js';
+import type { ConfirmedSignatureInfo } from '@solana/web3.js';
 import {
   ALL_FACILITATOR_ADDRESSES,
-  USDC_MINT,
   getFacilitatorName,
 } from '../config/facilitators';
 import type { Transaction } from '../db/schema';
-import { insertTransactions, upsertWallet, insertScoreSnapshot } from '../db/client';
+import { insertTransactions, upsertWallet, insertScoreSnapshot, getTransactionsForWallets, getCursor, upsertCursor } from '../db/client';
 import { calculateScores } from '../scoring';
+import { readAttestations } from '../integrations/attestation';
+import { parseTransactionsBatch, extractX402Payment, withConcurrency } from './helius';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_RPC = 'https://api.mainnet-beta.solana.com';
-const RATE_LIMIT_MS = 200;
 const DEFAULT_LIMIT = 100;
+const FACILITATOR_CONCURRENCY = 5;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function getConnection(): Connection {
   const rpcUrl = process.env.HELIUS_RPC_URL ?? process.env.SOLANA_RPC_URL ?? DEFAULT_RPC;
   return new Connection(rpcUrl, 'confirmed');
 }
 
-/** Extract USDC payment from a parsed x402 transaction.
- *
- * x402 pattern: facilitator is the tx signer (accountKeys[0]).
- * USDC transfer is a `transferChecked` instruction with:
- *   - authority = agent wallet (sender)
- *   - mint = USDC
- *   - tokenAmount = payment amount
- *
- * Fallback: if no instruction match, check token balance diffs.
- */
-export function parseX402Transaction(
-  tx: ParsedTransactionWithMeta,
-  facilitatorAddress: string
-): Omit<Transaction, 'id'> | null {
-  if (!tx.blockTime || !tx.transaction) return null;
-  if (!tx.meta) return null;
-
-  const signature = tx.transaction.signatures[0];
-  const success = tx.meta.err === null;
-  const timestamp = new Date(tx.blockTime * 1000).toISOString();
-
-  // Strategy 1: Look for USDC transferChecked in top-level + inner instructions
-  const allInstructions = [
-    ...tx.transaction.message.instructions,
-    ...(tx.meta.innerInstructions ?? []).flatMap((g) => g.instructions),
-  ];
-
-  for (const ix of allInstructions) {
-    if (!('parsed' in ix) || !ix.parsed || typeof ix.parsed !== 'object') continue;
-
-    const parsed = ix.parsed as { type?: string; info?: Record<string, unknown> };
-    if (parsed.type !== 'transfer' && parsed.type !== 'transferChecked') continue;
-
-    const info = parsed.info;
-    if (!info) continue;
-
-    const mint = info.mint as string | undefined;
-    const authority = info.authority as string | undefined;
-
-    // For transferChecked, mint is explicit. For transfer, check via token balances.
-    if (parsed.type === 'transferChecked' && mint !== USDC_MINT) continue;
-
-    const tokenAmount = info.tokenAmount as { uiAmount?: number } | undefined;
-    const rawAmount = info.amount as string | undefined;
-
-    let amount = 0;
-    if (tokenAmount?.uiAmount) {
-      amount = tokenAmount.uiAmount;
-    } else if (rawAmount && parsed.type === 'transferChecked') {
-      amount = parseInt(rawAmount, 10) / 1_000_000; // USDC has 6 decimals
-    }
-
-    if (amount <= 0 || !authority) continue;
-
-    // For plain 'transfer' (no mint field), verify it's USDC via token balance mints
-    if (parsed.type === 'transfer') {
-      const postBalances = tx.meta?.postTokenBalances ?? [];
-      const source = info.source as string | undefined;
-      const sourceBalance = postBalances.find(
-        (b) => {
-          const accountKeys = tx.transaction.message.accountKeys;
-          const key = typeof accountKeys[b.accountIndex] === 'string'
-            ? accountKeys[b.accountIndex]
-            : (accountKeys[b.accountIndex] as { pubkey: PublicKey }).pubkey.toBase58();
-          return key === source;
-        }
-      );
-      if (!sourceBalance || sourceBalance.mint !== USDC_MINT) continue;
-      amount = parseInt(rawAmount ?? '0', 10) / 1_000_000;
-    }
-
-    return {
-      wallet_address: authority,
-      facilitator: facilitatorAddress,
-      amount,
-      timestamp,
-      success,
-      tx_signature: signature,
-    };
-  }
-
-  // Strategy 2: Fallback — check USDC balance diffs
-  const pre = tx.meta.preTokenBalances ?? [];
-  const post = tx.meta.postTokenBalances ?? [];
-
-  let senderAddress: string | null = null;
-  let transferAmount = 0;
-
-  for (const postBal of post) {
-    if (postBal.mint !== USDC_MINT) continue;
-    const preBal = pre.find((p) => p.accountIndex === postBal.accountIndex);
-    const preAmt = preBal?.uiTokenAmount.uiAmount ?? 0;
-    const postAmt = postBal.uiTokenAmount.uiAmount ?? 0;
-    const delta = postAmt - preAmt;
-
-    if (delta < 0 && postBal.owner) {
-      senderAddress = postBal.owner;
-      transferAmount = Math.abs(delta);
-      break;
-    }
-  }
-
-  if (!senderAddress || transferAmount <= 0) return null;
-
-  return {
-    wallet_address: senderAddress,
-    facilitator: facilitatorAddress,
-    amount: transferAmount,
-    timestamp,
-    success,
-    tx_signature: signature,
-  };
-}
+// ─── Fetch Pipeline ─────────────────────────────────────────────────────────
 
 /**
  * Fetch and parse x402 transactions for a single facilitator address.
- * Returns an array of Transaction objects (without `id`).
+ *
+ * 1. getSignaturesForAddress — one RPC call to get signature list
+ * 2. parseTransactionsBatch — one Helius API call per 100 sigs (batch parsing)
+ * 3. extractX402Payment — filter for USDC payments
  */
 export async function fetchTransactionsForFacilitator(
   address: string,
-  limit: number = DEFAULT_LIMIT
-): Promise<Omit<Transaction, 'id'>[]> {
+  limit: number = DEFAULT_LIMIT,
+  options?: { until?: string; before?: string },
+): Promise<{ transactions: Omit<Transaction, 'id'>[]; latestSignature: string | null }> {
   const connection = getConnection();
   const pubkey = new PublicKey(address);
 
+  const sigOpts: { limit: number; until?: string; before?: string } = { limit };
+  if (options?.until) sigOpts.until = options.until;
+  if (options?.before) sigOpts.before = options.before;
+
   let signatures: ConfirmedSignatureInfo[];
   try {
-    signatures = await connection.getSignaturesForAddress(pubkey, { limit });
+    signatures = await connection.getSignaturesForAddress(pubkey, sigOpts);
   } catch (err) {
     console.error(`[indexer] Failed to get signatures for ${address}:`, err);
-    return [];
+    return { transactions: [], latestSignature: null };
   }
+
+  if (signatures.length === 0) {
+    const name = getFacilitatorName(address) ?? 'unknown';
+    console.log(`[indexer] ${address} (${name}): 0 new signatures`);
+    return { transactions: [], latestSignature: null };
+  }
+
+  const latestSignature = signatures[0].signature;
+  const sigStrings = signatures.map((s) => s.signature);
+
+  // Batch parse via Helius Enhanced Transactions API
+  const parsed = await parseTransactionsBatch(sigStrings);
 
   const results: Omit<Transaction, 'id'>[] = [];
-
-  for (const sigInfo of signatures) {
-    await sleep(RATE_LIMIT_MS);
-
-    let tx: ParsedTransactionWithMeta | null = null;
-    try {
-      tx = await connection.getParsedTransaction(sigInfo.signature, {
-        maxSupportedTransactionVersion: 0,
-      });
-    } catch (err) {
-      console.error(`[indexer] Failed to get tx ${sigInfo.signature}:`, err);
-      continue;
-    }
-
-    if (!tx) continue;
-
-    const parsed = parseX402Transaction(tx, address);
-    if (parsed) {
-      results.push(parsed);
-    }
+  for (const tx of parsed) {
+    const payment = extractX402Payment(tx, address);
+    if (payment) results.push(payment);
   }
 
-  console.log(`[indexer] ${address} (${getFacilitatorName(address) ?? 'unknown'}): ${results.length}/${signatures.length} USDC txs`);
-  return results;
+  const name = getFacilitatorName(address) ?? 'unknown';
+  console.log(`[indexer] ${address} (${name}): ${results.length}/${signatures.length} USDC txs`);
+  return { transactions: results, latestSignature };
 }
 
 /**
  * Fetch x402 transactions for ALL known facilitator addresses.
- * Applies rate limiting between each facilitator call.
+ * Uses stored cursors for incremental indexing unless backfill mode is set.
+ * Processes facilitators in parallel (FACILITATOR_CONCURRENCY at a time).
  */
 export async function fetchAllX402Transactions(
-  limit: number = DEFAULT_LIMIT
+  limit: number = DEFAULT_LIMIT,
+  options?: { backfill?: boolean },
 ): Promise<Omit<Transaction, 'id'>[]> {
-  const all: Omit<Transaction, 'id'>[] = [];
+  const backfill = options?.backfill ?? false;
 
-  for (const address of ALL_FACILITATOR_ADDRESSES) {
-    const txs = await fetchTransactionsForFacilitator(address, limit);
-    all.push(...txs);
-    await sleep(RATE_LIMIT_MS);
-  }
+  const results = await withConcurrency(
+    ALL_FACILITATOR_ADDRESSES,
+    FACILITATOR_CONCURRENCY,
+    async (address) => {
+      // Load cursor for incremental indexing (skip in backfill mode)
+      let until: string | undefined;
+      if (!backfill) {
+        const cursor = await getCursor(address);
+        if (cursor) until = cursor.last_signature;
+      }
 
+      const result = await fetchTransactionsForFacilitator(address, limit, { until });
+
+      // Save cursor for next run (newest signature from this batch)
+      if (result.latestSignature && !backfill) {
+        await upsertCursor(address, result.latestSignature);
+      }
+
+      return result.transactions;
+    },
+  );
+
+  const all = results.flat();
   console.log(`[indexer] Total x402 transactions fetched: ${all.length}`);
   return all;
+}
+
+// ─── Indexer Run ─────────────────────────────────────────────────────────────
+
+export interface IndexerOptions {
+  backfill?: boolean;
 }
 
 /**
  * Full indexer run: fetch all x402 transactions, persist to DB,
  * recalculate scores, and update wallet records.
  */
-export async function runIndexer(limit: number = DEFAULT_LIMIT): Promise<{
+export async function runIndexer(
+  limit: number = DEFAULT_LIMIT,
+  options?: IndexerOptions,
+): Promise<{
   fetched: number;
   inserted: number;
   scored: number;
 }> {
-  console.log('[indexer] Starting full indexer run...');
+  console.log(`[indexer] Starting ${options?.backfill ? 'backfill' : 'incremental'} indexer run...`);
 
-  const transactions = await fetchAllX402Transactions(limit);
+  const transactions = await fetchAllX402Transactions(limit, options);
   if (transactions.length === 0) {
-    console.log('[indexer] No transactions found');
+    console.log('[indexer] No new transactions found');
     return { fetched: 0, inserted: 0, scored: 0 };
   }
 
@@ -246,7 +164,18 @@ export async function runIndexer(limit: number = DEFAULT_LIMIT): Promise<{
   const inserted = await insertTransactions(transactions);
   console.log(`[indexer] Inserted ${inserted}/${transactions.length} transactions`);
 
-  const scores = calculateScores(transactions);
+  // Re-query full DB history for affected wallets so scores reflect ALL transactions
+  const affectedWallets = [...new Set(transactions.map((tx) => tx.wallet_address))];
+  console.log(`[indexer] Fetching full history for ${affectedWallets.length} affected wallets...`);
+  const allTxsForAffected = await getTransactionsForWallets(affectedWallets);
+
+  // Fetch 8004 attestations for affected wallets
+  const attestations = await readAttestations(affectedWallets);
+  if (attestations.size > 0) {
+    console.log(`[indexer] Found ${attestations.size} 8004 attestations`);
+  }
+
+  const scores = calculateScores(allTxsForAffected, attestations);
 
   let scored = 0;
   for (const [address, walletScore] of scores) {

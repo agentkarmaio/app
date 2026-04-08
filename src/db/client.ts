@@ -1,5 +1,5 @@
 /**
- * Karma DB Client — Supabase
+ * Karma DB Client -- Supabase
  *
  * Env vars required:
  *   NEXT_PUBLIC_SUPABASE_URL
@@ -7,9 +7,9 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import type { Wallet, Transaction, TrustTier } from './schema';
+import type { Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating } from './schema';
 
-// ─── Supabase Client ─────────────────────────────────────────────────────────
+// --- Supabase Client ---------------------------------------------------------
 
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -20,7 +20,7 @@ function getSupabase() {
 
 export const supabase = getSupabase();
 
-// ─── Wallet Queries ──────────────────────────────────────────────────────────
+// --- Wallet Queries ----------------------------------------------------------
 
 export async function getWallet(address: string): Promise<Wallet | null> {
   const { data, error } = await supabase
@@ -66,7 +66,54 @@ export async function getLeaderboard(limit = 25): Promise<Wallet[]> {
   return (data ?? []) as Wallet[];
 }
 
-// ─── Transaction Queries ─────────────────────────────────────────────────────
+// --- Agent Claiming ----------------------------------------------------------
+
+export async function claimWallet(
+  address: string,
+  displayName: string,
+  description: string | null,
+  website: string | null,
+  category: string | null,
+): Promise<void> {
+  // Ensure the wallet row exists (upsert with minimal data if not)
+  const existing = await getWallet(address);
+  if (!existing) {
+    const { error: insertErr } = await supabase
+      .from('wallets')
+      .insert({
+        address,
+        score: 0,
+        trust_tier: 'Unrated',
+        tx_count: 0,
+        claimed: true,
+        display_name: displayName,
+        description,
+        website,
+        category,
+        claimed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    if (insertErr) throw insertErr;
+    return;
+  }
+
+  const { error } = await supabase
+    .from('wallets')
+    .update({
+      claimed: true,
+      display_name: displayName,
+      description,
+      website,
+      category,
+      claimed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('address', address);
+
+  if (error) throw error;
+}
+
+// --- Transaction Queries -----------------------------------------------------
 
 export async function insertTransaction(
   tx: Omit<Transaction, 'id'>,
@@ -134,6 +181,28 @@ export async function getTransactionCount(walletAddress: string): Promise<number
   return count ?? 0;
 }
 
+export async function getTransactionsForWallets(
+  walletAddresses: string[],
+): Promise<Transaction[]> {
+  if (walletAddresses.length === 0) return [];
+
+  const all: Transaction[] = [];
+  // Supabase .in() has URL length limits; chunk into batches of 500
+  for (let i = 0; i < walletAddresses.length; i += 500) {
+    const chunk = walletAddresses.slice(i, i + 500);
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .in('wallet_address', chunk)
+      .order('timestamp', { ascending: false });
+
+    if (error) throw error;
+    if (data) all.push(...(data as Transaction[]));
+  }
+
+  return all;
+}
+
 export async function getAllTransactions(): Promise<Transaction[]> {
   const { data, error } = await supabase
     .from('transactions')
@@ -144,7 +213,7 @@ export async function getAllTransactions(): Promise<Transaction[]> {
   return (data ?? []) as Transaction[];
 }
 
-// ─── Score Snapshots ─────────────────────────────────────────────────────────
+// --- Score Snapshots ---------------------------------------------------------
 
 export async function insertScoreSnapshot(
   walletAddress: string,
@@ -162,29 +231,73 @@ export async function insertScoreSnapshot(
       success_rate: successRate,
       diversity,
       volume,
-      age: Math.round(age * 180), // denormalize 0–1 back to days (cap 180)
+      age: Math.round(age * 180), // denormalize 0-1 back to days (cap 180)
     });
 
   if (error) throw error;
 }
 
-// ─── Stats Queries ───────────────────────────────────────────────────────────
+export async function getScoreHistory(
+  walletAddress: string,
+  limit = 30,
+): Promise<{ score: number; calculated_at: string }[]> {
+  const { data, error } = await supabase
+    .from('scores')
+    .select('score, calculated_at')
+    .eq('wallet_address', walletAddress)
+    .order('calculated_at', { ascending: true })
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []).map((r: { score: number; calculated_at: string }) => ({
+    score: Number(r.score),
+    calculated_at: r.calculated_at,
+  }));
+}
+
+export async function cleanupOldScoreSnapshots(days = 90): Promise<number> {
+  const { data, error } = await supabase.rpc('cleanup_score_snapshots', { retention_days: days });
+  if (error) {
+    // SQL function not deployed yet — skip silently
+    console.warn('[db] cleanup_score_snapshots function not available, skipping');
+    return 0;
+  }
+  return Number(data ?? 0);
+}
+
+// --- Stats Queries -----------------------------------------------------------
 
 export async function getStats() {
-  const [walletsRes, txRes, tierRes] = await Promise.all([
+  // Try SQL function first, fall back to JS aggregation if not deployed
+  const txStatsRes = await supabase.rpc('get_transaction_stats').single();
+  const useRpc = !txStatsRes.error;
+
+  const [walletsRes, tierRes] = await Promise.all([
     supabase.from('wallets').select('*', { count: 'exact', head: true }),
-    supabase.from('transactions').select('amount'),
     supabase.from('wallets').select('trust_tier'),
   ]);
 
   if (walletsRes.error) throw walletsRes.error;
-  if (txRes.error) throw txRes.error;
   if (tierRes.error) throw tierRes.error;
 
-  const totalVolume = (txRes.data ?? []).reduce(
-    (sum: number, row: { amount: number }) => sum + Number(row.amount),
-    0,
-  );
+  let totalTransactions = 0;
+  let totalVolumeUsdc = 0;
+
+  if (useRpc) {
+    const stats = txStatsRes.data as Record<string, unknown>;
+    totalTransactions = Number(stats?.total_count ?? 0);
+    totalVolumeUsdc = Number(stats?.total_volume ?? 0);
+  } else {
+    // Fallback: JS aggregation
+    const { data: txData, error: txError } = await supabase
+      .from('transactions')
+      .select('amount');
+    if (txError) throw txError;
+    totalTransactions = txData?.length ?? 0;
+    totalVolumeUsdc = (txData ?? []).reduce(
+      (sum: number, row: { amount: number }) => sum + Number(row.amount), 0,
+    );
+  }
 
   const tierDistribution: Record<string, number> = {};
   for (const row of (tierRes.data ?? []) as { trust_tier: string }[]) {
@@ -193,13 +306,13 @@ export async function getStats() {
 
   return {
     totalAgents: walletsRes.count ?? 0,
-    totalTransactions: txRes.data?.length ?? 0,
-    totalVolumeUsdc: totalVolume,
+    totalTransactions,
+    totalVolumeUsdc,
     tierDistribution,
   };
 }
 
-// ─── Explore Queries ─────────────────────────────────────────────────────────
+// --- Explore Queries ---------------------------------------------------------
 
 export async function getFacilitatorStats(): Promise<{
   facilitator: string;
@@ -208,6 +321,20 @@ export async function getFacilitatorStats(): Promise<{
   totalVolume: number;
   lastActive: string | null;
 }[]> {
+  // Try SQL function first, fall back to JS aggregation if not deployed
+  const rpcRes = await supabase.rpc('get_facilitator_stats');
+
+  if (!rpcRes.error && rpcRes.data) {
+    return (rpcRes.data as { facilitator: string; tx_count: number; unique_agents: number; total_volume: number; last_active: string | null }[]).map((row) => ({
+      facilitator: row.facilitator,
+      txCount: Number(row.tx_count),
+      uniqueAgents: Number(row.unique_agents),
+      totalVolume: Number(row.total_volume),
+      lastActive: row.last_active,
+    }));
+  }
+
+  // Fallback: JS aggregation
   const { data, error } = await supabase
     .from('transactions')
     .select('facilitator, wallet_address, amount, timestamp');
@@ -263,4 +390,112 @@ export async function getRecentTransactions(
   const { data, error } = await query;
   if (error) throw error;
   return (data ?? []) as Transaction[];
+}
+
+// --- Indexer Cursors ----------------------------------------------------------
+
+export async function getCursor(facilitator: string): Promise<IndexerCursor | null> {
+  const { data, error } = await supabase
+    .from('indexer_cursors')
+    .select('*')
+    .eq('facilitator', facilitator)
+    .single();
+
+  if (error && error.code === 'PGRST116') return null;
+  if (error) throw error;
+  return data as IndexerCursor;
+}
+
+export async function upsertCursor(
+  facilitator: string,
+  lastSignature: string,
+  lastSlot?: number,
+): Promise<void> {
+  const { error } = await supabase
+    .from('indexer_cursors')
+    .upsert({
+      facilitator,
+      last_signature: lastSignature,
+      last_slot: lastSlot ?? null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'facilitator' });
+
+  if (error) throw error;
+}
+
+// --- Consumer Feedback -------------------------------------------------------
+
+export async function insertFeedback(
+  agentWallet: string,
+  consumerWallet: string,
+  rating: FeedbackRating,
+  txSignature: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('feedback')
+    .insert({
+      agent_wallet: agentWallet,
+      consumer_wallet: consumerWallet,
+      rating,
+      tx_signature: txSignature,
+    });
+
+  if (error) throw error;
+}
+
+export async function getFeedbackForAgent(
+  agentWallet: string,
+  limit = 50,
+): Promise<Feedback[]> {
+  const { data, error } = await supabase
+    .from('feedback')
+    .select('*')
+    .eq('agent_wallet', agentWallet)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []) as Feedback[];
+}
+
+export async function getFeedbackSummary(
+  agentWallet: string,
+): Promise<{ total: number; delivered: number; failed: number; deliveryRate: number }> {
+  const { data, error } = await supabase
+    .from('feedback')
+    .select('rating')
+    .eq('agent_wallet', agentWallet);
+
+  if (error) throw error;
+
+  const rows = (data ?? []) as { rating: string }[];
+  const total = rows.length;
+  const delivered = rows.filter((r) => r.rating === 'delivered').length;
+  const failed = total - delivered;
+  const deliveryRate = total > 0 ? delivered / total : 0;
+
+  return { total, delivered, failed, deliveryRate };
+}
+
+export async function hasFeedbackForTx(txSignature: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('feedback')
+    .select('id')
+    .eq('tx_signature', txSignature)
+    .limit(1);
+
+  if (error) throw error;
+  return (data?.length ?? 0) > 0;
+}
+
+export async function getTransactionBySig(txSignature: string): Promise<Transaction | null> {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('*')
+    .eq('tx_signature', txSignature)
+    .single();
+
+  if (error && error.code === 'PGRST116') return null;
+  if (error) throw error;
+  return data as Transaction;
 }

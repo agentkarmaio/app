@@ -63,6 +63,22 @@ const NORMALIZE = {
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 
+/**
+ * Recency decay — penalizes agents who haven't transacted recently.
+ * Active agents (< 7 days) get no penalty. Dormant/inactive get up to 20% reduction.
+ *
+ *   0–7 days:   multiplier = 1.0  (no decay)
+ *   7–30 days:  multiplier = 1.0 → 0.95  (gentle)
+ *   30–90 days: multiplier = 0.95 → 0.85  (moderate)
+ *   90+ days:   multiplier = 0.80  (floor)
+ */
+function recencyDecay(daysSinceLastTx: number): number {
+  if (daysSinceLastTx <= 7) return 1.0;
+  if (daysSinceLastTx <= 30) return 1.0 - 0.05 * ((daysSinceLastTx - 7) / 23);
+  if (daysSinceLastTx <= 90) return 0.95 - 0.10 * ((daysSinceLastTx - 30) / 60);
+  return 0.80;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Map a raw 0–100 score to a trust tier label */
@@ -88,10 +104,19 @@ function cap(value: number, max: number): number {
 /**
  * Calculate a WalletScore for a single wallet given its transactions.
  * @param attestation — 8004 on-chain feedback score (0–1). Fetched externally via readAttestation().
+ * @param feedbackDeliveryRate — local consumer feedback delivery rate (0–1). From getFeedbackSummary().
+ * @param feedbackCount — number of local feedback submissions for weighting.
+ *
+ * The attestation metric blends 8004 on-chain score with local feedback:
+ *   - If no local feedback: use 8004 score only
+ *   - If local feedback exists: weighted average of 8004 (40%) + local delivery rate (60%)
+ *   - Local feedback is weighted higher because it's tied to actual transaction references
  */
 export function calculateScore(
   transactions: ScoringTransaction[],
   attestation = 0,
+  feedbackDeliveryRate?: number,
+  feedbackCount?: number,
 ): WalletScore {
   if (transactions.length === 0) {
     throw new Error('calculateScore requires at least one transaction');
@@ -114,7 +139,17 @@ export function calculateScore(
   const daysActive = (Date.now() - firstTs) / MS_PER_DAY;
   const age = cap(daysActive, NORMALIZE.ageMax);
 
-  const clampedAttestation = Math.min(Math.max(attestation, 0), 1);
+  // Blend 8004 on-chain attestation with local consumer feedback
+  let blendedAttestation: number;
+  if (feedbackCount && feedbackCount > 0 && feedbackDeliveryRate !== undefined) {
+    // Local feedback exists — weighted blend (local gets 60% because it's tx-referenced)
+    const localScore = Math.min(Math.max(feedbackDeliveryRate, 0), 1);
+    const onChainScore = Math.min(Math.max(attestation, 0), 1);
+    blendedAttestation = onChainScore * 0.4 + localScore * 0.6;
+  } else {
+    blendedAttestation = Math.min(Math.max(attestation, 0), 1);
+  }
+  const clampedAttestation = blendedAttestation;
 
   const rawScore =
     successRate * WEIGHTS.successRate +
@@ -123,7 +158,10 @@ export function calculateScore(
     age * WEIGHTS.age +
     clampedAttestation * WEIGHTS.attestation;
 
-  const score = Math.round(rawScore * 100 * 100) / 100;
+  // Apply recency decay — penalizes stale agents
+  const daysSinceLastTx = (Date.now() - lastTs) / MS_PER_DAY;
+  const decay = recencyDecay(daysSinceLastTx);
+  const score = Math.round(rawScore * decay * 100 * 100) / 100;
 
   return {
     address,

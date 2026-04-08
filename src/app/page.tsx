@@ -21,6 +21,7 @@ export default async function HomePage() {
     leaderboard = wallets.map((w, i) => ({
       rank: i + 1,
       address: w.address,
+      displayName: w.display_name,
       score: Number(w.score),
       trustTier: w.trust_tier as TrustTier,
       txCount: w.tx_count,

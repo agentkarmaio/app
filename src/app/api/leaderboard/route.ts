@@ -15,6 +15,7 @@ export async function GET(request: NextRequest) {
       trustTier: w.trust_tier,
       txCount: w.tx_count,
       lastSeen: w.last_seen,
+      entityName: w.entity_name ?? null,
     })),
   });
 }

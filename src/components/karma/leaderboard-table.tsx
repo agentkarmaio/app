@@ -4,11 +4,13 @@ import {
 } from '@/components/ui/table';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { WalletAddress } from '@/components/karma/wallet-address';
+import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import type { TrustTier } from '@/db/schema';
 
 export interface LeaderboardEntry {
   rank: number;
   address: string;
+  displayName?: string | null;
   score: number;
   trustTier: TrustTier;
   txCount: number;
@@ -34,7 +36,7 @@ export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
           <TableHead className="text-center">Score</TableHead>
           <TableHead className="text-center">Tier</TableHead>
           <TableHead className="text-right">Transactions</TableHead>
-          <TableHead className="text-right hidden sm:table-cell">Last Active</TableHead>
+          <TableHead className="text-right hidden sm:table-cell">Status</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -48,7 +50,11 @@ export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
                 href={`/agent/${entry.address}`}
                 className="hover:underline underline-offset-4"
               >
-                <WalletAddress address={entry.address} copyable={false} />
+                {entry.displayName ? (
+                  <span className="text-[13px] font-[510] text-[#f7f8f8]">{entry.displayName}</span>
+                ) : (
+                  <WalletAddress address={entry.address} copyable={false} />
+                )}
               </Link>
             </TableCell>
             <TableCell className="text-center font-bold tabular-nums">
@@ -60,11 +66,8 @@ export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
             <TableCell className="text-right tabular-nums">
               {entry.txCount.toLocaleString()}
             </TableCell>
-            <TableCell className="text-right text-muted-foreground text-sm hidden sm:table-cell">
-              {new Date(entry.lastSeen).toLocaleDateString('en-US', {
-                month: 'short',
-                day: 'numeric',
-              })}
+            <TableCell className="text-right hidden sm:table-cell">
+              <LivenessIndicator lastSeen={entry.lastSeen} size="sm" />
             </TableCell>
           </TableRow>
         ))}

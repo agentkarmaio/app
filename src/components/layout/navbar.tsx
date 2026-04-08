@@ -31,14 +31,12 @@ export function Navbar() {
           <Link href="/explore" className="transition-colors hover:text-[#f7f8f8]">
             Explore
           </Link>
-          <a
-            href="https://github.com/8004-protocol/8004-solana"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="transition-colors hover:text-[#f7f8f8]"
-          >
-            Docs
-          </a>
+          <Link href="/protocol" className="transition-colors hover:text-[#f7f8f8]">
+            Protocol
+          </Link>
+          <Link href="/widget" className="transition-colors hover:text-[#f7f8f8]">
+            Widget
+          </Link>
         </nav>
       </div>
     </header>

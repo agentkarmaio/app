@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, ExternalLink } from 'lucide-react';
-import { getWallet, getTransactions } from '@/db/client';
+import { ArrowLeft, ExternalLink, Globe, Verified } from 'lucide-react';
+import { getWallet, getTransactions, getFeedbackSummary, getScoreHistory } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { readAttestation } from '@/integrations/attestation';
 import { ScoreRing } from '@/components/karma/score-ring';
@@ -9,9 +9,24 @@ import { TierBadge } from '@/components/karma/tier-badge';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { MetricBar } from '@/components/karma/metric-bar';
 import { TransactionList } from '@/components/karma/transaction-list';
+import { LivenessIndicator } from '@/components/karma/liveness-indicator';
+import { ClaimBanner } from '@/components/karma/claim-banner';
+import { FeedbackSection } from '@/components/karma/feedback-section';
+import { ScoreChart } from '@/components/karma/score-chart';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import type { TrustTier } from '@/db/schema';
+
+const CATEGORY_LABELS: Record<string, string> = {
+  ai: 'AI / ML',
+  data: 'Data Feed',
+  defi: 'DeFi',
+  infra: 'Infrastructure',
+  social: 'Social',
+  utility: 'Utility',
+  other: 'Other',
+};
 
 export default async function AgentProfilePage({
   params,
@@ -38,14 +53,26 @@ export default async function AgentProfilePage({
   let attestation = 0;
   try { attestation = await readAttestation(wallet); } catch { /* no on-chain feedback */ }
 
+  let feedbackSummary = { total: 0, delivered: 0, failed: 0, deliveryRate: 0 };
+  try { feedbackSummary = await getFeedbackSummary(wallet); } catch { /* no feedback yet */ }
+
+  let scoreHistory: { score: number; calculated_at: string }[] = [];
+  try { scoreHistory = await getScoreHistory(wallet, 30); } catch { /* no history */ }
+
   const liveScore = transactions.length > 0
-    ? calculateScore(transactions, attestation)
+    ? calculateScore(transactions, attestation, feedbackSummary.deliveryRate, feedbackSummary.total)
     : null;
 
   const score = liveScore?.score ?? Number(walletRow?.score ?? 0);
   const tier = (liveScore?.trustTier ?? walletRow?.trust_tier ?? 'Unrated') as TrustTier;
   const metrics = liveScore?.metrics ?? { successRate: 0, diversity: 0, volume: 0, age: 0, attestation: 0 };
   const txCount = liveScore?.txCount ?? walletRow?.tx_count ?? 0;
+
+  const isClaimed = walletRow?.claimed ?? false;
+  const displayName = walletRow?.display_name;
+  const agentDescription = walletRow?.description;
+  const agentWebsite = walletRow?.website;
+  const agentCategory = walletRow?.category;
 
   return (
     <div className="space-y-6">
@@ -57,13 +84,27 @@ export default async function AgentProfilePage({
         Back to Leaderboard
       </Link>
 
-      <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-2">
+      <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-3">
           <div className="flex items-center gap-3">
-            <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">Agent Profile</h1>
+            {displayName ? (
+              <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
+                {displayName}
+              </h1>
+            ) : (
+              <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
+                Agent Profile
+              </h1>
+            )}
             <TierBadge tier={tier} />
+            {isClaimed && (
+              <Badge variant="outline" className="bg-[rgb(94_106_210/0.08)] text-[#828fff] border-[rgb(94_106_210/0.15)] text-[10px] px-1.5 py-0 font-[510]">
+                <Verified className="size-3 mr-0.5" />
+                Claimed
+              </Badge>
+            )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <WalletAddress address={wallet} truncate={false} className="text-muted-foreground" />
             <a
               href={`https://solscan.io/account/${wallet}`}
@@ -73,12 +114,40 @@ export default async function AgentProfilePage({
             >
               <ExternalLink className="size-3.5" />
             </a>
+            {walletRow?.last_seen && (
+              <LivenessIndicator lastSeen={walletRow.last_seen} size="sm" />
+            )}
+          </div>
+          {agentDescription && (
+            <p className="text-[14px] text-[#8a8f98] leading-relaxed max-w-lg">
+              {agentDescription}
+            </p>
+          )}
+          <div className="flex items-center gap-3">
+            {agentCategory && (
+              <Badge variant="outline" className="bg-[rgb(255_255_255/0.04)] text-[#8a8f98] border-[rgb(255_255_255/0.08)] text-[11px] px-1.5 py-0">
+                {CATEGORY_LABELS[agentCategory] ?? agentCategory}
+              </Badge>
+            )}
+            {agentWebsite && (
+              <a
+                href={agentWebsite}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[12px] text-[#8a8f98] hover:text-[#f7f8f8] transition-colors"
+              >
+                <Globe className="size-3" />
+                {new URL(agentWebsite).hostname}
+              </a>
+            )}
           </div>
         </div>
         <ScoreRing score={score} tier={tier} size={90} strokeWidth={7} />
       </div>
 
       <Separator />
+
+      {!isClaimed && <ClaimBanner walletAddress={wallet} />}
 
       <div className="grid gap-6 md:grid-cols-2">
         <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
@@ -111,6 +180,16 @@ export default async function AgentProfilePage({
               </div>
               <Separator />
               <div className="flex justify-between">
+                <dt className="text-muted-foreground">Status</dt>
+                <dd>
+                  {walletRow?.last_seen
+                    ? <LivenessIndicator lastSeen={walletRow.last_seen} size="sm" />
+                    : <span className="text-muted-foreground">Unknown</span>
+                  }
+                </dd>
+              </div>
+              <Separator />
+              <div className="flex justify-between">
                 <dt className="text-muted-foreground">Transactions</dt>
                 <dd className="tabular-nums">{txCount.toLocaleString()}</dd>
               </div>
@@ -120,7 +199,7 @@ export default async function AgentProfilePage({
                 <dd className="text-muted-foreground">
                   {walletRow?.first_seen
                     ? new Date(walletRow.first_seen).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                    : '—'}
+                    : '\u2014'}
                 </dd>
               </div>
               <Separator />
@@ -129,13 +208,27 @@ export default async function AgentProfilePage({
                 <dd className="text-muted-foreground">
                   {walletRow?.last_seen
                     ? new Date(walletRow.last_seen).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                    : '—'}
+                    : '\u2014'}
                 </dd>
               </div>
             </dl>
           </CardContent>
         </Card>
       </div>
+
+      <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">Score Trend</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ScoreChart data={scoreHistory} tier={tier} />
+        </CardContent>
+      </Card>
+
+      <FeedbackSection
+        agentWallet={wallet}
+        feedbackSummary={feedbackSummary}
+      />
 
       <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
         <CardHeader className="pb-3">

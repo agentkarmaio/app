@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAllTransactions, getTransactions, upsertWallet, insertScoreSnapshot } from '@/db/client';
+import { getAllTransactions, getTransactions, upsertWallet, insertScoreSnapshot, getFeedbackSummary } from '@/db/client';
 import { calculateScore, calculateScores } from '@/scoring/index';
 import { readAttestation, readAttestations } from '@/integrations/attestation';
 
@@ -13,8 +13,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No transactions found for wallet' }, { status: 404 });
     }
 
-    const attestation = await readAttestation(wallet);
-    const score = calculateScore(transactions, attestation);
+    const [attestation, feedback] = await Promise.all([
+      readAttestation(wallet),
+      getFeedbackSummary(wallet),
+    ]);
+    const score = calculateScore(transactions, attestation, feedback.deliveryRate, feedback.total);
     await upsertWallet(wallet, score.score, score.trustTier, score.txCount);
     await insertScoreSnapshot(
       wallet,
@@ -25,24 +28,45 @@ export async function POST(request: NextRequest) {
       score.metrics.age,
     );
 
-    return NextResponse.json({ refreshed: 1, wallet: score });
+    return NextResponse.json({ refreshed: 1, wallet: score, feedbackCount: feedback.total });
   }
 
   const allTx = await getAllTransactions();
   const walletAddresses = [...new Set(allTx.map((tx) => tx.wallet_address))];
   const attestations = await readAttestations(walletAddresses);
+
+  // Fetch feedback summaries for all wallets
+  const feedbackMap = new Map<string, { deliveryRate: number; total: number }>();
+  for (const addr of walletAddresses) {
+    try {
+      const fb = await getFeedbackSummary(addr);
+      if (fb.total > 0) feedbackMap.set(addr, fb);
+    } catch { /* skip */ }
+  }
+
   const scores = calculateScores(allTx, attestations);
 
   let refreshed = 0;
   for (const [address, score] of scores) {
-    await upsertWallet(address, score.score, score.trustTier, score.txCount);
+    // Re-calculate with feedback if available
+    const fb = feedbackMap.get(address);
+    const finalScore = fb
+      ? calculateScore(
+          allTx.filter((tx) => tx.wallet_address === address),
+          attestations.get(address) ?? 0,
+          fb.deliveryRate,
+          fb.total,
+        )
+      : score;
+
+    await upsertWallet(address, finalScore.score, finalScore.trustTier, finalScore.txCount);
     await insertScoreSnapshot(
       address,
-      score.score,
-      score.metrics.successRate,
-      score.metrics.diversity,
-      score.metrics.volume,
-      score.metrics.age,
+      finalScore.score,
+      finalScore.metrics.successRate,
+      finalScore.metrics.diversity,
+      finalScore.metrics.volume,
+      finalScore.metrics.age,
     );
     refreshed++;
   }
@@ -50,6 +74,7 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     refreshed,
     attestationsFound: attestations.size,
-    message: `Refreshed ${refreshed} wallet scores (${attestations.size} with 8004 attestation)`,
+    feedbackWallets: feedbackMap.size,
+    message: `Refreshed ${refreshed} wallet scores (${attestations.size} with 8004, ${feedbackMap.size} with feedback)`,
   });
 }
