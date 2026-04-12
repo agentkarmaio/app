@@ -1,0 +1,4 @@
+domain: agentkarma.io
+
+infra:
+    - name: agentkarma-db

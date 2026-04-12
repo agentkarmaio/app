@@ -6,19 +6,31 @@
  *   SUPABASE_SERVICE_ROLE_KEY
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating } from './schema';
 
 // --- Supabase Client ---------------------------------------------------------
+// Lazy: only instantiated on first access. Keeps `next build` from crashing
+// when env vars aren't present during the Docker build step.
 
-function getSupabase() {
+let _client: SupabaseClient | null = null;
+
+function getSupabase(): SupabaseClient {
+  if (_client) return _client;
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error('NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set');
-  return createClient(url, key);
+  _client = createClient(url, key);
+  return _client;
 }
 
-export const supabase = getSupabase();
+export const supabase = new Proxy({} as SupabaseClient, {
+  get(_target, prop) {
+    const client = getSupabase();
+    const value = Reflect.get(client, prop, client);
+    return typeof value === 'function' ? value.bind(client) : value;
+  },
+});
 
 // --- Wallet Queries ----------------------------------------------------------
 

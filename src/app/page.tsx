@@ -6,6 +6,8 @@ import { FacilitatorList } from '@/components/karma/facilitator-list';
 import type { LeaderboardEntry } from '@/components/karma/leaderboard-table';
 import type { TrustTier } from '@/db/schema';
 
+export const dynamic = 'force-dynamic';
+
 export default async function HomePage() {
   let stats = null;
   let leaderboard: LeaderboardEntry[] = [];
