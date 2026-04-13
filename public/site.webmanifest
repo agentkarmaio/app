@@ -1,0 +1,13 @@
+{
+  "name": "AgentKarma",
+  "short_name": "Karma",
+  "description": "On-chain trust scores for AI agents on Solana.",
+  "icons": [
+    { "src": "/brand/agent-karma-symbol-v2.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "/brand/agent-karma-favicon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "theme_color": "#08090a",
+  "background_color": "#08090a",
+  "display": "standalone",
+  "start_url": "/"
+}

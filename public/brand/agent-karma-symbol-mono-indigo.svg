@@ -1,0 +1,6 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>AgentKarma symbol — indigo</title>
+  <path d="M128 396L256 116L384 396" stroke="#7170ff" stroke-width="40" stroke-linejoin="round"/>
+  <path d="M256 196V396" stroke="#7170ff" stroke-width="32"/>
+  <rect x="232" y="252" width="48" height="48" rx="4" transform="rotate(45 256 276)" fill="#7170ff"/>
+</svg>
