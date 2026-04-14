@@ -5,6 +5,7 @@ import {
 import { TierBadge } from '@/components/karma/tier-badge';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { LivenessIndicator } from '@/components/karma/liveness-indicator';
+import { Sparkline } from '@/components/karma/sparkline';
 import type { TrustTier } from '@/db/schema';
 
 export interface LeaderboardEntry {
@@ -15,6 +16,8 @@ export interface LeaderboardEntry {
   trustTier: TrustTier;
   txCount: number;
   lastSeen: string;
+  delivery?: { total: number; deliveryRate: number } | null;
+  trend?: number[];
 }
 
 export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
@@ -34,7 +37,9 @@ export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
           <TableHead className="w-12 text-center">#</TableHead>
           <TableHead>Agent Wallet</TableHead>
           <TableHead className="text-center">Score</TableHead>
+          <TableHead className="text-center hidden md:table-cell">Trend</TableHead>
           <TableHead className="text-center">Tier</TableHead>
+          <TableHead className="text-center hidden md:table-cell">Delivery</TableHead>
           <TableHead className="text-right">Transactions</TableHead>
           <TableHead className="text-right hidden sm:table-cell">Status</TableHead>
         </TableRow>
@@ -60,8 +65,22 @@ export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
             <TableCell className="text-center font-bold tabular-nums">
               {Number(entry.score).toFixed(1)}
             </TableCell>
+            <TableCell className="text-center hidden md:table-cell">
+              {entry.trend && entry.trend.length >= 2 ? (
+                <Sparkline points={entry.trend} className="inline-block align-middle" />
+              ) : (
+                <span className="text-[11px] text-[#62666d]">—</span>
+              )}
+            </TableCell>
             <TableCell className="text-center">
               <TierBadge tier={entry.trustTier} size="sm" />
+            </TableCell>
+            <TableCell className="text-center hidden md:table-cell">
+              {entry.delivery && entry.delivery.total > 0 ? (
+                <DeliveryPill rate={entry.delivery.deliveryRate} count={entry.delivery.total} />
+              ) : (
+                <span className="text-[11px] text-[#62666d]">—</span>
+              )}
             </TableCell>
             <TableCell className="text-right tabular-nums">
               {entry.txCount.toLocaleString()}
@@ -73,5 +92,22 @@ export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
         ))}
       </TableBody>
     </Table>
+  );
+}
+
+function DeliveryPill({ rate, count }: { rate: number; count: number }) {
+  const pct = Math.round(rate * 100);
+  const color =
+    pct >= 90 ? 'text-[#10b981] bg-[rgb(16_185_129/0.10)] border-[rgb(16_185_129/0.20)]'
+    : pct >= 70 ? 'text-[#d0d6e0] bg-[rgb(255_255_255/0.04)] border-[rgb(255_255_255/0.08)]'
+    : 'text-[#e5484d] bg-[rgb(229_72_77/0.10)] border-[rgb(229_72_77/0.20)]';
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-[510] tabular-nums ${color}`}
+      title={`${count} consumer feedback${count === 1 ? '' : 's'}`}
+    >
+      {pct}%
+      <span className="text-[10px] opacity-60">·{count}</span>
+    </span>
   );
 }

@@ -66,13 +66,13 @@ export async function upsertWallet(
   if (error) throw error;
 }
 
-export async function getLeaderboard(limit = 25): Promise<Wallet[]> {
+export async function getLeaderboard(limit = 25, offset = 0): Promise<Wallet[]> {
   const { data, error } = await supabase
     .from('wallets')
     .select('*')
     .gt('score', 0)
     .order('score', { ascending: false })
-    .limit(limit);
+    .range(offset, offset + limit - 1);
 
   if (error) throw error;
   return (data ?? []) as Wallet[];
@@ -388,6 +388,7 @@ export async function getFacilitatorStats(): Promise<{
 export async function getRecentTransactions(
   facilitator?: string,
   limit = 30,
+  since?: Date,
 ): Promise<Transaction[]> {
   let query = supabase
     .from('transactions')
@@ -398,10 +399,34 @@ export async function getRecentTransactions(
   if (facilitator) {
     query = query.eq('facilitator', facilitator);
   }
+  if (since) {
+    query = query.gte('timestamp', since.toISOString());
+  }
 
   const { data, error } = await query;
   if (error) throw error;
   return (data ?? []) as Transaction[];
+}
+
+export async function getWalletTiers(
+  addresses: string[],
+): Promise<Map<string, TrustTier>> {
+  const out = new Map<string, TrustTier>();
+  if (addresses.length === 0) return out;
+
+  for (let i = 0; i < addresses.length; i += 500) {
+    const chunk = addresses.slice(i, i + 500);
+    const { data, error } = await supabase
+      .from('wallets')
+      .select('address, trust_tier')
+      .in('address', chunk);
+
+    if (error) throw error;
+    for (const row of (data ?? []) as { address: string; trust_tier: TrustTier }[]) {
+      out.set(row.address, row.trust_tier);
+    }
+  }
+  return out;
 }
 
 // --- Indexer Cursors ----------------------------------------------------------
@@ -487,6 +512,69 @@ export async function getFeedbackSummary(
   const deliveryRate = total > 0 ? delivered / total : 0;
 
   return { total, delivered, failed, deliveryRate };
+}
+
+export async function getFeedbackSummariesForWallets(
+  agentWallets: string[],
+): Promise<Map<string, { total: number; delivered: number; failed: number; deliveryRate: number }>> {
+  const out = new Map<string, { total: number; delivered: number; failed: number; deliveryRate: number }>();
+  if (agentWallets.length === 0) return out;
+
+  for (let i = 0; i < agentWallets.length; i += 500) {
+    const chunk = agentWallets.slice(i, i + 500);
+    const { data, error } = await supabase
+      .from('feedback')
+      .select('agent_wallet, rating')
+      .in('agent_wallet', chunk);
+
+    if (error) throw error;
+    for (const row of (data ?? []) as { agent_wallet: string; rating: string }[]) {
+      const current = out.get(row.agent_wallet) ?? { total: 0, delivered: 0, failed: 0, deliveryRate: 0 };
+      current.total++;
+      if (row.rating === 'delivered') current.delivered++;
+      else current.failed++;
+      current.deliveryRate = current.delivered / current.total;
+      out.set(row.agent_wallet, current);
+    }
+  }
+  return out;
+}
+
+export async function getScoreHistoriesForWallets(
+  walletAddresses: string[],
+  sincesDaysAgo = 30,
+  maxPerWallet = 30,
+): Promise<Map<string, { score: number; calculated_at: string }[]>> {
+  const out = new Map<string, { score: number; calculated_at: string }[]>();
+  if (walletAddresses.length === 0) return out;
+
+  const since = new Date(Date.now() - sincesDaysAgo * 24 * 60 * 60 * 1000).toISOString();
+
+  for (let i = 0; i < walletAddresses.length; i += 500) {
+    const chunk = walletAddresses.slice(i, i + 500);
+    const { data, error } = await supabase
+      .from('scores')
+      .select('wallet_address, score, calculated_at')
+      .in('wallet_address', chunk)
+      .gte('calculated_at', since)
+      .order('calculated_at', { ascending: true });
+
+    if (error) throw error;
+
+    for (const row of (data ?? []) as { wallet_address: string; score: number; calculated_at: string }[]) {
+      const list = out.get(row.wallet_address) ?? [];
+      list.push({ score: Number(row.score), calculated_at: row.calculated_at });
+      out.set(row.wallet_address, list);
+    }
+  }
+
+  // Trim each list to maxPerWallet (keep last N)
+  for (const [addr, list] of out) {
+    if (list.length > maxPerWallet) {
+      out.set(addr, list.slice(-maxPerWallet));
+    }
+  }
+  return out;
 }
 
 export async function hasFeedbackForTx(txSignature: string): Promise<boolean> {

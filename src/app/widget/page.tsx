@@ -8,6 +8,8 @@ export const metadata = {
   description: 'Embed trust badges for x402 AI agents on your site.',
 };
 
+export const dynamic = 'force-dynamic';
+
 export default async function WidgetPage() {
   // Grab a sample wallet for live preview
   let sampleWallet = 'WALLET_ADDRESS';

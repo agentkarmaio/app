@@ -19,30 +19,39 @@ function formatUsdc(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
-const STAT_ITEMS = [
+type StatItem = {
+  key: string;
+  label: string;
+  icon: typeof Users;
+  getValue: (d: StatsData) => string;
+  featured?: boolean;
+};
+
+const STAT_ITEMS: StatItem[] = [
   {
-    key: 'agents' as const,
+    key: 'agents',
     label: 'Tracked Agents',
     icon: Users,
-    getValue: (d: StatsData) => formatNumber(d.totalAgents),
+    getValue: (d) => formatNumber(d.totalAgents),
   },
   {
-    key: 'txs' as const,
-    label: 'Transactions',
+    key: 'txs',
+    label: 'Payments Settled',
     icon: ArrowLeftRight,
-    getValue: (d: StatsData) => formatNumber(d.totalTransactions),
+    getValue: (d) => formatNumber(d.totalTransactions),
   },
   {
-    key: 'volume' as const,
-    label: 'Total Volume',
+    key: 'volume',
+    label: 'USDC Volume',
     icon: DollarSign,
-    getValue: (d: StatsData) => formatUsdc(d.totalVolumeUsdc),
+    getValue: (d) => formatUsdc(d.totalVolumeUsdc),
+    featured: true,
   },
   {
-    key: 'trusted' as const,
+    key: 'trusted',
     label: 'Trusted Agents',
     icon: Shield,
-    getValue: (d: StatsData) => {
+    getValue: (d) => {
       const good = (d.tierDistribution['Good'] ?? 0)
         + (d.tierDistribution['Very Good'] ?? 0)
         + (d.tierDistribution['Excellent'] ?? 0);
@@ -54,24 +63,47 @@ const STAT_ITEMS = [
 export function StatsCards({ data }: { data: StatsData }) {
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      {STAT_ITEMS.map((item) => (
-        <div
-          key={item.key}
-          className="rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] p-4"
-        >
-          <div className="flex items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-[rgb(255_255_255/0.04)]">
-              <item.icon className="size-4 text-[#8a8f98]" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xl font-[510] tabular-nums leading-none tracking-[-0.288px] text-[#f7f8f8]">
-                {item.getValue(data)}
+      {STAT_ITEMS.map((item) => {
+        const featured = item.featured;
+        return (
+          <div
+            key={item.key}
+            className={
+              featured
+                ? 'relative overflow-hidden rounded-lg border border-[rgb(113_112_255/0.25)] bg-gradient-to-br from-[rgb(94_106_210/0.12)] to-[rgb(94_106_210/0.02)] p-5'
+                : 'rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] p-5'
+            }
+          >
+            {featured && (
+              <div
+                aria-hidden
+                className="pointer-events-none absolute -right-8 -top-8 size-32 rounded-full bg-[#5e6ad2] opacity-[0.08] blur-2xl"
+              />
+            )}
+            <div className="flex items-center gap-2">
+              <item.icon
+                className={
+                  featured
+                    ? 'size-3.5 text-[#7170ff]'
+                    : 'size-3.5 text-[#62666d]'
+                }
+              />
+              <p
+                className={
+                  featured
+                    ? 'text-[11px] font-[510] uppercase tracking-[0.08em] text-[#7170ff]'
+                    : 'text-[11px] font-[510] uppercase tracking-[0.08em] text-[#62666d]'
+                }
+              >
+                {item.label}
               </p>
-              <p className="mt-1 text-xs font-[510] text-[#62666d]">{item.label}</p>
             </div>
+            <p className="mt-3 text-[36px] font-[560] tabular-nums leading-none tracking-[-1.2px] text-[#f7f8f8]">
+              {item.getValue(data)}
+            </p>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

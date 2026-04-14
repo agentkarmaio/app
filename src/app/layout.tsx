@@ -24,7 +24,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={cn("dark font-sans", inter.variable, mono.variable)}>
-      <body className="min-h-screen bg-background antialiased">
+      <body className="min-h-screen overflow-x-hidden bg-background antialiased">
         <Navbar />
         <main className="mx-auto max-w-5xl px-4 py-8">
           {children}
