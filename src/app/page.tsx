@@ -7,7 +7,6 @@ import {
 import { StatsCards } from '@/components/karma/stats-cards';
 import { LeaderboardWithLoadMore } from '@/components/karma/leaderboard-with-load-more';
 import { Hero } from '@/components/karma/hero';
-import { TrustGraph } from '@/components/karma/trust-graph';
 import { FacilitatorList } from '@/components/karma/facilitator-list';
 import type { LeaderboardEntry } from '@/components/karma/leaderboard-table';
 import type { TrustTier } from '@/db/schema';
@@ -20,11 +19,12 @@ export default async function HomePage() {
   let dbError = false;
 
   try {
-    const [statsData, wallets] = await Promise.all([
+    const [statsData, page] = await Promise.all([
       getStats(),
-      getLeaderboard(50),
+      getLeaderboard(25),
     ]);
     stats = statsData;
+    const wallets = page.wallets;
 
     const addresses = wallets.map((w) => w.address);
     const [deliveryMap, historyMap] = await Promise.all([
@@ -76,8 +76,6 @@ export default async function HomePage() {
       ) : (
         <>
           {stats && <StatsCards data={stats} />}
-
-          <TrustGraph />
 
           <div className="rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
             <LeaderboardWithLoadMore initial={leaderboard} />

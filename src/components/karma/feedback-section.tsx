@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { ThumbsUp, ThumbsDown, MessageSquare } from 'lucide-react';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -26,33 +28,29 @@ export function FeedbackSection({
   const [status, setStatus] = useState<'idle' | 'signing' | 'submitting' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
 
+  const { publicKey, connected, signMessage } = useWallet();
+  const { setVisible } = useWalletModal();
+
   const { total, delivered, failed, deliveryRate } = feedbackSummary;
 
   async function handleSubmit() {
     if (!txSig.trim() || !selectedRating) return;
 
-    setStatus('signing');
     setErrorMsg('');
 
+    if (!connected || !publicKey || !signMessage) {
+      setVisible(true);
+      setErrorMsg('Connect your wallet to continue.');
+      return;
+    }
+
+    setStatus('signing');
     try {
-      const provider = (window as unknown as Record<string, unknown>).solana as {
-        connect: () => Promise<{ publicKey: { toString: () => string } }>;
-        signMessage: (message: Uint8Array, encoding: string) => Promise<{ signature: Uint8Array }>;
-      } | undefined;
-
-      if (!provider?.signMessage) {
-        setErrorMsg('Solana wallet not found. Install Phantom or Backpack.');
-        setStatus('error');
-        return;
-      }
-
-      await provider.connect();
-
       const timestamp = Date.now().toString();
       const message = `AgentKarma: Feedback ${selectedRating} for ${txSig.trim()} at ${timestamp}`;
       const messageBytes = new TextEncoder().encode(message);
-      const { signature } = await provider.signMessage(messageBytes, 'utf8');
-      const signatureB58 = uint8ArrayToBase58(new Uint8Array(signature));
+      const signatureBytes = await signMessage(messageBytes);
+      const signatureB58 = uint8ArrayToBase58(signatureBytes);
 
       setStatus('submitting');
 
@@ -76,10 +74,8 @@ export function FeedbackSection({
       setStatus('success');
       setTimeout(() => window.location.reload(), 1500);
     } catch (err) {
-      if (status !== 'error') {
-        setErrorMsg(err instanceof Error ? err.message : 'Submission failed');
-        setStatus('error');
-      }
+      setErrorMsg(err instanceof Error ? err.message : 'Submission failed');
+      setStatus('error');
     }
   }
 
@@ -104,7 +100,6 @@ export function FeedbackSection({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Summary stats */}
         {total > 0 ? (
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2">
@@ -134,7 +129,6 @@ export function FeedbackSection({
           </p>
         )}
 
-        {/* Submission form */}
         {showForm && status !== 'success' && (
           <div className="space-y-3 pt-2 border-t border-[rgb(255_255_255/0.06)]">
             <p className="text-[12px] text-[#8a8f98]">
@@ -180,9 +174,9 @@ export function FeedbackSection({
                 disabled={!txSig.trim() || !selectedRating || status === 'signing' || status === 'submitting'}
                 onClick={handleSubmit}
               >
-                {status === 'signing' ? 'Sign with wallet...' :
-                 status === 'submitting' ? 'Submitting...' :
-                 'Sign & Submit'}
+                {status === 'signing' ? 'Sign with wallet…' :
+                 status === 'submitting' ? 'Submitting…' :
+                 connected ? 'Sign & Submit' : 'Connect & Submit'}
               </Button>
             </div>
             {errorMsg && (
@@ -197,7 +191,7 @@ export function FeedbackSection({
         {status === 'success' && (
           <div className="pt-2 border-t border-[rgb(255_255_255/0.06)]">
             <p className="text-[13px] text-[#30a46c] font-[510]">
-              Feedback submitted. Refreshing...
+              Feedback submitted. Refreshing…
             </p>
           </div>
         )}

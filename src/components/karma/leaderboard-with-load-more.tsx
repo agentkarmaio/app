@@ -1,10 +1,10 @@
 'use client';
 
-import { useMemo, useState, useTransition } from 'react';
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { LeaderboardTable, type LeaderboardEntry } from './leaderboard-table';
-import { getLivenessStatus, type LivenessStatus, type TrustTier } from '@/db/schema';
+import type { LivenessStatus, TrustTier } from '@/db/schema';
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 25;
 
 interface ApiEntry {
   rank: number;
@@ -27,46 +27,133 @@ const TIER_OPTIONS: TierFilter[] = ['All', 'Excellent', 'Very Good', 'Good', 'Fa
 export function LeaderboardWithLoadMore({ initial }: { initial: LeaderboardEntry[] }) {
   const [entries, setEntries] = useState<LeaderboardEntry[]>(initial);
   const [hasMore, setHasMore] = useState(initial.length >= PAGE_SIZE);
+  const [total, setTotal] = useState<number | null>(null);
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusFilter>('All');
   const [tier, setTier] = useState<TierFilter>('All');
+  const [pulsing, setPulsing] = useState<Set<string>>(() => new Set());
+  const seenSigsRef = useRef<Set<string>>(new Set());
+  const seededRef = useRef(false);
 
-  async function loadMore() {
-    setError(null);
-    const res = await fetch(`/api/leaderboard?limit=${PAGE_SIZE}&offset=${entries.length}`);
-    if (!res.ok) {
-      setError('Failed to load more');
+  useEffect(() => {
+    let cancelled = false;
+
+    async function poll() {
+      try {
+        const res = await fetch('/api/explore?limit=15', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          transactions: { wallet_address: string; tx_signature: string }[];
+        };
+        const txs = data.transactions ?? [];
+        if (cancelled) return;
+
+        if (!seededRef.current) {
+          for (const t of txs) seenSigsRef.current.add(t.tx_signature);
+          seededRef.current = true;
+          return;
+        }
+
+        const freshAddresses: string[] = [];
+        for (const t of txs) {
+          if (!seenSigsRef.current.has(t.tx_signature)) {
+            seenSigsRef.current.add(t.tx_signature);
+            freshAddresses.push(t.wallet_address);
+          }
+        }
+        if (freshAddresses.length === 0) return;
+
+        setPulsing((prev) => {
+          const next = new Set(prev);
+          for (const a of freshAddresses) next.add(a);
+          return next;
+        });
+
+        freshAddresses.forEach((addr) => {
+          setTimeout(() => {
+            setPulsing((prev) => {
+              if (!prev.has(addr)) return prev;
+              const next = new Set(prev);
+              next.delete(addr);
+              return next;
+            });
+          }, 1900);
+        });
+      } catch {}
+    }
+
+    poll();
+    const interval = setInterval(poll, 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const fetchPage = useCallback(
+    async (reset: boolean) => {
+      setError(null);
+      const offset = reset ? 0 : entries.length;
+      const p = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
+      if (status !== 'All') p.set('status', status);
+      if (tier !== 'All') p.set('tier', tier);
+      const res = await fetch(`/api/leaderboard?${p}`);
+      if (!res.ok) {
+        setError('Failed to load');
+        return;
+      }
+      const data = (await res.json()) as { wallets: ApiEntry[]; total?: number };
+      const next: LeaderboardEntry[] = data.wallets.map((w) => ({
+        rank: w.rank,
+        address: w.address,
+        displayName: w.displayName,
+        score: w.score,
+        trustTier: w.trustTier,
+        txCount: w.txCount,
+        lastSeen: w.lastSeen,
+        delivery: w.delivery,
+        trend: w.trend,
+      }));
+      startTransition(() => {
+        setEntries((prev) => (reset ? next : [...prev, ...next]));
+        setHasMore(next.length >= PAGE_SIZE);
+        setTotal(typeof data.total === 'number' ? data.total : null);
+      });
+    },
+    [entries.length, status, tier],
+  );
+
+  const loadMore = useCallback(() => fetchPage(false), [fetchPage]);
+
+  const filterMounted = useRef(false);
+  useEffect(() => {
+    if (!filterMounted.current) {
+      filterMounted.current = true;
       return;
     }
-    const data = (await res.json()) as { wallets: ApiEntry[] };
-    const next: LeaderboardEntry[] = data.wallets.map((w) => ({
-      rank: w.rank,
-      address: w.address,
-      displayName: w.displayName,
-      score: w.score,
-      trustTier: w.trustTier,
-      txCount: w.txCount,
-      lastSeen: w.lastSeen,
-      delivery: w.delivery,
-      trend: w.trend,
-    }));
-    startTransition(() => {
-      setEntries((prev) => [...prev, ...next]);
-      setHasMore(next.length >= PAGE_SIZE);
-    });
-  }
+    fetchPage(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, tier]);
 
-  const filtered = useMemo(() => {
-    if (status === 'All' && tier === 'All') return entries;
-    return entries.filter((e) => {
-      if (tier !== 'All' && e.trustTier !== tier) return false;
-      if (status !== 'All' && getLivenessStatus(e.lastSeen) !== status) return false;
-      return true;
-    });
-  }, [entries, status, tier]);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!hasMore || isPending || !sentinelRef.current) return;
+    const el = sentinelRef.current;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMore();
+      },
+      { rootMargin: '400px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore, isPending, loadMore]);
 
-  const hiddenCount = entries.length - filtered.length;
+  const headerCount =
+    total !== null && (status !== 'All' || tier !== 'All')
+      ? `${entries.length} / ${total} agents`
+      : `${entries.length} agents`;
 
   return (
     <>
@@ -88,38 +175,38 @@ export function LeaderboardWithLoadMore({ initial }: { initial: LeaderboardEntry
           onChange={setTier}
         />
         <span className="ml-auto text-[10px] font-[510] uppercase tracking-[0.08em] text-[#62666d] tabular-nums">
-          {hiddenCount > 0
-            ? `${filtered.length} / ${entries.length}`
-            : `${entries.length} agents`}
+          {headerCount}
         </span>
       </div>
-      {filtered.length === 0 && entries.length > 0 ? (
+      {entries.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-          <p className="text-sm">No agents match these filters.</p>
-          <button
-            type="button"
-            onClick={() => {
-              setStatus('All');
-              setTier('All');
-            }}
-            className="mt-2 text-xs text-[#8a8f98] underline underline-offset-4 hover:text-[#f7f8f8]"
-          >
-            Clear filters
-          </button>
+          <p className="text-sm">
+            {status === 'All' && tier === 'All'
+              ? 'No agents yet.'
+              : 'No agents match these filters.'}
+          </p>
+          {(status !== 'All' || tier !== 'All') && (
+            <button
+              type="button"
+              onClick={() => {
+                setStatus('All');
+                setTier('All');
+              }}
+              className="mt-2 text-xs text-[#8a8f98] underline underline-offset-4 hover:text-[#f7f8f8]"
+            >
+              Clear filters
+            </button>
+          )}
         </div>
       ) : (
-        <LeaderboardTable entries={filtered} />
+        <LeaderboardTable entries={entries} pulsingAddresses={pulsing} />
       )}
       {hasMore && (
-        <div className="flex items-center justify-center border-t border-[rgb(255_255_255/0.05)] px-4 py-3">
-          <button
-            type="button"
-            onClick={loadMore}
-            disabled={isPending}
-            className="rounded-md border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] px-3 py-1.5 text-[13px] font-[510] text-[#d0d6e0] transition-colors hover:bg-[rgb(255_255_255/0.04)] hover:text-[#f7f8f8] disabled:opacity-50"
-          >
-            {isPending ? 'Loading…' : 'Load more'}
-          </button>
+        <div
+          ref={sentinelRef}
+          className="flex items-center justify-center border-t border-[rgb(255_255_255/0.05)] px-4 py-3 text-[12px] text-[#62666d]"
+        >
+          {isPending ? 'Loading\u2026' : '\u00a0'}
         </div>
       )}
       {error && (

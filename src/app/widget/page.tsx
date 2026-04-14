@@ -14,7 +14,7 @@ export default async function WidgetPage() {
   // Grab a sample wallet for live preview
   let sampleWallet = 'WALLET_ADDRESS';
   try {
-    const top = await getLeaderboard(1);
+    const { wallets: top } = await getLeaderboard(1);
     if (top.length > 0) sampleWallet = top[0].address;
   } catch { /* ok */ }
 

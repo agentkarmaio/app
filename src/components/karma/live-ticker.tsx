@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 
 interface Tx {
   walletAddress: string;
@@ -11,6 +12,14 @@ interface Tx {
 
 function shortAddr(a: string) {
   return `${a.slice(0, 4)}…${a.slice(-4)}`;
+}
+
+function formatUsdcAmount(amount: number): string {
+  if (!Number.isFinite(amount) || amount === 0) return '0.00';
+  if (amount >= 1) return amount.toFixed(2);
+  if (amount >= 0.01) return amount.toFixed(3);
+  if (amount >= 0.0001) return amount.toFixed(4);
+  return '<0.0001';
 }
 
 function timeAgo(iso: string): string {
@@ -61,21 +70,27 @@ export function LiveTicker() {
   return (
     <div
       key={tx.signature}
-      className="inline-flex items-center gap-2 rounded-full border border-[rgb(255_255_255/0.06)] bg-[rgb(255_255_255/0.02)] py-1 pl-2 pr-3 text-[11.5px] text-[#8a8f98] backdrop-blur-sm animate-in fade-in duration-500"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#62666d] animate-in fade-in duration-500"
     >
-      <span className="relative flex size-1.5">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#7170ff] opacity-50" />
-        <span className="relative inline-flex size-1.5 rounded-full bg-[#7170ff]" />
+      <span className="relative flex size-1">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#7170ff] opacity-60" />
+        <span className="relative inline-flex size-1 rounded-full bg-[#7170ff]" />
       </span>
-      <span className="text-[#62666d]">Last settled</span>
-      <span className="font-mono text-[#d0d6e0]" suppressHydrationWarning>
+      <span className="uppercase tracking-[0.08em]">Last settled</span>
+      <Link
+        href={`/agent/${tx.walletAddress}`}
+        className="font-mono text-[#d0d6e0] underline-offset-4 decoration-[rgb(255_255_255/0.12)] transition-colors hover:text-[#f7f8f8] hover:decoration-[rgb(113_112_255/0.5)] hover:underline"
+        suppressHydrationWarning
+      >
         {shortAddr(tx.walletAddress)}
+      </Link>
+      <span className="text-[rgb(255_255_255/0.12)]">·</span>
+      <span className="tabular-nums text-[#d0d6e0]">
+        {formatUsdcAmount(tx.amount)}
+        <span className="ml-0.5 text-[#62666d]">USDC</span>
       </span>
-      <span className="text-[#62666d]">·</span>
-      <span className="tabular-nums text-[#d0d6e0]">{tx.amount.toFixed(2)} USDC</span>
-      <span className="text-[#62666d]">·</span>
-      <span className="tabular-nums text-[#62666d]" suppressHydrationWarning>
-        {/* tick is a dep so this re-renders every second */}
+      <span className="text-[rgb(255_255_255/0.12)]">·</span>
+      <span className="tabular-nums" suppressHydrationWarning>
         {tick >= 0 ? timeAgo(tx.timestamp) : ''}
       </span>
     </div>

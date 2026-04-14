@@ -156,11 +156,7 @@ export function TrustGraph() {
   }, [positioned]);
 
   if (!data) {
-    return (
-      <div className="rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] p-4">
-        <div className="h-[380px] animate-pulse rounded-md bg-[rgb(255_255_255/0.02)]" />
-      </div>
-    );
+    return <div className="h-[420px]" />;
   }
 
   if (data.agents.length === 0) return null;
@@ -170,30 +166,25 @@ export function TrustGraph() {
     : null;
 
   return (
-    <div className="rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgb(255_255_255/0.05)] px-4 py-2">
-        <div className="flex items-center gap-3">
-          <h2 className="text-[12px] font-[510] text-[#d0d6e0] tracking-[-0.12px]">
-            Trust Network
-          </h2>
-          <span aria-hidden className="h-3 w-px bg-[rgb(255_255_255/0.08)]" />
-          <span className="flex items-center gap-1.5 text-[11px] text-[#8a8f98]">
+    <section aria-label="Trust Network">
+      <div className="relative">
+        <div className="mb-1 flex items-center justify-between">
+          <div className="flex items-center gap-2">
             <span className="relative flex size-1.5">
               <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#10b981] opacity-60" />
               <span className="relative inline-flex size-1.5 rounded-full bg-[#10b981]" />
             </span>
-            Live
+            <span className="text-[11px] font-[510] uppercase tracking-[0.12em] text-[#8a8f98]">
+              Live trust network
+            </span>
+          </div>
+          <span className="font-mono text-[10px] tabular-nums text-[#62666d]">
+            {data.agents.length} agents · {recent.length} pulses
           </span>
         </div>
-        <span className="text-[10px] font-[510] uppercase tracking-[0.08em] text-[#62666d] tabular-nums">
-          {data.agents.length} agents · {recent.length} recent payments
-        </span>
-      </div>
-
-      <div className="relative">
         <svg
           viewBox={`0 0 ${W} ${H}`}
-          className="block h-[380px] w-full"
+          className="block h-[420px] w-full"
           preserveAspectRatio="xMidYMid meet"
         >
           <defs>
@@ -393,7 +384,7 @@ export function TrustGraph() {
         )}
 
         {/* Legend */}
-        <div className="pointer-events-none absolute bottom-3 right-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[#62666d]">
+        <div className="pointer-events-none absolute bottom-0 right-0 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[#62666d]">
           {TIER_LEGEND.map((l) => (
             <span key={l.tier} className="flex items-center gap-1.5">
               <span
@@ -405,6 +396,6 @@ export function TrustGraph() {
           ))}
         </div>
       </div>
-    </div>
+    </section>
   );
 }

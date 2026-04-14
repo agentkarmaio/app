@@ -1,7 +1,14 @@
+import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, ExternalLink, Globe, Verified } from 'lucide-react';
-import { getWallet, getTransactions, getFeedbackSummary, getScoreHistory } from '@/db/client';
+import {
+  getWallet,
+  getTransactions,
+  getTransactionCount,
+  getFeedbackSummary,
+  getScoreHistory,
+} from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { readAttestation } from '@/integrations/attestation';
 import { ScoreRing } from '@/components/karma/score-ring';
@@ -28,6 +35,124 @@ const CATEGORY_LABELS: Record<string, string> = {
   other: 'Other',
 };
 
+function CardSkeleton({ title, rows = 5 }: { title: string; rows?: number }) {
+  return (
+    <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
+      <CardHeader className="pb-4">
+        <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
+          {title}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div
+            key={i}
+            className="h-3 rounded bg-[rgb(255_255_255/0.04)] animate-pulse"
+            style={{ width: `${100 - i * 8}%` }}
+          />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+async function ScoreBreakdownCard({
+  wallet,
+  feedbackDeliveryRate,
+  feedbackCount,
+}: {
+  wallet: string;
+  feedbackDeliveryRate: number;
+  feedbackCount: number;
+}) {
+  const [txs, attestation] = await Promise.all([
+    getTransactions(wallet, 100),
+    readAttestation(wallet).catch(() => 0),
+  ]);
+
+  if (txs.length === 0) {
+    return (
+      <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
+        <CardHeader className="pb-4">
+          <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
+            Score Breakdown
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">No transactions yet.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const live = calculateScore(txs, attestation, feedbackDeliveryRate, feedbackCount);
+  const m = live.metrics;
+
+  return (
+    <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
+      <CardHeader className="pb-4">
+        <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
+          Score Breakdown
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <MetricBar label="Success Rate" value={m.successRate} weight="35%" />
+        <MetricBar label="Facilitator Diversity" value={m.diversity} weight="25%" maxLabel="Unique facilitators / 10" />
+        <MetricBar label="Volume" value={m.volume} weight="20%" maxLabel="Transactions / 500" />
+        <MetricBar label="Account Age" value={m.age} weight="10%" maxLabel="Days active / 180" />
+        <MetricBar label="8004 Attestation" value={m.attestation ?? 0} weight="10%" maxLabel="On-chain feedback via 8004 protocol" />
+      </CardContent>
+    </Card>
+  );
+}
+
+async function ScoreTrendCard({ wallet, tier }: { wallet: string; tier: TrustTier }) {
+  const scoreHistory = await getScoreHistory(wallet, 30).catch(() => []);
+  return (
+    <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
+          Score Trend
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ScoreChart data={scoreHistory} tier={tier} />
+      </CardContent>
+    </Card>
+  );
+}
+
+async function TransactionsCard({ wallet }: { wallet: string }) {
+  const [transactions, txTotal] = await Promise.all([
+    getTransactions(wallet, 25),
+    getTransactionCount(wallet),
+  ]);
+  return (
+    <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
+          Recent Transactions
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        <TransactionList
+          walletAddress={wallet}
+          total={txTotal}
+          pageSize={25}
+          transactions={transactions.map((tx) => ({
+            id: tx.id,
+            facilitator: tx.facilitator,
+            amount: Number(tx.amount),
+            timestamp: tx.timestamp,
+            success: tx.success,
+            tx_signature: tx.tx_signature,
+          }))}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
 export default async function AgentProfilePage({
   params,
 }: {
@@ -37,36 +162,25 @@ export default async function AgentProfilePage({
   if (!wallet || wallet.length < 32) notFound();
 
   let walletRow;
-  let transactions;
+  let feedbackSummary = { total: 0, delivered: 0, failed: 0, deliveryRate: 0 };
 
   try {
-    [walletRow, transactions] = await Promise.all([
+    [walletRow, feedbackSummary] = await Promise.all([
       getWallet(wallet),
-      getTransactions(wallet, 100),
+      getFeedbackSummary(wallet).catch(() => feedbackSummary),
     ]);
   } catch {
     notFound();
   }
 
-  if (!walletRow && transactions.length === 0) notFound();
+  if (!walletRow) {
+    const anyTx = await getTransactionCount(wallet).catch(() => 0);
+    if (anyTx === 0) notFound();
+  }
 
-  let attestation = 0;
-  try { attestation = await readAttestation(wallet); } catch { /* no on-chain feedback */ }
-
-  let feedbackSummary = { total: 0, delivered: 0, failed: 0, deliveryRate: 0 };
-  try { feedbackSummary = await getFeedbackSummary(wallet); } catch { /* no feedback yet */ }
-
-  let scoreHistory: { score: number; calculated_at: string }[] = [];
-  try { scoreHistory = await getScoreHistory(wallet, 30); } catch { /* no history */ }
-
-  const liveScore = transactions.length > 0
-    ? calculateScore(transactions, attestation, feedbackSummary.deliveryRate, feedbackSummary.total)
-    : null;
-
-  const score = liveScore?.score ?? Number(walletRow?.score ?? 0);
-  const tier = (liveScore?.trustTier ?? walletRow?.trust_tier ?? 'Unrated') as TrustTier;
-  const metrics = liveScore?.metrics ?? { successRate: 0, diversity: 0, volume: 0, age: 0, attestation: 0 };
-  const txCount = liveScore?.txCount ?? walletRow?.tx_count ?? 0;
+  const score = Number(walletRow?.score ?? 0);
+  const tier = (walletRow?.trust_tier ?? 'Unrated') as TrustTier;
+  const txCount = walletRow?.tx_count ?? 0;
 
   const isClaimed = walletRow?.claimed ?? false;
   const displayName = walletRow?.display_name;
@@ -150,18 +264,13 @@ export default async function AgentProfilePage({
       {!isClaimed && <ClaimBanner walletAddress={wallet} />}
 
       <div className="grid gap-6 md:grid-cols-2">
-        <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">Score Breakdown</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <MetricBar label="Success Rate" value={metrics.successRate} weight="35%" />
-            <MetricBar label="Facilitator Diversity" value={metrics.diversity} weight="25%" maxLabel="Unique facilitators / 10" />
-            <MetricBar label="Volume" value={metrics.volume} weight="20%" maxLabel="Transactions / 500" />
-            <MetricBar label="Account Age" value={metrics.age} weight="10%" maxLabel="Days active / 180" />
-            <MetricBar label="8004 Attestation" value={metrics.attestation ?? 0} weight="10%" maxLabel="On-chain feedback via 8004 protocol" />
-          </CardContent>
-        </Card>
+        <Suspense fallback={<CardSkeleton title="Score Breakdown" rows={5} />}>
+          <ScoreBreakdownCard
+            wallet={wallet}
+            feedbackDeliveryRate={feedbackSummary.deliveryRate}
+            feedbackCount={feedbackSummary.total}
+          />
+        </Suspense>
 
         <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
           <CardHeader className="pb-4">
@@ -216,37 +325,18 @@ export default async function AgentProfilePage({
         </Card>
       </div>
 
-      <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">Score Trend</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ScoreChart data={scoreHistory} tier={tier} />
-        </CardContent>
-      </Card>
+      <Suspense fallback={<CardSkeleton title="Score Trend" rows={3} />}>
+        <ScoreTrendCard wallet={wallet} tier={tier} />
+      </Suspense>
 
       <FeedbackSection
         agentWallet={wallet}
         feedbackSummary={feedbackSummary}
       />
 
-      <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">Recent Transactions</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <TransactionList
-            transactions={transactions.map((tx) => ({
-              id: tx.id,
-              facilitator: tx.facilitator,
-              amount: Number(tx.amount),
-              timestamp: tx.timestamp,
-              success: tx.success,
-              tx_signature: tx.tx_signature,
-            }))}
-          />
-        </CardContent>
-      </Card>
+      <Suspense fallback={<CardSkeleton title="Recent Transactions" rows={6} />}>
+        <TransactionsCard wallet={wallet} />
+      </Suspense>
     </div>
   );
 }

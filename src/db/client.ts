@@ -7,7 +7,7 @@
  */
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type { Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating } from './schema';
+import type { Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating, LivenessStatus } from './schema';
 
 // --- Supabase Client ---------------------------------------------------------
 // Lazy: only instantiated on first access. Keeps `next build` from crashing
@@ -66,16 +66,53 @@ export async function upsertWallet(
   if (error) throw error;
 }
 
-export async function getLeaderboard(limit = 25, offset = 0): Promise<Wallet[]> {
-  const { data, error } = await supabase
+export interface LeaderboardFilters {
+  status?: LivenessStatus;
+  tier?: TrustTier;
+}
+
+export interface LeaderboardPage {
+  wallets: Wallet[];
+  total: number;
+}
+
+export async function getLeaderboard(
+  limit = 25,
+  offset = 0,
+  filters: LeaderboardFilters = {},
+): Promise<LeaderboardPage> {
+  let q = supabase
     .from('wallets')
-    .select('*')
-    .gt('score', 0)
+    .select('*', { count: 'exact' })
+    .gt('score', 0);
+
+  if (filters.tier) q = q.eq('trust_tier', filters.tier);
+
+  if (filters.status) {
+    const now = Date.now();
+    const iso = (hoursAgo: number) => new Date(now - hoursAgo * 3600_000).toISOString();
+    switch (filters.status) {
+      case 'Active':
+        q = q.gte('last_seen', iso(24));
+        break;
+      case 'Recent':
+        q = q.lt('last_seen', iso(24)).gte('last_seen', iso(7 * 24));
+        break;
+      case 'Dormant':
+        q = q.lt('last_seen', iso(7 * 24)).gte('last_seen', iso(90 * 24));
+        break;
+      case 'Inactive':
+        q = q.lt('last_seen', iso(90 * 24));
+        break;
+    }
+  }
+
+  const { data, error, count } = await q
     .order('score', { ascending: false })
     .range(offset, offset + limit - 1);
 
   if (error) throw error;
-  return (data ?? []) as Wallet[];
+  return { wallets: (data ?? []) as Wallet[], total: count ?? 0 };
 }
 
 // --- Agent Claiming ----------------------------------------------------------

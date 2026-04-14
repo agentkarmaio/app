@@ -1,0 +1,37 @@
+name: Sync x402 facilitators
+
+on:
+  schedule:
+    - cron: '0 9 * * 1' # Mondays 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Run sync
+        run: bun run sync:facilitators
+
+      - name: Open PR if config changed
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: chore/sync-facilitators
+          commit-message: 'chore(facilitators): sync from x402scan'
+          title: 'chore(facilitators): sync from x402scan'
+          body: |
+            Automated sync of Solana facilitator addresses from
+            [`Merit-Systems/x402scan`](https://github.com/Merit-Systems/x402scan).
+
+            Review the diff before merging — any new facilitators will start
+            getting indexed on the next run.
+          add-paths: src/config/facilitators.ts

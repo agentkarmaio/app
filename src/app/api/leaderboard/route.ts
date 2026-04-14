@@ -4,13 +4,26 @@ import {
   getFeedbackSummariesForWallets,
   getScoreHistoriesForWallets,
 } from '@/db/client';
+import type { LivenessStatus, TrustTier } from '@/db/schema';
+
+const STATUSES: LivenessStatus[] = ['Active', 'Recent', 'Dormant', 'Inactive'];
+const TIERS: TrustTier[] = ['Unrated', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'];
+
+function parseStatus(v: string | null): LivenessStatus | undefined {
+  return v && (STATUSES as string[]).includes(v) ? (v as LivenessStatus) : undefined;
+}
+function parseTier(v: string | null): TrustTier | undefined {
+  return v && (TIERS as string[]).includes(v) ? (v as TrustTier) : undefined;
+}
 
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const limit = Math.min(parseInt(searchParams.get('limit') ?? '25', 10), 100);
   const offset = Math.max(parseInt(searchParams.get('offset') ?? '0', 10), 0);
+  const status = parseStatus(searchParams.get('status'));
+  const tier = parseTier(searchParams.get('tier'));
 
-  const wallets = await getLeaderboard(limit, offset);
+  const { wallets, total } = await getLeaderboard(limit, offset, { status, tier });
   const addresses = wallets.map((w) => w.address);
 
   const [deliveryMap, historyMap] = await Promise.all([
@@ -19,6 +32,7 @@ export async function GET(request: NextRequest) {
   ]);
 
   return NextResponse.json({
+    total,
     count: wallets.length,
     offset,
     limit,

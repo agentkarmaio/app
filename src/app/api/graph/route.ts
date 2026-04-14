@@ -6,7 +6,7 @@ import type { Transaction } from '@/db/schema';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const agents = await getLeaderboard(24);
+  const { wallets: agents } = await getLeaderboard(24);
   if (agents.length === 0) {
     return NextResponse.json({ facilitator: null, agents: [] });
   }

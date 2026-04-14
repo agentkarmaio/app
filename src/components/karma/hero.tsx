@@ -1,6 +1,7 @@
 import { WalletSearch } from '@/components/karma/wallet-search';
 import { WavyBackground } from '@/components/karma/wavy-background';
 import { LiveTicker } from '@/components/karma/live-ticker';
+import { TrustGraphMini } from '@/components/karma/trust-graph-mini';
 
 const PROTOCOLS = [
   { label: 'x402', role: 'payments' },
@@ -11,7 +12,7 @@ const PROTOCOLS = [
 
 export function Hero() {
   return (
-    <section className="relative pb-12 pt-10 sm:pt-16">
+    <section className="relative pb-12 pt-10 sm:pt-16 lg:pb-20 lg:pt-20">
       <div
         aria-hidden
         className="pointer-events-none absolute top-0 h-full overflow-hidden -z-10"
@@ -44,47 +45,70 @@ export function Hero() {
         />
       </div>
 
-      <div className="flex items-center gap-2">
-        <span className="relative flex size-1.5">
-          <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#10b981] opacity-60" />
-          <span className="relative inline-flex size-1.5 rounded-full bg-[#10b981]" />
-        </span>
-        <span className="text-[11px] font-[510] uppercase tracking-[0.12em] text-[#8a8f98]">
-          Indexing x402 payments · Live on Solana
-        </span>
-      </div>
-
-      <h1 className="mt-5 max-w-3xl text-[44px] font-[560] leading-[1.05] tracking-[-1.4px] text-[#f7f8f8] sm:text-[56px]">
-        Trust,{' '}
-        <span className="bg-gradient-to-br from-[#8a92ff] via-[#7170ff] to-[#5e6ad2] bg-clip-text text-transparent">
-          quantified
-        </span>{' '}
-        for AI agents.
-      </h1>
-
-      <p className="mt-4 max-w-2xl text-[16px] leading-relaxed text-[#8a8f98] tracking-[-0.176px]">
-        The credit bureau for autonomous agents. On-chain karma scores derived
-        from every x402 payment settled on Solana — so humans and machines can
-        tell which agents to trust.
-      </p>
-
-      <div className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-2 font-mono text-[11px] text-[#62666d]">
-        {PROTOCOLS.map((p, i) => (
-          <span key={p.label} className="flex items-center gap-2">
-            {i > 0 && <span className="text-[rgb(255_255_255/0.1)]">·</span>}
-            <span className="text-[#d0d6e0]">{p.label}</span>
-            <span className="uppercase tracking-[0.08em] text-[#62666d]">
-              {p.role}
+      <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,380px)] lg:items-center lg:gap-16 xl:grid-cols-[minmax(0,1fr)_minmax(0,420px)] xl:gap-20">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="relative flex size-1.5">
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#10b981] opacity-60" />
+              <span className="relative inline-flex size-1.5 rounded-full bg-[#10b981]" />
             </span>
-          </span>
-        ))}
-      </div>
+            <span className="text-[11px] font-[510] uppercase tracking-[0.12em] text-[#8a8f98]">
+              Indexing x402 payments · Live on Solana
+            </span>
+          </div>
 
-      <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="max-w-xl flex-1">
-          <WalletSearch />
+          <h1 className="mt-5 max-w-3xl text-[44px] font-[560] leading-[1.05] tracking-[-1.4px] text-[#f7f8f8] sm:text-[56px]">
+            Trust,{' '}
+            <span className="bg-gradient-to-br from-[#8a92ff] via-[#7170ff] to-[#5e6ad2] bg-clip-text text-transparent">
+              quantified
+            </span>{' '}
+            for AI agents.
+          </h1>
+
+          <p className="mt-4 max-w-2xl text-[16px] leading-relaxed text-[#8a8f98] tracking-[-0.176px]">
+            The credit bureau for autonomous agents. On-chain karma scores derived
+            from every x402 payment settled on Solana — so humans and machines can
+            tell which agents to trust.
+          </p>
+
+          <div className="mt-6 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[10px]">
+            {PROTOCOLS.map((p, i) => (
+              <span key={p.label} className="flex items-center gap-2">
+                {i > 0 && (
+                  <span className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]" />
+                )}
+                <span className="font-mono font-[500] text-[#8a8f98]">{p.label}</span>
+                <span className="uppercase tracking-[0.14em] text-[#4f5258]">
+                  {p.role}
+                </span>
+              </span>
+            ))}
+          </div>
+
+          <div className="mt-7 space-y-3">
+            <div className="w-full max-w-md">
+              <WalletSearch />
+            </div>
+            <div className="pl-4">
+              <LiveTicker />
+            </div>
+          </div>
         </div>
-        <LiveTicker />
+
+        <div className="hidden lg:block">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="relative flex size-1.5">
+                <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#10b981] opacity-60" />
+                <span className="relative inline-flex size-1.5 rounded-full bg-[#10b981]" />
+              </span>
+              <span className="text-[10px] font-[510] uppercase tracking-[0.12em] text-[#8a8f98]">
+                Live trust network
+              </span>
+            </div>
+          </div>
+          <TrustGraphMini />
+        </div>
       </div>
     </section>
   );

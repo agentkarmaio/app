@@ -2,9 +2,21 @@
 
 import { useState } from 'react';
 import { Shield } from 'lucide-react';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+
+const CATEGORIES = [
+  { value: 'ai', label: 'AI / ML' },
+  { value: 'data', label: 'Data Feed' },
+  { value: 'defi', label: 'DeFi' },
+  { value: 'infra', label: 'Infrastructure' },
+  { value: 'social', label: 'Social' },
+  { value: 'utility', label: 'Utility' },
+  { value: 'other', label: 'Other' },
+];
 
 export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -15,56 +27,39 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
   const [status, setStatus] = useState<'idle' | 'signing' | 'submitting' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
 
-  const categories = [
-    { value: 'ai', label: 'AI / ML' },
-    { value: 'data', label: 'Data Feed' },
-    { value: 'defi', label: 'DeFi' },
-    { value: 'infra', label: 'Infrastructure' },
-    { value: 'social', label: 'Social' },
-    { value: 'utility', label: 'Utility' },
-    { value: 'other', label: 'Other' },
-  ];
+  const { publicKey, connected, signMessage } = useWallet();
+  const { setVisible } = useWalletModal();
 
   async function handleClaim() {
     if (!displayName.trim()) return;
 
-    setStatus('signing');
     setErrorMsg('');
 
+    if (!connected || !publicKey || !signMessage) {
+      setVisible(true);
+      setErrorMsg('Connect your wallet to continue.');
+      return;
+    }
+
+    if (publicKey.toBase58() !== walletAddress) {
+      setErrorMsg(
+        `Connected wallet (${publicKey.toBase58().slice(0, 8)}…) doesn't match this agent's wallet.`,
+      );
+      setStatus('error');
+      return;
+    }
+
+    setStatus('signing');
     try {
-      // Request wallet signature via window.solana (Phantom/Backpack)
-      const provider = (window as unknown as Record<string, unknown>).solana as {
-        isPhantom?: boolean;
-        connect: () => Promise<{ publicKey: { toString: () => string } }>;
-        signMessage: (message: Uint8Array, encoding: string) => Promise<{ signature: Uint8Array }>;
-      } | undefined;
-
-      if (!provider?.signMessage) {
-        setErrorMsg('Solana wallet not found. Install Phantom or Backpack.');
-        setStatus('error');
-        return;
-      }
-
-      // Connect wallet
-      const { publicKey } = await provider.connect();
-      if (publicKey.toString() !== walletAddress) {
-        setErrorMsg(`Connected wallet (${publicKey.toString().slice(0, 8)}...) doesn't match this agent's wallet.`);
-        setStatus('error');
-        return;
-      }
-
-      // Sign the claim message
       const timestamp = Date.now().toString();
       const message = `AgentKarma: Claim wallet ${walletAddress} at ${timestamp}`;
       const messageBytes = new TextEncoder().encode(message);
-      const { signature } = await provider.signMessage(messageBytes, 'utf8');
 
-      // Convert signature to base58
-      const signatureB58 = uint8ArrayToBase58(new Uint8Array(signature));
+      const signatureBytes = await signMessage(messageBytes);
+      const signatureB58 = uint8ArrayToBase58(signatureBytes);
 
       setStatus('submitting');
 
-      // Submit to API
       const res = await fetch('/api/agent/claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -85,13 +80,10 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
       }
 
       setStatus('success');
-      // Reload page to show updated profile
       setTimeout(() => window.location.reload(), 1000);
     } catch (err) {
-      if (status !== 'error') {
-        setErrorMsg(err instanceof Error ? err.message : 'Claim failed');
-        setStatus('error');
-      }
+      setErrorMsg(err instanceof Error ? err.message : 'Claim failed');
+      setStatus('error');
     }
   }
 
@@ -101,7 +93,7 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
         <CardContent className="flex items-center gap-2.5 px-3 py-0">
           <Shield className="size-3.5 text-[#30a46c]" />
           <p className="text-[12px] text-[#30a46c] font-[510] leading-4">
-            Agent claimed successfully. Refreshing...
+            Agent claimed successfully. Refreshing…
           </p>
         </CardContent>
       </Card>
@@ -153,7 +145,7 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
                 className="h-8 rounded-md border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.03)] px-3 text-[13px] text-[#f7f8f8] outline-none"
               >
                 <option value="">Category (optional)</option>
-                {categories.map((c) => (
+                {CATEGORIES.map((c) => (
                   <option key={c.value} value={c.value}>{c.label}</option>
                 ))}
               </select>
@@ -181,9 +173,9 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
                 onClick={handleClaim}
                 disabled={!displayName.trim() || status === 'signing' || status === 'submitting'}
               >
-                {status === 'signing' ? 'Sign with wallet...' :
-                 status === 'submitting' ? 'Saving...' :
-                 'Sign & Claim'}
+                {status === 'signing' ? 'Sign with wallet…' :
+                 status === 'submitting' ? 'Saving…' :
+                 connected ? 'Sign & Claim' : 'Connect & Claim'}
               </Button>
               <Button
                 variant="ghost"

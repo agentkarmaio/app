@@ -20,7 +20,13 @@ export interface LeaderboardEntry {
   trend?: number[];
 }
 
-export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
+export function LeaderboardTable({
+  entries,
+  pulsingAddresses,
+}: {
+  entries: LeaderboardEntry[];
+  pulsingAddresses?: Set<string>;
+}) {
   if (entries.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
@@ -46,7 +52,10 @@ export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
       </TableHeader>
       <TableBody>
         {entries.map((entry) => (
-          <TableRow key={entry.address}>
+          <TableRow
+            key={entry.address}
+            className={pulsingAddresses?.has(entry.address) ? 'karma-row-pulse' : undefined}
+          >
             <TableCell className="text-center font-medium text-muted-foreground tabular-nums">
               {entry.rank}
             </TableCell>

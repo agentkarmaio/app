@@ -24,7 +24,7 @@ type StatItem = {
   label: string;
   icon: typeof Users;
   getValue: (d: StatsData) => string;
-  featured?: boolean;
+  accent?: boolean;
 };
 
 const STAT_ITEMS: StatItem[] = [
@@ -45,7 +45,7 @@ const STAT_ITEMS: StatItem[] = [
     label: 'USDC Volume',
     icon: DollarSign,
     getValue: (d) => formatUsdc(d.totalVolumeUsdc),
-    featured: true,
+    accent: true,
   },
   {
     key: 'trusted',
@@ -62,48 +62,26 @@ const STAT_ITEMS: StatItem[] = [
 
 export function StatsCards({ data }: { data: StatsData }) {
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      {STAT_ITEMS.map((item) => {
-        const featured = item.featured;
-        return (
-          <div
-            key={item.key}
-            className={
-              featured
-                ? 'relative overflow-hidden rounded-lg border border-[rgb(113_112_255/0.25)] bg-gradient-to-br from-[rgb(94_106_210/0.12)] to-[rgb(94_106_210/0.02)] p-5'
-                : 'rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] p-5'
-            }
-          >
-            {featured && (
-              <div
-                aria-hidden
-                className="pointer-events-none absolute -right-8 -top-8 size-32 rounded-full bg-[#5e6ad2] opacity-[0.08] blur-2xl"
-              />
-            )}
-            <div className="flex items-center gap-2">
-              <item.icon
-                className={
-                  featured
-                    ? 'size-3.5 text-[#7170ff]'
-                    : 'size-3.5 text-[#62666d]'
-                }
-              />
-              <p
-                className={
-                  featured
-                    ? 'text-[11px] font-[510] uppercase tracking-[0.08em] text-[#7170ff]'
-                    : 'text-[11px] font-[510] uppercase tracking-[0.08em] text-[#62666d]'
-                }
-              >
-                {item.label}
-              </p>
-            </div>
-            <p className="mt-3 text-[36px] font-[560] tabular-nums leading-none tracking-[-1.2px] text-[#f7f8f8]">
-              {item.getValue(data)}
+    <div className="grid grid-cols-2 divide-[rgb(255_255_255/0.06)] border-y border-[rgb(255_255_255/0.06)] sm:grid-cols-4 sm:divide-x">
+      {STAT_ITEMS.map((item) => (
+        <div key={item.key} className="px-4 py-4 sm:px-5">
+          <div className="flex items-center gap-1.5">
+            <item.icon className="size-3 text-[#62666d]" strokeWidth={1.75} />
+            <p className="text-[10px] font-[510] uppercase tracking-[0.12em] text-[#62666d]">
+              {item.label}
             </p>
           </div>
-        );
-      })}
+          <p
+            className={
+              item.accent
+                ? 'mt-1.5 text-[22px] font-[560] tabular-nums leading-none tracking-[-0.6px] text-[#828fff]'
+                : 'mt-1.5 text-[22px] font-[560] tabular-nums leading-none tracking-[-0.6px] text-[#f7f8f8]'
+            }
+          >
+            {item.getValue(data)}
+          </p>
+        </div>
+      ))}
     </div>
   );
 }

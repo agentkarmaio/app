@@ -97,7 +97,7 @@ export function WalletSearch() {
   return (
     <div ref={containerRef} className="relative w-full max-w-xl">
       <div className="relative">
-        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#62666d]" />
+        <Search className="pointer-events-none absolute left-3.5 top-1/2 size-3.5 -translate-y-1/2 text-[#62666d]" />
         <input
           ref={inputRef}
           type="text"
@@ -105,18 +105,18 @@ export function WalletSearch() {
           onChange={(e) => handleChange(e.target.value)}
           onFocus={() => query.length >= 3 && setOpen(true)}
           onKeyDown={handleKeyDown}
-          placeholder="Search by wallet address..."
-          className="h-10 w-full rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] pl-10 pr-4 text-[14px] font-[510] text-[#f7f8f8] placeholder-[#62666d] outline-none transition-colors focus:border-[#5e6ad2] focus:bg-[rgb(255_255_255/0.04)]"
+          placeholder="Search by wallet address…"
+          className="h-9 w-full rounded-full border border-[rgb(255_255_255/0.05)] bg-[rgb(255_255_255/0.02)] pl-9 pr-4 text-[13px] font-[510] text-[#f7f8f8] placeholder-[#62666d] outline-none transition-colors focus:border-[rgb(113_112_255/0.35)] focus:bg-[rgb(255_255_255/0.03)]"
           spellCheck={false}
           autoComplete="off"
         />
         {loading && (
-          <Loader2 className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-[#62666d]" />
+          <Loader2 className="absolute right-3.5 top-1/2 size-3.5 -translate-y-1/2 animate-spin text-[#62666d]" />
         )}
       </div>
 
       {showDropdown && (
-        <div className="absolute top-full z-50 mt-1.5 w-full overflow-hidden rounded-lg border border-[rgb(255_255_255/0.08)] bg-[#191a1b] shadow-[rgba(0,0,0,0.4)_0px_2px_4px]">
+        <div className="absolute top-full z-50 mt-1.5 w-full overflow-hidden rounded-xl border border-[rgb(255_255_255/0.06)] bg-[rgb(20_21_22/0.95)] backdrop-blur-xl shadow-[0_8px_24px_-12px_rgb(0_0_0/0.6)]">
           {isValidSolanaAddress && (
             <button
               type="button"
