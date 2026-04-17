@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { formatUsdcAmount } from '@/lib/format';
 
 interface Tx {
   walletAddress: string;
@@ -12,14 +13,6 @@ interface Tx {
 
 function shortAddr(a: string) {
   return `${a.slice(0, 4)}…${a.slice(-4)}`;
-}
-
-function formatUsdcAmount(amount: number): string {
-  if (!Number.isFinite(amount) || amount === 0) return '0.00';
-  if (amount >= 1) return amount.toFixed(2);
-  if (amount >= 0.01) return amount.toFixed(3);
-  if (amount >= 0.0001) return amount.toFixed(4);
-  return '<0.0001';
 }
 
 function timeAgo(iso: string): string {

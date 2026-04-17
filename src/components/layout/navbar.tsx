@@ -72,13 +72,17 @@ export function Navbar() {
             })}
           </nav>
 
-          <div className="ml-1 hidden border-l border-[rgb(255_255_255/0.06)] pl-2 md:block">
+          <div
+            data-tour="connect"
+            className="ml-1 hidden border-l border-[rgb(255_255_255/0.06)] pl-2 md:block"
+          >
             <WalletConnectButton />
           </div>
 
           <Sheet open={open} onOpenChange={setOpen}>
             <SheetTrigger
               aria-label="Open menu"
+              data-tour="connect"
               className="inline-flex size-8 items-center justify-center rounded-full text-[#8a8f98] transition-colors hover:bg-[rgb(255_255_255/0.06)] hover:text-[#f7f8f8] md:hidden"
             >
               <Menu className="size-4" />

@@ -551,6 +551,29 @@ export async function getFeedbackSummary(
   return { total, delivered, failed, deliveryRate };
 }
 
+export async function getFeedbackRatingsForSignatures(
+  txSignatures: string[],
+): Promise<Map<string, 'delivered' | 'failed'>> {
+  const out = new Map<string, 'delivered' | 'failed'>();
+  if (txSignatures.length === 0) return out;
+
+  for (let i = 0; i < txSignatures.length; i += 500) {
+    const chunk = txSignatures.slice(i, i + 500);
+    const { data, error } = await supabase
+      .from('feedback')
+      .select('tx_signature, rating')
+      .in('tx_signature', chunk);
+
+    if (error) throw error;
+    for (const row of (data ?? []) as { tx_signature: string; rating: string }[]) {
+      if (row.rating === 'delivered' || row.rating === 'failed') {
+        out.set(row.tx_signature, row.rating);
+      }
+    }
+  }
+  return out;
+}
+
 export async function getFeedbackSummariesForWallets(
   agentWallets: string[],
 ): Promise<Map<string, { total: number; delivered: number; failed: number; deliveryRate: number }>> {

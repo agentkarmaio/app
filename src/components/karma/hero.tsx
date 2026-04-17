@@ -57,7 +57,10 @@ export function Hero() {
             </span>
           </div>
 
-          <h1 className="mt-5 max-w-3xl text-[44px] font-[560] leading-[1.05] tracking-[-1.4px] text-[#f7f8f8] sm:text-[56px]">
+          <h1
+            data-tour="hero"
+            className="mt-5 max-w-3xl text-[36px] font-[560] leading-[1.08] tracking-[-1.1px] text-[#f7f8f8] sm:text-[44px] sm:leading-[1.05] sm:tracking-[-1.4px] md:text-[56px]"
+          >
             Trust,{' '}
             <span className="bg-gradient-to-br from-[#8a92ff] via-[#7170ff] to-[#5e6ad2] bg-clip-text text-transparent">
               quantified
@@ -74,13 +77,16 @@ export function Hero() {
           <div className="mt-6 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[10px]">
             {PROTOCOLS.map((p, i) => (
               <span key={p.label} className="flex items-center gap-2">
-                {i > 0 && (
-                  <span className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]" />
-                )}
                 <span className="font-mono font-[500] text-[#8a8f98]">{p.label}</span>
                 <span className="uppercase tracking-[0.14em] text-[#4f5258]">
                   {p.role}
                 </span>
+                {i < PROTOCOLS.length - 1 && (
+                  <span
+                    aria-hidden
+                    className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]"
+                  />
+                )}
               </span>
             ))}
           </div>

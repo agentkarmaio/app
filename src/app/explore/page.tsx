@@ -9,6 +9,7 @@ import { WalletAddress } from '@/components/karma/wallet-address';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { Badge } from '@/components/ui/badge';
 import type { TrustTier } from '@/db/schema';
+import { formatUsdcAmount } from '@/lib/format';
 
 export const dynamic = 'force-dynamic';
 
@@ -285,7 +286,7 @@ function RecentActivity({
                 </div>
                 <div className="flex items-center gap-4 shrink-0">
                   <span className="text-[13px] font-[510] tabular-nums text-[#d0d6e0]">
-                    {Number(tx.amount).toFixed(2)} <span className="text-[#62666d] text-[11px]">USDC</span>
+                    {formatUsdcAmount(Number(tx.amount))} <span className="text-[#62666d] text-[11px]">USDC</span>
                   </span>
                   <span className="hidden sm:inline text-[12px] tabular-nums text-[#62666d]">
                     {new Date(tx.timestamp).toLocaleDateString('en-US', {

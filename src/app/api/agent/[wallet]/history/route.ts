@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getTransactions, getTransactionCount } from '@/db/client';
+import {
+  getTransactions,
+  getTransactionCount,
+  getFeedbackRatingsForSignatures,
+} from '@/db/client';
 
 export async function GET(
   request: NextRequest,
@@ -20,6 +24,10 @@ export async function GET(
     getTransactionCount(wallet),
   ]);
 
+  const feedbackMap = await getFeedbackRatingsForSignatures(
+    transactions.map((tx) => tx.tx_signature),
+  );
+
   return NextResponse.json({
     address: wallet,
     total,
@@ -32,6 +40,7 @@ export async function GET(
       timestamp: tx.timestamp,
       success: tx.success,
       txSignature: tx.tx_signature,
+      feedback: feedbackMap.get(tx.tx_signature) ?? null,
     })),
   });
 }

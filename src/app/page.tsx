@@ -8,6 +8,7 @@ import { StatsCards } from '@/components/karma/stats-cards';
 import { LeaderboardWithLoadMore } from '@/components/karma/leaderboard-with-load-more';
 import { Hero } from '@/components/karma/hero';
 import { FacilitatorList } from '@/components/karma/facilitator-list';
+import { Tour } from '@/components/karma/tour';
 import type { LeaderboardEntry } from '@/components/karma/leaderboard-table';
 import type { TrustTier } from '@/db/schema';
 
@@ -57,6 +58,7 @@ export default async function HomePage() {
 
   return (
     <div className="space-y-10">
+      {!dbError && hasData && <Tour />}
       <Hero />
 
       {dbError ? (
@@ -77,7 +79,10 @@ export default async function HomePage() {
         <>
           {stats && <StatsCards data={stats} />}
 
-          <div className="rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
+          <div
+            data-tour="leaderboard"
+            className="scroll-mt-24 rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]"
+          >
             <LeaderboardWithLoadMore initial={leaderboard} />
           </div>
 

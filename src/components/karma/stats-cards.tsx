@@ -62,7 +62,10 @@ const STAT_ITEMS: StatItem[] = [
 
 export function StatsCards({ data }: { data: StatsData }) {
   return (
-    <div className="grid grid-cols-2 divide-[rgb(255_255_255/0.06)] border-y border-[rgb(255_255_255/0.06)] sm:grid-cols-4 sm:divide-x">
+    <div
+      data-tour="stats"
+      className="grid grid-cols-2 divide-[rgb(255_255_255/0.06)] border-y border-[rgb(255_255_255/0.06)] sm:grid-cols-4 sm:divide-x"
+    >
       {STAT_ITEMS.map((item) => (
         <div key={item.key} className="px-4 py-4 sm:px-5">
           <div className="flex items-center gap-1.5">

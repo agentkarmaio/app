@@ -6,6 +6,9 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { getFacilitatorName } from '@/config/facilitators';
+import { formatUsdcAmount } from '@/lib/format';
+
+type FeedbackRating = 'delivered' | 'failed' | null;
 
 interface TxRow {
   id: string;
@@ -14,6 +17,7 @@ interface TxRow {
   timestamp: string;
   success: boolean;
   tx_signature: string;
+  feedback?: FeedbackRating;
 }
 
 interface ApiTx {
@@ -23,14 +27,35 @@ interface ApiTx {
   timestamp: string;
   success: boolean;
   txSignature: string;
+  feedback?: FeedbackRating;
 }
 
-function formatUsdc(amount: number): string {
-  if (!Number.isFinite(amount) || amount === 0) return '$0.00';
-  if (amount >= 1) return `$${amount.toFixed(2)}`;
-  if (amount >= 0.01) return `$${amount.toFixed(3)}`;
-  if (amount >= 0.0001) return `$${amount.toFixed(4)}`;
-  return `<$0.0001`;
+function relativeTime(iso: string): string {
+  const s = Math.max(1, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 2592000) return `${Math.floor(s / 86400)}d ago`;
+  return `${Math.floor(s / 2592000)}mo ago`;
+}
+
+function FeedbackPill({ rating }: { rating: FeedbackRating }) {
+  if (!rating) {
+    return <span className="text-[11px] text-[#4f5258]">—</span>;
+  }
+  const delivered = rating === 'delivered';
+  return (
+    <span
+      className={
+        delivered
+          ? 'inline-flex items-center gap-1 rounded-md border border-[rgb(16_185_129/0.20)] bg-[rgb(16_185_129/0.10)] px-1.5 py-0.5 text-[11px] font-[510] text-[#10b981]'
+          : 'inline-flex items-center gap-1 rounded-md border border-[rgb(229_72_77/0.20)] bg-[rgb(229_72_77/0.10)] px-1.5 py-0.5 text-[11px] font-[510] text-[#e5484d]'
+      }
+      title={`Consumer reported this payment as ${delivered ? 'delivered' : 'failed'}`}
+    >
+      {delivered ? 'Delivered' : 'Failed'}
+    </span>
+  );
 }
 
 function TxSignature({ signature }: { signature: string }) {
@@ -82,6 +107,7 @@ export function TransactionList({
         timestamp: tx.timestamp,
         success: tx.success,
         tx_signature: tx.txSignature,
+        feedback: tx.feedback ?? null,
       }));
       setRows((prev) => {
         const combined = [...prev, ...next];
@@ -116,6 +142,8 @@ export function TransactionList({
     );
   }
 
+  const showDelivery = rows.some((tx) => tx.feedback);
+
   return (
     <Table>
       <TableHeader>
@@ -123,47 +151,83 @@ export function TransactionList({
           <TableHead>Facilitator</TableHead>
           <TableHead className="text-right">Amount</TableHead>
           <TableHead className="text-center">Status</TableHead>
+          {showDelivery && (
+            <TableHead className="text-center hidden md:table-cell">Delivery</TableHead>
+          )}
           <TableHead className="text-right hidden sm:table-cell">Date</TableHead>
           <TableHead className="text-right hidden md:table-cell">Signature</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
-        {rows.map((tx) => (
-          <TableRow key={tx.id}>
-            <TableCell className="font-medium capitalize">
-              {getFacilitatorName(tx.facilitator) ?? tx.facilitator.slice(0, 8) + '...'}
-            </TableCell>
-            <TableCell className="text-right tabular-nums">
-              {formatUsdc(Number(tx.amount))}
-            </TableCell>
-            <TableCell className="text-center">
-              <Badge
-                variant="outline"
-                className={
-                  tx.success
-                    ? 'border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-400'
-                    : 'border-red-200 bg-red-50 text-red-600 dark:border-red-800 dark:bg-red-950 dark:text-red-400'
-                }
-              >
-                {tx.success ? 'OK' : 'Failed'}
-              </Badge>
-            </TableCell>
-            <TableCell className="text-right text-sm text-muted-foreground hidden sm:table-cell">
-              {new Date(tx.timestamp).toLocaleDateString('en-US', {
-                month: 'short',
-                day: 'numeric',
-                year: 'numeric',
-              })}
-            </TableCell>
-            <TableCell className="text-right hidden md:table-cell">
-              <TxSignature signature={tx.tx_signature} />
-            </TableCell>
-          </TableRow>
-        ))}
+        {rows.map((tx) => {
+          const facilitatorName = getFacilitatorName(tx.facilitator);
+          return (
+            <TableRow key={tx.id}>
+              <TableCell className="font-medium capitalize">
+                <span
+                  title={tx.facilitator}
+                  className="cursor-help underline-offset-4 decoration-dotted decoration-[rgb(255_255_255/0.12)] hover:underline"
+                >
+                  {facilitatorName ?? tx.facilitator.slice(0, 8) + '...'}
+                </span>
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                <span title={`${Number(tx.amount).toFixed(6)} USDC`}>
+                  {formatUsdcAmount(Number(tx.amount), true)}
+                </span>
+              </TableCell>
+              <TableCell className="text-center">
+                <Badge
+                  variant="outline"
+                  className={
+                    tx.success
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-400'
+                      : 'border-red-200 bg-red-50 text-red-600 dark:border-red-800 dark:bg-red-950 dark:text-red-400'
+                  }
+                >
+                  {tx.success ? 'OK' : 'Failed'}
+                </Badge>
+              </TableCell>
+              {showDelivery && (
+                <TableCell className="text-center hidden md:table-cell">
+                  <FeedbackPill rating={tx.feedback ?? null} />
+                </TableCell>
+              )}
+              <TableCell className="text-right text-sm text-muted-foreground hidden sm:table-cell tabular-nums">
+                <div
+                  className="flex flex-col items-end leading-tight"
+                  title={new Date(tx.timestamp).toLocaleString()}
+                  suppressHydrationWarning
+                >
+                  <span className="whitespace-nowrap">
+                    {new Date(tx.timestamp).toLocaleDateString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                    })}
+                    <span className="text-[#4f5258]">
+                      {' · '}
+                    </span>
+                    {new Date(tx.timestamp).toLocaleTimeString('en-US', {
+                      hour: 'numeric',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                  <span className="text-[11px] text-[#4f5258]" suppressHydrationWarning>
+                    {relativeTime(tx.timestamp)}
+                  </span>
+                </div>
+              </TableCell>
+              <TableCell className="text-right hidden md:table-cell">
+                <TxSignature signature={tx.tx_signature} />
+              </TableCell>
+            </TableRow>
+          );
+        })}
         {!done && (
           <TableRow ref={sentinelRef} className="hover:bg-transparent">
             <TableCell
-              colSpan={5}
+              colSpan={showDelivery ? 6 : 5}
               className="py-4 text-center text-xs text-muted-foreground"
             >
               {loading ? 'Loading more\u2026' : '\u00a0'}

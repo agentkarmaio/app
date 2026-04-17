@@ -29,6 +29,7 @@ export function LeaderboardWithLoadMore({ initial }: { initial: LeaderboardEntry
   const [hasMore, setHasMore] = useState(initial.length >= PAGE_SIZE);
   const [total, setTotal] = useState<number | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [isFiltering, setIsFiltering] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusFilter>('All');
   const [tier, setTier] = useState<TierFilter>('All');
@@ -94,32 +95,37 @@ export function LeaderboardWithLoadMore({ initial }: { initial: LeaderboardEntry
   const fetchPage = useCallback(
     async (reset: boolean) => {
       setError(null);
+      if (reset) setIsFiltering(true);
       const offset = reset ? 0 : entries.length;
       const p = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
       if (status !== 'All') p.set('status', status);
       if (tier !== 'All') p.set('tier', tier);
-      const res = await fetch(`/api/leaderboard?${p}`);
-      if (!res.ok) {
-        setError('Failed to load');
-        return;
+      try {
+        const res = await fetch(`/api/leaderboard?${p}`);
+        if (!res.ok) {
+          setError('Failed to load');
+          return;
+        }
+        const data = (await res.json()) as { wallets: ApiEntry[]; total?: number };
+        const next: LeaderboardEntry[] = data.wallets.map((w) => ({
+          rank: w.rank,
+          address: w.address,
+          displayName: w.displayName,
+          score: w.score,
+          trustTier: w.trustTier,
+          txCount: w.txCount,
+          lastSeen: w.lastSeen,
+          delivery: w.delivery,
+          trend: w.trend,
+        }));
+        startTransition(() => {
+          setEntries((prev) => (reset ? next : [...prev, ...next]));
+          setHasMore(next.length >= PAGE_SIZE);
+          setTotal(typeof data.total === 'number' ? data.total : null);
+        });
+      } finally {
+        if (reset) setIsFiltering(false);
       }
-      const data = (await res.json()) as { wallets: ApiEntry[]; total?: number };
-      const next: LeaderboardEntry[] = data.wallets.map((w) => ({
-        rank: w.rank,
-        address: w.address,
-        displayName: w.displayName,
-        score: w.score,
-        trustTier: w.trustTier,
-        txCount: w.txCount,
-        lastSeen: w.lastSeen,
-        delivery: w.delivery,
-        trend: w.trend,
-      }));
-      startTransition(() => {
-        setEntries((prev) => (reset ? next : [...prev, ...next]));
-        setHasMore(next.length >= PAGE_SIZE);
-        setTotal(typeof data.total === 'number' ? data.total : null);
-      });
     },
     [entries.length, status, tier],
   );
@@ -174,11 +180,17 @@ export function LeaderboardWithLoadMore({ initial }: { initial: LeaderboardEntry
           options={TIER_OPTIONS}
           onChange={setTier}
         />
-        <span className="ml-auto text-[10px] font-[510] uppercase tracking-[0.08em] text-[#62666d] tabular-nums">
+        <span className="ml-auto flex items-center gap-1.5 text-[10px] font-[510] uppercase tracking-[0.08em] text-[#62666d] tabular-nums">
+          {isFiltering && (
+            <span
+              aria-label="Loading"
+              className="inline-block h-2.5 w-2.5 animate-spin rounded-full border border-[rgb(255_255_255/0.15)] border-t-[#d0d6e0]"
+            />
+          )}
           {headerCount}
         </span>
       </div>
-      {entries.length === 0 ? (
+      {entries.length === 0 && !isFiltering ? (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <p className="text-sm">
             {status === 'All' && tier === 'All'
@@ -199,7 +211,16 @@ export function LeaderboardWithLoadMore({ initial }: { initial: LeaderboardEntry
           )}
         </div>
       ) : (
-        <LeaderboardTable entries={entries} pulsingAddresses={pulsing} />
+        <div
+          className={
+            isFiltering
+              ? 'pointer-events-none opacity-50 transition-opacity duration-150'
+              : 'transition-opacity duration-150'
+          }
+          aria-busy={isFiltering}
+        >
+          <LeaderboardTable entries={entries} pulsingAddresses={pulsing} />
+        </div>
       )}
       {hasMore && (
         <div

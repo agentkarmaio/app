@@ -7,6 +7,7 @@ import {
   getTransactions,
   getTransactionCount,
   getFeedbackSummary,
+  getFeedbackRatingsForSignatures,
   getScoreHistory,
 } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
@@ -127,6 +128,9 @@ async function TransactionsCard({ wallet }: { wallet: string }) {
     getTransactions(wallet, 25),
     getTransactionCount(wallet),
   ]);
+  const feedbackMap = await getFeedbackRatingsForSignatures(
+    transactions.map((tx) => tx.tx_signature),
+  );
   return (
     <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
       <CardHeader className="pb-3">
@@ -146,6 +150,7 @@ async function TransactionsCard({ wallet }: { wallet: string }) {
             timestamp: tx.timestamp,
             success: tx.success,
             tx_signature: tx.tx_signature,
+            feedback: feedbackMap.get(tx.tx_signature) ?? null,
           }))}
         />
       </CardContent>
