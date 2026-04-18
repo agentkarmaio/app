@@ -1,77 +1,62 @@
 /**
- * Karma Scoring Engine — Computes trust scores for agent wallets
- * based on their x402 transaction history.
+ * Karma Scoring Engine — four-tier weighted blend (Phase F).
  *
- * Formula (weighted):
- *   score = (successRate × 0.35) + (diversity × 0.25) + (volume × 0.20)
- *         + (age × 0.10) + (attestation × 0.10)
- *   attestation is reserved for future 8004 integration (currently 0)
+ * See docs/SIGNAL-ARCHITECTURE.md for the canonical specification.
  *
- * TrustTier thresholds:
- *   0–20   → Unrated
- *   21–40  → Poor
- *   41–60  → Fair
- *   61–75  → Good
- *   76–90  → Very Good
- *   91–100 → Excellent
+ *   Score = clamp( Σ_k (w_k * tier_k_aggregate), 0, 100 )
+ *     where (w1, w2, w3, w4) = (0.60, 0.25, 0.10, 0.05)
+ *
+ * When a tier has no signals, its weight is **redistributed proportionally**
+ * across tiers that do have signals — new agents with strong Tier 2 behavior
+ * are not zero-penalized for lacking Tier 1 receipts.
+ *
+ * Legacy `calculateScore(transactions, attestation, feedback*)` is preserved
+ * as a thin adapter that derives Tier 1 (attestation) + Tier 2 (behavioral)
+ * aggregates from raw x402 transactions.
  */
 
-// Accepts Transaction with timestamp as string or Date
-interface ScoringTransaction {
-  wallet_address: string;
-  facilitator: string;
-  amount: number;
-  timestamp: string | Date;
-  success: boolean;
-  tx_signature: string;
-}
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+import type { ConfidenceBadge, SignalTier } from '@/db/schema';
 
 export type TrustTier = 'Unrated' | 'Poor' | 'Fair' | 'Good' | 'Very Good' | 'Excellent';
 
-export interface WalletScore {
-  address: string;
-  score: number;       // 0–100 (rounded to 2 decimal places)
-  trustTier: TrustTier;
-  metrics: {
-    successRate: number;  // 0–1
-    diversity: number;    // normalized unique facilitator count (0–1)
-    volume: number;       // normalized tx count (0–1)
-    age: number;          // normalized days since first tx (0–1)
-    attestation: number;  // 0–1 from 8004 on-chain feedback
-  };
-  txCount: number;
-  lastActive: Date;
+// ─── Tier Weights ─────────────────────────────────────────────────────────────
+
+export const TIER_WEIGHTS: Record<SignalTier, number> = {
+  1: 0.60,
+  2: 0.25,
+  3: 0.10,
+  4: 0.05,
+} as const;
+
+export interface TierAggregates {
+  tier1?: number | null;
+  tier2?: number | null;
+  tier3?: number | null;
+  tier4?: number | null;
 }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+export interface TieredScoreResult {
+  score: number;
+  trustTier: TrustTier;
+  effectiveWeights: Record<SignalTier, number>;
+  confidenceBadge: ConfidenceBadge;
+}
 
-const WEIGHTS = {
-  successRate: 0.35,
-  diversity: 0.25,
-  volume: 0.20,
-  age: 0.10,
-  attestation: 0.10,
-} as const;
-
-const NORMALIZE = {
-  diversityMax: 10,   // unique_services / 10 (capped at 1.0)
-  volumeMax: 500,     // tx_count / 500 (capped at 1.0)
-  ageMax: 180,        // days_active / 180 (capped at 1.0)
-} as const;
+// ─── Shared helpers ───────────────────────────────────────────────────────────
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 
-/**
- * Recency decay — penalizes agents who haven't transacted recently.
- * Active agents (< 7 days) get no penalty. Dormant/inactive get up to 20% reduction.
- *
- *   0–7 days:   multiplier = 1.0  (no decay)
- *   7–30 days:  multiplier = 1.0 → 0.95  (gentle)
- *   30–90 days: multiplier = 0.95 → 0.85  (moderate)
- *   90+ days:   multiplier = 0.80  (floor)
- */
+function clamp01(x: number): number {
+  if (!Number.isFinite(x)) return 0;
+  if (x < 0) return 0;
+  if (x > 1) return 1;
+  return x;
+}
+
+function cap(value: number, max: number): number {
+  return Math.min(value / max, 1.0);
+}
+
 function recencyDecay(daysSinceLastTx: number): number {
   if (daysSinceLastTx <= 7) return 1.0;
   if (daysSinceLastTx <= 30) return 1.0 - 0.05 * ((daysSinceLastTx - 7) / 23);
@@ -79,9 +64,6 @@ function recencyDecay(daysSinceLastTx: number): number {
   return 0.80;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Map a raw 0–100 score to a trust tier label */
 export function getTrustTier(score: number): TrustTier {
   if (score <= 20) return 'Unrated';
   if (score <= 40) return 'Poor';
@@ -91,27 +73,100 @@ export function getTrustTier(score: number): TrustTier {
   return 'Excellent';
 }
 
-function cap(value: number, max: number): number {
-  return Math.min(value / max, 1.0);
+// ─── Tier blend + confidence badge ────────────────────────────────────────────
+
+export function getConfidenceBadge(aggregates: TierAggregates): ConfidenceBadge {
+  const has = (v: number | null | undefined) => typeof v === 'number' && v >= 0;
+  if (has(aggregates.tier1)) return 'receipt-backed';
+  if (has(aggregates.tier2) || has(aggregates.tier3)) return 'behavior-inferred';
+  return 'declared';
 }
 
-// ─── Core Scoring ─────────────────────────────────────────────────────────────
+export function calculateTieredScore(
+  aggregates: TierAggregates,
+  opts: { decay?: number } = {},
+): TieredScoreResult {
+  const present = ([1, 2, 3, 4] as SignalTier[]).filter((t) => {
+    const key = `tier${t}` as const;
+    const v = aggregates[key];
+    return typeof v === 'number' && Number.isFinite(v);
+  });
 
-/**
- * Calculate a WalletScore for a single wallet given its transactions.
- * All transactions must belong to the same wallet (wallet_address).
- */
-/**
- * Calculate a WalletScore for a single wallet given its transactions.
- * @param attestation — 8004 on-chain feedback score (0–1). Fetched externally via readAttestation().
- * @param feedbackDeliveryRate — local consumer feedback delivery rate (0–1). From getFeedbackSummary().
- * @param feedbackCount — number of local feedback submissions for weighting.
- *
- * The attestation metric blends 8004 on-chain score with local feedback:
- *   - If no local feedback: use 8004 score only
- *   - If local feedback exists: weighted average of 8004 (40%) + local delivery rate (60%)
- *   - Local feedback is weighted higher because it's tied to actual transaction references
- */
+  const effectiveWeights: Record<SignalTier, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
+
+  if (present.length === 0) {
+    return {
+      score: 0,
+      trustTier: getTrustTier(0),
+      effectiveWeights,
+      confidenceBadge: 'declared',
+    };
+  }
+
+  const presentWeightSum = present.reduce((sum, t) => sum + TIER_WEIGHTS[t], 0);
+
+  let raw = 0;
+  for (const t of present) {
+    const w = TIER_WEIGHTS[t] / presentWeightSum;
+    effectiveWeights[t] = w;
+    const v = clamp01(aggregates[`tier${t}` as const] as number);
+    raw += w * v;
+  }
+
+  const decay = opts.decay ?? 1.0;
+  const score = Math.round(raw * decay * 100 * 100) / 100;
+
+  return {
+    score,
+    trustTier: getTrustTier(score),
+    effectiveWeights,
+    confidenceBadge: getConfidenceBadge(aggregates),
+  };
+}
+
+// ─── Legacy x402 adapter ──────────────────────────────────────────────────────
+
+interface ScoringTransaction {
+  wallet_address: string;
+  facilitator: string;
+  amount: number;
+  timestamp: string | Date;
+  success: boolean;
+  tx_signature: string;
+}
+
+export interface WalletScore {
+  address: string;
+  score: number;
+  providerScore: number;
+  consumerScore: number | null;
+  trustTier: TrustTier;
+  confidenceBadge: ConfidenceBadge;
+  metrics: {
+    successRate: number;
+    diversity: number;
+    volume: number;
+    age: number;
+    attestation: number;
+  };
+  tierAggregates: TierAggregates;
+  txCount: number;
+  lastActive: Date;
+}
+
+const NORMALIZE = {
+  diversityMax: 10,
+  volumeMax: 500,
+  ageMax: 180,
+} as const;
+
+const TIER2_METRIC_WEIGHTS = {
+  successRate: 0.35,
+  diversity: 0.25,
+  volume: 0.20,
+  age: 0.20,
+} as const;
+
 export function calculateScore(
   transactions: ScoringTransaction[],
   attestation = 0,
@@ -139,54 +194,55 @@ export function calculateScore(
   const daysActive = (Date.now() - firstTs) / MS_PER_DAY;
   const age = cap(daysActive, NORMALIZE.ageMax);
 
-  // Blend 8004 on-chain attestation with local consumer feedback
-  let blendedAttestation: number;
-  if (feedbackCount && feedbackCount > 0 && feedbackDeliveryRate !== undefined) {
-    // Local feedback exists — weighted blend (local gets 60% because it's tx-referenced)
-    const localScore = Math.min(Math.max(feedbackDeliveryRate, 0), 1);
-    const onChainScore = Math.min(Math.max(attestation, 0), 1);
-    blendedAttestation = onChainScore * 0.4 + localScore * 0.6;
-  } else {
-    blendedAttestation = Math.min(Math.max(attestation, 0), 1);
+  const tier2 =
+    successRate * TIER2_METRIC_WEIGHTS.successRate +
+    diversity * TIER2_METRIC_WEIGHTS.diversity +
+    volume * TIER2_METRIC_WEIGHTS.volume +
+    age * TIER2_METRIC_WEIGHTS.age;
+
+  // Tier 1 — receipt-gated attestation (8004 + local tx-referenced feedback).
+  // Local weighted 60% because it's anchored to a tx_signature.
+  const onChain = clamp01(attestation);
+  const hasLocal = typeof feedbackCount === 'number' && feedbackCount > 0
+    && typeof feedbackDeliveryRate === 'number';
+  let tier1: number | null = null;
+  let blendedAttestation = 0;
+  if (hasLocal) {
+    const local = clamp01(feedbackDeliveryRate as number);
+    blendedAttestation = onChain * 0.4 + local * 0.6;
+    tier1 = blendedAttestation;
+  } else if (onChain > 0) {
+    blendedAttestation = onChain;
+    tier1 = onChain;
   }
-  const clampedAttestation = blendedAttestation;
 
-  const rawScore =
-    successRate * WEIGHTS.successRate +
-    diversity * WEIGHTS.diversity +
-    volume * WEIGHTS.volume +
-    age * WEIGHTS.age +
-    clampedAttestation * WEIGHTS.attestation;
+  const aggregates: TierAggregates = { tier1, tier2, tier3: null, tier4: null };
 
-  // Apply recency decay — penalizes stale agents
   const daysSinceLastTx = (Date.now() - lastTs) / MS_PER_DAY;
   const decay = recencyDecay(daysSinceLastTx);
-  const score = Math.round(rawScore * decay * 100 * 100) / 100;
+
+  const tiered = calculateTieredScore(aggregates, { decay });
 
   return {
     address,
-    score,
-    trustTier: getTrustTier(score),
+    score: tiered.score,
+    providerScore: tiered.score,
+    consumerScore: null,
+    trustTier: tiered.trustTier,
+    confidenceBadge: tiered.confidenceBadge,
     metrics: {
       successRate,
       diversity,
       volume,
       age,
-      attestation: clampedAttestation,
+      attestation: blendedAttestation,
     },
+    tierAggregates: aggregates,
     txCount,
     lastActive: new Date(lastTs),
   };
 }
 
-/**
- * Calculate scores for all wallets in a mixed transaction list.
- * Groups by wallet_address, then calls calculateScore for each group.
- * Returns a map of address → WalletScore.
- */
-/**
- * @param attestations — optional map of wallet → attestation score (0–1)
- */
 export function calculateScores(
   allTransactions: ScoringTransaction[],
   attestations?: Map<string, number>,

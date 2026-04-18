@@ -7,7 +7,10 @@
  */
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type { Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating, LivenessStatus } from './schema';
+import type {
+  Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating, LivenessStatus,
+  ConfidenceBadge, SignalEvent, SignalTier, KarmaFace,
+} from './schema';
 
 // --- Supabase Client ---------------------------------------------------------
 // Lazy: only instantiated on first access. Keeps `next build` from crashing
@@ -46,22 +49,39 @@ export async function getWallet(address: string): Promise<Wallet | null> {
   return data as Wallet;
 }
 
+export interface UpsertWalletOpts {
+  providerScore?: number;
+  consumerScore?: number | null;
+  confidenceBadge?: ConfidenceBadge;
+}
+
 export async function upsertWallet(
   address: string,
   score: number,
   trustTier: TrustTier,
   txCount: number,
+  opts: UpsertWalletOpts = {},
 ): Promise<void> {
+  // Back-compat: when Phase-F fields aren't supplied, mirror `score` into
+  // `provider_score` and default the badge to 'declared'.
+  const providerScore = opts.providerScore ?? score;
+  const confidenceBadge: ConfidenceBadge = opts.confidenceBadge ?? 'declared';
+
+  const row: Record<string, unknown> = {
+    address,
+    score,
+    provider_score: providerScore,
+    confidence_badge: confidenceBadge,
+    trust_tier: trustTier,
+    tx_count: txCount,
+    last_seen: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  if ('consumerScore' in opts) row.consumer_score = opts.consumerScore;
+
   const { error } = await supabase
     .from('wallets')
-    .upsert({
-      address,
-      score,
-      trust_tier: trustTier,
-      tx_count: txCount,
-      last_seen: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'address' });
+    .upsert(row, { onConflict: 'address' });
 
   if (error) throw error;
 }
@@ -495,6 +515,113 @@ export async function upsertCursor(
     }, { onConflict: 'facilitator' });
 
   if (error) throw error;
+}
+
+// --- Signal Events (Phase F) -------------------------------------------------
+
+export interface InsertSignalEventInput {
+  agentWallet: string;
+  tier: SignalTier;
+  kind: string;
+  face?: KarmaFace;
+  weight?: number;
+  value?: number | null;
+  payload?: Record<string, unknown> | null;
+  signedBy?: string | null;
+  txRef?: string | null;
+  observedAt?: string | Date;
+}
+
+function toSignalRow(input: InsertSignalEventInput): Record<string, unknown> {
+  const row: Record<string, unknown> = {
+    agent_wallet: input.agentWallet,
+    tier: input.tier,
+    kind: input.kind,
+    face: input.face ?? 'provider',
+    weight: input.weight ?? 1.0,
+  };
+  if (input.value !== undefined) row.value = input.value;
+  if (input.payload !== undefined) row.payload = input.payload;
+  if (input.signedBy !== undefined) row.signed_by = input.signedBy;
+  if (input.txRef !== undefined) row.tx_ref = input.txRef;
+  if (input.observedAt !== undefined) {
+    row.observed_at = typeof input.observedAt === 'string'
+      ? input.observedAt
+      : input.observedAt.toISOString();
+  }
+  return row;
+}
+
+export async function insertSignalEvent(input: InsertSignalEventInput): Promise<void> {
+  const { error } = await supabase
+    .from('signal_events')
+    .upsert(toSignalRow(input), {
+      onConflict: 'agent_wallet,kind,tx_ref',
+      ignoreDuplicates: true,
+    });
+
+  if (error) throw error;
+}
+
+export async function insertSignalEvents(
+  inputs: InsertSignalEventInput[],
+): Promise<number> {
+  if (inputs.length === 0) return 0;
+
+  let total = 0;
+  // chunk to keep payloads reasonable for supabase-js
+  for (let i = 0; i < inputs.length; i += 500) {
+    const rows = inputs.slice(i, i + 500).map(toSignalRow);
+    const { data, error } = await supabase
+      .from('signal_events')
+      .upsert(rows, {
+        onConflict: 'agent_wallet,kind,tx_ref',
+        ignoreDuplicates: true,
+      })
+      .select('id');
+    if (error) throw error;
+    total += data?.length ?? 0;
+  }
+  return total;
+}
+
+export async function getSignalEventsForWallet(
+  agentWallet: string,
+  limit = 200,
+): Promise<SignalEvent[]> {
+  const { data, error } = await supabase
+    .from('signal_events')
+    .select('*')
+    .eq('agent_wallet', agentWallet)
+    .order('observed_at', { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []) as SignalEvent[];
+}
+
+export async function getSignalEventsForWallets(
+  agentWallets: string[],
+): Promise<Map<string, SignalEvent[]>> {
+  const out = new Map<string, SignalEvent[]>();
+  if (agentWallets.length === 0) return out;
+
+  for (let i = 0; i < agentWallets.length; i += 500) {
+    const chunk = agentWallets.slice(i, i + 500);
+    const { data, error } = await supabase
+      .from('signal_events')
+      .select('*')
+      .in('agent_wallet', chunk)
+      .order('observed_at', { ascending: false });
+
+    if (error) throw error;
+    for (const row of (data ?? []) as SignalEvent[]) {
+      const list = out.get(row.agent_wallet) ?? [];
+      list.push(row);
+      out.set(row.agent_wallet, list);
+    }
+  }
+  return out;
 }
 
 // --- Consumer Feedback -------------------------------------------------------

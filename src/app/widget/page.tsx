@@ -1,11 +1,12 @@
 import Link from 'next/link';
 import { ArrowLeft, Code, Image, Braces } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { CodeBlock } from '@/components/karma/code-block';
 import { getLeaderboard } from '@/db/client';
 
 export const metadata = {
   title: 'Widget — Embed Karma Badges',
-  description: 'Embed trust badges for x402 AI agents on your site.',
+  description: 'Embed trust badges for autonomous on-chain agents on your site.',
 };
 
 export const dynamic = 'force-dynamic';
@@ -194,15 +195,3 @@ export default async function WidgetPage() {
   );
 }
 
-function CodeBlock({ lang, children }: { lang: string; children: string }) {
-  return (
-    <div className="rounded-md border border-[rgb(255_255_255/0.06)] bg-[rgb(0_0_0/0.3)] overflow-x-auto">
-      <div className="border-b border-[rgb(255_255_255/0.06)] px-3 py-1">
-        <span className="text-[11px] text-[#62666d] font-mono">{lang}</span>
-      </div>
-      <pre className="p-3 text-[12px] leading-relaxed font-mono text-[#d0d6e0] whitespace-pre overflow-x-auto">
-        {children}
-      </pre>
-    </div>
-  );
-}

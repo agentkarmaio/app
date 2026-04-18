@@ -1,0 +1,39 @@
+/**
+ * Signal builders — translate raw observations into `signal_events` rows.
+ *
+ * Phase G1: x402 payments emit a Tier 2 behavioral signal. A payment without
+ * any follow-up feedback is a behavioral fact (the wallet moved USDC through
+ * a facilitator). The pairing with a signed delivery feedback (Tier 1) is
+ * emitted separately by the feedback endpoint.
+ */
+
+import type { Transaction } from '@/db/schema';
+import type { InsertSignalEventInput } from '@/db/client';
+
+/**
+ * Build the Tier 2 signal for a single x402 payment.
+ * `signed_by` = facilitator address (the entity that routed/coordinated the tx).
+ * `value` = normalized amount (USDC / 1000), capped at 1.0 — contributes to
+ * volume weighting without letting a single whale payment dominate.
+ */
+export function buildX402PaymentSignal(tx: Transaction): InsertSignalEventInput {
+  const normalizedAmount = Math.min(Number(tx.amount) / 1000, 1);
+  return {
+    agentWallet: tx.wallet_address,
+    tier: 2,
+    kind: 'x402_payment',
+    face: 'provider', // matches legacy treatment; re-evaluated in G1b
+    weight: 1.0,
+    value: normalizedAmount,
+    signedBy: tx.facilitator,
+    txRef: tx.tx_signature,
+    observedAt: tx.timestamp,
+    payload: { amount: Number(tx.amount), success: tx.success },
+  };
+}
+
+export function buildX402PaymentSignals(
+  txs: Pick<Transaction, 'wallet_address' | 'facilitator' | 'amount' | 'timestamp' | 'success' | 'tx_signature'>[],
+): InsertSignalEventInput[] {
+  return txs.map((tx) => buildX402PaymentSignal(tx as Transaction));
+}

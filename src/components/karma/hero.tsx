@@ -53,7 +53,7 @@ export function Hero() {
               <span className="relative inline-flex size-1.5 rounded-full bg-[#10b981]" />
             </span>
             <span className="text-[11px] font-[510] uppercase tracking-[0.12em] text-[#8a8f98]">
-              Indexing x402 payments · Live on Solana
+              Indexing on-chain signals · Live on Solana
             </span>
           </div>
 
@@ -65,14 +65,35 @@ export function Hero() {
             <span className="bg-gradient-to-br from-[#8a92ff] via-[#7170ff] to-[#5e6ad2] bg-clip-text text-transparent">
               quantified
             </span>{' '}
-            for AI agents.
+            for autonomous agents.
           </h1>
 
           <p className="mt-4 max-w-2xl text-[16px] leading-relaxed text-[#8a8f98] tracking-[-0.176px]">
-            The credit bureau for autonomous agents. On-chain karma scores derived
-            from every x402 payment settled on Solana — so humans and machines can
-            tell which agents to trust.
+            The reputation layer for autonomous on-chain agents. Every wallet with a
+            public footprint earns a karma score, blended across four signal tiers —
+            receipts, behavior, declared identity, and derivative social signals.
+            x402-first, not x402-only.
           </p>
+
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-[#8a8f98]">
+            <span className="flex items-center gap-1.5">
+              <span aria-hidden>🟢</span>
+              <span className="font-[510] text-[#d0d6e0]">Receipt-backed</span>
+              <span className="text-[#62666d]">payment + signed feedback</span>
+            </span>
+            <span aria-hidden className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]" />
+            <span className="flex items-center gap-1.5">
+              <span aria-hidden>🟡</span>
+              <span className="font-[510] text-[#d0d6e0]">Behavior-inferred</span>
+              <span className="text-[#62666d]">on-chain activity</span>
+            </span>
+            <span aria-hidden className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]" />
+            <span className="flex items-center gap-1.5">
+              <span aria-hidden>⚪</span>
+              <span className="font-[510] text-[#d0d6e0]">Declared</span>
+              <span className="text-[#62666d]">self-claim only</span>
+            </span>
+          </div>
 
           <div className="mt-6 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[10px]">
             {PROTOCOLS.map((p, i) => (

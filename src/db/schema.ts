@@ -6,7 +6,7 @@
  */
 
 import {
-  pgTable, text, timestamp, integer, numeric, boolean, uuid, index,
+  pgTable, text, timestamp, integer, numeric, boolean, uuid, index, uniqueIndex, jsonb,
 } from 'drizzle-orm/pg-core';
 
 // --- Drizzle Table Definitions (for drizzle-kit push) -------------------------
@@ -32,8 +32,14 @@ export const walletsTable = pgTable('wallets', {
   website:         text('website'),
   category:        text('category'),
   claimed_at:      timestamp('claimed_at', { withTimezone: true }),
+  // Two-faced karma (Phase F — signal spectrum)
+  provider_score:  numeric('provider_score', { precision: 6, scale: 2 }).notNull().default('0'),
+  consumer_score:  numeric('consumer_score', { precision: 6, scale: 2 }),
+  confidence_badge: text('confidence_badge').notNull().default('declared'),
 }, (table) => [
   index('idx_wallets_score').on(table.score),
+  index('idx_wallets_provider_score').on(table.provider_score),
+  index('idx_wallets_confidence_badge').on(table.confidence_badge),
 ]);
 
 export const transactionsTable = pgTable('transactions', {
@@ -78,6 +84,35 @@ export const feedbackTable = pgTable('feedback', {
   index('idx_feedback_tx_signature').on(table.tx_signature),
 ]);
 
+// --- Signal Events (Phase F — signal spectrum) -------------------------------
+
+export const signalEventsTable = pgTable('signal_events', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  agent_wallet: text('agent_wallet').notNull().references(() => walletsTable.address, { onDelete: 'cascade' }),
+  tier:         integer('tier').notNull(),
+  kind:         text('kind').notNull(),
+  face:         text('face').notNull().default('provider'),
+  weight:       numeric('weight', { precision: 5, scale: 4 }).notNull().default('1.0'),
+  value:        numeric('value', { precision: 5, scale: 4 }),
+  payload:      jsonb('payload'),
+  signed_by:    text('signed_by'),
+  tx_ref:       text('tx_ref'),
+  observed_at:  timestamp('observed_at', { withTimezone: true }).notNull().defaultNow(),
+  created_at:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_signal_events_agent_wallet').on(table.agent_wallet),
+  index('idx_signal_events_tier').on(table.tier),
+  index('idx_signal_events_face').on(table.face),
+  index('idx_signal_events_observed_at').on(table.observed_at),
+  index('idx_signal_events_kind').on(table.kind),
+  // Dedup same external event across retries. Rows with NULL tx_ref (synthetic
+  // signals) don't collide because Postgres treats NULLs as distinct in unique
+  // indexes — same effect as a partial index but Supabase-js `.upsert()` needs
+  // a non-partial target to match ON CONFLICT.
+  uniqueIndex('uniq_signal_events_dedup')
+    .on(table.agent_wallet, table.kind, table.tx_ref),
+]);
+
 // --- Indexer Cursor State ----------------------------------------------------
 
 export const indexerCursorsTable = pgTable('indexer_cursors', {
@@ -94,6 +129,10 @@ export type TrustTier = 'Unrated' | 'Poor' | 'Fair' | 'Good' | 'Very Good' | 'Ex
 export type LivenessStatus = 'Active' | 'Recent' | 'Dormant' | 'Inactive';
 
 export type AgentCategory = 'ai' | 'data' | 'defi' | 'infra' | 'social' | 'utility' | 'other';
+
+export type ConfidenceBadge = 'receipt-backed' | 'behavior-inferred' | 'declared';
+export type SignalTier = 1 | 2 | 3 | 4;
+export type KarmaFace = 'provider' | 'consumer';
 
 export interface Wallet {
   address: string;
@@ -116,6 +155,25 @@ export interface Wallet {
   website?: string | null;
   category?: string | null;
   claimed_at?: string | null;
+  // Two-faced karma (Phase F)
+  provider_score: number;
+  consumer_score: number | null;
+  confidence_badge: ConfidenceBadge;
+}
+
+export interface SignalEvent {
+  id: string;
+  agent_wallet: string;
+  tier: SignalTier;
+  kind: string;
+  face: KarmaFace;
+  weight: number;
+  value: number | null;
+  payload: Record<string, unknown> | null;
+  signed_by: string | null;
+  tx_ref: string | null;
+  observed_at: string;
+  created_at: string;
 }
 
 /** Derive liveness status from last_seen timestamp */

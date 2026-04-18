@@ -7,7 +7,7 @@
     "build": "bun next build",
     "start": "bun next start",
     "lint": "bun next lint",
-    "db:push": "servel port-forward @agentkarma-db/db:5432 -- bun drizzle-kit push",
+    "db:push": "servel pf @agentkarma-db/db:5432 -- bun drizzle-kit push",
     "db:studio": "servel port-forward @agentkarma-db/db:5432 -- bun drizzle-kit studio",
     "db:sql": "servel infra sql @agentkarma-db --remote KN",
     "db:generate": "bun drizzle-kit generate",

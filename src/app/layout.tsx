@@ -10,8 +10,8 @@ const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono' });
 
 export const metadata: Metadata = {
-  title: "Karma — The Credit Bureau for AI Agents",
-  description: "On-chain trust scores for AI agents using the x402 payment protocol on Solana.",
+  title: "Karma — Reputation Layer for Autonomous On-Chain Agents",
+  description: "Passive, manipulation-resistant trust scores for any autonomous agent with a Solana footprint. x402-first, not x402-only.",
   manifest: "/site.webmanifest",
 };
 

@@ -14,6 +14,7 @@ import { calculateScore } from '@/scoring/index';
 import { readAttestation } from '@/integrations/attestation';
 import { ScoreRing } from '@/components/karma/score-ring';
 import { TierBadge } from '@/components/karma/tier-badge';
+import { ConfidenceBadge } from '@/components/karma/confidence-badge';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { MetricBar } from '@/components/karma/metric-bar';
 import { TransactionList } from '@/components/karma/transaction-list';
@@ -24,7 +25,7 @@ import { ScoreChart } from '@/components/karma/score-chart';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import type { TrustTier } from '@/db/schema';
+import type { TrustTier, ConfidenceBadge as ConfidenceBadgeValue } from '@/db/schema';
 
 const CATEGORY_LABELS: Record<string, string> = {
   ai: 'AI / ML',
@@ -186,6 +187,13 @@ export default async function AgentProfilePage({
   const score = Number(walletRow?.score ?? 0);
   const tier = (walletRow?.trust_tier ?? 'Unrated') as TrustTier;
   const txCount = walletRow?.tx_count ?? 0;
+  const providerScore = walletRow?.provider_score != null
+    ? Number(walletRow.provider_score)
+    : score;
+  const consumerScore = walletRow?.consumer_score != null
+    ? Number(walletRow.consumer_score)
+    : null;
+  const confidenceBadge: ConfidenceBadgeValue = walletRow?.confidence_badge ?? 'declared';
 
   const isClaimed = walletRow?.claimed ?? false;
   const displayName = walletRow?.display_name;
@@ -216,6 +224,7 @@ export default async function AgentProfilePage({
               </h1>
             )}
             <TierBadge tier={tier} />
+            <ConfidenceBadge badge={confidenceBadge} size="sm" />
             {isClaimed && (
               <Badge variant="outline" className="bg-[rgb(94_106_210/0.08)] text-[#828fff] border-[rgb(94_106_210/0.15)] text-[10px] px-1.5 py-0 font-[510]">
                 <Verified className="size-3 mr-0.5" />
@@ -284,8 +293,20 @@ export default async function AgentProfilePage({
           <CardContent>
             <dl className="space-y-3 text-sm">
               <div className="flex justify-between">
-                <dt className="text-muted-foreground">Karma Score</dt>
-                <dd className="font-bold tabular-nums">{score.toFixed(1)} / 100</dd>
+                <dt className="text-muted-foreground">Provider Karma</dt>
+                <dd className="font-bold tabular-nums">{providerScore.toFixed(1)} / 100</dd>
+              </div>
+              <Separator />
+              <div className="flex justify-between">
+                <dt className="text-muted-foreground" title="Will this wallet pay cleanly when it takes work? Populated in Phase I.">Consumer Karma</dt>
+                <dd className="font-bold tabular-nums text-muted-foreground">
+                  {consumerScore != null ? `${consumerScore.toFixed(1)} / 100` : '—'}
+                </dd>
+              </div>
+              <Separator />
+              <div className="flex justify-between">
+                <dt className="text-muted-foreground">Confidence</dt>
+                <dd><ConfidenceBadge badge={confidenceBadge} size="sm" /></dd>
               </div>
               <Separator />
               <div className="flex justify-between">

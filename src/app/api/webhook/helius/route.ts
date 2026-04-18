@@ -8,8 +8,10 @@ import {
   upsertWallet,
   getTransactionsForWallets,
   insertScoreSnapshot,
+  insertSignalEvents,
 } from '@/db/client';
 import { calculateScores } from '@/scoring';
+import { buildX402PaymentSignals } from '@/scoring/signals';
 import { readAttestations } from '@/integrations/attestation';
 import { ALL_FACILITATOR_ADDRESSES } from '@/config/facilitators';
 import type { Transaction } from '@/db/schema';
@@ -62,6 +64,7 @@ export async function POST(request: NextRequest) {
 
   // 5. Insert transactions — idempotent via tx_signature upsert
   const inserted = await insertTransactions(parsed);
+  await insertSignalEvents(buildX402PaymentSignals(parsed));
 
   // 6. Re-score affected wallets
   const allTxs = await getTransactionsForWallets(uniqueWallets);
@@ -70,7 +73,11 @@ export async function POST(request: NextRequest) {
 
   await Promise.all(
     [...scores.entries()].map(async ([address, ws]) => {
-      await upsertWallet(address, ws.score, ws.trustTier, ws.txCount);
+      await upsertWallet(address, ws.score, ws.trustTier, ws.txCount, {
+        providerScore: ws.providerScore,
+        consumerScore: ws.consumerScore,
+        confidenceBadge: ws.confidenceBadge,
+      });
       await insertScoreSnapshot(
         address,
         ws.score,

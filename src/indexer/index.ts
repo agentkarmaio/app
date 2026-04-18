@@ -20,8 +20,9 @@ import {
   getFacilitatorName,
 } from '../config/facilitators';
 import type { Transaction } from '../db/schema';
-import { insertTransactions, upsertWallet, insertScoreSnapshot, getTransactionsForWallets, getCursor, upsertCursor } from '../db/client';
+import { insertTransactions, upsertWallet, insertScoreSnapshot, getTransactionsForWallets, getCursor, upsertCursor, insertSignalEvents } from '../db/client';
 import { calculateScores } from '../scoring';
+import { buildX402PaymentSignals } from '../scoring/signals';
 import { readAttestations } from '../integrations/attestation';
 import { parseTransactionsBatch, extractX402Payment, withConcurrency } from './helius';
 
@@ -164,6 +165,10 @@ export async function runIndexer(
   const inserted = await insertTransactions(transactions);
   console.log(`[indexer] Inserted ${inserted}/${transactions.length} transactions`);
 
+  // Emit Tier 2 behavioral signals for every payment (idempotent via (agent,kind,tx_ref)).
+  const signalsInserted = await insertSignalEvents(buildX402PaymentSignals(transactions));
+  if (signalsInserted > 0) console.log(`[indexer] Emitted ${signalsInserted} Tier 2 signal_events`);
+
   // Re-query full DB history for affected wallets so scores reflect ALL transactions
   const affectedWallets = [...new Set(transactions.map((tx) => tx.wallet_address))];
   console.log(`[indexer] Fetching full history for ${affectedWallets.length} affected wallets...`);
@@ -179,7 +184,11 @@ export async function runIndexer(
 
   let scored = 0;
   for (const [address, walletScore] of scores) {
-    await upsertWallet(address, walletScore.score, walletScore.trustTier, walletScore.txCount);
+    await upsertWallet(address, walletScore.score, walletScore.trustTier, walletScore.txCount, {
+      providerScore: walletScore.providerScore,
+      consumerScore: walletScore.consumerScore,
+      confidenceBadge: walletScore.confidenceBadge,
+    });
     await insertScoreSnapshot(
       address,
       walletScore.score,

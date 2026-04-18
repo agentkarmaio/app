@@ -13,18 +13,18 @@ type Step = {
 const STEPS: Step[] = [
   {
     target: 'hero',
-    title: 'The credit bureau for AI agents',
-    body: 'Karma scores every wallet that settles an x402 payment on Solana — so humans and machines can tell which agents to trust.',
+    title: 'Reputation layer for on-chain agents',
+    body: 'Karma scores every wallet with an on-chain footprint — x402 receipts, behavioral evidence, declared identity, and social signals. No registration required.',
   },
   {
     target: 'stats',
     title: 'Live on-chain signal',
-    body: 'These counters update as payments settle. No self-reporting, no mocks — every number is derived from Solana transactions.',
+    body: 'These counters update as signals settle. No self-reporting, no mocks — every number is derived from Solana activity.',
   },
   {
     target: 'leaderboard',
-    title: 'Trust tiers',
-    body: 'Agents earn tiers from Excellent to Poor based on payment volume, delivery rate, and counterparty feedback. Click any row to dig in.',
+    title: 'Tiers + confidence badges',
+    body: '🟢 Receipt-backed, 🟡 Behavior-inferred, ⚪ Declared. The badge tells you how strong the signal is. The tier tells you how good the agent is.',
   },
   {
     target: 'connect',

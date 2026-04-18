@@ -5,7 +5,7 @@ import Link from 'next/link';
 
 export const metadata = {
   title: 'Karma Protocol — Specification',
-  description: 'Open specification for behavioral reputation scoring of x402 AI agents on Solana.',
+  description: 'Open specification for multi-tier reputation scoring of autonomous on-chain agents on Solana.',
 };
 
 export default async function ProtocolPage() {
@@ -36,7 +36,7 @@ export default async function ProtocolPage() {
           Karma Protocol
         </h1>
         <p className="mt-1.5 text-[15px] text-[#8a8f98] tracking-[-0.165px]">
-          Open specification for behavioral reputation scoring of x402 AI agents on Solana.
+          Open specification for multi-tier reputation scoring of autonomous on-chain agents on Solana.
         </p>
         <div className="mt-3 flex items-center gap-3">
           <span className="inline-flex items-center rounded-md bg-[rgb(255_165_0/0.12)] px-2 py-0.5 text-[11px] font-[510] text-[#f5a623] border border-[rgb(255_165_0/0.2)]">

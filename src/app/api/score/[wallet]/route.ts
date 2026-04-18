@@ -39,10 +39,21 @@ export async function GET(
     name: walletRow.funded_by_name ?? null,
   } : null;
 
+  const providerScore = walletRow?.provider_score != null
+    ? Number(walletRow.provider_score)
+    : Number(walletRow?.score ?? 0);
+  const consumerScore = walletRow?.consumer_score != null
+    ? Number(walletRow.consumer_score)
+    : null;
+  const confidenceBadge = walletRow?.confidence_badge ?? 'declared';
+
   if (transactions.length === 0) {
     return NextResponse.json({
       address: wallet,
       score: walletRow?.score ?? 0,
+      providerScore,
+      consumerScore,
+      confidenceBadge,
       trustTier: walletRow?.trust_tier ?? 'Unrated',
       metrics: { successRate: 0, diversity: 0, volume: 0, age: 0 },
       txCount: 0,
@@ -57,6 +68,9 @@ export async function GET(
   const score = calculateScore(transactions);
   return NextResponse.json({
     ...score,
+    providerScore: score.providerScore,
+    consumerScore: score.consumerScore,
+    confidenceBadge: score.confidenceBadge,
     identity,
     entity,
     fundedBy,

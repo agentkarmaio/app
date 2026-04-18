@@ -18,7 +18,11 @@ export async function POST(request: NextRequest) {
       getFeedbackSummary(wallet),
     ]);
     const score = calculateScore(transactions, attestation, feedback.deliveryRate, feedback.total);
-    await upsertWallet(wallet, score.score, score.trustTier, score.txCount);
+    await upsertWallet(wallet, score.score, score.trustTier, score.txCount, {
+      providerScore: score.providerScore,
+      consumerScore: score.consumerScore,
+      confidenceBadge: score.confidenceBadge,
+    });
     await insertScoreSnapshot(
       wallet,
       score.score,
@@ -59,7 +63,11 @@ export async function POST(request: NextRequest) {
         )
       : score;
 
-    await upsertWallet(address, finalScore.score, finalScore.trustTier, finalScore.txCount);
+    await upsertWallet(address, finalScore.score, finalScore.trustTier, finalScore.txCount, {
+      providerScore: finalScore.providerScore,
+      consumerScore: finalScore.consumerScore,
+      confidenceBadge: finalScore.confidenceBadge,
+    });
     await insertScoreSnapshot(
       address,
       finalScore.score,
