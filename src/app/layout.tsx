@@ -33,13 +33,6 @@ export const metadata: Metadata = {
     description: siteDescription,
     images: [ogImage],
   },
-  icons: {
-    icon: [
-      { url: "/icon.svg", type: "image/svg+xml" },
-      { url: "/brand/agentkarma-dark-minified.jpg", type: "image/jpeg", sizes: "1024x1024" },
-    ],
-    apple: "/apple-icon.svg",
-  },
 };
 
 export const viewport: Viewport = {

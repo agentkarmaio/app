@@ -71,3 +71,28 @@ export function buildCadenceSignal(
     },
   };
 }
+
+/**
+ * Build the Tier 3 manifest signal for a wallet. Unverified declared manifests
+ * land at 0.5, owner-signed (wallet-matching) manifests at 1.0. Sub-weights
+ * reserved for Phase H2+ (DNS proof, GitHub proof, cross-chain 8004 import).
+ */
+export function buildManifestSignal(
+  walletAddress: string,
+  opts: { sourceType: string; verified: boolean; url?: string | null },
+): InsertSignalEventInput {
+  return {
+    agentWallet: walletAddress,
+    tier: 3,
+    kind: 'manifest',
+    face: 'provider',
+    weight: 1.0,
+    value: opts.verified ? 1.0 : 0.5,
+    txRef: AGGREGATE_TX_REF,
+    payload: {
+      sourceType: opts.sourceType,
+      verified: opts.verified,
+      url: opts.url ?? null,
+    },
+  };
+}

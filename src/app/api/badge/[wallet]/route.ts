@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getWallet, getTransactions, getFeedbackSummary } from '@/db/client';
+import { getWallet, getTransactions, getFeedbackSummary, getLatestSignalValues } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
 import { getLivenessStatus } from '@/db/schema';
@@ -39,10 +39,13 @@ export async function GET(
   const cadence = transactions.length > 0
     ? computeCadence(transactions.map((tx) => new Date(tx.timestamp)))
     : null;
+  const manifestMap = await getLatestSignalValues([wallet], 'manifest')
+    .catch(() => new Map<string, number>());
   const liveScore = transactions.length > 0
     ? calculateScore(
         transactions, 0, feedback.deliveryRate, feedback.total,
         cadence?.automationScore ?? null,
+        manifestMap.get(wallet) ?? null,
       )
     : null;
 

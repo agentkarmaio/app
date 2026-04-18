@@ -113,6 +113,25 @@ export const signalEventsTable = pgTable('signal_events', {
     .on(table.agent_wallet, table.kind, table.tx_ref),
 ]);
 
+// --- Agent Manifests (Phase H1 — Tier 3 declared identity) ------------------
+
+export const agentManifestsTable = pgTable('agent_manifests', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  agent_wallet: text('agent_wallet').notNull().references(() => walletsTable.address, { onDelete: 'cascade' }),
+  source_type:  text('source_type').notNull(), // 'x402_accepts' | 'mcp_descriptor' | 'self_hosted' | 'claim_form'
+  url:          text('url'),
+  fetched_at:   timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+  raw:          jsonb('raw'),
+  parsed:       jsonb('parsed'),
+  verified:     boolean('verified').notNull().default(false),
+  created_at:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_agent_manifests_agent_wallet').on(table.agent_wallet),
+  index('idx_agent_manifests_source_type').on(table.source_type),
+  // One manifest row per (wallet, source_type) — resolver overwrites on refresh.
+  uniqueIndex('uniq_agent_manifests_source').on(table.agent_wallet, table.source_type),
+]);
+
 // --- Indexer Cursor State ----------------------------------------------------
 
 export const indexerCursorsTable = pgTable('indexer_cursors', {
@@ -159,6 +178,32 @@ export interface Wallet {
   provider_score: number;
   consumer_score: number | null;
   confidence_badge: ConfidenceBadge;
+}
+
+export type ManifestSourceType = 'x402_accepts' | 'mcp_descriptor' | 'self_hosted' | 'claim_form';
+
+export interface AgentManifest {
+  id: string;
+  agent_wallet: string;
+  source_type: ManifestSourceType;
+  url: string | null;
+  fetched_at: string;
+  raw: Record<string, unknown> | null;
+  parsed: ParsedManifest | null;
+  verified: boolean;
+  created_at: string;
+}
+
+/** Normalized view of what a manifest declares, regardless of source format. */
+export interface ParsedManifest {
+  name?: string | null;
+  description?: string | null;
+  website?: string | null;
+  github?: string | null;
+  category?: string | null;
+  capabilities?: string[];
+  endpoints?: Array<{ kind: string; url: string; description?: string }>;
+  [key: string]: unknown;
 }
 
 export interface SignalEvent {

@@ -12,6 +12,7 @@
 
 import {
   getAllTransactions, upsertWallet, insertScoreSnapshot, getFeedbackSummary,
+  getLatestSignalValues,
 } from '../db/client';
 import { calculateScore } from '../scoring';
 import { computeCadence } from '../scoring/cadence';
@@ -26,6 +27,10 @@ async function main() {
   console.log('[backfill] Fetching 8004 attestations…');
   const attestations = await readAttestations(wallets);
   console.log(`[backfill] ${attestations.size} wallets have 8004 attestations`);
+
+  console.log('[backfill] Loading manifest signals…');
+  const manifestScores = await getLatestSignalValues(wallets, 'manifest');
+  console.log(`[backfill] ${manifestScores.size} wallets have a manifest`);
 
   const txByWallet = new Map<string, typeof allTx>();
   for (const tx of allTx) {
@@ -57,6 +62,7 @@ async function main() {
       feedbackRate,
       feedbackTotal,
       cadence?.automationScore ?? null,
+      manifestScores.get(wallet) ?? null,
     );
 
     await upsertWallet(wallet, score.score, score.trustTier, score.txCount, {

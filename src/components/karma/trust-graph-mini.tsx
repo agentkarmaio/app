@@ -48,6 +48,10 @@ function shortAddr(a: string) {
   return `${a.slice(0, 4)}\u2026${a.slice(-4)}`;
 }
 
+function diamondPath(x: number, y: number, r: number) {
+  return `M${x},${y - r} L${x + r},${y} L${x},${y + r} L${x - r},${y} Z`;
+}
+
 function hashAddr(s: string) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
@@ -449,7 +453,12 @@ export function TrustGraphMini() {
               onMouseEnter={() => setHovered(p.agent.address)}
               onMouseLeave={() => setHovered(null)}
               onClick={() => router.push(`/agent/${p.agent.address}`)}
-              style={{ cursor: 'pointer' }}
+              className="karma-node-float"
+              style={{
+                cursor: 'pointer',
+                animationDelay: `${(hashAddr(p.agent.address) % 5400) - 5400}ms`,
+                animationDuration: `${4.6 + (hashAddr(p.agent.address) % 1800) / 1000}s`,
+              }}
             >
               <circle cx={p.x} cy={p.y} r={p.r + 8} fill="transparent" />
 
@@ -485,17 +494,38 @@ export function TrustGraphMini() {
                 </circle>
               )}
 
-              <circle
-                cx={p.x}
-                cy={p.y}
-                r={p.r}
-                fill={TIER_FILL[p.agent.trustTier]}
-                fillOpacity={isHovered || isPulsing ? 1 : isTop ? 0.92 : 0.78}
-                stroke="#08090a"
-                strokeWidth={0.9}
+              <g
                 filter={isTop || isHovered || isPulsing ? 'url(#nodeGlowMini)' : undefined}
-                style={{ transition: 'fill-opacity 200ms, r 200ms' }}
-              />
+                opacity={isHovered || isPulsing ? 1 : isTop ? 0.95 : 0.82}
+                style={{ transition: 'opacity 200ms' }}
+              >
+                <path
+                  d={diamondPath(p.x, p.y, p.r * 1.2)}
+                  fill={TIER_FILL[p.agent.trustTier]}
+                  stroke="#08090a"
+                  strokeWidth={0.8}
+                  strokeLinejoin="miter"
+                />
+                <path
+                  d={`M${p.x},${p.y - p.r * 1.2} L${p.x},${p.y} L${p.x - p.r * 1.2},${p.y} Z`}
+                  fill="#ffffff"
+                  opacity={0.18}
+                />
+                <path
+                  d={`M${p.x + p.r * 1.2},${p.y} L${p.x},${p.y + p.r * 1.2} L${p.x},${p.y} Z`}
+                  fill="#000000"
+                  opacity={0.22}
+                />
+                <line
+                  x1={p.x}
+                  y1={p.y - p.r * 1.2}
+                  x2={p.x}
+                  y2={p.y + p.r * 1.2}
+                  stroke="#000000"
+                  strokeWidth={0.35}
+                  opacity={0.3}
+                />
+              </g>
             </g>
           );
         })}

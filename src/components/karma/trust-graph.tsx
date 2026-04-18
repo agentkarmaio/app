@@ -73,6 +73,10 @@ function shortAddr(a: string) {
   return `${a.slice(0, 4)}…${a.slice(-4)}`;
 }
 
+function diamondPath(x: number, y: number, r: number) {
+  return `M${x},${y - r} L${x + r},${y} L${x},${y + r} L${x - r},${y} Z`;
+}
+
 export function TrustGraph() {
   const router = useRouter();
   const [data, setData] = useState<GraphResponse | null>(null);
@@ -311,7 +315,12 @@ export function TrustGraph() {
                 onMouseEnter={() => setHovered(p.agent.address)}
                 onMouseLeave={() => setHovered(null)}
                 onClick={() => router.push(`/agent/${p.agent.address}`)}
-                style={{ cursor: 'pointer' }}
+                className="karma-node-float"
+                style={{
+                  cursor: 'pointer',
+                  animationDelay: `${((p.agent.address.charCodeAt(2) * 37 + p.agent.address.charCodeAt(5)) % 5400) - 5400}ms`,
+                  animationDuration: `${5 + (p.agent.address.charCodeAt(3) % 20) / 10}s`,
+                }}
               >
                 <circle
                   cx={p.x}
@@ -350,17 +359,41 @@ export function TrustGraph() {
                     )}
                   </circle>
                 )}
-                <circle
-                  cx={p.x}
-                  cy={p.y}
-                  r={p.r}
-                  fill={TIER_FILL[p.agent.trustTier]}
-                  fillOpacity={isHovered || isPulsing ? 1 : 0.85}
-                  stroke="#08090a"
-                  strokeWidth={1.2}
+                <g
                   filter={isHovered || isPulsing ? 'url(#nodeGlow)' : undefined}
-                  style={{ transition: 'fill-opacity 200ms' }}
-                />
+                  style={{ transition: 'opacity 200ms' }}
+                  opacity={isHovered || isPulsing ? 1 : 0.92}
+                >
+                  <path
+                    d={diamondPath(p.x, p.y, p.r * 1.15)}
+                    fill={TIER_FILL[p.agent.trustTier]}
+                    stroke="#08090a"
+                    strokeWidth={1}
+                    strokeLinejoin="miter"
+                  />
+                  {/* top-left highlight facet */}
+                  <path
+                    d={`M${p.x},${p.y - p.r * 1.15} L${p.x},${p.y} L${p.x - p.r * 1.15},${p.y} Z`}
+                    fill="#ffffff"
+                    opacity={0.18}
+                  />
+                  {/* bottom-right shadow facet */}
+                  <path
+                    d={`M${p.x + p.r * 1.15},${p.y} L${p.x},${p.y + p.r * 1.15} L${p.x},${p.y} Z`}
+                    fill="#000000"
+                    opacity={0.22}
+                  />
+                  {/* center seam for faceted look */}
+                  <line
+                    x1={p.x}
+                    y1={p.y - p.r * 1.15}
+                    x2={p.x}
+                    y2={p.y + p.r * 1.15}
+                    stroke="#000000"
+                    strokeWidth={0.4}
+                    opacity={0.28}
+                  />
+                </g>
               </g>
             );
           })}

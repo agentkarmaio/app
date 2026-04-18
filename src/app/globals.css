@@ -158,6 +158,101 @@
   animation: karma-row-pulse 1.8s ease-out;
 }
 
+@keyframes karma-node-float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2.5px);
+  }
+}
+
+.karma-node-float {
+  animation: karma-node-float 5.4s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .karma-node-float {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------------
+ * Navbar logo — subtle idle breathing + hover flourish
+ * ------------------------------------------------------------------ */
+
+@keyframes karma-logo-sheen {
+  0%, 80%, 100% {
+    background-position: 200% 50%;
+  }
+  92% {
+    background-position: -100% 50%;
+  }
+}
+
+.karma-logo-wrap {
+  overflow: visible;
+}
+
+.karma-logo {
+  transition: transform 400ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    filter 400ms ease-out;
+  transform-origin: center;
+  filter: drop-shadow(0 0 0.5px rgb(113 112 255 / 0.4));
+}
+
+.karma-logo-wrap::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+  background: linear-gradient(
+    110deg,
+    transparent 35%,
+    rgb(200 210 255 / 0.35) 47%,
+    rgb(255 255 255 / 0.55) 50%,
+    rgb(200 210 255 / 0.35) 53%,
+    transparent 65%
+  );
+  background-size: 300% 100%;
+  background-repeat: no-repeat;
+  mask-image: url('/brand/agentkarma-dark-X-transparent.png');
+  -webkit-mask-image: url('/brand/agentkarma-dark-X-transparent.png');
+  mask-size: contain;
+  -webkit-mask-size: contain;
+  mask-repeat: no-repeat;
+  -webkit-mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-position: center;
+  mix-blend-mode: screen;
+  animation: karma-logo-sheen 20s ease-in-out infinite;
+}
+
+.karma-logo-group:hover .karma-logo {
+  transform: scale(1.04);
+  filter: drop-shadow(0 0 6px rgb(113 112 255 / 0.55));
+}
+
+.karma-logo-group:hover .karma-logo-wrap::after {
+  animation-duration: 5s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .karma-logo-wrap::after {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .karma-logo {
+    animation: none;
+  }
+}
+
 /* ------------------------------------------------------------------
  * Solana wallet-adapter modal — restyle to match Karma design system
  * Overrides defaults from @solana/wallet-adapter-react-ui/styles.css

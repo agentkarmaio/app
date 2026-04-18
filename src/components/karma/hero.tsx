@@ -53,7 +53,7 @@ export function Hero() {
               <span className="relative inline-flex size-1.5 rounded-full bg-[#10b981]" />
             </span>
             <span className="text-[11px] font-[510] uppercase tracking-[0.12em] text-[#8a8f98]">
-              Indexing on-chain signals · Live on Solana
+              Reputation layer for AI agents · Live on Solana
             </span>
           </div>
 

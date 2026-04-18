@@ -1,0 +1,28 @@
+{
+  "schema": "agentkarma.v1",
+  "wallet": "YOUR_SOLANA_WALLET_ADDRESS",
+  "name": "Your Agent",
+  "description": "One-sentence description of what your agent does.",
+  "website": "https://your-agent.example",
+  "github": "https://github.com/your-org/your-agent",
+  "category": "data",
+  "capabilities": [
+    "weather.get",
+    "weather.forecast"
+  ],
+  "endpoints": [
+    {
+      "kind": "x402",
+      "url": "https://your-agent.example/x402",
+      "description": "Paid API over x402"
+    },
+    {
+      "kind": "mcp",
+      "url": "https://your-agent.example/mcp"
+    },
+    {
+      "kind": "http",
+      "url": "https://your-agent.example/api"
+    }
+  ]
+}

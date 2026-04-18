@@ -9,6 +9,8 @@ import {
   getFeedbackSummary,
   getFeedbackRatingsForSignatures,
   getScoreHistory,
+  getAgentManifestsForWallet,
+  getLatestSignalValues,
 } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
@@ -23,6 +25,7 @@ import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { ClaimBanner } from '@/components/karma/claim-banner';
 import { FeedbackSection } from '@/components/karma/feedback-section';
 import { ScoreChart } from '@/components/karma/score-chart';
+import { ManifestCard } from '@/components/karma/manifest-card';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -68,9 +71,10 @@ async function ScoreBreakdownCard({
   feedbackDeliveryRate: number;
   feedbackCount: number;
 }) {
-  const [txs, attestation] = await Promise.all([
+  const [txs, attestation, manifestMap] = await Promise.all([
     getTransactions(wallet, 100),
     readAttestation(wallet).catch(() => 0),
+    getLatestSignalValues([wallet], 'manifest').catch(() => new Map<string, number>()),
   ]);
 
   if (txs.length === 0) {
@@ -92,8 +96,15 @@ async function ScoreBreakdownCard({
   const live = calculateScore(
     txs, attestation, feedbackDeliveryRate, feedbackCount,
     cadence?.automationScore ?? null,
+    manifestMap.get(wallet) ?? null,
   );
   const m = live.metrics;
+  const effective = live.tierAggregates;
+  const tier1Pct = effective.tier1 != null ? Math.round(effective.tier1 * 100) : null;
+  const tier2Pct = effective.tier2 != null ? Math.round(effective.tier2 * 100) : null;
+  const tier3Pct = effective.tier3 != null ? Math.round(effective.tier3 * 100) : null;
+  const manifestValue = manifestMap.get(wallet) ?? null;
+  const manifestVerified = manifestValue != null && manifestValue >= 1.0;
 
   return (
     <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
@@ -101,15 +112,121 @@ async function ScoreBreakdownCard({
         <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
           Score Breakdown
         </CardTitle>
+        <p className="mt-1 text-[11px] text-[#62666d]">
+          Weighted blend across four signal tiers · missing tiers redistribute proportionally
+        </p>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <MetricBar label="Success Rate" value={m.successRate} weight="35%" />
-        <MetricBar label="Facilitator Diversity" value={m.diversity} weight="25%" maxLabel="Unique facilitators / 10" />
-        <MetricBar label="Volume" value={m.volume} weight="20%" maxLabel="Transactions / 500" />
-        <MetricBar label="Account Age" value={m.age} weight="10%" maxLabel="Days active / 180" />
-        <MetricBar label="8004 Attestation" value={m.attestation ?? 0} weight="10%" maxLabel="On-chain feedback via 8004 protocol" />
+      <CardContent className="space-y-6">
+        <TierSection
+          label="Tier 1 · Receipts"
+          weight="60%"
+          dotColor="#10b981"
+          summary={tier1Pct != null ? `${tier1Pct}%` : '—'}
+          empty={tier1Pct == null}
+          emptyHint="No receipt-backed attestations yet"
+        >
+          <MetricBar
+            label="8004 + consumer feedback"
+            value={m.attestation ?? 0}
+            maxLabel="Payment + signed delivery feedback"
+          />
+        </TierSection>
+
+        <TierSection
+          label="Tier 2 · Behavior"
+          weight="25%"
+          dotColor="#f5a623"
+          summary={tier2Pct != null ? `${tier2Pct}%` : '—'}
+        >
+          <MetricBar label="Success Rate" value={m.successRate} weight="35%" />
+          <MetricBar label="Counterparty Diversity" value={m.diversity} weight="25%" maxLabel="Unique facilitators / 10" />
+          <MetricBar label="Volume" value={m.volume} weight="20%" maxLabel="Transactions / 500" />
+          <MetricBar label="Account Age" value={m.age} weight="20%" maxLabel="Days active / 180" />
+          <MetricBar
+            label="Cadence (automation)"
+            value={m.cadence ?? 0}
+            weight="+10% blend"
+            maxLabel={
+              m.cadence == null
+                ? `Needs ≥10 tx to classify (have ${txs.length})`
+                : 'Higher = 24/7 regular pattern; lower = human-shaped'
+            }
+          />
+        </TierSection>
+
+        <TierSection
+          label="Tier 3 · Declared identity"
+          weight="10%"
+          dotColor="#8a92ff"
+          summary={tier3Pct != null ? `${tier3Pct}%` : '—'}
+          empty={tier3Pct == null}
+          emptyHint="No manifest or ownership proof yet"
+        >
+          <MetricBar
+            label={manifestVerified ? 'Manifest (owner-signed)' : 'Manifest (declared)'}
+            value={manifestValue ?? 0}
+            maxLabel={
+              manifestVerified
+                ? 'agentkarma.json declares this wallet — owner-verified'
+                : 'agentkarma.json found — wallet binding unverified'
+            }
+          />
+        </TierSection>
+
+        <TierSection
+          label="Tier 4 · Social"
+          weight="5%"
+          dotColor="#8a8f98"
+          summary="—"
+          empty
+          emptyHint="Derivative signals — deferred"
+        />
       </CardContent>
     </Card>
+  );
+}
+
+function TierSection({
+  label,
+  weight,
+  dotColor,
+  summary,
+  empty,
+  emptyHint,
+  children,
+}: {
+  label: string;
+  weight: string;
+  dotColor: string;
+  summary: string;
+  empty?: boolean;
+  emptyHint?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <div className="flex items-center gap-2">
+          <span
+            aria-hidden
+            className="size-1.5 rounded-full"
+            style={{ background: dotColor }}
+          />
+          <span className="text-[12px] font-[590] uppercase tracking-[0.08em] text-[#d0d6e0]">
+            {label}
+          </span>
+          <span className="text-[10px] font-[510] text-[#62666d]">{weight}</span>
+        </div>
+        <span className="text-[12px] font-[590] tabular-nums text-[#f7f8f8]">
+          {summary}
+        </span>
+      </div>
+      {empty ? (
+        <p className="text-[11px] text-[#62666d] italic">{emptyHint}</p>
+      ) : (
+        <div className="space-y-3 pl-3.5">{children}</div>
+      )}
+    </div>
   );
 }
 
@@ -175,10 +292,12 @@ export default async function AgentProfilePage({
   let walletRow;
   let feedbackSummary = { total: 0, delivered: 0, failed: 0, deliveryRate: 0 };
 
+  let manifests: Awaited<ReturnType<typeof getAgentManifestsForWallet>> = [];
   try {
-    [walletRow, feedbackSummary] = await Promise.all([
+    [walletRow, feedbackSummary, manifests] = await Promise.all([
       getWallet(wallet),
       getFeedbackSummary(wallet).catch(() => feedbackSummary),
+      getAgentManifestsForWallet(wallet).catch(() => []),
     ]);
   } catch {
     notFound();
@@ -355,6 +474,8 @@ export default async function AgentProfilePage({
           </CardContent>
         </Card>
       </div>
+
+      {manifests.length > 0 && <ManifestCard manifest={manifests[0]} />}
 
       <Suspense fallback={<CardSkeleton title="Score Trend" rows={3} />}>
         <ScoreTrendCard wallet={wallet} tier={tier} />

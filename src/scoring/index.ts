@@ -175,6 +175,7 @@ export function calculateScore(
   feedbackDeliveryRate?: number,
   feedbackCount?: number,
   cadenceScore?: number | null,
+  manifestScore?: number | null,
 ): WalletScore {
   if (transactions.length === 0) {
     throw new Error('calculateScore requires at least one transaction');
@@ -228,7 +229,9 @@ export function calculateScore(
     tier1 = onChain;
   }
 
-  const aggregates: TierAggregates = { tier1, tier2, tier3: null, tier4: null };
+  // Tier 3 from manifest signal (Phase H1). Tier 4 deferred.
+  const tier3 = typeof manifestScore === 'number' ? clamp01(manifestScore) : null;
+  const aggregates: TierAggregates = { tier1, tier2, tier3, tier4: null };
 
   const daysSinceLastTx = (Date.now() - lastTs) / MS_PER_DAY;
   const decay = recencyDecay(daysSinceLastTx);
@@ -260,6 +263,7 @@ export function calculateScores(
   allTransactions: ScoringTransaction[],
   attestations?: Map<string, number>,
   cadenceScores?: Map<string, number>,
+  manifestScores?: Map<string, number>,
 ): Map<string, WalletScore> {
   const byWallet = new Map<string, ScoringTransaction[]>();
   for (const tx of allTransactions) {
@@ -278,6 +282,7 @@ export function calculateScores(
         undefined,
         undefined,
         cadenceScores?.get(address) ?? null,
+        manifestScores?.get(address) ?? null,
       ),
     );
   }

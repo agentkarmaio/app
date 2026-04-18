@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getWallet, getTransactions } from '@/db/client';
+import { getWallet, getTransactions, getLatestSignalValues } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
 
@@ -67,12 +67,14 @@ export async function GET(
   }
 
   const cadence = computeCadence(transactions.map((tx) => new Date(tx.timestamp)));
+  const manifestMap = await getLatestSignalValues([wallet], 'manifest').catch(() => new Map<string, number>());
   const score = calculateScore(
     transactions,
     0,
     undefined,
     undefined,
     cadence?.automationScore ?? null,
+    manifestMap.get(wallet) ?? null,
   );
   return NextResponse.json({
     ...score,

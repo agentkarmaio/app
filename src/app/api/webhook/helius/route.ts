@@ -92,7 +92,8 @@ export async function POST(request: NextRequest) {
     await insertSignalEvents(cadenceSignals, { overwrite: true });
   }
 
-  const scores = calculateScores(allTxs, attestations, cadenceScores);
+  const manifestScores = await getLatestSignalValues(uniqueWallets, 'manifest');
+  const scores = calculateScores(allTxs, attestations, cadenceScores, manifestScores);
 
   await Promise.all(
     [...scores.entries()].map(async ([address, ws]) => {

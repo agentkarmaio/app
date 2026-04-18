@@ -32,15 +32,17 @@ export function Navbar() {
   return (
     <header className="sticky top-0 z-50 px-4 pt-4">
       <div className="mx-auto flex h-11 max-w-5xl items-center justify-between rounded-full border border-[rgb(255_255_255/0.06)] bg-transparent pl-4 pr-2 backdrop-blur-xl backdrop-saturate-150 shadow-[0_1px_0_0_rgb(255_255_255/0.04)_inset,0_8px_24px_-12px_rgb(0_0_0/0.6)]">
-        <Link href="/" className="flex items-center gap-2">
-          <Image
-            src="/brand/agentkarma-dark-X-transparent.png"
-            alt="Karma"
-            width={96}
-            height={96}
-            priority
-            className="size-9"
-          />
+        <Link href="/" className="karma-logo-group flex items-center gap-2">
+          <span className="karma-logo-wrap relative inline-flex size-9 items-center justify-center">
+            <Image
+              src="/brand/agentkarma-dark-X-transparent.png"
+              alt="Karma"
+              width={96}
+              height={96}
+              priority
+              className="karma-logo relative z-10 size-9"
+            />
+          </span>
           <span className="text-[14px] font-[590] tracking-[-0.154px] text-[#f7f8f8]">
             Karma
           </span>

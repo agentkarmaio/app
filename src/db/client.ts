@@ -10,6 +10,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type {
   Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating, LivenessStatus,
   ConfidenceBadge, SignalEvent, SignalTier, KarmaFace,
+  AgentManifest, ManifestSourceType, ParsedManifest,
 } from './schema';
 
 // --- Supabase Client ---------------------------------------------------------
@@ -659,6 +660,69 @@ export async function getSignalEventsForWallets(
 
     if (error) throw error;
     for (const row of (data ?? []) as SignalEvent[]) {
+      const list = out.get(row.agent_wallet) ?? [];
+      list.push(row);
+      out.set(row.agent_wallet, list);
+    }
+  }
+  return out;
+}
+
+// --- Agent Manifests (Phase H1) ---------------------------------------------
+
+export interface UpsertAgentManifestInput {
+  agentWallet: string;
+  sourceType: ManifestSourceType;
+  url: string | null;
+  raw: Record<string, unknown> | null;
+  parsed: ParsedManifest | null;
+  verified: boolean;
+}
+
+export async function upsertAgentManifest(input: UpsertAgentManifestInput): Promise<void> {
+  const { error } = await supabase
+    .from('agent_manifests')
+    .upsert({
+      agent_wallet: input.agentWallet,
+      source_type:  input.sourceType,
+      url:          input.url,
+      raw:          input.raw,
+      parsed:       input.parsed,
+      verified:     input.verified,
+      fetched_at:   new Date().toISOString(),
+    }, { onConflict: 'agent_wallet,source_type' });
+
+  if (error) throw error;
+}
+
+export async function getAgentManifestsForWallet(
+  agentWallet: string,
+): Promise<AgentManifest[]> {
+  const { data, error } = await supabase
+    .from('agent_manifests')
+    .select('*')
+    .eq('agent_wallet', agentWallet)
+    .order('fetched_at', { ascending: false });
+
+  if (error) throw error;
+  return (data ?? []) as AgentManifest[];
+}
+
+export async function getAgentManifestsForWallets(
+  agentWallets: string[],
+): Promise<Map<string, AgentManifest[]>> {
+  const out = new Map<string, AgentManifest[]>();
+  if (agentWallets.length === 0) return out;
+
+  for (let i = 0; i < agentWallets.length; i += 500) {
+    const chunk = agentWallets.slice(i, i + 500);
+    const { data, error } = await supabase
+      .from('agent_manifests')
+      .select('*')
+      .in('agent_wallet', chunk);
+
+    if (error) throw error;
+    for (const row of (data ?? []) as AgentManifest[]) {
       const list = out.get(row.agent_wallet) ?? [];
       list.push(row);
       out.set(row.agent_wallet, list);

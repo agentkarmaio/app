@@ -202,7 +202,11 @@ export async function runIndexer(
     console.log(`[indexer] Emitted ${cadenceSignals.length} cadence signals`);
   }
 
-  const scores = calculateScores(allTxsForAffected, attestations, cadenceScores);
+  // Load Tier 3 manifest scores (Phase H1) — already-resolved manifests contribute
+  // to the blended score; wallets with no manifest get null and weight redistributes.
+  const manifestScores = await getLatestSignalValues(affectedWallets, 'manifest');
+
+  const scores = calculateScores(allTxsForAffected, attestations, cadenceScores, manifestScores);
 
   let scored = 0;
   for (const [address, walletScore] of scores) {

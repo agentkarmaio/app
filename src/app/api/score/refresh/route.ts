@@ -15,9 +15,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No transactions found for wallet' }, { status: 404 });
     }
 
-    const [attestation, feedback] = await Promise.all([
+    const [attestation, feedback, manifestMap] = await Promise.all([
       readAttestation(wallet),
       getFeedbackSummary(wallet),
+      getLatestSignalValues([wallet], 'manifest'),
     ]);
 
     // Recompute + re-emit cadence for this wallet, then use its automationScore.
@@ -32,6 +33,7 @@ export async function POST(request: NextRequest) {
       feedback.deliveryRate,
       feedback.total,
       cadence?.automationScore ?? null,
+      manifestMap.get(wallet) ?? null,
     );
     await upsertWallet(wallet, score.score, score.trustTier, score.txCount, {
       providerScore: score.providerScore,
@@ -63,8 +65,11 @@ export async function POST(request: NextRequest) {
     } catch { /* skip */ }
   }
 
-  const cadenceScores = await getLatestSignalValues(walletAddresses, 'cadence');
-  const scores = calculateScores(allTx, attestations, cadenceScores);
+  const [cadenceScores, manifestScores] = await Promise.all([
+    getLatestSignalValues(walletAddresses, 'cadence'),
+    getLatestSignalValues(walletAddresses, 'manifest'),
+  ]);
+  const scores = calculateScores(allTx, attestations, cadenceScores, manifestScores);
 
   let refreshed = 0;
   for (const [address, score] of scores) {
@@ -77,6 +82,7 @@ export async function POST(request: NextRequest) {
           fb.deliveryRate,
           fb.total,
           cadenceScores.get(address) ?? null,
+          manifestScores.get(address) ?? null,
         )
       : score;
 
