@@ -94,18 +94,25 @@
     Inactive: '#e5484d',
   };
 
+  var CONFIDENCE = {
+    'receipt-backed':    { color: '#10b981', label: 'Receipt-backed' },
+    'behavior-inferred': { color: '#f5a623', label: 'Behavior-inferred' },
+    'declared':          { color: '#8a8f98', label: 'Declared' },
+  };
+
   function buildHTML(data, opts) {
     var tc = TIER_COLORS[data.trustTier] || '#62666d';
     var lc = LIVENESS_COLORS[data.liveness] || '#62666d';
+    var cf = CONFIDENCE[data.confidenceBadge] || CONFIDENCE.declared;
     var label = data.displayName || (data.address.slice(0, 4) + '...' + data.address.slice(-4));
     var score = (typeof data.score === 'number') ? data.score.toFixed(1) : '0.0';
     var compact = opts.size === 'compact';
 
     if (compact) {
-      return '<div class="karma-badge" style="display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border-radius:6px;background:#111113;border:1px solid ' + tc + '33;cursor:pointer;font-family:Inter,-apple-system,sans-serif;transition:border-color 0.15s;" onmouseenter="this.style.borderColor=\'' + tc + '66\'" onmouseleave="this.style.borderColor=\'' + tc + '33\'">'
+      return '<div class="karma-badge" style="display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border-radius:6px;background:#111113;border:1px solid ' + tc + '33;cursor:pointer;font-family:Inter,-apple-system,sans-serif;transition:border-color 0.15s;" onmouseenter="this.style.borderColor=\'' + tc + '66\'" onmouseleave="this.style.borderColor=\'' + tc + '33\'" title="' + esc(cf.label) + '">'
         + '<span style="font-size:13px;font-weight:600;color:' + tc + ';">' + score + '</span>'
         + '<span style="font-size:11px;color:#8a8f98;">' + esc(label) + '</span>'
-        + '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + lc + ';"></span>'
+        + '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + cf.color + ';" title="' + esc(cf.label) + '"></span>'
         + '</div>';
     }
 
@@ -125,6 +132,7 @@
       + '</div>'
       + '<div style="display:inline-flex;align-items:center;gap:6px;">'
       + '<span style="font-size:10px;font-weight:500;padding:1px 6px;border-radius:4px;background:' + tc + '1f;color:' + tc + ';border:0.5px solid ' + tc + '40;">' + data.trustTier + '</span>'
+      + '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:500;padding:1px 6px;border-radius:4px;background:' + cf.color + '1f;color:' + cf.color + ';border:0.5px solid ' + cf.color + '40;" title="Confidence: ' + esc(cf.label) + '"><span style="width:5px;height:5px;border-radius:50%;background:' + cf.color + ';"></span>' + esc(cf.label) + '</span>'
       + '<span style="font-size:10px;color:#62666d;">' + data.txCount + ' txs</span>'
       + '</div>'
       + '</div>'

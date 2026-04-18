@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getWallet, getTransactions } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
+import { computeCadence } from '@/scoring/cadence';
 
 export async function GET(
   _request: NextRequest,
@@ -65,7 +66,14 @@ export async function GET(
     });
   }
 
-  const score = calculateScore(transactions);
+  const cadence = computeCadence(transactions.map((tx) => new Date(tx.timestamp)));
+  const score = calculateScore(
+    transactions,
+    0,
+    undefined,
+    undefined,
+    cadence?.automationScore ?? null,
+  );
   return NextResponse.json({
     ...score,
     providerScore: score.providerScore,

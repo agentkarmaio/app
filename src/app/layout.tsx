@@ -9,10 +9,37 @@ import { SolanaWalletProvider } from "@/components/wallet/wallet-provider";
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono' });
 
+const siteUrl = "https://agentkarma.io";
+const siteTitle = "Karma — Reputation Layer for Autonomous On-Chain Agents";
+const siteDescription = "Passive, manipulation-resistant trust scores for any autonomous agent with a Solana footprint. x402-first, not x402-only.";
+const ogImage = "/brand/agentkarma-dark-X.png";
+
 export const metadata: Metadata = {
-  title: "Karma — Reputation Layer for Autonomous On-Chain Agents",
-  description: "Passive, manipulation-resistant trust scores for any autonomous agent with a Solana footprint. x402-first, not x402-only.",
+  metadataBase: new URL(siteUrl),
+  title: siteTitle,
+  description: siteDescription,
   manifest: "/site.webmanifest",
+  openGraph: {
+    type: "website",
+    url: siteUrl,
+    title: siteTitle,
+    description: siteDescription,
+    siteName: "AgentKarma",
+    images: [{ url: ogImage, width: 2048, height: 2048, alt: "AgentKarma" }],
+  },
+  twitter: {
+    card: "summary",
+    title: siteTitle,
+    description: siteDescription,
+    images: [ogImage],
+  },
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/brand/agentkarma-dark-minified.jpg", type: "image/jpeg", sizes: "1024x1024" },
+    ],
+    apple: "/apple-icon.svg",
+  },
 };
 
 export const viewport: Viewport = {

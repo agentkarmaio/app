@@ -11,6 +11,7 @@ import {
   getScoreHistory,
 } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
+import { computeCadence } from '@/scoring/cadence';
 import { readAttestation } from '@/integrations/attestation';
 import { ScoreRing } from '@/components/karma/score-ring';
 import { TierBadge } from '@/components/karma/tier-badge';
@@ -87,7 +88,11 @@ async function ScoreBreakdownCard({
     );
   }
 
-  const live = calculateScore(txs, attestation, feedbackDeliveryRate, feedbackCount);
+  const cadence = computeCadence(txs.map((tx) => new Date(tx.timestamp)));
+  const live = calculateScore(
+    txs, attestation, feedbackDeliveryRate, feedbackCount,
+    cadence?.automationScore ?? null,
+  );
   const m = live.metrics;
 
   return (

@@ -9,9 +9,11 @@ import {
   getTransactionsForWallets,
   insertScoreSnapshot,
   insertSignalEvents,
+  getLatestSignalValues,
 } from '@/db/client';
 import { calculateScores } from '@/scoring';
-import { buildX402PaymentSignals } from '@/scoring/signals';
+import { buildX402PaymentSignals, buildCadenceSignal } from '@/scoring/signals';
+import { computeCadence } from '@/scoring/cadence';
 import { readAttestations } from '@/integrations/attestation';
 import { ALL_FACILITATOR_ADDRESSES } from '@/config/facilitators';
 import type { Transaction } from '@/db/schema';
@@ -69,7 +71,28 @@ export async function POST(request: NextRequest) {
   // 6. Re-score affected wallets
   const allTxs = await getTransactionsForWallets(uniqueWallets);
   const attestations = await readAttestations(uniqueWallets);
-  const scores = calculateScores(allTxs, attestations);
+
+  // Recompute + emit cadence, then feed the map into scoring.
+  const cadenceByWallet = new Map<string, Date[]>();
+  for (const tx of allTxs) {
+    const list = cadenceByWallet.get(tx.wallet_address) ?? [];
+    list.push(new Date(tx.timestamp));
+    cadenceByWallet.set(tx.wallet_address, list);
+  }
+  const cadenceSignals = [];
+  const cadenceScores = new Map<string, number>();
+  for (const [addr, ts] of cadenceByWallet) {
+    const cadence = computeCadence(ts);
+    if (cadence) {
+      cadenceSignals.push(buildCadenceSignal(addr, cadence));
+      cadenceScores.set(addr, cadence.automationScore);
+    }
+  }
+  if (cadenceSignals.length > 0) {
+    await insertSignalEvents(cadenceSignals, { overwrite: true });
+  }
+
+  const scores = calculateScores(allTxs, attestations, cadenceScores);
 
   await Promise.all(
     [...scores.entries()].map(async ([address, ws]) => {

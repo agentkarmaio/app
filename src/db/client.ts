@@ -612,6 +612,37 @@ export async function getSignalEventsForWallet(
   return (data ?? []) as SignalEvent[];
 }
 
+/**
+ * Fetch the most-recent signal `value` per wallet for a given kind.
+ * Used by scoring to read aggregate signals (cadence, breadth) when present.
+ * Returns a plain map wallet → numeric value.
+ */
+export async function getLatestSignalValues(
+  agentWallets: string[],
+  kind: string,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (agentWallets.length === 0) return out;
+
+  for (let i = 0; i < agentWallets.length; i += 500) {
+    const chunk = agentWallets.slice(i, i + 500);
+    const { data, error } = await supabase
+      .from('signal_events')
+      .select('agent_wallet, value, observed_at')
+      .eq('kind', kind)
+      .in('agent_wallet', chunk)
+      .order('observed_at', { ascending: false });
+
+    if (error) throw error;
+
+    for (const row of (data ?? []) as { agent_wallet: string; value: number | null; observed_at: string }[]) {
+      if (out.has(row.agent_wallet)) continue; // keep only the most recent per wallet
+      if (row.value != null) out.set(row.agent_wallet, Number(row.value));
+    }
+  }
+  return out;
+}
+
 export async function getSignalEventsForWallets(
   agentWallets: string[],
 ): Promise<Map<string, SignalEvent[]>> {

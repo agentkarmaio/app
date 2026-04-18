@@ -4,7 +4,9 @@
   "description": "On-chain trust scores for AI agents on Solana.",
   "icons": [
     { "src": "/brand/agent-karma-symbol-v2.svg", "sizes": "any", "type": "image/svg+xml" },
-    { "src": "/brand/agent-karma-favicon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+    { "src": "/brand/agent-karma-favicon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" },
+    { "src": "/brand/agentkarma-dark-minified.jpg", "sizes": "1024x1024", "type": "image/jpeg" },
+    { "src": "/brand/agentkarma-dark-X.png", "sizes": "2048x2048", "type": "image/png" }
   ],
   "theme_color": "#08090a",
   "background_color": "#08090a",

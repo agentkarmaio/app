@@ -148,6 +148,8 @@ export interface WalletScore {
     volume: number;
     age: number;
     attestation: number;
+    /** Automation-likelihood from cadence analysis (null if <10 tx). */
+    cadence: number | null;
   };
   tierAggregates: TierAggregates;
   txCount: number;
@@ -172,6 +174,7 @@ export function calculateScore(
   attestation = 0,
   feedbackDeliveryRate?: number,
   feedbackCount?: number,
+  cadenceScore?: number | null,
 ): WalletScore {
   if (transactions.length === 0) {
     throw new Error('calculateScore requires at least one transaction');
@@ -194,11 +197,20 @@ export function calculateScore(
   const daysActive = (Date.now() - firstTs) / MS_PER_DAY;
   const age = cap(daysActive, NORMALIZE.ageMax);
 
-  const tier2 =
+  const legacyTier2 =
     successRate * TIER2_METRIC_WEIGHTS.successRate +
     diversity * TIER2_METRIC_WEIGHTS.diversity +
     volume * TIER2_METRIC_WEIGHTS.volume +
     age * TIER2_METRIC_WEIGHTS.age;
+
+  // Blend in cadence when available (G2). Cadence is a behavioral shape
+  // signal — contributes 10% of Tier 2 so legacy metrics still dominate.
+  const cadenceClamped = typeof cadenceScore === 'number'
+    ? clamp01(cadenceScore)
+    : null;
+  const tier2 = cadenceClamped != null
+    ? legacyTier2 * 0.9 + cadenceClamped * 0.1
+    : legacyTier2;
 
   // Tier 1 — receipt-gated attestation (8004 + local tx-referenced feedback).
   // Local weighted 60% because it's anchored to a tx_signature.
@@ -236,6 +248,7 @@ export function calculateScore(
       volume,
       age,
       attestation: blendedAttestation,
+      cadence: cadenceClamped,
     },
     tierAggregates: aggregates,
     txCount,
@@ -246,6 +259,7 @@ export function calculateScore(
 export function calculateScores(
   allTransactions: ScoringTransaction[],
   attestations?: Map<string, number>,
+  cadenceScores?: Map<string, number>,
 ): Map<string, WalletScore> {
   const byWallet = new Map<string, ScoringTransaction[]>();
   for (const tx of allTransactions) {
@@ -256,7 +270,16 @@ export function calculateScores(
 
   const scores = new Map<string, WalletScore>();
   for (const [address, txs] of byWallet) {
-    scores.set(address, calculateScore(txs, attestations?.get(address) ?? 0));
+    scores.set(
+      address,
+      calculateScore(
+        txs,
+        attestations?.get(address) ?? 0,
+        undefined,
+        undefined,
+        cadenceScores?.get(address) ?? null,
+      ),
+    );
   }
 
   return scores;

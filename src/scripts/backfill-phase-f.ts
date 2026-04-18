@@ -14,6 +14,7 @@ import {
   getAllTransactions, upsertWallet, insertScoreSnapshot, getFeedbackSummary,
 } from '../db/client';
 import { calculateScore } from '../scoring';
+import { computeCadence } from '../scoring/cadence';
 import { readAttestations } from '../integrations/attestation';
 
 async function main() {
@@ -49,11 +50,13 @@ async function main() {
       }
     } catch { /* skip */ }
 
+    const cadence = computeCadence(txs.map((tx) => new Date(tx.timestamp)));
     const score = calculateScore(
       txs,
       attestations.get(wallet) ?? 0,
       feedbackRate,
       feedbackTotal,
+      cadence?.automationScore ?? null,
     );
 
     await upsertWallet(wallet, score.score, score.trustTier, score.txCount, {

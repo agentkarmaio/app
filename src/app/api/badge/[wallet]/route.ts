@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getWallet, getTransactions, getFeedbackSummary } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
+import { computeCadence } from '@/scoring/cadence';
 import { getLivenessStatus } from '@/db/schema';
-import type { TrustTier, LivenessStatus } from '@/db/schema';
+import type { TrustTier, LivenessStatus, ConfidenceBadge } from '@/db/schema';
 
 /**
  * GET /api/badge/[wallet]?format=svg|json&theme=dark|light
@@ -35,12 +36,24 @@ export async function GET(
   let feedback = { deliveryRate: 0, total: 0 };
   try { feedback = await getFeedbackSummary(wallet); } catch { /* ok */ }
 
+  const cadence = transactions.length > 0
+    ? computeCadence(transactions.map((tx) => new Date(tx.timestamp)))
+    : null;
   const liveScore = transactions.length > 0
-    ? calculateScore(transactions, 0, feedback.deliveryRate, feedback.total)
+    ? calculateScore(
+        transactions, 0, feedback.deliveryRate, feedback.total,
+        cadence?.automationScore ?? null,
+      )
     : null;
 
   const score = liveScore?.score ?? Number(walletRow?.score ?? 0);
+  const providerScore = liveScore?.providerScore
+    ?? (walletRow?.provider_score != null ? Number(walletRow.provider_score) : score);
+  const consumerScore = liveScore?.consumerScore
+    ?? (walletRow?.consumer_score != null ? Number(walletRow.consumer_score) : null);
   const tier = (liveScore?.trustTier ?? walletRow?.trust_tier ?? 'Unrated') as TrustTier;
+  const confidenceBadge: ConfidenceBadge = (liveScore?.confidenceBadge
+    ?? walletRow?.confidence_badge ?? 'declared');
   const displayName = walletRow?.display_name ?? null;
   const liveness: LivenessStatus = walletRow?.last_seen
     ? getLivenessStatus(walletRow.last_seen)
@@ -51,6 +64,9 @@ export async function GET(
     return NextResponse.json({
       address: wallet,
       score,
+      providerScore,
+      consumerScore,
+      confidenceBadge,
       trustTier: tier,
       displayName,
       liveness,
@@ -66,7 +82,7 @@ export async function GET(
   }
 
   // SVG badge
-  const svg = renderBadgeSVG({ score, tier, displayName, liveness, wallet });
+  const svg = renderBadgeSVG({ score, tier, confidenceBadge, displayName, liveness, wallet });
 
   return new NextResponse(svg, {
     headers: {
@@ -95,30 +111,38 @@ const LIVENESS_COLORS: Record<LivenessStatus, string> = {
   Inactive: '#e5484d',
 };
 
+const CONFIDENCE_DOT_COLOR: Record<ConfidenceBadge, string> = {
+  'receipt-backed': '#10b981',
+  'behavior-inferred': '#f5a623',
+  declared: '#8a8f98',
+};
+
 function renderBadgeSVG({
   score,
   tier,
+  confidenceBadge,
   displayName,
   liveness,
   wallet,
 }: {
   score: number;
   tier: TrustTier;
+  confidenceBadge: ConfidenceBadge;
   displayName: string | null;
   liveness: LivenessStatus;
   wallet: string;
 }): string {
   const tierColor = TIER_COLORS[tier];
   const livenessColor = LIVENESS_COLORS[liveness];
+  const confidenceColor = CONFIDENCE_DOT_COLOR[confidenceBadge];
   const label = displayName ?? `${wallet.slice(0, 4)}...${wallet.slice(-4)}`;
   const scoreText = score.toFixed(1);
 
-  // Score ring calculation
   const ringR = 18;
   const ringC = 2 * Math.PI * ringR;
   const ringOffset = ringC - (score / 100) * ringC;
 
-  const width = 220;
+  const width = 240;
   const height = 56;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -142,22 +166,30 @@ function renderBadgeSVG({
 
   <!-- Agent info -->
   <g transform="translate(56, 16)">
-    <!-- Liveness dot -->
     <circle cx="0" cy="5" r="3" fill="${livenessColor}"/>
-    <!-- Name -->
     <text x="8" y="9" fill="#f7f8f8" font-size="12" font-weight="500">${escapeXml(label)}</text>
   </g>
 
-  <!-- Tier badge -->
+  <!-- Tier + confidence badges -->
   <g transform="translate(56, 32)">
     <rect x="0" y="0" width="${tier.length * 7 + 12}" height="18" rx="4"
       fill="${tierColor}" fill-opacity="0.12" stroke="${tierColor}" stroke-opacity="0.25" stroke-width="0.5"/>
     <text x="6" y="13" fill="${tierColor}" font-size="10" font-weight="500">${tier}</text>
   </g>
 
-  <!-- Karma brand -->
+  <g transform="translate(${56 + tier.length * 7 + 18}, 32)">
+    <circle cx="6" cy="9" r="3" fill="${confidenceColor}"/>
+    <text x="14" y="13" fill="#8a8f98" font-size="10" font-weight="500">${confidenceLabel(confidenceBadge)}</text>
+  </g>
+
   <text x="${width - 8}" y="${height - 6}" text-anchor="end" fill="#62666d" font-size="8" font-weight="400">karma</text>
 </svg>`;
+}
+
+function confidenceLabel(b: ConfidenceBadge): string {
+  if (b === 'receipt-backed') return 'Receipts';
+  if (b === 'behavior-inferred') return 'Behavior';
+  return 'Declared';
 }
 
 function escapeXml(str: string): string {

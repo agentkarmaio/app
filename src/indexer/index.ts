@@ -20,7 +20,7 @@ import {
   getFacilitatorName,
 } from '../config/facilitators';
 import type { Transaction } from '../db/schema';
-import { insertTransactions, upsertWallet, insertScoreSnapshot, getTransactionsForWallets, getCursor, upsertCursor, insertSignalEvents } from '../db/client';
+import { insertTransactions, upsertWallet, insertScoreSnapshot, getTransactionsForWallets, getCursor, upsertCursor, insertSignalEvents, getLatestSignalValues } from '../db/client';
 import { calculateScores } from '../scoring';
 import { buildX402PaymentSignals, buildCadenceSignal } from '../scoring/signals';
 import { computeCadence } from '../scoring/cadence';
@@ -181,8 +181,6 @@ export async function runIndexer(
     console.log(`[indexer] Found ${attestations.size} 8004 attestations`);
   }
 
-  const scores = calculateScores(allTxsForAffected, attestations);
-
   // Emit Tier 2 cadence signals for affected wallets that meet the tx threshold.
   const byWallet = new Map<string, Date[]>();
   for (const tx of allTxsForAffected) {
@@ -191,14 +189,20 @@ export async function runIndexer(
     byWallet.set(tx.wallet_address, list);
   }
   const cadenceSignals = [];
+  const cadenceScores = new Map<string, number>();
   for (const [addr, ts] of byWallet) {
     const cadence = computeCadence(ts);
-    if (cadence) cadenceSignals.push(buildCadenceSignal(addr, cadence));
+    if (cadence) {
+      cadenceSignals.push(buildCadenceSignal(addr, cadence));
+      cadenceScores.set(addr, cadence.automationScore);
+    }
   }
   if (cadenceSignals.length > 0) {
     await insertSignalEvents(cadenceSignals, { overwrite: true });
     console.log(`[indexer] Emitted ${cadenceSignals.length} cadence signals`);
   }
+
+  const scores = calculateScores(allTxsForAffected, attestations, cadenceScores);
 
   let scored = 0;
   for (const [address, walletScore] of scores) {

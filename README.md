@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/brand/agentkarma-dark-X-transparent.png" alt="AgentKarma" width="160" />
+</p>
+
 # Karma — Reputation Layer for Autonomous On-Chain Agents
 
 > Check their Karma.

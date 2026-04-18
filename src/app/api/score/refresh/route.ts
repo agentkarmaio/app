@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAllTransactions, getTransactions, upsertWallet, insertScoreSnapshot, getFeedbackSummary } from '@/db/client';
+import { getAllTransactions, getTransactions, upsertWallet, insertScoreSnapshot, getFeedbackSummary, getLatestSignalValues, insertSignalEvents } from '@/db/client';
 import { calculateScore, calculateScores } from '@/scoring/index';
 import { readAttestation, readAttestations } from '@/integrations/attestation';
+import { computeCadence } from '@/scoring/cadence';
+import { buildCadenceSignal } from '@/scoring/signals';
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
@@ -17,7 +19,20 @@ export async function POST(request: NextRequest) {
       readAttestation(wallet),
       getFeedbackSummary(wallet),
     ]);
-    const score = calculateScore(transactions, attestation, feedback.deliveryRate, feedback.total);
+
+    // Recompute + re-emit cadence for this wallet, then use its automationScore.
+    const cadence = computeCadence(transactions.map((tx) => new Date(tx.timestamp)));
+    if (cadence) {
+      await insertSignalEvents([buildCadenceSignal(wallet, cadence)], { overwrite: true });
+    }
+
+    const score = calculateScore(
+      transactions,
+      attestation,
+      feedback.deliveryRate,
+      feedback.total,
+      cadence?.automationScore ?? null,
+    );
     await upsertWallet(wallet, score.score, score.trustTier, score.txCount, {
       providerScore: score.providerScore,
       consumerScore: score.consumerScore,
@@ -48,7 +63,8 @@ export async function POST(request: NextRequest) {
     } catch { /* skip */ }
   }
 
-  const scores = calculateScores(allTx, attestations);
+  const cadenceScores = await getLatestSignalValues(walletAddresses, 'cadence');
+  const scores = calculateScores(allTx, attestations, cadenceScores);
 
   let refreshed = 0;
   for (const [address, score] of scores) {
@@ -60,6 +76,7 @@ export async function POST(request: NextRequest) {
           attestations.get(address) ?? 0,
           fb.deliveryRate,
           fb.total,
+          cadenceScores.get(address) ?? null,
         )
       : score;
 

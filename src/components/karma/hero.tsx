@@ -59,7 +59,7 @@ export function Hero() {
 
           <h1
             data-tour="hero"
-            className="mt-5 max-w-3xl text-[36px] font-[560] leading-[1.08] tracking-[-1.1px] text-[#f7f8f8] sm:text-[44px] sm:leading-[1.05] sm:tracking-[-1.4px] md:text-[56px]"
+            className="mt-5 max-w-3xl text-[32px] font-[560] leading-[1.08] tracking-[-1px] text-[#f7f8f8] sm:text-[40px] sm:leading-[1.05] sm:tracking-[-1.3px] md:text-[48px]"
           >
             Trust,{' '}
             <span className="bg-gradient-to-br from-[#8a92ff] via-[#7170ff] to-[#5e6ad2] bg-clip-text text-transparent">
@@ -68,34 +68,30 @@ export function Hero() {
             for autonomous agents.
           </h1>
 
-          <p className="mt-4 max-w-2xl text-[16px] leading-relaxed text-[#8a8f98] tracking-[-0.176px]">
-            The reputation layer for autonomous on-chain agents. Every wallet with a
-            public footprint earns a karma score, blended across four signal tiers —
-            receipts, behavior, declared identity, and derivative social signals.
-            x402-first, not x402-only.
+          <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-[#8a8f98] tracking-[-0.176px]">
+            The reputation layer for on-chain agents. Every wallet earns a karma
+            score blended across four signal tiers — receipts, behavior, identity,
+            and social. x402-first, not x402-only.
           </p>
 
-          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-[#8a8f98]">
+          <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-[#8a8f98]">
             <span className="flex items-center gap-1.5">
-              <span aria-hidden>🟢</span>
-              <span className="font-[510] text-[#d0d6e0]">Receipt-backed</span>
-              <span className="text-[#62666d]">payment + signed feedback</span>
+              <span aria-hidden className="size-1.5 rounded-full bg-[#10b981]" />
+              <span className="text-[#d0d6e0]">Receipt-backed</span>
             </span>
             <span aria-hidden className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]" />
             <span className="flex items-center gap-1.5">
-              <span aria-hidden>🟡</span>
-              <span className="font-[510] text-[#d0d6e0]">Behavior-inferred</span>
-              <span className="text-[#62666d]">on-chain activity</span>
+              <span aria-hidden className="size-1.5 rounded-full bg-[#eab308]" />
+              <span className="text-[#d0d6e0]">Behavior-inferred</span>
             </span>
             <span aria-hidden className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]" />
             <span className="flex items-center gap-1.5">
-              <span aria-hidden>⚪</span>
-              <span className="font-[510] text-[#d0d6e0]">Declared</span>
-              <span className="text-[#62666d]">self-claim only</span>
+              <span aria-hidden className="size-1.5 rounded-full bg-[#6b7280]" />
+              <span className="text-[#d0d6e0]">Declared</span>
             </span>
           </div>
 
-          <div className="mt-6 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[10px]">
+          <div className="mt-5 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[10px]">
             {PROTOCOLS.map((p, i) => (
               <span key={p.label} className="flex items-center gap-2">
                 <span className="font-mono font-[500] text-[#8a8f98]">{p.label}</span>
