@@ -19,6 +19,7 @@ const NAV_ITEMS = [
   { href: '/explore', label: 'Explore' },
   { href: '/protocol', label: 'Protocol' },
   { href: '/widget', label: 'Widget' },
+  { href: '/enterprise', label: 'Enterprise' },
 ];
 
 function isActive(pathname: string, href: string) {

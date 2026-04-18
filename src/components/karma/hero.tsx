@@ -10,6 +10,22 @@ const PROTOCOLS = [
   { label: 'Solana', role: 'settlement' },
 ];
 
+function LegendDiamond({ color }: { color: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 10 10" className="size-2 shrink-0">
+      <path
+        d="M5 0.8 L9.2 5 L5 9.2 L0.8 5 Z"
+        fill={color}
+        stroke="#08090a"
+        strokeWidth="0.5"
+        strokeLinejoin="miter"
+      />
+      <path d="M5 0.8 L5 5 L0.8 5 Z" fill="#ffffff" fillOpacity="0.22" />
+      <path d="M9.2 5 L5 9.2 L5 5 Z" fill="#000000" fillOpacity="0.22" />
+    </svg>
+  );
+}
+
 export function Hero() {
   return (
     <section className="relative pb-12 pt-10 sm:pt-16 lg:pb-20 lg:pt-20">
@@ -76,17 +92,17 @@ export function Hero() {
 
           <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-[#8a8f98]">
             <span className="flex items-center gap-1.5">
-              <span aria-hidden className="size-1.5 rounded-full bg-[#10b981]" />
+              <LegendDiamond color="#10b981" />
               <span className="text-[#d0d6e0]">Receipt-backed</span>
             </span>
             <span aria-hidden className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]" />
             <span className="flex items-center gap-1.5">
-              <span aria-hidden className="size-1.5 rounded-full bg-[#eab308]" />
+              <LegendDiamond color="#eab308" />
               <span className="text-[#d0d6e0]">Behavior-inferred</span>
             </span>
             <span aria-hidden className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]" />
             <span className="flex items-center gap-1.5">
-              <span aria-hidden className="size-1.5 rounded-full bg-[#6b7280]" />
+              <LegendDiamond color="#6b7280" />
               <span className="text-[#d0d6e0]">Declared</span>
             </span>
           </div>
@@ -119,17 +135,6 @@ export function Hero() {
         </div>
 
         <div className="hidden lg:block">
-          <div className="mb-2 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="relative flex size-1.5">
-                <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#10b981] opacity-60" />
-                <span className="relative inline-flex size-1.5 rounded-full bg-[#10b981]" />
-              </span>
-              <span className="text-[10px] font-[510] uppercase tracking-[0.12em] text-[#8a8f98]">
-                Live trust network
-              </span>
-            </div>
-          </div>
           <TrustGraphMini />
         </div>
       </div>

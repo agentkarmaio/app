@@ -39,3 +39,6 @@ next-env.d.ts
 .repoignore
 
 .servel/*.local.json
+
+# Solana keypairs for demo-seeded wallets — never commit
+.keys/

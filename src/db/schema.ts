@@ -113,6 +113,30 @@ export const signalEventsTable = pgTable('signal_events', {
     .on(table.agent_wallet, table.kind, table.tx_ref),
 ]);
 
+// --- Organizations (Enterprise fleet view) ----------------------------------
+
+export const organizationsTable = pgTable('organizations', {
+  slug:        text('slug').primaryKey(),
+  name:        text('name').notNull(),
+  description: text('description'),
+  website:     text('website'),
+  logo_url:    text('logo_url'),
+  verified:    boolean('verified').notNull().default(false),
+  created_at:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const organizationMembersTable = pgTable('organization_members', {
+  id:               uuid('id').primaryKey().defaultRandom(),
+  organization_slug: text('organization_slug').notNull().references(() => organizationsTable.slug, { onDelete: 'cascade' }),
+  agent_wallet:     text('agent_wallet').notNull().references(() => walletsTable.address, { onDelete: 'cascade' }),
+  role:             text('role'),
+  added_at:         timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_org_members_slug').on(table.organization_slug),
+  index('idx_org_members_wallet').on(table.agent_wallet),
+  uniqueIndex('uniq_org_members').on(table.organization_slug, table.agent_wallet),
+]);
+
 // --- Agent Manifests (Phase H1 — Tier 3 declared identity) ------------------
 
 export const agentManifestsTable = pgTable('agent_manifests', {
@@ -178,6 +202,24 @@ export interface Wallet {
   provider_score: number;
   consumer_score: number | null;
   confidence_badge: ConfidenceBadge;
+}
+
+export interface Organization {
+  slug: string;
+  name: string;
+  description: string | null;
+  website: string | null;
+  logo_url: string | null;
+  verified: boolean;
+  created_at: string;
+}
+
+export interface OrganizationMember {
+  id: string;
+  organization_slug: string;
+  agent_wallet: string;
+  role: string | null;
+  added_at: string;
 }
 
 export type ManifestSourceType = 'x402_accepts' | 'mcp_descriptor' | 'self_hosted' | 'claim_form';

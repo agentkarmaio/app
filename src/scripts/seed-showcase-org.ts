@@ -1,0 +1,142 @@
+/**
+ * Seed the AgentKarma showcase organization — a 3-agent fleet used to
+ * demonstrate the enterprise fleet view. All three wallets are freshly
+ * generated in `.keys/` and under the operator's control; their claims
+ * are inserted directly (bypassing the signed flow, same as seed-demo-claim).
+ *
+ * One wallet (the flagship) also gets a self-hosted manifest served from
+ * `/public/.well-known/agentkarma.json`, which gives it a verified Tier 3
+ * signal in addition to the claim.
+ *
+ * Usage:
+ *   bun run src/scripts/seed-showcase-org.ts [--origin https://agentkarma.io]
+ */
+
+import { promises as fs } from 'fs';
+import path from 'path';
+import {
+  claimWallet, upsertOrganization, addOrganizationMember,
+  upsertAgentManifest, insertSignalEvents,
+} from '../db/client';
+import { parseAgentKarmaManifest } from '../integrations/manifest';
+import { buildManifestSignal } from '../scoring/signals';
+import type { ParsedManifest } from '../db/schema';
+
+const ORG = {
+  slug: 'agentkarma',
+  name: 'AgentKarma',
+  description: 'The reputation layer for autonomous on-chain agents.',
+  verified: true,
+};
+
+const MEMBERS = [
+  {
+    wallet: 'BPMEefwk2VV3Ntt7ZKvBT5KDgTcRJ9Wy28Qj5r1mQCiD',
+    displayName: 'Karma Flagship',
+    description: 'Primary public-facing agent. Serves karma scores, manifests, and feedback attestations.',
+    category: 'infra',
+    role: 'flagship',
+    isFlagship: true,
+  },
+  {
+    wallet: 'BXYUcv6aRaSi6bkPY4oZyKF7TCH1cf5ymUPRgnmJFKms',
+    displayName: 'Karma Indexer',
+    description: 'Ingests x402 payments and behavioral signals across Solana facilitators.',
+    category: 'infra',
+    role: 'worker',
+    isFlagship: false,
+  },
+  {
+    wallet: '6LcZpmsiPuNtFrwUCdVF8a8JMpwM1TpW83TiMjc4X1mM',
+    displayName: 'Karma Widget',
+    description: 'Delivers embeddable trust badges and the public widget SDK.',
+    category: 'infra',
+    role: 'worker',
+    isFlagship: false,
+  },
+] as const;
+
+function parseArgs(argv: string[]) {
+  const named: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('--')) named[a.slice(2)] = argv[++i] ?? '';
+  }
+  return named;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const origin = (args.origin ?? 'https://agentkarma.io').replace(/\/$/, '');
+
+  // 1. Upsert the organization
+  await upsertOrganization({
+    ...ORG,
+    website: origin,
+  });
+  console.log(`[seed-org] Upserted organization "${ORG.slug}"`);
+
+  // 2. Claim each member wallet + add to org
+  for (const m of MEMBERS) {
+    await claimWallet(m.wallet, m.displayName, m.description, origin, m.category);
+    await addOrganizationMember(ORG.slug, m.wallet, m.role);
+    console.log(`[seed-org] ✓ ${m.displayName} (${m.wallet.slice(0, 8)}…) claimed + added as "${m.role}"`);
+  }
+
+  // 3. Publish the flagship manifest + emit verified Tier 3 signal
+  const flagship = MEMBERS.find((m) => m.isFlagship)!;
+  const manifest: Record<string, unknown> = {
+    schema: 'agentkarma.v1',
+    wallet: flagship.wallet,
+    name: ORG.name,
+    description: ORG.description,
+    website: origin,
+    github: 'https://github.com/agentkarma',
+    category: 'infra',
+    capabilities: [
+      'karma.score.read',
+      'karma.badge.render',
+      'karma.attestation.submit',
+      'karma.feedback.submit',
+    ],
+    endpoints: [
+      { kind: 'http', url: `${origin}/api/v2/score/${flagship.wallet}`, description: 'Two-faced karma score (JSON)' },
+      { kind: 'http', url: `${origin}/api/badge/${flagship.wallet}`, description: 'Embeddable SVG badge' },
+      { kind: 'http', url: `${origin}/agent/${flagship.wallet}`, description: 'Agent profile' },
+      { kind: 'http', url: `${origin}/org/${ORG.slug}`, description: 'Fleet view' },
+    ],
+  };
+
+  const filePath = path.join(process.cwd(), 'public', '.well-known', 'agentkarma.json');
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
+  console.log(`[seed-org] Wrote ${filePath}`);
+
+  const parsed = parseAgentKarmaManifest(manifest) as ParsedManifest;
+  const manifestUrl = `${origin}/.well-known/agentkarma.json`;
+  await upsertAgentManifest({
+    agentWallet: flagship.wallet,
+    sourceType:  'self_hosted',
+    url:         manifestUrl,
+    raw:         manifest,
+    parsed,
+    verified:    true,
+  });
+  await insertSignalEvents(
+    [buildManifestSignal(flagship.wallet, { sourceType: 'self_hosted', verified: true, url: manifestUrl })],
+    { overwrite: true },
+  );
+  console.log('[seed-org] Flagship manifest + verified Tier 3 signal upserted');
+
+  console.log('');
+  console.log('[seed-org] Done.');
+  console.log(`  Fleet view:      ${origin}/org/${ORG.slug}`);
+  console.log(`  Flagship:        ${origin}/agent/${flagship.wallet}`);
+  console.log('  After deploy, trigger a refresh so Tier 3 lands in scores:');
+  console.log(`    curl -X POST ${origin}/api/score/refresh`);
+}
+
+main().catch((err) => {
+  console.error('[seed-org] Failed:', err);
+  process.exit(1);
+});

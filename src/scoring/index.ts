@@ -137,10 +137,13 @@ interface ScoringTransaction {
 
 export interface WalletScore {
   address: string;
+  /** Back-compat: mirrors providerScore. */
   score: number;
   providerScore: number;
   consumerScore: number | null;
+  /** Back-compat: provider-face tier label. */
   trustTier: TrustTier;
+  /** Back-compat: provider-face confidence. */
   confidenceBadge: ConfidenceBadge;
   metrics: {
     successRate: number;
@@ -152,9 +155,39 @@ export interface WalletScore {
     cadence: number | null;
   };
   tierAggregates: TierAggregates;
+  /** Consumer-face breakout — null when txs are absent. */
+  consumerFace: ConsumerFaceScore | null;
   txCount: number;
   lastActive: Date;
 }
+
+export interface ConsumerFaceScore {
+  /** 0–100. */
+  score: number;
+  trustTier: TrustTier;
+  confidenceBadge: ConfidenceBadge;
+  /** Tier-2-only aggregate; single-tier so no redistribution needed. */
+  tierAggregates: TierAggregates;
+  /** Weighted contributions inside Tier 2 for display. */
+  metrics: {
+    successRate: number;
+    diversity: number;
+    volume: number;
+    age: number;
+    cadence: number | null;
+  };
+}
+
+// Consumer-face Tier 2 weights put more emphasis on payment reliability +
+// volume (does this wallet pay cleanly and often?) and less on age/diversity
+// than the provider face, which weights stability + breadth more heavily.
+const CONSUMER_TIER2_METRIC_WEIGHTS = {
+  successRate: 0.30,
+  diversity:   0.15,
+  volume:      0.30,
+  age:         0.15,
+  // +10% cadence blend (same behavior as provider face)
+} as const;
 
 const NORMALIZE = {
   diversityMax: 10,
@@ -238,11 +271,36 @@ export function calculateScore(
 
   const tiered = calculateTieredScore(aggregates, { decay });
 
+  // ─── Consumer face — payment-behavior view (Phase I) ────────────────────────
+  //
+  // Same inputs but re-weighted to reflect "does this wallet pay cleanly and
+  // often?" Tier 2 only; confidence badge is always 🟡 behavior-inferred at
+  // this stage because the consumer face doesn't yet consume Tier 1 dispute
+  // signals (Phase I2+).
+  const consumerLegacyTier2 =
+    successRate * CONSUMER_TIER2_METRIC_WEIGHTS.successRate +
+    diversity   * CONSUMER_TIER2_METRIC_WEIGHTS.diversity +
+    volume      * CONSUMER_TIER2_METRIC_WEIGHTS.volume +
+    age         * CONSUMER_TIER2_METRIC_WEIGHTS.age;
+  const consumerTier2 = cadenceClamped != null
+    ? consumerLegacyTier2 * 0.9 + cadenceClamped * 0.1
+    : consumerLegacyTier2;
+
+  const consumerAggregates: TierAggregates = { tier1: null, tier2: consumerTier2, tier3: null, tier4: null };
+  const consumerTiered = calculateTieredScore(consumerAggregates, { decay });
+  const consumerFace: ConsumerFaceScore = {
+    score: consumerTiered.score,
+    trustTier: consumerTiered.trustTier,
+    confidenceBadge: consumerTiered.confidenceBadge,
+    tierAggregates: consumerAggregates,
+    metrics: { successRate, diversity, volume, age, cadence: cadenceClamped },
+  };
+
   return {
     address,
     score: tiered.score,
     providerScore: tiered.score,
-    consumerScore: null,
+    consumerScore: consumerFace.score,
     trustTier: tiered.trustTier,
     confidenceBadge: tiered.confidenceBadge,
     metrics: {
@@ -254,6 +312,7 @@ export function calculateScore(
       cadence: cadenceClamped,
     },
     tierAggregates: aggregates,
+    consumerFace,
     txCount,
     lastActive: new Date(lastTs),
   };

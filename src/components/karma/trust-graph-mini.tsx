@@ -547,7 +547,7 @@ export function TrustGraphMini() {
       )}
 
       <div className="pointer-events-none absolute bottom-1 right-1 font-mono text-[9px] tabular-nums text-[#4f5258]">
-        {data.agents.length} agents
+        top {Math.min(data.agents.length, MAX_NODES)} by karma
       </div>
     </div>
   );

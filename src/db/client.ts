@@ -11,6 +11,7 @@ import type {
   Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating, LivenessStatus,
   ConfidenceBadge, SignalEvent, SignalTier, KarmaFace,
   AgentManifest, ManifestSourceType, ParsedManifest,
+  Organization, OrganizationMember,
 } from './schema';
 
 // --- Supabase Client ---------------------------------------------------------
@@ -666,6 +667,91 @@ export async function getSignalEventsForWallets(
     }
   }
   return out;
+}
+
+// --- Organizations (Enterprise fleet view) ----------------------------------
+
+export interface UpsertOrganizationInput {
+  slug: string;
+  name: string;
+  description?: string | null;
+  website?: string | null;
+  logoUrl?: string | null;
+  verified?: boolean;
+}
+
+export async function upsertOrganization(input: UpsertOrganizationInput): Promise<void> {
+  const { error } = await supabase
+    .from('organizations')
+    .upsert({
+      slug:        input.slug,
+      name:        input.name,
+      description: input.description ?? null,
+      website:     input.website ?? null,
+      logo_url:    input.logoUrl ?? null,
+      verified:    input.verified ?? false,
+    }, { onConflict: 'slug' });
+
+  if (error) throw error;
+}
+
+export async function getOrganization(slug: string): Promise<Organization | null> {
+  const { data, error } = await supabase
+    .from('organizations')
+    .select('*')
+    .eq('slug', slug)
+    .single();
+  if (error && error.code === 'PGRST116') return null;
+  if (error) throw error;
+  return data as Organization;
+}
+
+export async function listOrganizations(): Promise<Array<Organization & { memberCount: number }>> {
+  const { data, error } = await supabase
+    .from('organizations')
+    .select('*, organization_members(count)')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return ((data ?? []) as (Organization & { organization_members?: { count: number }[] })[]).map((o) => ({
+    ...o,
+    memberCount: o.organization_members?.[0]?.count ?? 0,
+  }));
+}
+
+export async function addOrganizationMember(
+  slug: string, agentWallet: string, role: string | null = null,
+): Promise<void> {
+  const { error } = await supabase
+    .from('organization_members')
+    .upsert({
+      organization_slug: slug,
+      agent_wallet:      agentWallet,
+      role,
+    }, { onConflict: 'organization_slug,agent_wallet' });
+  if (error) throw error;
+}
+
+export async function getOrganizationMembers(slug: string): Promise<OrganizationMember[]> {
+  const { data, error } = await supabase
+    .from('organization_members')
+    .select('*')
+    .eq('organization_slug', slug)
+    .order('added_at', { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as OrganizationMember[];
+}
+
+export async function getOrganizationForWallet(agentWallet: string): Promise<Organization | null> {
+  const { data, error } = await supabase
+    .from('organization_members')
+    .select('organization_slug, organizations(*)')
+    .eq('agent_wallet', agentWallet)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  const orgs = (data as unknown as { organizations: Organization | null }).organizations;
+  return orgs ?? null;
 }
 
 // --- Agent Manifests (Phase H1) ---------------------------------------------
