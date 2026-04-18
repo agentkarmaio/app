@@ -35,9 +35,13 @@
  */
 
 import type { ParsedManifest, ManifestSourceType } from '@/db/schema';
+import { PublicKey } from '@solana/web3.js';
+import nacl from 'tweetnacl';
 
 const FETCH_TIMEOUT_MS = 5_000;
 const MAX_BODY_BYTES = 100_000;
+// GitHub proof expires after 30 days — prevents replay with a rotated key.
+const GITHUB_PROOF_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface ManifestFetchResult {
   sourceType: ManifestSourceType;
@@ -75,7 +79,14 @@ export async function resolveManifest(
   if (!parsed) return null;
 
   const declaredWallet = typeof raw.wallet === 'string' ? raw.wallet : null;
-  const verified = declaredWallet === wallet;
+
+  // Verification ladder: a manifest is "verified" if either
+  //   (a) its declared `wallet` matches the claimed wallet (self-attestation), OR
+  //   (b) a GitHub proof file in the linked repo is signed by the wallet.
+  let verified = declaredWallet === wallet;
+  if (!verified && parsed.github) {
+    verified = await verifyGithubProof(wallet, parsed.github);
+  }
 
   return {
     sourceType: 'self_hosted',
@@ -84,6 +95,124 @@ export async function resolveManifest(
     parsed,
     verified,
   };
+}
+
+// ─── GitHub ownership proof (Phase H2) ────────────────────────────────────────
+//
+// An agent publishes `AGENTKARMA.md` at the repo root containing:
+//
+//   AgentKarma: wallet <solana-address> at <unix-ms>
+//   <base58 ed25519 signature of the above single line>
+//
+// We fetch via `raw.githubusercontent.com`, verify the signature against the
+// wallet's pubkey, and check the timestamp is within GITHUB_PROOF_MAX_AGE_MS.
+// Rotation = republish the file; stale proofs silently fail.
+
+export async function verifyGithubProof(
+  wallet: string,
+  githubUrl: string,
+): Promise<boolean> {
+  const repo = parseGithubRepo(githubUrl);
+  if (!repo) return false;
+
+  // Try `HEAD` then the common default branches. `HEAD` resolves on most repos.
+  const candidates = [
+    `https://raw.githubusercontent.com/${repo.owner}/${repo.name}/HEAD/AGENTKARMA.md`,
+    `https://raw.githubusercontent.com/${repo.owner}/${repo.name}/main/AGENTKARMA.md`,
+    `https://raw.githubusercontent.com/${repo.owner}/${repo.name}/master/AGENTKARMA.md`,
+  ];
+
+  for (const url of candidates) {
+    const body = await fetchText(url);
+    if (!body) continue;
+    const ok = verifyProofBody(wallet, body);
+    if (ok) return true;
+  }
+  return false;
+}
+
+function parseGithubRepo(url: string): { owner: string; name: string } | null {
+  try {
+    const u = new URL(url);
+    if (u.hostname !== 'github.com' && u.hostname !== 'www.github.com') return null;
+    const [owner, name] = u.pathname.split('/').filter(Boolean);
+    if (!owner || !name) return null;
+    // Strip trailing .git or anything after
+    return { owner, name: name.replace(/\.git$/, '') };
+  } catch {
+    return null;
+  }
+}
+
+function verifyProofBody(wallet: string, body: string): boolean {
+  const lines = body.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 2) return false;
+
+  const msgLine = lines.find((l) => l.startsWith('AgentKarma: wallet '));
+  const sigLine = msgLine ? lines[lines.indexOf(msgLine) + 1] : null;
+  if (!msgLine || !sigLine) return false;
+
+  // Parse "AgentKarma: wallet <pubkey> at <ts>"
+  const match = msgLine.match(/^AgentKarma: wallet (\S+) at (\d+)$/);
+  if (!match) return false;
+  const [, declared, tsStr] = match;
+  if (declared !== wallet) return false;
+
+  const ts = Number(tsStr);
+  if (!Number.isFinite(ts)) return false;
+  if (Date.now() - ts > GITHUB_PROOF_MAX_AGE_MS) return false;
+  if (ts > Date.now() + 60_000) return false; // reject far-future timestamps
+
+  try {
+    const pubkey = new PublicKey(wallet).toBytes();
+    const msgBytes = new TextEncoder().encode(msgLine);
+    const sigBytes = bs58Decode(sigLine);
+    return nacl.sign.detached.verify(msgBytes, sigBytes, pubkey);
+  } catch {
+    return false;
+  }
+}
+
+async function fetchText(url: string): Promise<string | null> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: ctl.signal, redirect: 'follow' });
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (text.length > MAX_BODY_BYTES) return null;
+    return text;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Minimal base58 decode — duplicated from claim route to avoid a client-side
+// dep; a shared helper can land when a third caller appears.
+function bs58Decode(str: string): Uint8Array {
+  const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const BASE = BigInt(58);
+  let num = BigInt(0);
+  for (const char of str) {
+    const index = ALPHABET.indexOf(char);
+    if (index === -1) throw new Error(`Invalid base58 character: ${char}`);
+    num = num * BASE + BigInt(index);
+  }
+  const hex = num.toString(16).padStart(2, '0');
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  let leadingZeros = 0;
+  for (const char of str) {
+    if (char === '1') leadingZeros++;
+    else break;
+  }
+  const result = new Uint8Array(leadingZeros + bytes.length);
+  result.set(bytes, leadingZeros);
+  return result;
 }
 
 /**
