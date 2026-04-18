@@ -552,12 +552,24 @@ function toSignalRow(input: InsertSignalEventInput): Record<string, unknown> {
   return row;
 }
 
-export async function insertSignalEvent(input: InsertSignalEventInput): Promise<void> {
+export interface InsertSignalEventOpts {
+  /**
+   * When true, overwrite the existing row on conflict (use for aggregate
+   * signals like cadence that summarize current state). When false (default),
+   * skip duplicates (use for per-event signals keyed by tx_signature).
+   */
+  overwrite?: boolean;
+}
+
+export async function insertSignalEvent(
+  input: InsertSignalEventInput,
+  opts: InsertSignalEventOpts = {},
+): Promise<void> {
   const { error } = await supabase
     .from('signal_events')
     .upsert(toSignalRow(input), {
       onConflict: 'agent_wallet,kind,tx_ref',
-      ignoreDuplicates: true,
+      ignoreDuplicates: !opts.overwrite,
     });
 
   if (error) throw error;
@@ -565,18 +577,18 @@ export async function insertSignalEvent(input: InsertSignalEventInput): Promise<
 
 export async function insertSignalEvents(
   inputs: InsertSignalEventInput[],
+  opts: InsertSignalEventOpts = {},
 ): Promise<number> {
   if (inputs.length === 0) return 0;
 
   let total = 0;
-  // chunk to keep payloads reasonable for supabase-js
   for (let i = 0; i < inputs.length; i += 500) {
     const rows = inputs.slice(i, i + 500).map(toSignalRow);
     const { data, error } = await supabase
       .from('signal_events')
       .upsert(rows, {
         onConflict: 'agent_wallet,kind,tx_ref',
-        ignoreDuplicates: true,
+        ignoreDuplicates: !opts.overwrite,
       })
       .select('id');
     if (error) throw error;

@@ -9,6 +9,15 @@
 
 import type { Transaction } from '@/db/schema';
 import type { InsertSignalEventInput } from '@/db/client';
+import type { CadenceResult } from './cadence';
+
+/**
+ * Sentinel tx_ref for aggregate signals (cadence, program breadth, etc.)
+ * that summarize a wallet's state rather than a single event. One row per
+ * (agent_wallet, kind) — the `uniq_signal_events_dedup` unique index turns
+ * re-emissions into idempotent overwrites.
+ */
+export const AGGREGATE_TX_REF = 'aggregate';
 
 /**
  * Build the Tier 2 signal for a single x402 payment.
@@ -36,4 +45,29 @@ export function buildX402PaymentSignals(
   txs: Pick<Transaction, 'wallet_address' | 'facilitator' | 'amount' | 'timestamp' | 'success' | 'tx_signature'>[],
 ): InsertSignalEventInput[] {
   return txs.map((tx) => buildX402PaymentSignal(tx as Transaction));
+}
+
+/**
+ * Build the Tier 2 cadence signal for a wallet. `value` = automationScore, so
+ * downstream scoring can aggregate without re-parsing the payload.
+ */
+export function buildCadenceSignal(
+  walletAddress: string,
+  cadence: CadenceResult,
+): InsertSignalEventInput {
+  return {
+    agentWallet: walletAddress,
+    tier: 2,
+    kind: 'cadence',
+    face: 'provider',
+    weight: 1.0,
+    value: cadence.automationScore,
+    txRef: AGGREGATE_TX_REF,
+    payload: {
+      uniformity: cadence.uniformity,
+      regularity: cadence.regularity,
+      histogram: cadence.histogram,
+      txCount: cadence.txCount,
+    },
+  };
 }

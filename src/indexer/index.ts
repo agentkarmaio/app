@@ -22,7 +22,8 @@ import {
 import type { Transaction } from '../db/schema';
 import { insertTransactions, upsertWallet, insertScoreSnapshot, getTransactionsForWallets, getCursor, upsertCursor, insertSignalEvents } from '../db/client';
 import { calculateScores } from '../scoring';
-import { buildX402PaymentSignals } from '../scoring/signals';
+import { buildX402PaymentSignals, buildCadenceSignal } from '../scoring/signals';
+import { computeCadence } from '../scoring/cadence';
 import { readAttestations } from '../integrations/attestation';
 import { parseTransactionsBatch, extractX402Payment, withConcurrency } from './helius';
 
@@ -181,6 +182,23 @@ export async function runIndexer(
   }
 
   const scores = calculateScores(allTxsForAffected, attestations);
+
+  // Emit Tier 2 cadence signals for affected wallets that meet the tx threshold.
+  const byWallet = new Map<string, Date[]>();
+  for (const tx of allTxsForAffected) {
+    const list = byWallet.get(tx.wallet_address) ?? [];
+    list.push(new Date(tx.timestamp));
+    byWallet.set(tx.wallet_address, list);
+  }
+  const cadenceSignals = [];
+  for (const [addr, ts] of byWallet) {
+    const cadence = computeCadence(ts);
+    if (cadence) cadenceSignals.push(buildCadenceSignal(addr, cadence));
+  }
+  if (cadenceSignals.length > 0) {
+    await insertSignalEvents(cadenceSignals, { overwrite: true });
+    console.log(`[indexer] Emitted ${cadenceSignals.length} cadence signals`);
+  }
 
   let scored = 0;
   for (const [address, walletScore] of scores) {
