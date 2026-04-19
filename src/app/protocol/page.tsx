@@ -18,7 +18,7 @@ export default async function ProtocolPage() {
     content = 'RFC document not found.';
   }
 
-  // Simple markdown-to-HTML sections (no external deps needed)
+  const { version, status, date } = extractRFCMetadata(content);
   const sections = parseRFC(content);
 
   return (
@@ -40,10 +40,10 @@ export default async function ProtocolPage() {
         </p>
         <div className="mt-3 flex items-center gap-3">
           <span className="inline-flex items-center rounded-md bg-[rgb(255_165_0/0.12)] px-2 py-0.5 text-[11px] font-[510] text-[#f5a623] border border-[rgb(255_165_0/0.2)]">
-            Draft v0.1.0
+            {status} v{version}
           </span>
           <span className="text-[12px] text-[#62666d]">
-            Last updated: April 7, 2026
+            Last updated: {date}
           </span>
         </div>
       </div>
@@ -57,6 +57,24 @@ export default async function ProtocolPage() {
       </div>
     </div>
   );
+}
+
+// --- RFC Metadata Extractor ---
+
+function extractRFCMetadata(md: string): { version: string; status: string; date: string } {
+  const head = md.split('\n').slice(0, 40).join('\n');
+  const version = head.match(/\*\*Version:\*\*\s*([^\s(]+)/)?.[1] ?? '0.0.0';
+  const status = head.match(/\*\*Status:\*\*\s*(\w+)/)?.[1] ?? 'Draft';
+  const rawDate = head.match(/\*\*Date:\*\*\s*(\d{4}-\d{2}-\d{2})/)?.[1];
+  const date = rawDate
+    ? new Date(rawDate + 'T00:00:00Z').toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        timeZone: 'UTC',
+      })
+    : 'unknown';
+  return { version, status, date };
 }
 
 // --- Minimal RFC Markdown Parser ---
