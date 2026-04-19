@@ -5,6 +5,11 @@ import {
   getScoreHistoriesForWallets,
 } from '@/db/client';
 import type { LivenessStatus, TrustTier } from '@/db/schema';
+import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
+
+export async function OPTIONS() {
+  return corsPreflight();
+}
 
 const STATUSES: LivenessStatus[] = ['Active', 'Recent', 'Dormant', 'Inactive'];
 const TIERS: TrustTier[] = ['Unrated', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'];
@@ -17,6 +22,9 @@ function parseTier(v: string | null): TrustTier | undefined {
 }
 
 export async function GET(request: NextRequest) {
+  const gate = await enforceRateLimit('leaderboard', request);
+  if (!gate.ok) return gate.response;
+
   const { searchParams } = request.nextUrl;
   const limit = Math.min(parseInt(searchParams.get('limit') ?? '25', 10), 100);
   const offset = Math.max(parseInt(searchParams.get('offset') ?? '0', 10), 0);
@@ -57,5 +65,11 @@ export async function GET(request: NextRequest) {
         trend: history.map((h) => h.score),
       };
     }),
+  }, {
+    headers: {
+      ...gate.headers,
+      ...corsHeaders(),
+      'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+    },
   });
 }

@@ -17,16 +17,13 @@ import { computeCadence } from '@/scoring/cadence';
 import { readAttestations } from '@/integrations/attestation';
 import { ALL_FACILITATOR_ADDRESSES } from '@/config/facilitators';
 import type { Transaction } from '@/db/schema';
+import { verifyHeliusWebhook } from '@/lib/api-auth';
 
 export async function POST(request: NextRequest) {
-  // 1. Auth — validate webhook secret if configured
-  const secret = process.env.HELIUS_WEBHOOK_SECRET;
-  if (secret) {
-    const authHeader = request.headers.get('authorization');
-    if (authHeader !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-  }
+  // 1. Auth — Helius sends the configured Authentication Header verbatim.
+  //    Accepts HELIUS_WEBHOOK_AUTH_HEADER or legacy HELIUS_WEBHOOK_SECRET.
+  const auth = verifyHeliusWebhook(request);
+  if (!auth.ok) return auth.response;
 
   // 2. Parse body — Helius sends an array of enhanced transactions
   let body: HeliusEnhancedTransaction[];

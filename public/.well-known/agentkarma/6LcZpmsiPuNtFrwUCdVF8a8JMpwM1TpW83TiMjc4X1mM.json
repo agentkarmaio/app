@@ -1,0 +1,30 @@
+{
+  "schema": "agentkarma.v1",
+  "wallet": "6LcZpmsiPuNtFrwUCdVF8a8JMpwM1TpW83TiMjc4X1mM",
+  "name": "AgentKarma — Karma Widget",
+  "description": "Delivers embeddable trust badges and the public widget SDK.",
+  "website": "https://agentkarma.io",
+  "github": "https://github.com/agentkarma",
+  "category": "infra",
+  "capabilities": [
+    "karma.read",
+    "karma.badge"
+  ],
+  "endpoints": [
+    {
+      "kind": "http",
+      "url": "https://agentkarma.io/agent/6LcZpmsiPuNtFrwUCdVF8a8JMpwM1TpW83TiMjc4X1mM",
+      "description": "Agent profile"
+    },
+    {
+      "kind": "http",
+      "url": "https://agentkarma.io/api/v2/score/6LcZpmsiPuNtFrwUCdVF8a8JMpwM1TpW83TiMjc4X1mM",
+      "description": "Two-faced karma score (JSON)"
+    },
+    {
+      "kind": "http",
+      "url": "https://agentkarma.io/api/badge/6LcZpmsiPuNtFrwUCdVF8a8JMpwM1TpW83TiMjc4X1mM",
+      "description": "Embeddable SVG badge"
+    }
+  ]
+}

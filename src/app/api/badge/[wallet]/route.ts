@@ -4,6 +4,11 @@ import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
 import { getLivenessStatus } from '@/db/schema';
 import type { TrustTier, LivenessStatus, ConfidenceBadge } from '@/db/schema';
+import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
+
+export async function OPTIONS() {
+  return corsPreflight();
+}
 
 /**
  * GET /api/badge/[wallet]?format=svg|json&theme=dark|light
@@ -16,6 +21,9 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ wallet: string }> },
 ) {
+  const gate = await enforceRateLimit('badge', request);
+  if (!gate.ok) return gate.response;
+
   const { wallet } = await params;
   const { searchParams } = new URL(request.url);
   const format = searchParams.get('format') ?? 'svg';
@@ -78,8 +86,9 @@ export async function GET(
       deliveryRate: feedback.deliveryRate,
     }, {
       headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=300',
+        ...gate.headers,
+        ...corsHeaders(),
+        'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
       },
     });
   }
@@ -89,9 +98,10 @@ export async function GET(
 
   return new NextResponse(svg, {
     headers: {
+      ...gate.headers,
+      ...corsHeaders(),
       'Content-Type': 'image/svg+xml',
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=300',
+      'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
     },
   });
 }

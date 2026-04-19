@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server';
 import { SOLANA_FACILITATORS, ALL_FACILITATOR_ADDRESSES } from '@/config/facilitators';
+import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
+
+export async function OPTIONS() {
+  return corsPreflight();
+}
 
 /**
  * GET /api/facilitators
@@ -22,7 +27,7 @@ export async function GET() {
     facilitators,
   }, {
     headers: {
-      'Access-Control-Allow-Origin': '*',
+      ...corsHeaders(),
       'Cache-Control': 'public, max-age=3600',
     },
   });

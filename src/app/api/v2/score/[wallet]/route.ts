@@ -5,6 +5,11 @@ import {
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
 import { readAttestation } from '@/integrations/attestation';
+import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
+
+export async function OPTIONS() {
+  return corsPreflight();
+}
 
 type Face = 'provider' | 'consumer' | 'both';
 
@@ -122,7 +127,7 @@ export async function GET(
 
   return NextResponse.json(response, {
     headers: {
-      'Access-Control-Allow-Origin': '*',
+      ...corsHeaders(),
       'Cache-Control': 'public, max-age=60',
     },
   });

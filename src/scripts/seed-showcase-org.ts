@@ -83,51 +83,66 @@ async function main() {
     console.log(`[seed-org] ✓ ${m.displayName} (${m.wallet.slice(0, 8)}…) claimed + added as "${m.role}"`);
   }
 
-  // 3. Publish the flagship manifest + emit verified Tier 3 signal
-  const flagship = MEMBERS.find((m) => m.isFlagship)!;
-  const manifest: Record<string, unknown> = {
-    schema: 'agentkarma.v1',
-    wallet: flagship.wallet,
-    name: ORG.name,
-    description: ORG.description,
-    website: origin,
-    github: 'https://github.com/agentkarma',
-    category: 'infra',
-    capabilities: [
+  // 3. Publish a manifest + verified Tier 3 signal for every member.
+  //    Flagship is served at the canonical /.well-known/agentkarma.json;
+  //    workers are served at /.well-known/agentkarma/{wallet}.json.
+  const CAPABILITIES_BY_ROLE: Record<string, string[]> = {
+    flagship: [
       'karma.score.read',
       'karma.badge.render',
       'karma.attestation.submit',
       'karma.feedback.submit',
     ],
-    endpoints: [
-      { kind: 'http', url: `${origin}/api/v2/score/${flagship.wallet}`, description: 'Two-faced karma score (JSON)' },
-      { kind: 'http', url: `${origin}/api/badge/${flagship.wallet}`, description: 'Embeddable SVG badge' },
-      { kind: 'http', url: `${origin}/agent/${flagship.wallet}`, description: 'Agent profile' },
-      { kind: 'http', url: `${origin}/org/${ORG.slug}`, description: 'Fleet view' },
-    ],
+    worker: ['karma.read', 'karma.badge'],
   };
 
-  const filePath = path.join(process.cwd(), 'public', '.well-known', 'agentkarma.json');
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
-  console.log(`[seed-org] Wrote ${filePath}`);
+  for (const m of MEMBERS) {
+    const manifest: Record<string, unknown> = {
+      schema: 'agentkarma.v1',
+      wallet: m.wallet,
+      name: `${ORG.name} — ${m.displayName}`,
+      description: m.description,
+      website: origin,
+      github: 'https://github.com/agentkarma',
+      category: m.category,
+      capabilities: CAPABILITIES_BY_ROLE[m.role] ?? ['karma.read'],
+      endpoints: [
+        { kind: 'http', url: `${origin}/agent/${m.wallet}`, description: 'Agent profile' },
+        { kind: 'http', url: `${origin}/api/v2/score/${m.wallet}`, description: 'Two-faced karma score (JSON)' },
+        { kind: 'http', url: `${origin}/api/badge/${m.wallet}`, description: 'Embeddable SVG badge' },
+        ...(m.isFlagship
+          ? [{ kind: 'http', url: `${origin}/org/${ORG.slug}`, description: 'Fleet view' }]
+          : []),
+      ],
+    };
 
-  const parsed = parseAgentKarmaManifest(manifest) as ParsedManifest;
-  const manifestUrl = `${origin}/.well-known/agentkarma.json`;
-  await upsertAgentManifest({
-    agentWallet: flagship.wallet,
-    sourceType:  'self_hosted',
-    url:         manifestUrl,
-    raw:         manifest,
-    parsed,
-    verified:    true,
-  });
-  await insertSignalEvents(
-    [buildManifestSignal(flagship.wallet, { sourceType: 'self_hosted', verified: true, url: manifestUrl })],
-    { overwrite: true },
-  );
-  console.log('[seed-org] Flagship manifest + verified Tier 3 signal upserted');
+    const filePath = m.isFlagship
+      ? path.join(process.cwd(), 'public', '.well-known', 'agentkarma.json')
+      : path.join(process.cwd(), 'public', '.well-known', 'agentkarma', `${m.wallet}.json`);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
 
+    const manifestUrl = m.isFlagship
+      ? `${origin}/.well-known/agentkarma.json`
+      : `${origin}/.well-known/agentkarma/${m.wallet}.json`;
+
+    const parsed = parseAgentKarmaManifest(manifest) as ParsedManifest;
+    await upsertAgentManifest({
+      agentWallet: m.wallet,
+      sourceType:  'self_hosted',
+      url:         manifestUrl,
+      raw:         manifest,
+      parsed,
+      verified:    true,
+    });
+    await insertSignalEvents(
+      [buildManifestSignal(m.wallet, { sourceType: 'self_hosted', verified: true, url: manifestUrl })],
+      { overwrite: true },
+    );
+    console.log(`[seed-org] ✓ ${m.displayName}: manifest + verified Tier 3 signal (${path.relative(process.cwd(), filePath)})`);
+  }
+
+  const flagship = MEMBERS.find((m) => m.isFlagship)!;
   console.log('');
   console.log('[seed-org] Done.');
   console.log(`  Fleet view:      ${origin}/org/${ORG.slug}`);

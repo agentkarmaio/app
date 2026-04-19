@@ -7,6 +7,11 @@ import {
   getTransactionBySig,
 } from '@/db/client';
 import type { FeedbackRating } from '@/db/schema';
+import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
+
+export async function OPTIONS() {
+  return corsPreflight();
+}
 
 const VALID_RATINGS: FeedbackRating[] = ['delivered', 'failed'];
 
@@ -134,6 +139,9 @@ export async function POST(request: NextRequest) {
 
 /** GET /api/feedback?agent=<wallet> — Get feedback summary for an agent */
 export async function GET(request: NextRequest) {
+  const gate = await enforceRateLimit('feedback-get', request);
+  if (!gate.ok) return gate.response;
+
   const { searchParams } = new URL(request.url);
   const agent = searchParams.get('agent');
 
@@ -144,7 +152,13 @@ export async function GET(request: NextRequest) {
   const { getFeedbackSummary } = await import('@/db/client');
   const summary = await getFeedbackSummary(agent);
 
-  return NextResponse.json(summary);
+  return NextResponse.json(summary, {
+    headers: {
+      ...gate.headers,
+      ...corsHeaders(),
+      'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+    },
+  });
 }
 
 function bs58Decode(str: string): Uint8Array {

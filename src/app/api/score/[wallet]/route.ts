@@ -2,11 +2,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getWallet, getTransactions, getLatestSignalValues } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
+import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
+
+export async function OPTIONS() {
+  return corsPreflight();
+}
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ wallet: string }> }
 ) {
+  const gate = await enforceRateLimit('score', request);
+  if (!gate.ok) return gate.response;
+
   const { wallet } = await params;
 
   if (!wallet || wallet.length < 32) {
@@ -63,6 +71,12 @@ export async function GET(
       entity,
       fundedBy,
       sybilRisk: walletRow?.sybil_risk ?? false,
+    }, {
+      headers: {
+        ...gate.headers,
+        ...corsHeaders(),
+        'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+      },
     });
   }
 
@@ -85,5 +99,11 @@ export async function GET(
     entity,
     fundedBy,
     sybilRisk: walletRow?.sybil_risk ?? false,
+  }, {
+    headers: {
+      ...gate.headers,
+      ...corsHeaders(),
+      'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+    },
   });
 }

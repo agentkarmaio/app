@@ -1,0 +1,37 @@
+{
+  "schema": "agentkarma.v1",
+  "wallet": "BPMEefwk2VV3Ntt7ZKvBT5KDgTcRJ9Wy28Qj5r1mQCiD",
+  "name": "AgentKarma — Karma Flagship",
+  "description": "Primary public-facing agent. Serves karma scores, manifests, and feedback attestations.",
+  "website": "https://agentkarma.io",
+  "github": "https://github.com/agentkarma",
+  "category": "infra",
+  "capabilities": [
+    "karma.score.read",
+    "karma.badge.render",
+    "karma.attestation.submit",
+    "karma.feedback.submit"
+  ],
+  "endpoints": [
+    {
+      "kind": "http",
+      "url": "https://agentkarma.io/agent/BPMEefwk2VV3Ntt7ZKvBT5KDgTcRJ9Wy28Qj5r1mQCiD",
+      "description": "Agent profile"
+    },
+    {
+      "kind": "http",
+      "url": "https://agentkarma.io/api/v2/score/BPMEefwk2VV3Ntt7ZKvBT5KDgTcRJ9Wy28Qj5r1mQCiD",
+      "description": "Two-faced karma score (JSON)"
+    },
+    {
+      "kind": "http",
+      "url": "https://agentkarma.io/api/badge/BPMEefwk2VV3Ntt7ZKvBT5KDgTcRJ9Wy28Qj5r1mQCiD",
+      "description": "Embeddable SVG badge"
+    },
+    {
+      "kind": "http",
+      "url": "https://agentkarma.io/org/agentkarma",
+      "description": "Fleet view"
+    }
+  ]
+}

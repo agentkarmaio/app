@@ -1,14 +1,28 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/db/client';
 import { getLeaderboard } from '@/db/client';
 import type { Transaction } from '@/db/schema';
+import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function OPTIONS() {
+  return corsPreflight();
+}
+
+export async function GET(request: NextRequest) {
+  const gate = await enforceRateLimit('graph', request);
+  if (!gate.ok) return gate.response;
+
   const { wallets: agents } = await getLeaderboard(24);
   if (agents.length === 0) {
-    return NextResponse.json({ facilitator: null, agents: [] });
+    return NextResponse.json({ facilitator: null, agents: [] }, {
+      headers: {
+        ...gate.headers,
+        ...corsHeaders(),
+        'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+      },
+    });
   }
 
   const addresses = agents.map((a) => a.address);
@@ -48,5 +62,11 @@ export async function GET() {
         primaryFacilitator: primary,
       };
     }),
+  }, {
+    headers: {
+      ...gate.headers,
+      ...corsHeaders(),
+      'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+    },
   });
 }

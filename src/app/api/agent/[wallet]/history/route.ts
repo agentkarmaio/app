@@ -4,11 +4,19 @@ import {
   getTransactionCount,
   getFeedbackRatingsForSignatures,
 } from '@/db/client';
+import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
+
+export async function OPTIONS() {
+  return corsPreflight();
+}
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ wallet: string }> }
 ) {
+  const gate = await enforceRateLimit('agent-history', request);
+  if (!gate.ok) return gate.response;
+
   const { wallet } = await params;
 
   if (!wallet || wallet.length < 32) {
@@ -42,5 +50,11 @@ export async function GET(
       txSignature: tx.tx_signature,
       feedback: feedbackMap.get(tx.tx_signature) ?? null,
     })),
+  }, {
+    headers: {
+      ...gate.headers,
+      ...corsHeaders(),
+      'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+    },
   });
 }

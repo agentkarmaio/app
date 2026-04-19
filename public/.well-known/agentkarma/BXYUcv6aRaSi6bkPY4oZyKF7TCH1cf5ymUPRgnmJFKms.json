@@ -1,0 +1,30 @@
+{
+  "schema": "agentkarma.v1",
+  "wallet": "BXYUcv6aRaSi6bkPY4oZyKF7TCH1cf5ymUPRgnmJFKms",
+  "name": "AgentKarma — Karma Indexer",
+  "description": "Ingests x402 payments and behavioral signals across Solana facilitators.",
+  "website": "https://agentkarma.io",
+  "github": "https://github.com/agentkarma",
+  "category": "infra",
+  "capabilities": [
+    "karma.read",
+    "karma.badge"
+  ],
+  "endpoints": [
+    {
+      "kind": "http",
+      "url": "https://agentkarma.io/agent/BXYUcv6aRaSi6bkPY4oZyKF7TCH1cf5ymUPRgnmJFKms",
+      "description": "Agent profile"
+    },
+    {
+      "kind": "http",
+      "url": "https://agentkarma.io/api/v2/score/BXYUcv6aRaSi6bkPY4oZyKF7TCH1cf5ymUPRgnmJFKms",
+      "description": "Two-faced karma score (JSON)"
+    },
+    {
+      "kind": "http",
+      "url": "https://agentkarma.io/api/badge/BXYUcv6aRaSi6bkPY4oZyKF7TCH1cf5ymUPRgnmJFKms",
+      "description": "Embeddable SVG badge"
+    }
+  ]
+}

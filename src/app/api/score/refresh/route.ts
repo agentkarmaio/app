@@ -4,8 +4,16 @@ import { calculateScore, calculateScores } from '@/scoring/index';
 import { readAttestation, readAttestations } from '@/integrations/attestation';
 import { computeCadence } from '@/scoring/cadence';
 import { buildCadenceSignal } from '@/scoring/signals';
+import { requireBearerSecret } from '@/lib/api-auth';
+import { enforceRateLimit } from '@/lib/rate-limit';
 
 export async function POST(request: NextRequest) {
+  const auth = requireBearerSecret(request, 'SCORE_REFRESH_TOKEN');
+  if (!auth.ok) return auth.response;
+
+  const gate = await enforceRateLimit('score-refresh', request);
+  if (!gate.ok) return gate.response;
+
   const body = await request.json().catch(() => ({}));
   const wallet = (body as { wallet?: string }).wallet;
 

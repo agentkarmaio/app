@@ -1,11 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/db/client';
 import type { Wallet } from '@/db/schema';
+import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
+
+export async function OPTIONS() {
+  return corsPreflight();
+}
 
 export async function GET(request: NextRequest) {
+  const gate = await enforceRateLimit('search', request);
+  if (!gate.ok) return gate.response;
+
   const q = request.nextUrl.searchParams.get('q')?.trim();
   if (!q || q.length < 3) {
-    return NextResponse.json({ results: [] });
+    return NextResponse.json({ results: [] }, {
+      headers: { ...gate.headers, ...corsHeaders() },
+    });
   }
 
   const { data, error } = await supabase
@@ -24,5 +34,11 @@ export async function GET(request: NextRequest) {
     txCount: w.tx_count,
   }));
 
-  return NextResponse.json({ results });
+  return NextResponse.json({ results }, {
+    headers: {
+      ...gate.headers,
+      ...corsHeaders(),
+      'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+    },
+  });
 }
