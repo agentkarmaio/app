@@ -405,10 +405,12 @@ export async function getFacilitatorStats(): Promise<{
     }));
   }
 
-  // Fallback: JS aggregation
+  // Fallback: JS aggregation (bounded to recent activity to avoid full-table scans)
   const { data, error } = await supabase
     .from('transactions')
-    .select('facilitator, wallet_address, amount, timestamp');
+    .select('facilitator, wallet_address, amount, timestamp')
+    .order('timestamp', { ascending: false })
+    .limit(5000);
 
   if (error) throw error;
 

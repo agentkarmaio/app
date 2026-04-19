@@ -14,8 +14,6 @@ import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import type { TrustTier, ConfidenceBadge as ConfidenceBadgeValue, Wallet } from '@/db/schema';
 
-export const dynamic = 'force-dynamic';
-
 const ROLE_LABELS: Record<string, { label: string; className: string }> = {
   flagship: {
     label: 'Flagship',

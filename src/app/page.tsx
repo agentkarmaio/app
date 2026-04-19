@@ -1,100 +1,88 @@
-import {
-  getStats,
-  getLeaderboard,
-  getFeedbackSummariesForWallets,
-  getScoreHistoriesForWallets,
-} from '@/db/client';
+import { Suspense } from 'react';
+import { cachedStats, cachedLeaderboardEntries } from '@/db/cached';
 import { StatsCards } from '@/components/karma/stats-cards';
 import { LeaderboardWithLoadMore } from '@/components/karma/leaderboard-with-load-more';
 import { Hero } from '@/components/karma/hero';
 import { FacilitatorList } from '@/components/karma/facilitator-list';
 import { Tour } from '@/components/karma/tour';
+import { KarmaCatchingUp } from '@/components/karma/karma-catching-up';
 import type { LeaderboardEntry } from '@/components/karma/leaderboard-table';
-import type { TrustTier } from '@/db/schema';
 
-export const dynamic = 'force-dynamic';
+export const revalidate = 30;
 
-export default async function HomePage() {
-  let stats = null;
+export default function HomePage() {
+  return (
+    <div className="space-y-10">
+      <Hero />
+      <Suspense fallback={<StatsSkeleton />}>
+        <StatsSection />
+      </Suspense>
+      <Suspense fallback={<LeaderboardSkeleton />}>
+        <LeaderboardSection />
+      </Suspense>
+    </div>
+  );
+}
+
+async function StatsSection() {
+  try {
+    const stats = await cachedStats();
+    return stats ? <StatsCards data={stats} /> : null;
+  } catch {
+    return null;
+  }
+}
+
+async function LeaderboardSection() {
   let leaderboard: LeaderboardEntry[] = [];
   let dbError = false;
-
   try {
-    const [statsData, page] = await Promise.all([
-      getStats(),
-      getLeaderboard(25),
-    ]);
-    stats = statsData;
-    const wallets = page.wallets;
-
-    const addresses = wallets.map((w) => w.address);
-    const [deliveryMap, historyMap] = await Promise.all([
-      getFeedbackSummariesForWallets(addresses),
-      getScoreHistoriesForWallets(addresses),
-    ]);
-
-    leaderboard = wallets.map((w, i) => {
-      const delivery = deliveryMap.get(w.address) ?? null;
-      const history = historyMap.get(w.address) ?? [];
-      return {
-        rank: i + 1,
-        address: w.address,
-        displayName: w.display_name,
-        score: Number(w.score),
-        trustTier: w.trust_tier as TrustTier,
-        txCount: w.tx_count,
-        lastSeen: w.last_seen,
-        delivery: delivery
-          ? { total: delivery.total, deliveryRate: delivery.deliveryRate }
-          : null,
-        trend: history.map((h) => h.score),
-      };
-    });
+    leaderboard = await cachedLeaderboardEntries();
   } catch {
     dbError = true;
   }
 
+  if (dbError) return <KarmaCatchingUp />;
+
   const hasData = leaderboard.length > 0;
-
   return (
-    <div className="space-y-10">
-      {!dbError && hasData && <Tour />}
-      <Hero />
+    <>
+      {hasData && <Tour />}
+      <div
+        data-tour="leaderboard"
+        className="scroll-mt-24 rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]"
+      >
+        <LeaderboardWithLoadMore initial={leaderboard} />
+      </div>
+      {!hasData && <FacilitatorList />}
+    </>
+  );
+}
 
-      {dbError ? (
-        <div className="relative overflow-hidden rounded-lg border border-[rgb(255_255_255/0.06)] bg-[rgb(255_255_255/0.02)] p-10 text-center">
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgb(245_166_35/0.08),transparent_55%)]"
-          />
-          <div className="relative">
-            <div className="karma-catching-wrap mx-auto size-10">
-              <span className="karma-catching-ring" />
-              <span className="karma-catching-ring" />
-              <span className="karma-catching-core" />
-            </div>
-            <p className="karma-catching-title mt-5 text-[15px] font-[510] text-[#f7f8f8]">
-              The karma feed is catching up
-            </p>
-            <p className="mt-1.5 text-[13px] text-[#8a8f98]">
-              We&apos;re reconnecting to the on-chain index. Refresh in a moment.
-            </p>
+function StatsSkeleton() {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} className="h-24 w-full animate-pulse rounded-lg bg-[rgb(255_255_255/0.03)]" />
+      ))}
+    </div>
+  );
+}
+
+function LeaderboardSkeleton() {
+  return (
+    <div className="rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
+      <div className="border-b border-[rgb(255_255_255/0.05)] px-4 py-3">
+        <div className="h-4 w-40 animate-pulse rounded bg-[rgb(255_255_255/0.04)]" />
+      </div>
+      <div className="divide-y divide-[rgb(255_255_255/0.05)]">
+        {Array.from({ length: 10 }).map((_, i) => (
+          <div key={i} className="flex items-center justify-between gap-4 px-4 py-3">
+            <div className="h-4 w-56 animate-pulse rounded bg-[rgb(255_255_255/0.04)]" />
+            <div className="h-4 w-20 animate-pulse rounded bg-[rgb(255_255_255/0.04)]" />
           </div>
-        </div>
-      ) : (
-        <>
-          {stats && <StatsCards data={stats} />}
-
-          <div
-            data-tour="leaderboard"
-            className="scroll-mt-24 rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]"
-          >
-            <LeaderboardWithLoadMore initial={leaderboard} />
-          </div>
-
-          {!hasData && <FacilitatorList />}
-        </>
-      )}
+        ))}
+      </div>
     </div>
   );
 }

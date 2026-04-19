@@ -1,17 +1,18 @@
 import Link from 'next/link';
+import { Suspense } from 'react';
 import {
-  getFacilitatorStats,
-  getRecentTransactions,
-  getWalletTiers,
-} from '@/db/client';
+  cachedFacilitatorStats,
+  cachedRecentTransactions,
+  getCachedWalletTierMap,
+} from '@/db/cached';
+import type { getFacilitatorStats, getRecentTransactions } from '@/db/client';
 import { SOLANA_FACILITATORS, getFacilitatorName } from '@/config/facilitators';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { TierBadge } from '@/components/karma/tier-badge';
+import { KarmaCatchingUp } from '@/components/karma/karma-catching-up';
 import { Badge } from '@/components/ui/badge';
 import type { TrustTier } from '@/db/schema';
 import { formatUsdcAmount } from '@/lib/format';
-
-export const dynamic = 'force-dynamic';
 
 type TimeWindow = '1d' | '7d' | '30d' | 'all';
 
@@ -32,26 +33,9 @@ export default async function ExplorePage({ searchParams }: Props) {
     ? timeParam
     : 'all';
   const daysBack = TIME_WINDOWS.find((w) => w.key === timeWindow)?.days ?? null;
-  const since = daysBack != null ? new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000) : undefined;
-
-  let facilitatorStats: Awaited<ReturnType<typeof getFacilitatorStats>> = [];
-  let recentTxs: Awaited<ReturnType<typeof getRecentTransactions>> = [];
-  let tierMap: Map<string, TrustTier> = new Map();
-  let dbError = false;
-
-  try {
-    [facilitatorStats, recentTxs] = await Promise.all([
-      getFacilitatorStats(),
-      getRecentTransactions(selectedFacilitator, 40, since),
-    ]);
-    const uniqueSenders = [...new Set(recentTxs.map((t) => t.wallet_address))];
-    tierMap = await getWalletTiers(uniqueSenders);
-  } catch {
-    dbError = true;
-  }
-
-  const allFacilitators = Object.entries(SOLANA_FACILITATORS);
-  const statsMap = new Map(facilitatorStats.map((s) => [s.facilitator, s]));
+  const sinceIso = daysBack != null
+    ? new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString()
+    : undefined;
 
   return (
     <div className="space-y-8">
@@ -64,42 +48,104 @@ export default async function ExplorePage({ searchParams }: Props) {
         </p>
       </div>
 
-      {dbError ? (
-        <div className="relative overflow-hidden rounded-lg border border-[rgb(255_255_255/0.06)] bg-[rgb(255_255_255/0.02)] p-10 text-center">
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgb(245_166_35/0.08),transparent_55%)]"
-          />
-          <div className="relative">
-            <div className="karma-catching-wrap mx-auto size-10">
-              <span className="karma-catching-ring" />
-              <span className="karma-catching-ring" />
-              <span className="karma-catching-core" />
-            </div>
-            <p className="karma-catching-title mt-5 text-[15px] font-[510] text-[#f7f8f8]">
-              The karma feed is catching up
-            </p>
-            <p className="mt-1.5 text-[13px] text-[#8a8f98]">
-              We&apos;re reconnecting to the on-chain index. Refresh in a moment.
-            </p>
-          </div>
-        </div>
-      ) : (
-        <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-          <FacilitatorSidebar
-            facilitators={allFacilitators}
-            statsMap={statsMap}
+      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+        <Suspense fallback={<SidebarSkeleton />}>
+          <FacilitatorSidebarAsync
             selected={selectedFacilitator}
             timeWindow={timeWindow}
           />
-          <RecentActivity
-            transactions={recentTxs}
-            tierMap={tierMap}
+        </Suspense>
+        <Suspense fallback={<ActivitySkeleton />} key={`${selectedFacilitator ?? ''}-${timeWindow}`}>
+          <RecentActivityAsync
             selectedFacilitator={selectedFacilitator}
             timeWindow={timeWindow}
+            sinceIso={sinceIso}
           />
-        </div>
-      )}
+        </Suspense>
+      </div>
+    </div>
+  );
+}
+
+async function FacilitatorSidebarAsync({
+  selected,
+  timeWindow,
+}: {
+  selected?: string;
+  timeWindow: TimeWindow;
+}) {
+  const allFacilitators = Object.entries(SOLANA_FACILITATORS);
+  let stats: Awaited<ReturnType<typeof getFacilitatorStats>> = [];
+  try {
+    stats = await cachedFacilitatorStats();
+  } catch { /* show empty sidebar */ }
+  const statsMap = new Map(stats.map((s) => [s.facilitator, s]));
+  return (
+    <FacilitatorSidebar
+      facilitators={allFacilitators}
+      statsMap={statsMap}
+      selected={selected}
+      timeWindow={timeWindow}
+    />
+  );
+}
+
+async function RecentActivityAsync({
+  selectedFacilitator,
+  timeWindow,
+  sinceIso,
+}: {
+  selectedFacilitator?: string;
+  timeWindow: TimeWindow;
+  sinceIso?: string;
+}) {
+  let recentTxs: Awaited<ReturnType<typeof getRecentTransactions>> = [];
+  let tierMap: Map<string, TrustTier> = new Map();
+  let dbError = false;
+  try {
+    recentTxs = await cachedRecentTransactions(selectedFacilitator, sinceIso);
+    const uniqueSenders = [...new Set(recentTxs.map((t) => t.wallet_address))];
+    tierMap = await getCachedWalletTierMap(uniqueSenders);
+  } catch {
+    dbError = true;
+  }
+
+  if (dbError) return <KarmaCatchingUp />;
+
+  return (
+    <RecentActivity
+      transactions={recentTxs}
+      tierMap={tierMap}
+      selectedFacilitator={selectedFacilitator}
+      timeWindow={timeWindow}
+    />
+  );
+}
+
+function SidebarSkeleton() {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} className="h-9 w-full animate-pulse rounded-md bg-[rgb(255_255_255/0.03)]" />
+      ))}
+    </div>
+  );
+}
+
+function ActivitySkeleton() {
+  return (
+    <div className="rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
+      <div className="border-b border-[rgb(255_255_255/0.05)] px-4 py-3">
+        <div className="h-4 w-32 animate-pulse rounded bg-[rgb(255_255_255/0.04)]" />
+      </div>
+      <div className="divide-y divide-[rgb(255_255_255/0.05)]">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <div key={i} className="flex items-center justify-between gap-4 px-4 py-3">
+            <div className="h-4 w-48 animate-pulse rounded bg-[rgb(255_255_255/0.04)]" />
+            <div className="h-4 w-24 animate-pulse rounded bg-[rgb(255_255_255/0.04)]" />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

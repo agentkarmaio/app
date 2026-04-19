@@ -9,7 +9,7 @@ export const metadata = {
   description: 'Embed trust badges for autonomous on-chain agents on your site.',
 };
 
-export const dynamic = 'force-dynamic';
+export const revalidate = 60;
 
 export default async function WidgetPage() {
   // Grab a sample wallet for live preview
