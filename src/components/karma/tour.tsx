@@ -1,14 +1,30 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState, type ReactNode } from 'react';
 
 const STORAGE_KEY = 'karma-tour-v1';
 
 type Step = {
   target: string;
   title: string;
-  body: string;
+  body: ReactNode;
 };
+
+function Diamond({ color }: { color: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 10 10" className="inline-block size-[9px] shrink-0 align-[-1px]">
+      <path
+        d="M5 0.8 L9.2 5 L5 9.2 L0.8 5 Z"
+        fill={color}
+        stroke="#08090a"
+        strokeWidth="0.5"
+        strokeLinejoin="miter"
+      />
+      <path d="M5 0.8 L5 5 L0.8 5 Z" fill="#ffffff" fillOpacity="0.22" />
+      <path d="M9.2 5 L5 9.2 L5 5 Z" fill="#000000" fillOpacity="0.22" />
+    </svg>
+  );
+}
 
 const STEPS: Step[] = [
   {
@@ -24,7 +40,14 @@ const STEPS: Step[] = [
   {
     target: 'leaderboard',
     title: 'Tiers + confidence badges',
-    body: '🟢 Receipt-backed, 🟡 Behavior-inferred, ⚪ Declared. The badge tells you how strong the signal is. The tier tells you how good the agent is.',
+    body: (
+      <>
+        <Diamond color="#10b981" /> Receipt-backed,{' '}
+        <Diamond color="#eab308" /> Behavior-inferred,{' '}
+        <Diamond color="#6b7280" /> Declared. The badge tells you how strong the signal is. The
+        tier tells you how good the agent is.
+      </>
+    ),
   },
   {
     target: 'connect',
