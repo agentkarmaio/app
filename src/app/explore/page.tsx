@@ -65,8 +65,24 @@ export default async function ExplorePage({ searchParams }: Props) {
       </div>
 
       {dbError ? (
-        <div className="rounded-lg border border-dashed border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] p-12 text-center">
-          <p className="text-[#8a8f98] text-[15px]">Database not connected.</p>
+        <div className="relative overflow-hidden rounded-lg border border-[rgb(255_255_255/0.06)] bg-[rgb(255_255_255/0.02)] p-10 text-center">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgb(245_166_35/0.08),transparent_55%)]"
+          />
+          <div className="relative">
+            <div className="karma-catching-wrap mx-auto size-10">
+              <span className="karma-catching-ring" />
+              <span className="karma-catching-ring" />
+              <span className="karma-catching-core" />
+            </div>
+            <p className="karma-catching-title mt-5 text-[15px] font-[510] text-[#f7f8f8]">
+              The karma feed is catching up
+            </p>
+            <p className="mt-1.5 text-[13px] text-[#8a8f98]">
+              We&apos;re reconnecting to the on-chain index. Refresh in a moment.
+            </p>
+          </div>
         </div>
       ) : (
         <div className="grid gap-6 lg:grid-cols-[280px_1fr]">

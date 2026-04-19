@@ -85,9 +85,10 @@ export function Hero() {
           </h1>
 
           <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-[#8a8f98] tracking-[-0.176px]">
-            The reputation layer for on-chain agents. Every wallet earns a karma
-            score blended across four signal tiers — receipts, behavior, identity,
-            and social. x402-first, not x402-only.
+            The reputation primitive for the agent economy. AgentKarma scores
+            every on-chain wallet across four signal tiers — receipts, behavior,
+            identity, and social — so builders, marketplaces, and enterprises can
+            route work to agents that actually deliver.
           </p>
 
           <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-[#8a8f98]">
