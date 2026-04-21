@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=1600, initial-scale=1" />
+  <title>AgentKarma — Pitch Deck</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;510;590&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <style>
+    :root {
+      --bg: #08090a;
+      --fg: #f7f8f8;
+      --fg-2: #d0d6e0;
+      --fg-3: #8a8f98;
+      --fg-4: #62666d;
+      --line: rgba(255,255,255,0.08);
+      --line-dim: rgba(255,255,255,0.04);
+      --gold: #c9a96a;
+      --gold-dim: rgba(201,169,106,0.15);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+      font-feature-settings: 'cv01', 'ss03';
+      -webkit-font-smoothing: antialiased;
+      font-weight: 400;
+    }
+    body { overflow-x: hidden; }
+
+    .slide {
+      width: 100vw;
+      height: 100vh;
+      min-height: 100vh;
+      padding: 88px 112px;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      page-break-after: always;
+      break-after: page;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .slide + .slide {
+      page-break-before: always;
+      break-before: page;
+    }
+
+    .slide-num {
+      position: absolute;
+      left: 112px;
+      bottom: 56px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--fg-4);
+      letter-spacing: 0.08em;
+    }
+    .mark {
+      position: absolute;
+      right: 112px;
+      bottom: 44px;
+      width: 48px;
+      height: 48px;
+      opacity: 0.9;
+    }
+    .mark img, .mark svg { width: 100%; height: 100%; object-fit: contain; }
+
+    /* Gold diamond — rotated square, same motif as the symbol's karma node */
+    .diamond {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      background: var(--gold);
+      transform: rotate(45deg);
+      vertical-align: middle;
+      margin-right: 2px;
+    }
+
+    h1, h2, h3 {
+      font-weight: 510;
+      letter-spacing: -0.02em;
+      color: var(--fg);
+    }
+    .kicker {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--fg-3);
+      margin-bottom: 40px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .kicker::before {
+      content: '';
+      display: inline-block;
+      width: 8px; height: 8px;
+      background: var(--gold);
+      transform: rotate(45deg);
+    }
+    .accent { color: var(--gold); }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+    /* Slide 1 — Title */
+    .s1 { justify-content: center; align-items: flex-start; }
+    .s1 .logo { height: 72px; width: auto; margin-bottom: 44px; }
+    .s1 h1 { font-size: 96px; line-height: 0.96; letter-spacing: -0.03em; }
+    .s1 .tagline { margin-top: 24px; font-size: 22px; color: var(--fg-3); letter-spacing: -0.01em; }
+    .s1 .url { position: absolute; right: 112px; top: 88px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: var(--fg-4); letter-spacing: 0.04em; }
+
+    /* Slide 2 — Question */
+    .s2 { justify-content: center; }
+    .s2 .question {
+      font-size: 72px;
+      line-height: 1.08;
+      letter-spacing: -0.025em;
+      font-weight: 510;
+      max-width: 1100px;
+      color: var(--fg);
+      font-style: italic;
+    }
+
+    /* Slide 3 — Gap */
+    .s3 h2 { font-size: 40px; line-height: 1.1; max-width: 760px; margin-bottom: 80px; }
+    .s3 .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 80px; max-width: 1100px; }
+    .s3 .col .label {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--fg-4);
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .s3 .col.today .label { color: var(--fg-4); }
+    .s3 .col.tomorrow .label { color: var(--gold); border-bottom-color: var(--gold-dim); }
+    .s3 .col .body { font-size: 22px; line-height: 1.4; letter-spacing: -0.01em; }
+    .s3 .col.today .body { color: var(--fg-4); }
+    .s3 .col.tomorrow .body { color: var(--fg); }
+
+    /* Slide 4 — How a score is computed */
+    .s4 h2 { font-size: 44px; line-height: 1.1; letter-spacing: -0.025em; max-width: 1100px; margin-bottom: 56px; }
+    .s4 .compute {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr 0.9fr;
+      gap: 48px;
+      align-items: center;
+    }
+    .s4 .inputs .tier { margin-bottom: 20px; }
+    .s4 .inputs .tier:last-child { margin-bottom: 0; }
+    .s4 .inputs .name {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      letter-spacing: 0.1em;
+      color: var(--gold);
+      margin-bottom: 6px;
+    }
+    .s4 .inputs .desc { font-size: 14px; color: var(--fg-2); line-height: 1.4; letter-spacing: -0.005em; }
+    .s4 .inputs .weight {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--fg-4);
+      margin-left: 6px;
+    }
+    .s4 .formula {
+      padding: 24px 28px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.015);
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 14px;
+      color: var(--fg-2);
+      line-height: 1.9;
+    }
+    .s4 .formula .eq { color: var(--fg); font-size: 16px; margin-bottom: 14px; }
+    .s4 .formula .op { color: var(--gold); }
+    .s4 .formula .note { color: var(--fg-4); font-size: 11px; letter-spacing: 0; margin-top: 14px; line-height: 1.5; font-family: 'Inter', sans-serif; }
+    .s4 .output { text-align: left; }
+    .s4 .output .score {
+      font-size: 120px;
+      font-weight: 510;
+      letter-spacing: -0.045em;
+      line-height: 0.9;
+      color: var(--fg);
+      margin-bottom: 12px;
+    }
+    .s4 .output .tier-name {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 13px;
+      letter-spacing: 0.12em;
+      color: var(--fg-3);
+      margin-bottom: 20px;
+      text-transform: uppercase;
+    }
+    .s4 .output .badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px; letter-spacing: 0.08em;
+      color: var(--gold);
+      padding: 5px 11px;
+      background: var(--gold-dim);
+      border: 1px solid var(--gold);
+      border-radius: 999px;
+    }
+
+    /* Slide 5 — Why it's hard to fake */
+    .s5b .kicker { color: var(--gold); }
+    .s5b h2 { font-size: 48px; line-height: 1.1; letter-spacing: -0.025em; max-width: 1100px; margin-bottom: 56px; }
+    .s5b .defense {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 28px 48px;
+      max-width: 1200px;
+    }
+    .s5b .box {
+      padding: 28px 32px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.015);
+    }
+    .s5b .box .label {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      letter-spacing: 0.1em;
+      color: var(--gold);
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .s5b .box .body {
+      font-size: 15px;
+      color: var(--fg-2);
+      line-height: 1.5;
+      letter-spacing: -0.005em;
+    }
+
+    /* Slide 6 — Agenticity */
+    .s5 .kicker { color: var(--gold); }
+    .s5 h2 { font-size: 48px; line-height: 1.1; letter-spacing: -0.025em; max-width: 1000px; margin-bottom: 40px; }
+    .s5 .viz { display: flex; align-items: center; gap: 56px; }
+    .s5 .venn {
+      width: 260px; height: 260px; flex-shrink: 0;
+      position: relative;
+    }
+    .s5 .venn .outer {
+      position: absolute; inset: 0;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: rgba(255,255,255,0.02);
+      display: flex; align-items: flex-start; justify-content: center;
+      padding-top: 20px;
+    }
+    .s5 .venn .inner {
+      position: absolute;
+      top: 62%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 116px; height: 116px;
+      border: 1px solid var(--gold);
+      border-radius: 50%;
+      background: var(--gold-dim);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .s5 .venn .outer .label,
+    .s5 .venn .inner .label {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      text-align: center;
+    }
+    .s5 .venn .outer .label { color: var(--fg-3); }
+    .s5 .venn .inner .label { color: var(--gold); line-height: 1.3; }
+    .s5 .side { flex: 1; min-width: 0; }
+    .s5 .side p {
+      font-size: 20px;
+      color: var(--fg-2);
+      line-height: 1.45;
+      letter-spacing: -0.01em;
+      margin-bottom: 24px;
+    }
+    .s5 .side .metrics {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      color: var(--fg-3);
+      letter-spacing: 0.04em;
+      line-height: 1.7;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+    .s5 .side .metrics-label {
+      font-size: 10px;
+      color: var(--fg-4);
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+    }
+
+    /* Slide 6 — Two faces */
+    .s6 h2 { font-size: 52px; line-height: 1.1; letter-spacing: -0.025em; margin-bottom: 72px; }
+    .s6 .faces { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; max-width: 1200px; }
+    .s6 .face {
+      padding: 40px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255,255,255,0.015);
+    }
+    .s6 .face .label {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--fg-4);
+      margin-bottom: 20px;
+    }
+    .s6 .face .score {
+      font-size: 96px; font-weight: 510; letter-spacing: -0.04em;
+      line-height: 0.95; color: var(--fg);
+      margin-bottom: 12px;
+    }
+    .s6 .face .score-label { font-size: 18px; color: var(--fg-3); margin-bottom: 24px; }
+    .s6 .face .q { font-size: 18px; color: var(--fg-2); line-height: 1.4; font-style: italic; }
+    .s6 .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px; letter-spacing: 0.08em;
+      color: var(--gold);
+      padding: 4px 10px;
+      background: var(--gold-dim);
+      border: 1px solid var(--gold);
+      border-radius: 999px;
+      margin-bottom: 24px;
+    }
+    .s6 .footer {
+      margin-top: 48px;
+      font-size: 16px; color: var(--fg-3);
+      font-style: italic;
+      letter-spacing: -0.005em;
+    }
+
+    /* Slide 7 — Open */
+    .s7 h2 { font-size: 52px; line-height: 1.1; letter-spacing: -0.025em; margin-bottom: 96px; }
+    .s7 .flow { display: flex; align-items: center; gap: 0; max-width: 1200px; }
+    .s7 .node {
+      flex: 1;
+      padding: 36px 24px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      text-align: center;
+      background: rgba(255,255,255,0.015);
+    }
+    .s7 .node.primary { border-color: var(--gold); background: var(--gold-dim); }
+    .s7 .node .name {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 18px; letter-spacing: 0.04em;
+      color: var(--fg); margin-bottom: 8px;
+    }
+    .s7 .node.primary .name { color: var(--gold); }
+    .s7 .node .sub {
+      font-size: 13px; color: var(--fg-3);
+    }
+    .s7 .arrow { color: var(--fg-4); font-size: 18px; padding: 0 16px; }
+    .s7 .footer {
+      margin-top: 48px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 13px;
+      color: var(--fg-3);
+      letter-spacing: 0.03em;
+    }
+
+    /* Slide 8 — What's live */
+    .s8 h2 { font-size: 40px; line-height: 1.1; margin-bottom: 80px; color: var(--fg-3); font-weight: 400; letter-spacing: -0.01em; }
+    .s8 .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 64px; max-width: 1200px; }
+    .s8 .stat .num {
+      font-size: 88px; font-weight: 510; letter-spacing: -0.035em;
+      line-height: 0.9; color: var(--fg); margin-bottom: 16px;
+    }
+    .s8 .stat .num.accent { color: var(--gold); }
+    .s8 .stat .caption {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px; letter-spacing: 0.08em;
+      color: var(--fg-3); line-height: 1.5;
+    }
+    .s8 .url {
+      margin-top: 72px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 16px;
+      color: var(--gold);
+      letter-spacing: 0.04em;
+    }
+
+    /* Slide 9 — Seam */
+    .s9 h2 { font-size: 44px; line-height: 1.15; letter-spacing: -0.02em; max-width: 1100px; margin-bottom: 96px; }
+    .s9 .flow { display: flex; align-items: center; gap: 0; max-width: 1200px; }
+    .s9 .node {
+      flex: 1; padding: 32px 24px;
+      border: 1px solid var(--line); border-radius: 12px;
+      text-align: center; background: rgba(255,255,255,0.015);
+    }
+    .s9 .node.primary { border-color: var(--gold); background: var(--gold-dim); }
+    .s9 .node .name {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 14px; letter-spacing: 0.1em;
+      color: var(--fg); margin-bottom: 6px;
+      text-transform: uppercase;
+    }
+    .s9 .node.primary .name { color: var(--gold); }
+    .s9 .node .sub {
+      font-size: 12px; color: var(--fg-3); line-height: 1.3;
+    }
+    .s9 .arrow { color: var(--fg-4); font-size: 20px; padding: 0 20px; }
+    .s9 .footer {
+      margin-top: 56px;
+      font-size: 18px;
+      color: var(--fg-3);
+      font-style: italic;
+      max-width: 900px;
+      line-height: 1.4;
+    }
+
+    /* Slide 10 — Close */
+    .s10 { justify-content: center; align-items: flex-start; }
+    .s10 .logo { height: 64px; width: auto; margin-bottom: 32px; }
+    .s10 h1 { font-size: 56px; font-weight: 510; letter-spacing: -0.025em; margin-bottom: 24px; }
+    .s10 .url {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 22px; color: var(--gold); margin-bottom: 16px;
+      letter-spacing: 0.02em;
+    }
+    .s10 .contact {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 13px; color: var(--fg-3);
+      letter-spacing: 0.04em;
+    }
+    .s10 .tagline {
+      position: absolute; top: 88px; right: 112px;
+      font-size: 15px; font-style: italic;
+      color: var(--fg-3);
+    }
+
+    /* Print-specific */
+    @page {
+      size: 13.333in 7.5in;
+      margin: 0;
+    }
+    @media print {
+      html, body {
+        background: var(--bg) !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      .slide {
+        width: 13.333in;
+        height: 7.5in;
+        min-height: 7.5in;
+        max-height: 7.5in;
+        padding: 0.6in 0.85in;
+        overflow: hidden;
+        page-break-after: always;
+        break-after: page;
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      .slide + .slide {
+        page-break-before: always;
+        break-before: page;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ============ SLIDE 1 — TITLE ============ -->
+<section class="slide s1">
+  <img class="logo" src="../brand/agentkarma-dark-X-transparent.png" alt="AgentKarma" />
+  <h1>AgentKarma</h1>
+  <div class="tagline">Reputation, for autonomous agents.</div>
+  <div class="url">agentkarma.io</div>
+  <div class="slide-num">01 / 11</div>
+  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+</section>
+
+<!-- ============ SLIDE 2 — THE QUESTION ============ -->
+<section class="slide s2">
+  <div class="kicker">The question</div>
+  <div class="question">Can you trust this agent with your money?</div>
+  <div class="slide-num">02 / 11</div>
+  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+</section>
+
+<!-- ============ SLIDE 3 — THE GAP ============ -->
+<section class="slide s3">
+  <div class="kicker">The gap</div>
+  <h2>Value moves on-chain. Trust doesn't.</h2>
+  <div class="columns">
+    <div class="col today">
+      <div class="label">Today</div>
+      <div class="body">Wallet address. Self-declared description. Guess.</div>
+    </div>
+    <div class="col tomorrow">
+      <div class="label">With a trust layer</div>
+      <div class="body">Verifiable behavior. Portable score. Decision.</div>
+    </div>
+  </div>
+  <div class="slide-num">03 / 11</div>
+  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+</section>
+
+<!-- ============ SLIDE 4 — HOW A KARMA SCORE IS COMPUTED ============ -->
+<section class="slide s4">
+  <div class="kicker">Under the hood</div>
+  <h2>How a karma score is computed.</h2>
+  <div class="compute">
+    <div class="inputs">
+      <div class="tier">
+        <div class="name">TIER 1 · RECEIPTS <span class="weight">60%</span></div>
+        <div class="desc">x402 payment + wallet-signed delivery feedback</div>
+      </div>
+      <div class="tier">
+        <div class="name">TIER 2 · BEHAVIOR <span class="weight">25%</span></div>
+        <div class="desc">volume · counterparty diversity · cadence · liveness</div>
+      </div>
+      <div class="tier">
+        <div class="name">TIER 3 · IDENTITY <span class="weight">10%</span></div>
+        <div class="desc">agent manifest · domain / GitHub proof · 8004 attestations</div>
+      </div>
+      <div class="tier">
+        <div class="name">TIER 4 · SOCIAL <span class="weight">5%</span></div>
+        <div class="desc">Farcaster · governance · directory listings</div>
+      </div>
+    </div>
+    <div class="formula">
+      <div class="eq">Karma</div>
+      <div><span class="op">=</span> 0.60 &middot; T<sub>1</sub></div>
+      <div><span class="op">+</span> 0.25 &middot; T<sub>2</sub></div>
+      <div><span class="op">+</span> 0.10 &middot; T<sub>3</sub></div>
+      <div><span class="op">+</span> 0.05 &middot; T<sub>4</sub></div>
+      <div class="note">Missing tiers redistribute weight — a new agent isn't scored as zero. Recent signals outweigh old. Confidence badge makes evidence quality explicit.</div>
+    </div>
+    <div class="output">
+      <div class="score">87</div>
+      <div class="tier-name">VERY GOOD</div>
+      <div class="badge"><span class="diamond"></span> Receipt-backed</div>
+    </div>
+  </div>
+  <div class="slide-num">04 / 11</div>
+  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+</section>
+
+<!-- ============ SLIDE 5 — WHY IT'S HARD TO FAKE ============ -->
+<section class="slide s5b">
+  <div class="kicker">Defense in depth</div>
+  <h2>Why a karma score is hard to fake.</h2>
+  <div class="defense">
+    <div class="box">
+      <div class="label">Receipt gating</div>
+      <div class="body">No attestation without a verified on-chain payment. Spam costs real USDC, per attempt, forever.</div>
+    </div>
+    <div class="box">
+      <div class="label">Counterparty diversity</div>
+      <div class="body">Same-cluster reviews get discounted. One friendly wallet doesn't make a crowd — and a tight cluster of three doesn't either.</div>
+    </div>
+    <div class="box">
+      <div class="label">Temporal decay</div>
+      <div class="body">Recent behavior weighs more than historical. Old scores fade. Liveness feeds directly into Provider Karma.</div>
+    </div>
+    <div class="box">
+      <div class="label">Attester diversity</div>
+      <div class="body">Small groups hyping the same agent see diminishing returns on every additional attestation. Cabals are visible, not rewarded.</div>
+    </div>
+  </div>
+  <div class="slide-num">05 / 11</div>
+  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+</section>
+
+<!-- ============ SLIDE 6 — AGENTICITY ============ -->
+<section class="slide s5">
+  <div class="kicker">The wedge</div>
+  <h2>Not every x402 wallet is really an agent.</h2>
+  <div class="viz">
+    <div class="venn">
+      <div class="outer"><div class="label">x402-active wallets</div></div>
+      <div class="inner"><div class="label">verified<br/>agentic behavior</div></div>
+    </div>
+    <div class="side">
+      <p><em>Autonomy Confidence</em> is a second 0–100 score, orthogonal to Karma. Karma asks <em>"is this trustworthy?"</em>&nbsp; Autonomy asks <em>"is this even an agent?"</em></p>
+      <div class="metrics">
+        <div class="metrics-label">Signals</div>
+        cadence &middot; latency variance &middot; concurrency<br/>
+        memo determinism &middot; counterparty breadth &middot; compute efficiency
+      </div>
+    </div>
+  </div>
+  <div class="slide-num">06 / 11</div>
+  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+</section>
+
+<!-- ============ SLIDE 6 — TWO FACES ============ -->
+<section class="slide s6">
+  <div class="kicker">Two faces</div>
+  <h2>Same wallet. Two questions.</h2>
+  <div class="faces">
+    <div class="face">
+      <div class="badge"><span class="diamond"></span> Receipt-backed</div>
+      <div class="label">Provider Karma</div>
+      <div class="score">87</div>
+      <div class="q">Will this agent deliver when paid?</div>
+    </div>
+    <div class="face">
+      <div class="badge"><span class="diamond"></span> Receipt-backed</div>
+      <div class="label">Consumer Karma</div>
+      <div class="score">61</div>
+      <div class="q">Will this agent pay cleanly when it consumes?</div>
+    </div>
+  </div>
+  <div class="footer">Marketplace economics require both.</div>
+  <div class="slide-num">07 / 11</div>
+  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+</section>
+
+<!-- ============ SLIDE 7 — OPEN ============ -->
+<section class="slide s7">
+  <div class="kicker">Open by design</div>
+  <h2>Every score a portable attestation.</h2>
+  <div class="flow">
+    <div class="node"><div class="name">x402</div><div class="sub">payments</div></div>
+    <div class="arrow">→</div>
+    <div class="node primary"><div class="name">AgentKarma</div><div class="sub">scoring</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="name">ERC-8004</div><div class="sub">storage</div></div>
+  </div>
+  <div class="footer">Any app can read. No lock-in. No routing.</div>
+  <div class="slide-num">08 / 11</div>
+  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+</section>
+
+<!-- ============ SLIDE 8 — WHAT'S LIVE ============ -->
+<section class="slide s8">
+  <div class="kicker">What's live</div>
+  <h2>Running on Solana mainnet today.</h2>
+  <div class="grid">
+    <div class="stat">
+      <div class="num accent">40k+</div>
+      <div class="caption">X402 PAYMENTS<br/>INDEXED</div>
+    </div>
+    <div class="stat">
+      <div class="num">329</div>
+      <div class="caption">WALLETS<br/>SCORED</div>
+    </div>
+    <div class="stat">
+      <div class="num">22</div>
+      <div class="caption">FACILITATORS<br/>TRACKED</div>
+    </div>
+    <div class="stat">
+      <div class="num">4</div>
+      <div class="caption">SIGNAL TIERS<br/>LIVE</div>
+    </div>
+  </div>
+  <div class="url">agentkarma.io</div>
+  <div class="slide-num">09 / 11</div>
+  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+</section>
+
+<!-- ============ SLIDE 9 — THE SEAM ============ -->
+<section class="slide s9">
+  <div class="kicker">The seam</div>
+  <h2>As regulated money lands on Solana, trust becomes infrastructure.</h2>
+  <div class="flow">
+    <div class="node"><div class="name">SDP</div><div class="sub">Solana Developer Platform</div></div>
+    <div class="arrow">→</div>
+    <div class="node primary"><div class="name">AgentKarma</div><div class="sub">verification primitive</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="name">Agent Economy</div><div class="sub">on-chain autonomous flows</div></div>
+  </div>
+  <div class="footer">"Which agents can touch this money?" will become a compliance question — long before anyone calls it one.</div>
+  <div class="slide-num">10 / 11</div>
+  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+</section>
+
+<!-- ============ SLIDE 10 — CLOSE ============ -->
+<section class="slide s10">
+  <div class="tagline">Check their Karma.</div>
+  <img class="logo" src="../brand/agentkarma-dark-X-transparent.png" alt="AgentKarma" />
+  <h1>AgentKarma</h1>
+  <div class="url">agentkarma.io</div>
+  <div class="contact">@agentkarmaio&nbsp; ·&nbsp; kerem@noras.tech</div>
+  <div class="slide-num">11 / 11</div>
+  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+</section>
+
+</body>
+</html>
