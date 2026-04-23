@@ -73,6 +73,63 @@ export function getTrustTier(score: number): TrustTier {
   return 'Excellent';
 }
 
+// ─── Evidence-gated tier progression ──────────────────────────────────────────
+//
+// A raw numeric score alone does not earn a tier label. A wallet must present
+// enough observable evidence for the label to be truthful — otherwise a fresh
+// 100%-success wallet with one counterparty can inherit "Very Good" just
+// because Tier-2 weight redistribution pulled its aggregate up.
+//
+// Two independent axes gate the ceiling:
+//   behavioral thickness — none / moderate / thick (by tx count, diversity, age)
+//   Tier-1 receipts      — none / some / strong
+// The ceiling is looked up via a 3×3 table; the numeric tier is the floor
+// (a genuinely low score still reads as Poor/Fair regardless of thickness).
+
+export interface TierEvidence {
+  txCount: number;
+  counterparties: number;
+  daysActive: number;
+  hasTier1Receipts: boolean;
+  tier1Strong: boolean;
+}
+
+const TIER_RANK: Record<TrustTier, number> = {
+  Unrated: 0, Poor: 1, Fair: 2, Good: 3, 'Very Good': 4, Excellent: 5,
+};
+
+function tierMin(a: TrustTier, b: TrustTier): TrustTier {
+  return TIER_RANK[a] <= TIER_RANK[b] ? a : b;
+}
+
+// [behavioral thickness][receipt strength] → ceiling tier
+// rows: thin · moderate · thick   cols: none · some · strong
+const EVIDENCE_CEILING: TrustTier[][] = [
+  ['Fair',      'Good',      'Very Good'],
+  ['Good',      'Very Good', 'Very Good'],
+  ['Very Good', 'Very Good', 'Excellent'],
+];
+
+export function evidenceGatedTier(score: number, evidence: TierEvidence): TrustTier {
+  const numeric = getTrustTier(score);
+  if (evidence.txCount === 0 && !evidence.hasTier1Receipts) return numeric;
+
+  const moderate =
+    evidence.txCount >= 50 &&
+    evidence.counterparties >= 3 &&
+    evidence.daysActive >= 14;
+  const thick =
+    evidence.txCount >= 200 &&
+    evidence.counterparties >= 10 &&
+    evidence.daysActive >= 30;
+
+  const behaviorLevel = thick ? 2 : moderate ? 1 : 0;
+  const receiptLevel = evidence.tier1Strong ? 2 : evidence.hasTier1Receipts ? 1 : 0;
+  const ceiling = EVIDENCE_CEILING[behaviorLevel][receiptLevel];
+
+  return tierMin(numeric, ceiling);
+}
+
 // ─── Tier blend + confidence badge ────────────────────────────────────────────
 
 export function getConfidenceBadge(aggregates: TierAggregates): ConfidenceBadge {
@@ -271,6 +328,18 @@ export function calculateScore(
 
   const tiered = calculateTieredScore(aggregates, { decay });
 
+  // Evidence-gated tier progression. See evidenceGatedTier() for rationale —
+  // numeric score is the floor, behavioral thickness + receipt strength set
+  // the ceiling. Thin-file wallets can't reach Very Good on Tier 2 alone.
+  const providerEvidence: TierEvidence = {
+    txCount,
+    counterparties: uniqueFacilitators,
+    daysActive,
+    hasTier1Receipts: tier1 != null && tier1 > 0,
+    tier1Strong: tier1 != null && tier1 >= 0.7,
+  };
+  const providerTier = evidenceGatedTier(tiered.score, providerEvidence);
+
   // ─── Consumer face — payment-behavior view (Phase I) ────────────────────────
   //
   // Same inputs but re-weighted to reflect "does this wallet pay cleanly and
@@ -288,9 +357,18 @@ export function calculateScore(
 
   const consumerAggregates: TierAggregates = { tier1: null, tier2: consumerTier2, tier3: null, tier4: null };
   const consumerTiered = calculateTieredScore(consumerAggregates, { decay });
+  // Consumer face doesn't yet consume Tier-1 dispute signals (Phase I2+), so
+  // the receipt axis is always zero here; thickness alone gates the tier.
+  const consumerTier = evidenceGatedTier(consumerTiered.score, {
+    txCount,
+    counterparties: uniqueFacilitators,
+    daysActive,
+    hasTier1Receipts: false,
+    tier1Strong: false,
+  });
   const consumerFace: ConsumerFaceScore = {
     score: consumerTiered.score,
-    trustTier: consumerTiered.trustTier,
+    trustTier: consumerTier,
     confidenceBadge: consumerTiered.confidenceBadge,
     tierAggregates: consumerAggregates,
     metrics: { successRate, diversity, volume, age, cadence: cadenceClamped },
@@ -301,7 +379,7 @@ export function calculateScore(
     score: tiered.score,
     providerScore: tiered.score,
     consumerScore: consumerFace.score,
-    trustTier: tiered.trustTier,
+    trustTier: providerTier,
     confidenceBadge: tiered.confidenceBadge,
     metrics: {
       successRate,

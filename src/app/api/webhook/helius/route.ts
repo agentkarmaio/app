@@ -12,8 +12,9 @@ import {
   getLatestSignalValues,
 } from '@/db/client';
 import { calculateScores } from '@/scoring';
-import { buildX402PaymentSignals, buildCadenceSignal } from '@/scoring/signals';
+import { buildX402PaymentSignals, buildCadenceSignal, buildAutonomySignal } from '@/scoring/signals';
 import { computeCadence } from '@/scoring/cadence';
+import { computeAutonomy, type AutonomyResult } from '@/scoring/autonomy';
 import { readAttestations } from '@/integrations/attestation';
 import { ALL_FACILITATOR_ADDRESSES } from '@/config/facilitators';
 import type { Transaction } from '@/db/schema';
@@ -69,24 +70,36 @@ export async function POST(request: NextRequest) {
   const allTxs = await getTransactionsForWallets(uniqueWallets);
   const attestations = await readAttestations(uniqueWallets);
 
-  // Recompute + emit cadence, then feed the map into scoring.
-  const cadenceByWallet = new Map<string, Date[]>();
+  // Recompute + emit cadence + autonomy, feed cadence into karma scoring.
+  const txByWallet = new Map<string, typeof allTxs>();
   for (const tx of allTxs) {
-    const list = cadenceByWallet.get(tx.wallet_address) ?? [];
-    list.push(new Date(tx.timestamp));
-    cadenceByWallet.set(tx.wallet_address, list);
+    const list = txByWallet.get(tx.wallet_address) ?? [];
+    list.push(tx);
+    txByWallet.set(tx.wallet_address, list);
   }
   const cadenceSignals = [];
+  const autonomySignals = [];
   const cadenceScores = new Map<string, number>();
-  for (const [addr, ts] of cadenceByWallet) {
-    const cadence = computeCadence(ts);
+  const autonomyByWallet = new Map<string, AutonomyResult>();
+  for (const [addr, txs] of txByWallet) {
+    const cadence = computeCadence(txs.map((tx) => new Date(tx.timestamp)));
     if (cadence) {
       cadenceSignals.push(buildCadenceSignal(addr, cadence));
       cadenceScores.set(addr, cadence.automationScore);
     }
+    const autonomy = computeAutonomy(
+      txs.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
+    );
+    if (autonomy) {
+      autonomySignals.push(buildAutonomySignal(addr, autonomy));
+      autonomyByWallet.set(addr, autonomy);
+    }
   }
   if (cadenceSignals.length > 0) {
     await insertSignalEvents(cadenceSignals, { overwrite: true });
+  }
+  if (autonomySignals.length > 0) {
+    await insertSignalEvents(autonomySignals, { overwrite: true });
   }
 
   const manifestScores = await getLatestSignalValues(uniqueWallets, 'manifest');
@@ -94,10 +107,13 @@ export async function POST(request: NextRequest) {
 
   await Promise.all(
     [...scores.entries()].map(async ([address, ws]) => {
+      const autonomy = autonomyByWallet.get(address);
       await upsertWallet(address, ws.score, ws.trustTier, ws.txCount, {
         providerScore: ws.providerScore,
         consumerScore: ws.consumerScore,
         confidenceBadge: ws.confidenceBadge,
+        autonomyScore: autonomy?.score ?? null,
+        autonomyLabel: autonomy?.label ?? null,
       });
       await insertScoreSnapshot(
         address,

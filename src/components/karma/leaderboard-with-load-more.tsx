@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { LeaderboardTable, type LeaderboardEntry } from './leaderboard-table';
-import type { LivenessStatus, TrustTier } from '@/db/schema';
+import type { LivenessStatus, TrustTier, ConfidenceBadge, AutonomyLabel } from '@/db/schema';
 
 const PAGE_SIZE = 25;
 
@@ -12,6 +12,9 @@ interface ApiEntry {
   displayName: string | null;
   score: number;
   trustTier: TrustTier;
+  confidenceBadge?: ConfidenceBadge | null;
+  autonomyScore?: number | null;
+  autonomyLabel?: AutonomyLabel | null;
   txCount: number;
   lastSeen: string;
   delivery: { total: number; deliveryRate: number } | null;
@@ -113,6 +116,9 @@ export function LeaderboardWithLoadMore({ initial }: { initial: LeaderboardEntry
           displayName: w.displayName,
           score: w.score,
           trustTier: w.trustTier,
+          confidenceBadge: w.confidenceBadge ?? null,
+          autonomyScore: w.autonomyScore ?? null,
+          autonomyLabel: w.autonomyLabel ?? null,
           txCount: w.txCount,
           lastSeen: w.lastSeen,
           delivery: w.delivery,

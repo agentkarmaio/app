@@ -9,7 +9,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type {
   Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating, LivenessStatus,
-  ConfidenceBadge, SignalEvent, SignalTier, KarmaFace,
+  ConfidenceBadge, SignalEvent, SignalTier, KarmaFace, AutonomyLabel,
   AgentManifest, ManifestSourceType, ParsedManifest,
   Organization, OrganizationMember,
 } from './schema';
@@ -55,6 +55,8 @@ export interface UpsertWalletOpts {
   providerScore?: number;
   consumerScore?: number | null;
   confidenceBadge?: ConfidenceBadge;
+  autonomyScore?: number | null;
+  autonomyLabel?: AutonomyLabel | null;
 }
 
 export async function upsertWallet(
@@ -80,6 +82,8 @@ export async function upsertWallet(
     updated_at: new Date().toISOString(),
   };
   if ('consumerScore' in opts) row.consumer_score = opts.consumerScore;
+  if ('autonomyScore' in opts) row.autonomy_score = opts.autonomyScore;
+  if ('autonomyLabel' in opts) row.autonomy_label = opts.autonomyLabel;
 
   const { error } = await supabase
     .from('wallets')
@@ -628,8 +632,11 @@ export async function getLatestSignalValues(
   const out = new Map<string, number>();
   if (agentWallets.length === 0) return out;
 
-  for (let i = 0; i < agentWallets.length; i += 500) {
-    const chunk = agentWallets.slice(i, i + 500);
+  // Chunk size kept low because PostgREST encodes the filter list in the URL
+  // as ?agent_wallet=in.(a,b,c,…) and base58 wallet addresses are ~44 chars
+  // each — 500 would exceed Supabase's 8KB URI limit on fleet-wide backfills.
+  for (let i = 0; i < agentWallets.length; i += 100) {
+    const chunk = agentWallets.slice(i, i + 100);
     const { data, error } = await supabase
       .from('signal_events')
       .select('agent_wallet, value, observed_at')
@@ -653,8 +660,8 @@ export async function getSignalEventsForWallets(
   const out = new Map<string, SignalEvent[]>();
   if (agentWallets.length === 0) return out;
 
-  for (let i = 0; i < agentWallets.length; i += 500) {
-    const chunk = agentWallets.slice(i, i + 500);
+  for (let i = 0; i < agentWallets.length; i += 100) {
+    const chunk = agentWallets.slice(i, i + 100);
     const { data, error } = await supabase
       .from('signal_events')
       .select('*')

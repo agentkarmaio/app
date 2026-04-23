@@ -4,6 +4,7 @@ import {
 } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
+import { computeAutonomy } from '@/scoring/autonomy';
 import { readAttestation } from '@/integrations/attestation';
 import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
 
@@ -62,6 +63,12 @@ export async function GET(
     ? computeCadence(transactions.map((tx) => new Date(tx.timestamp)))
     : null;
 
+  const autonomy = transactions.length > 0
+    ? computeAutonomy(
+        transactions.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
+      )
+    : null;
+
   const live = transactions.length > 0
     ? calculateScore(
         transactions,
@@ -106,6 +113,24 @@ export async function GET(
       hasSignal: false,
     };
   }
+
+  // Autonomy Confidence (RFC v0.3 §5.5) — MUST appear alongside karma on every
+  // response, independent of which face was requested.
+  response.autonomy = autonomy ? {
+    score: autonomy.score,
+    label: autonomy.label,
+    signals: autonomy.components,
+    effectiveWeights: autonomy.effectiveWeights,
+    txCount: autonomy.txCount,
+    lastUpdated: new Date().toISOString(),
+  } : {
+    score: walletRow?.autonomy_score != null ? Number(walletRow.autonomy_score) : null,
+    label: walletRow?.autonomy_label ?? null,
+    signals: null,
+    effectiveWeights: null,
+    txCount: 0,
+    lastUpdated: walletRow?.updated_at ?? null,
+  };
 
   if (face === 'consumer' || face === 'both') {
     response.consumer = live?.consumerFace ? {

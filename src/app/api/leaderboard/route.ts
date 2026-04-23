@@ -55,6 +55,8 @@ export async function GET(request: NextRequest) {
         providerScore: w.provider_score != null ? Number(w.provider_score) : Number(w.score),
         consumerScore: w.consumer_score != null ? Number(w.consumer_score) : null,
         confidenceBadge: w.confidence_badge ?? 'declared',
+        autonomyScore: w.autonomy_score != null ? Number(w.autonomy_score) : null,
+        autonomyLabel: w.autonomy_label ?? null,
         trustTier: w.trust_tier,
         txCount: w.tx_count,
         lastSeen: w.last_seen,

@@ -36,10 +36,14 @@ export const walletsTable = pgTable('wallets', {
   provider_score:  numeric('provider_score', { precision: 6, scale: 2 }).notNull().default('0'),
   consumer_score:  numeric('consumer_score', { precision: 6, scale: 2 }),
   confidence_badge: text('confidence_badge').notNull().default('declared'),
+  // Autonomy Confidence (RFC v0.3 §5.5) — orthogonal to karma
+  autonomy_score:  numeric('autonomy_score', { precision: 6, scale: 2 }),
+  autonomy_label:  text('autonomy_label'),
 }, (table) => [
   index('idx_wallets_score').on(table.score),
   index('idx_wallets_provider_score').on(table.provider_score),
   index('idx_wallets_confidence_badge').on(table.confidence_badge),
+  index('idx_wallets_autonomy_score').on(table.autonomy_score),
 ]);
 
 export const transactionsTable = pgTable('transactions', {
@@ -202,7 +206,11 @@ export interface Wallet {
   provider_score: number;
   consumer_score: number | null;
   confidence_badge: ConfidenceBadge;
+  autonomy_score?: number | null;
+  autonomy_label?: AutonomyLabel | null;
 }
+
+export type AutonomyLabel = 'agent-like' | 'mixed' | 'human-like';
 
 export interface Organization {
   slug: string;

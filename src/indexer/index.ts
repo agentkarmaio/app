@@ -22,8 +22,9 @@ import {
 import type { Transaction } from '../db/schema';
 import { insertTransactions, upsertWallet, insertScoreSnapshot, getTransactionsForWallets, getCursor, upsertCursor, insertSignalEvents, getLatestSignalValues } from '../db/client';
 import { calculateScores } from '../scoring';
-import { buildX402PaymentSignals, buildCadenceSignal } from '../scoring/signals';
+import { buildX402PaymentSignals, buildCadenceSignal, buildAutonomySignal } from '../scoring/signals';
 import { computeCadence } from '../scoring/cadence';
+import { computeAutonomy, type AutonomyResult } from '../scoring/autonomy';
 import { readAttestations } from '../integrations/attestation';
 import { parseTransactionsBatch, extractX402Payment, withConcurrency } from './helius';
 
@@ -181,25 +182,38 @@ export async function runIndexer(
     console.log(`[indexer] Found ${attestations.size} 8004 attestations`);
   }
 
-  // Emit Tier 2 cadence signals for affected wallets that meet the tx threshold.
-  const byWallet = new Map<string, Date[]>();
+  // Emit Tier 2 cadence + Autonomy Confidence signals for affected wallets.
+  const txByWallet = new Map<string, typeof allTxsForAffected>();
   for (const tx of allTxsForAffected) {
-    const list = byWallet.get(tx.wallet_address) ?? [];
-    list.push(new Date(tx.timestamp));
-    byWallet.set(tx.wallet_address, list);
+    const list = txByWallet.get(tx.wallet_address) ?? [];
+    list.push(tx);
+    txByWallet.set(tx.wallet_address, list);
   }
   const cadenceSignals = [];
+  const autonomySignals = [];
   const cadenceScores = new Map<string, number>();
-  for (const [addr, ts] of byWallet) {
-    const cadence = computeCadence(ts);
+  const autonomyByWallet = new Map<string, AutonomyResult>();
+  for (const [addr, txs] of txByWallet) {
+    const cadence = computeCadence(txs.map((tx) => new Date(tx.timestamp)));
     if (cadence) {
       cadenceSignals.push(buildCadenceSignal(addr, cadence));
       cadenceScores.set(addr, cadence.automationScore);
+    }
+    const autonomy = computeAutonomy(
+      txs.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
+    );
+    if (autonomy) {
+      autonomySignals.push(buildAutonomySignal(addr, autonomy));
+      autonomyByWallet.set(addr, autonomy);
     }
   }
   if (cadenceSignals.length > 0) {
     await insertSignalEvents(cadenceSignals, { overwrite: true });
     console.log(`[indexer] Emitted ${cadenceSignals.length} cadence signals`);
+  }
+  if (autonomySignals.length > 0) {
+    await insertSignalEvents(autonomySignals, { overwrite: true });
+    console.log(`[indexer] Emitted ${autonomySignals.length} autonomy signals`);
   }
 
   // Load Tier 3 manifest scores (Phase H1) — already-resolved manifests contribute
@@ -210,10 +224,13 @@ export async function runIndexer(
 
   let scored = 0;
   for (const [address, walletScore] of scores) {
+    const autonomy = autonomyByWallet.get(address);
     await upsertWallet(address, walletScore.score, walletScore.trustTier, walletScore.txCount, {
       providerScore: walletScore.providerScore,
       consumerScore: walletScore.consumerScore,
       confidenceBadge: walletScore.confidenceBadge,
+      autonomyScore: autonomy?.score ?? null,
+      autonomyLabel: autonomy?.label ?? null,
     });
     await insertScoreSnapshot(
       address,

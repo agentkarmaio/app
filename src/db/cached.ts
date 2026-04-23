@@ -82,6 +82,9 @@ export const cachedLeaderboardEntries = defineCache(
         displayName: w.display_name,
         score: Number(w.score),
         trustTier: w.trust_tier as TrustTier,
+        confidenceBadge: w.confidence_badge ?? null,
+        autonomyScore: w.autonomy_score != null ? Number(w.autonomy_score) : null,
+        autonomyLabel: w.autonomy_label ?? null,
         txCount: w.tx_count,
         lastSeen: w.last_seen,
         delivery: delivery

@@ -3,7 +3,8 @@ import { getAllTransactions, getTransactions, upsertWallet, insertScoreSnapshot,
 import { calculateScore, calculateScores } from '@/scoring/index';
 import { readAttestation, readAttestations } from '@/integrations/attestation';
 import { computeCadence } from '@/scoring/cadence';
-import { buildCadenceSignal } from '@/scoring/signals';
+import { computeAutonomy } from '@/scoring/autonomy';
+import { buildCadenceSignal, buildAutonomySignal } from '@/scoring/signals';
 import { requireBearerSecret } from '@/lib/api-auth';
 import { enforceRateLimit } from '@/lib/rate-limit';
 
@@ -29,10 +30,16 @@ export async function POST(request: NextRequest) {
       getLatestSignalValues([wallet], 'manifest'),
     ]);
 
-    // Recompute + re-emit cadence for this wallet, then use its automationScore.
+    // Recompute + re-emit cadence + autonomy for this wallet.
     const cadence = computeCadence(transactions.map((tx) => new Date(tx.timestamp)));
     if (cadence) {
       await insertSignalEvents([buildCadenceSignal(wallet, cadence)], { overwrite: true });
+    }
+    const autonomy = computeAutonomy(
+      transactions.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
+    );
+    if (autonomy) {
+      await insertSignalEvents([buildAutonomySignal(wallet, autonomy)], { overwrite: true });
     }
 
     const score = calculateScore(
@@ -47,6 +54,8 @@ export async function POST(request: NextRequest) {
       providerScore: score.providerScore,
       consumerScore: score.consumerScore,
       confidenceBadge: score.confidenceBadge,
+      autonomyScore: autonomy?.score ?? null,
+      autonomyLabel: autonomy?.label ?? null,
     });
     await insertScoreSnapshot(
       wallet,
@@ -79,13 +88,33 @@ export async function POST(request: NextRequest) {
   ]);
   const scores = calculateScores(allTx, attestations, cadenceScores, manifestScores);
 
+  // Group tx by wallet once for autonomy compute + feedback recalc.
+  const txByWallet = new Map<string, typeof allTx>();
+  for (const tx of allTx) {
+    const list = txByWallet.get(tx.wallet_address) ?? [];
+    list.push(tx);
+    txByWallet.set(tx.wallet_address, list);
+  }
+
+  const autonomySignals: ReturnType<typeof buildAutonomySignal>[] = [];
+  const autonomyByWallet = new Map<string, ReturnType<typeof computeAutonomy>>();
+  for (const [address, txs] of txByWallet) {
+    const autonomy = computeAutonomy(
+      txs.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
+    );
+    autonomyByWallet.set(address, autonomy);
+    if (autonomy) autonomySignals.push(buildAutonomySignal(address, autonomy));
+  }
+  if (autonomySignals.length > 0) {
+    await insertSignalEvents(autonomySignals, { overwrite: true });
+  }
+
   let refreshed = 0;
   for (const [address, score] of scores) {
-    // Re-calculate with feedback if available
     const fb = feedbackMap.get(address);
     const finalScore = fb
       ? calculateScore(
-          allTx.filter((tx) => tx.wallet_address === address),
+          txByWallet.get(address) ?? [],
           attestations.get(address) ?? 0,
           fb.deliveryRate,
           fb.total,
@@ -94,10 +123,13 @@ export async function POST(request: NextRequest) {
         )
       : score;
 
+    const autonomy = autonomyByWallet.get(address);
     await upsertWallet(address, finalScore.score, finalScore.trustTier, finalScore.txCount, {
       providerScore: finalScore.providerScore,
       consumerScore: finalScore.consumerScore,
       confidenceBadge: finalScore.confidenceBadge,
+      autonomyScore: autonomy?.score ?? null,
+      autonomyLabel: autonomy?.label ?? null,
     });
     await insertScoreSnapshot(
       address,

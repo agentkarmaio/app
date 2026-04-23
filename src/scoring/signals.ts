@@ -10,6 +10,7 @@
 import type { Transaction } from '@/db/schema';
 import type { InsertSignalEventInput } from '@/db/client';
 import type { CadenceResult } from './cadence';
+import type { AutonomyResult } from './autonomy';
 
 /**
  * Sentinel tx_ref for aggregate signals (cadence, program breadth, etc.)
@@ -68,6 +69,35 @@ export function buildCadenceSignal(
       regularity: cadence.regularity,
       histogram: cadence.histogram,
       txCount: cadence.txCount,
+    },
+  };
+}
+
+/**
+ * Build the Autonomy Confidence signal for a wallet (RFC v0.3 §5.5).
+ *
+ * Autonomy is orthogonal to Karma — stored as a Tier 2 behavioral signal for
+ * provenance, but MUST NOT be blended into the karma score. Scorers read it
+ * from its own column / payload and render it in its own chip.
+ */
+export function buildAutonomySignal(
+  walletAddress: string,
+  autonomy: AutonomyResult,
+): InsertSignalEventInput {
+  return {
+    agentWallet: walletAddress,
+    tier: 2,
+    kind: 'autonomy',
+    face: 'provider',
+    weight: 1.0,
+    value: autonomy.score / 100,
+    txRef: AGGREGATE_TX_REF,
+    payload: {
+      score: autonomy.score,
+      label: autonomy.label,
+      components: autonomy.components,
+      effectiveWeights: autonomy.effectiveWeights,
+      txCount: autonomy.txCount,
     },
   };
 }

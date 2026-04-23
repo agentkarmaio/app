@@ -4,10 +4,11 @@ import {
 } from '@/components/ui/table';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge } from '@/components/karma/confidence-badge';
+import { AutonomyChip } from '@/components/karma/autonomy-chip';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { Sparkline } from '@/components/karma/sparkline';
-import type { TrustTier, ConfidenceBadge as ConfidenceBadgeValue } from '@/db/schema';
+import type { TrustTier, ConfidenceBadge as ConfidenceBadgeValue, AutonomyLabel } from '@/db/schema';
 
 export interface LeaderboardEntry {
   rank: number;
@@ -16,6 +17,8 @@ export interface LeaderboardEntry {
   score: number;
   trustTier: TrustTier;
   confidenceBadge?: ConfidenceBadgeValue | null;
+  autonomyScore?: number | null;
+  autonomyLabel?: AutonomyLabel | null;
   txCount: number;
   lastSeen: string;
   delivery?: { total: number; deliveryRate: number } | null;
@@ -48,6 +51,7 @@ export function LeaderboardTable({
           <TableHead className="text-center hidden md:table-cell">Trend</TableHead>
           <TableHead className="text-center">Tier</TableHead>
           <TableHead className="text-center hidden lg:table-cell">Confidence</TableHead>
+          <TableHead className="text-center hidden lg:table-cell" title="Autonomy Confidence — is this counterparty actually an autonomous agent?">Autonomy</TableHead>
           <TableHead className="text-center hidden md:table-cell">Delivery</TableHead>
           <TableHead className="text-right">Transactions</TableHead>
           <TableHead className="text-right hidden sm:table-cell">Status</TableHead>
@@ -90,6 +94,13 @@ export function LeaderboardTable({
             <TableCell className="text-center hidden lg:table-cell">
               {entry.confidenceBadge ? (
                 <ConfidenceBadge badge={entry.confidenceBadge} size="sm" />
+              ) : (
+                <span className="text-[11px] text-[#62666d]">—</span>
+              )}
+            </TableCell>
+            <TableCell className="text-center hidden lg:table-cell">
+              {entry.autonomyScore != null && entry.autonomyLabel ? (
+                <AutonomyChip score={entry.autonomyScore} label={entry.autonomyLabel} size="sm" />
               ) : (
                 <span className="text-[11px] text-[#62666d]">—</span>
               )}

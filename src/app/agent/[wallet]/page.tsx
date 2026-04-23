@@ -12,12 +12,14 @@ import {
   getAgentManifestsForWallet,
   getLatestSignalValues,
 } from '@/db/client';
-import { calculateScore } from '@/scoring/index';
+import { calculateScore, type WalletScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
+import { computeAutonomy, type AutonomyResult } from '@/scoring/autonomy';
 import { readAttestation } from '@/integrations/attestation';
 import { ScoreRing } from '@/components/karma/score-ring';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge } from '@/components/karma/confidence-badge';
+import { AutonomyChip } from '@/components/karma/autonomy-chip';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { MetricBar } from '@/components/karma/metric-bar';
 import { TransactionList } from '@/components/karma/transaction-list';
@@ -29,7 +31,7 @@ import { ManifestCard } from '@/components/karma/manifest-card';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import type { TrustTier, ConfidenceBadge as ConfidenceBadgeValue } from '@/db/schema';
+import type { TrustTier, ConfidenceBadge as ConfidenceBadgeValue, AutonomyLabel } from '@/db/schema';
 
 const CATEGORY_LABELS: Record<string, string> = {
   ai: 'AI / ML',
@@ -62,22 +64,47 @@ function CardSkeleton({ title, rows = 5 }: { title: string; rows?: number }) {
   );
 }
 
-async function ScoreBreakdownCard({
-  wallet,
-  feedbackDeliveryRate,
-  feedbackCount,
-}: {
-  wallet: string;
-  feedbackDeliveryRate: number;
-  feedbackCount: number;
-}) {
+// Full-history live score used by every tier-bearing surface on this page so
+// the ring, header badge, summary, and breakdown bars can never disagree.
+// Matches what /api/score/refresh computes (cap 10000 txs, same tier gating).
+async function computeLiveAgentScore(
+  wallet: string,
+  feedback: { deliveryRate: number; total: number },
+): Promise<{
+  live: WalletScore | null;
+  manifestValue: number | null;
+  txCount: number;
+  autonomy: AutonomyResult | null;
+}> {
   const [txs, attestation, manifestMap] = await Promise.all([
-    getTransactions(wallet, 100),
+    getTransactions(wallet, 10000),
     readAttestation(wallet).catch(() => 0),
     getLatestSignalValues([wallet], 'manifest').catch(() => new Map<string, number>()),
   ]);
+  const manifestValue = manifestMap.get(wallet) ?? null;
+  if (txs.length === 0) return { live: null, manifestValue, txCount: 0, autonomy: null };
+  const cadence = computeCadence(txs.map((tx) => new Date(tx.timestamp)));
+  const autonomy = computeAutonomy(
+    txs.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
+  );
+  const live = calculateScore(
+    txs, attestation, feedback.deliveryRate, feedback.total,
+    cadence?.automationScore ?? null,
+    manifestValue,
+  );
+  return { live, manifestValue, txCount: txs.length, autonomy };
+}
 
-  if (txs.length === 0) {
+function ScoreBreakdownCard({
+  live,
+  manifestValue,
+  txCount,
+}: {
+  live: WalletScore | null;
+  manifestValue: number | null;
+  txCount: number;
+}) {
+  if (!live) {
     return (
       <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
         <CardHeader className="pb-4">
@@ -92,18 +119,11 @@ async function ScoreBreakdownCard({
     );
   }
 
-  const cadence = computeCadence(txs.map((tx) => new Date(tx.timestamp)));
-  const live = calculateScore(
-    txs, attestation, feedbackDeliveryRate, feedbackCount,
-    cadence?.automationScore ?? null,
-    manifestMap.get(wallet) ?? null,
-  );
   const m = live.metrics;
   const effective = live.tierAggregates;
   const tier1Pct = effective.tier1 != null ? Math.round(effective.tier1 * 100) : null;
   const tier2Pct = effective.tier2 != null ? Math.round(effective.tier2 * 100) : null;
   const tier3Pct = effective.tier3 != null ? Math.round(effective.tier3 * 100) : null;
-  const manifestValue = manifestMap.get(wallet) ?? null;
   const manifestVerified = manifestValue != null && manifestValue >= 1.0;
 
   return (
@@ -148,7 +168,7 @@ async function ScoreBreakdownCard({
             weight="+10% blend"
             maxLabel={
               m.cadence == null
-                ? `Needs ≥10 tx to classify (have ${txs.length})`
+                ? `Needs ≥10 tx to classify (have ${txCount})`
                 : 'Higher = 24/7 regular pattern; lower = human-shaped'
             }
           />
@@ -308,16 +328,27 @@ export default async function AgentProfilePage({
     if (anyTx === 0) notFound();
   }
 
-  const score = Number(walletRow?.score ?? 0);
-  const tier = (walletRow?.trust_tier ?? 'Unrated') as TrustTier;
-  const txCount = walletRow?.tx_count ?? 0;
-  const providerScore = walletRow?.provider_score != null
-    ? Number(walletRow.provider_score)
-    : score;
-  const consumerScore = walletRow?.consumer_score != null
-    ? Number(walletRow.consumer_score)
-    : null;
-  const confidenceBadge: ConfidenceBadgeValue = walletRow?.confidence_badge ?? 'declared';
+  // Single source of truth for this page: recompute the score from current
+  // transactions, attestations, and signals. walletRow is only used for
+  // identity + timestamps; never for tier labels (they drift when DB isn't
+  // backfilled after a scoring change).
+  const { live, manifestValue, txCount: liveTxCount, autonomy } = await computeLiveAgentScore(wallet, feedbackSummary);
+
+  const score = live?.score ?? Number(walletRow?.score ?? 0);
+  const tier: TrustTier = live?.trustTier ?? (walletRow?.trust_tier ?? 'Unrated') as TrustTier;
+  const txCount = liveTxCount || (walletRow?.tx_count ?? 0);
+  const providerScore = live?.providerScore
+    ?? (walletRow?.provider_score != null ? Number(walletRow.provider_score) : score);
+  const consumerScore = live?.consumerScore
+    ?? (walletRow?.consumer_score != null ? Number(walletRow.consumer_score) : null);
+  const confidenceBadge: ConfidenceBadgeValue =
+    live?.confidenceBadge ?? walletRow?.confidence_badge ?? 'declared';
+  // Prefer live compute; fall back to persisted columns for wallets below the
+  // MIN_TX_FOR_AUTONOMY threshold or when rows pre-date the backfill.
+  const autonomyScore = autonomy?.score
+    ?? (walletRow?.autonomy_score != null ? Number(walletRow.autonomy_score) : null);
+  const autonomyLabel: AutonomyLabel | null = (autonomy?.label
+    ?? (walletRow?.autonomy_label ?? null)) as AutonomyLabel | null;
 
   const isClaimed = walletRow?.claimed ?? false;
   const displayName = walletRow?.display_name;
@@ -349,6 +380,7 @@ export default async function AgentProfilePage({
             )}
             <TierBadge tier={tier} />
             <ConfidenceBadge badge={confidenceBadge} size="sm" />
+            <AutonomyChip score={autonomyScore} label={autonomyLabel} size="sm" />
             {isClaimed && (
               <Badge variant="outline" className="bg-[rgb(94_106_210/0.08)] text-[#828fff] border-[rgb(94_106_210/0.15)] text-[10px] px-1.5 py-0 font-[510]">
                 <Verified className="size-3 mr-0.5" />
@@ -402,13 +434,7 @@ export default async function AgentProfilePage({
       {!isClaimed && <ClaimBanner walletAddress={wallet} />}
 
       <div className="grid gap-6 md:grid-cols-2">
-        <Suspense fallback={<CardSkeleton title="Score Breakdown" rows={5} />}>
-          <ScoreBreakdownCard
-            wallet={wallet}
-            feedbackDeliveryRate={feedbackSummary.deliveryRate}
-            feedbackCount={feedbackSummary.total}
-          />
-        </Suspense>
+        <ScoreBreakdownCard live={live} manifestValue={manifestValue} txCount={txCount} />
 
         <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
           <CardHeader className="pb-4">
@@ -431,6 +457,17 @@ export default async function AgentProfilePage({
               <div className="flex justify-between">
                 <dt className="text-muted-foreground">Confidence</dt>
                 <dd><ConfidenceBadge badge={confidenceBadge} size="sm" /></dd>
+              </div>
+              <Separator />
+              <div className="flex justify-between">
+                <dt className="text-muted-foreground" title="Behavioral fingerprint indicating autonomous-agent vs human operation. Orthogonal to karma (RFC v0.3 §5.5).">Autonomy</dt>
+                <dd>
+                  {autonomyScore != null && autonomyLabel ? (
+                    <AutonomyChip score={autonomyScore} label={autonomyLabel} size="sm" />
+                  ) : (
+                    <span className="text-muted-foreground text-xs">—</span>
+                  )}
+                </dd>
               </div>
               <Separator />
               <div className="flex justify-between">

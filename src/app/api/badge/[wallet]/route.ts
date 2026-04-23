@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getWallet, getTransactions, getFeedbackSummary, getLatestSignalValues } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
+import { computeAutonomy } from '@/scoring/autonomy';
 import { getLivenessStatus } from '@/db/schema';
 import type { TrustTier, LivenessStatus, ConfidenceBadge } from '@/db/schema';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
@@ -47,6 +48,14 @@ export async function GET(
   const cadence = transactions.length > 0
     ? computeCadence(transactions.map((tx) => new Date(tx.timestamp)))
     : null;
+  const autonomy = transactions.length > 0
+    ? computeAutonomy(
+        transactions.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
+      )
+    : null;
+  const autonomyScore = autonomy?.score
+    ?? (walletRow?.autonomy_score != null ? Number(walletRow.autonomy_score) : null);
+  const autonomyLabel = autonomy?.label ?? walletRow?.autonomy_label ?? null;
   const manifestMap = await getLatestSignalValues([wallet], 'manifest')
     .catch(() => new Map<string, number>());
   const liveScore = transactions.length > 0
@@ -78,6 +87,8 @@ export async function GET(
       providerScore,
       consumerScore,
       confidenceBadge,
+      autonomyScore,
+      autonomyLabel,
       trustTier: tier,
       displayName,
       liveness,
@@ -94,7 +105,10 @@ export async function GET(
   }
 
   // SVG badge
-  const svg = renderBadgeSVG({ score, tier, confidenceBadge, displayName, liveness, wallet });
+  const svg = renderBadgeSVG({
+    score, tier, confidenceBadge, displayName, liveness, wallet,
+    autonomyScore, autonomyLabel,
+  });
 
   return new NextResponse(svg, {
     headers: {
@@ -130,6 +144,14 @@ const CONFIDENCE_DOT_COLOR: Record<ConfidenceBadge, string> = {
   declared: '#8a8f98',
 };
 
+type AutonomyLabelValue = 'agent-like' | 'mixed' | 'human-like';
+
+const AUTONOMY_COLORS: Record<AutonomyLabelValue, string> = {
+  'agent-like': '#7170ff',
+  'mixed':      '#f5a623',
+  'human-like': '#8a8f98',
+};
+
 function renderBadgeSVG({
   score,
   tier,
@@ -137,6 +159,8 @@ function renderBadgeSVG({
   displayName,
   liveness,
   wallet,
+  autonomyScore,
+  autonomyLabel,
 }: {
   score: number;
   tier: TrustTier;
@@ -144,6 +168,8 @@ function renderBadgeSVG({
   displayName: string | null;
   liveness: LivenessStatus;
   wallet: string;
+  autonomyScore: number | null;
+  autonomyLabel: string | null;
 }): string {
   const tierColor = TIER_COLORS[tier];
   const livenessColor = LIVENESS_COLORS[liveness];
@@ -156,7 +182,14 @@ function renderBadgeSVG({
   const ringOffset = ringC - (score / 100) * ringC;
 
   const width = 240;
-  const height = 56;
+  const hasAutonomy = autonomyScore != null;
+  const height = hasAutonomy ? 76 : 56;
+  const autonomyColor = (autonomyLabel && autonomyLabel in AUTONOMY_COLORS)
+    ? AUTONOMY_COLORS[autonomyLabel as AutonomyLabelValue]
+    : '#8a8f98';
+  const autonomyText = hasAutonomy
+    ? `Autonomy ${(autonomyScore as number).toFixed(0)} · ${autonomyLabel ?? ''}`
+    : '';
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
   <defs>
@@ -194,6 +227,13 @@ function renderBadgeSVG({
     <circle cx="6" cy="9" r="3" fill="${confidenceColor}"/>
     <text x="14" y="13" fill="#8a8f98" font-size="10" font-weight="500">${confidenceLabel(confidenceBadge)}</text>
   </g>
+
+  ${hasAutonomy ? `
+  <!-- Autonomy Confidence (RFC v0.3 §5.5) — orthogonal to karma -->
+  <g transform="translate(56, 54)">
+    <circle cx="3" cy="9" r="3" fill="${autonomyColor}"/>
+    <text x="11" y="13" fill="${autonomyColor}" font-size="10" font-weight="500">${escapeXml(autonomyText)}</text>
+  </g>` : ''}
 
   <text x="${width - 8}" y="${height - 6}" text-anchor="end" fill="#62666d" font-size="8" font-weight="400">karma</text>
 </svg>`;

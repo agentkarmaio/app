@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getWallet, getTransactions, getLatestSignalValues } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
+import { computeAutonomy } from '@/scoring/autonomy';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
 export async function OPTIONS() {
@@ -56,6 +57,11 @@ export async function GET(
     : null;
   const confidenceBadge = walletRow?.confidence_badge ?? 'declared';
 
+  const storedAutonomy = walletRow?.autonomy_score != null ? {
+    score: Number(walletRow.autonomy_score),
+    label: walletRow.autonomy_label ?? null,
+  } : null;
+
   if (transactions.length === 0) {
     return NextResponse.json({
       address: wallet,
@@ -63,6 +69,7 @@ export async function GET(
       providerScore,
       consumerScore,
       confidenceBadge,
+      autonomy: storedAutonomy,
       trustTier: walletRow?.trust_tier ?? 'Unrated',
       metrics: { successRate: 0, diversity: 0, volume: 0, age: 0 },
       txCount: 0,
@@ -81,6 +88,9 @@ export async function GET(
   }
 
   const cadence = computeCadence(transactions.map((tx) => new Date(tx.timestamp)));
+  const autonomy = computeAutonomy(
+    transactions.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
+  );
   const manifestMap = await getLatestSignalValues([wallet], 'manifest').catch(() => new Map<string, number>());
   const score = calculateScore(
     transactions,
@@ -95,6 +105,11 @@ export async function GET(
     providerScore: score.providerScore,
     consumerScore: score.consumerScore,
     confidenceBadge: score.confidenceBadge,
+    autonomy: autonomy ? {
+      score: autonomy.score,
+      label: autonomy.label,
+      components: autonomy.components,
+    } : storedAutonomy,
     identity,
     entity,
     fundedBy,

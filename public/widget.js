@@ -100,6 +100,14 @@
     'declared':          { color: '#8a8f98', label: 'Declared' },
   };
 
+  // Autonomy Confidence labels (RFC v0.3 §5.5). Orthogonal to karma — rendered
+  // as a separate chip, never blended with the karma score.
+  var AUTONOMY = {
+    'agent-like': { color: '#7170ff', label: 'agent-like' },
+    'mixed':      { color: '#f5a623', label: 'mixed' },
+    'human-like': { color: '#8a8f98', label: 'human-like' },
+  };
+
   function buildHTML(data, opts) {
     var tc = TIER_COLORS[data.trustTier] || '#62666d';
     var lc = LIVENESS_COLORS[data.liveness] || '#62666d';
@@ -107,6 +115,11 @@
     var label = data.displayName || (data.address.slice(0, 4) + '...' + data.address.slice(-4));
     var score = (typeof data.score === 'number') ? data.score.toFixed(1) : '0.0';
     var compact = opts.size === 'compact';
+    var hasAutonomy = typeof data.autonomyScore === 'number' && data.autonomyLabel;
+    var ac = hasAutonomy ? (AUTONOMY[data.autonomyLabel] || AUTONOMY['human-like']) : null;
+    var autonomyChip = hasAutonomy
+      ? '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:500;padding:1px 6px;border-radius:4px;background:' + ac.color + '1f;color:' + ac.color + ';border:0.5px solid ' + ac.color + '40;" title="Autonomy Confidence"><span style="width:5px;height:5px;border-radius:50%;background:' + ac.color + ';"></span>Autonomy ' + Math.round(data.autonomyScore) + ' · ' + esc(ac.label) + '</span>'
+      : '';
 
     if (compact) {
       return '<div class="karma-badge" style="display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border-radius:6px;background:#111113;border:1px solid ' + tc + '33;cursor:pointer;font-family:Inter,-apple-system,sans-serif;transition:border-color 0.15s;" onmouseenter="this.style.borderColor=\'' + tc + '66\'" onmouseleave="this.style.borderColor=\'' + tc + '33\'" title="' + esc(cf.label) + '">'
@@ -133,6 +146,7 @@
       + '<div style="display:inline-flex;align-items:center;gap:6px;">'
       + '<span style="font-size:10px;font-weight:500;padding:1px 6px;border-radius:4px;background:' + tc + '1f;color:' + tc + ';border:0.5px solid ' + tc + '40;">' + data.trustTier + '</span>'
       + '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:500;padding:1px 6px;border-radius:4px;background:' + cf.color + '1f;color:' + cf.color + ';border:0.5px solid ' + cf.color + '40;" title="Confidence: ' + esc(cf.label) + '"><span style="width:5px;height:5px;border-radius:50%;background:' + cf.color + ';"></span>' + esc(cf.label) + '</span>'
+      + autonomyChip
       + '<span style="font-size:10px;color:#62666d;">' + data.txCount + ' txs</span>'
       + '</div>'
       + '</div>'
