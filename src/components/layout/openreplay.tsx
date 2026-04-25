@@ -14,6 +14,7 @@ export function OpenReplay() {
   const { publicKey } = useWallet();
 
   useEffect(() => {
+    if (window.location.protocol !== "https:") return;
     let cancelled = false;
     (async () => {
       const [{ default: Tracker }, { default: trackerAssist }] = await Promise.all([
