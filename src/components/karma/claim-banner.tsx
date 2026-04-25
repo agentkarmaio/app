@@ -18,12 +18,15 @@ const CATEGORIES = [
   { value: 'other', label: 'Other' },
 ];
 
+const TEMPO_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
+
 export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
   const [expanded, setExpanded] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [description, setDescription] = useState('');
   const [website, setWebsite] = useState('');
   const [category, setCategory] = useState('');
+  const [tempoAddress, setTempoAddress] = useState('');
   const [status, setStatus] = useState<'idle' | 'signing' | 'submitting' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -49,6 +52,13 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
       return;
     }
 
+    const trimmedTempo = tempoAddress.trim();
+    if (trimmedTempo && !TEMPO_ADDRESS_REGEX.test(trimmedTempo)) {
+      setErrorMsg('Tempo address must be a valid EVM-style 0x… 42-character address.');
+      setStatus('error');
+      return;
+    }
+
     setStatus('signing');
     try {
       const timestamp = Date.now().toString();
@@ -69,6 +79,7 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
           description: description.trim() || null,
           website: website.trim() || null,
           category: category || null,
+          tempoAddress: trimmedTempo || null,
           signature: signatureB58,
           message,
         }),
@@ -163,6 +174,17 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
               onChange={(e) => setWebsite(e.target.value)}
               className="bg-[rgb(255_255_255/0.03)] border-[rgb(255_255_255/0.08)] text-[13px] h-8"
             />
+            <Input
+              placeholder="Tempo / MPP address (optional, 0x…)"
+              value={tempoAddress}
+              onChange={(e) => setTempoAddress(e.target.value)}
+              maxLength={42}
+              className="bg-[rgb(255_255_255/0.03)] border-[rgb(255_255_255/0.08)] text-[13px] h-8 font-mono"
+            />
+            <p className="text-[10px] text-[#62666d] -mt-1.5">
+              Optional Tier 3 declared signal. If you also operate on the Tempo / MPP rail,
+              link your address — displayed alongside Karma but not blended into your score.
+            </p>
             {errorMsg && (
               <p className="text-[12px] text-[#e5484d]">{errorMsg}</p>
             )}

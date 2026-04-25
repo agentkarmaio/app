@@ -149,6 +149,7 @@ export async function claimWallet(
   description: string | null,
   website: string | null,
   category: string | null,
+  tempoAddress: string | null = null,
 ): Promise<void> {
   // Ensure the wallet row exists (upsert with minimal data if not)
   const existing = await getWallet(address);
@@ -165,6 +166,7 @@ export async function claimWallet(
         description,
         website,
         category,
+        tempo_address: tempoAddress,
         claimed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
@@ -180,11 +182,28 @@ export async function claimWallet(
       description,
       website,
       category,
+      tempo_address: tempoAddress,
       claimed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
     .eq('address', address);
 
+  if (error) throw error;
+}
+
+/**
+ * Set or clear the declared Tempo (MPP) address on a wallet row. Used both by
+ * the claim form and by the manifest resolver when an `agentkarma.json` declares
+ * a tempoAddress. Tier 3 declared-only — never affects Karma.
+ */
+export async function setWalletTempoAddress(
+  address: string,
+  tempoAddress: string | null,
+): Promise<void> {
+  const { error } = await supabase
+    .from('wallets')
+    .update({ tempo_address: tempoAddress, updated_at: new Date().toISOString() })
+    .eq('address', address);
   if (error) throw error;
 }
 

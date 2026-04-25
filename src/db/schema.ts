@@ -32,6 +32,10 @@ export const walletsTable = pgTable('wallets', {
   website:         text('website'),
   category:        text('category'),
   claimed_at:      timestamp('claimed_at', { withTimezone: true }),
+  // Tier 3 declared identity: parallel agent-payment rail addresses. MPP runs
+  // on Tempo (EVM-style 0x… 42-char). Declared-only — no on-chain verification
+  // until cross-chain wallet linkage lands. NEVER blended into Karma.
+  tempo_address:   text('tempo_address'),
   // Two-faced karma (Phase F — signal spectrum)
   provider_score:  numeric('provider_score', { precision: 6, scale: 2 }).notNull().default('0'),
   consumer_score:  numeric('consumer_score', { precision: 6, scale: 2 }),
@@ -202,6 +206,8 @@ export interface Wallet {
   website?: string | null;
   category?: string | null;
   claimed_at?: string | null;
+  // Tier 3 declared identity (parallel agent-payment rails). Tempo / MPP.
+  tempo_address?: string | null;
   // Two-faced karma (Phase F)
   provider_score: number;
   consumer_score: number | null;
@@ -253,7 +259,18 @@ export interface ParsedManifest {
   category?: string | null;
   capabilities?: string[];
   endpoints?: Array<{ kind: string; url: string; description?: string }>;
+  /** Optional Tempo (EVM 0x…) address — declares MPP rail participation. */
+  tempoAddress?: string | null;
   [key: string]: unknown;
+}
+
+/**
+ * EVM-style address (Tempo, used by MPP). Matched case-insensitively; we store
+ * whatever the user typed (no normalization) so checksummed addresses survive.
+ */
+export const TEMPO_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
+export function isTempoAddress(value: unknown): value is string {
+  return typeof value === 'string' && TEMPO_ADDRESS_REGEX.test(value);
 }
 
 export interface SignalEvent {

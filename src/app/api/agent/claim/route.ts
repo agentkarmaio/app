@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { PublicKey } from '@solana/web3.js';
 import nacl from 'tweetnacl';
 import { claimWallet } from '@/db/client';
+import { TEMPO_ADDRESS_REGEX } from '@/db/schema';
 
 const VALID_CATEGORIES = ['ai', 'data', 'defi', 'infra', 'social', 'utility', 'other'];
 
@@ -17,6 +18,7 @@ const VALID_CATEGORIES = ['ai', 'data', 'defi', 'infra', 'social', 'utility', 'o
  *   description:  string — short description (optional, max 280 chars)
  *   website:      string — URL (optional)
  *   category:     string — one of VALID_CATEGORIES (optional)
+ *   tempoAddress: string — Tempo (MPP) EVM 0x… 42-char address (optional, Tier 3 declared-only)
  *   signature:    string — base58-encoded Ed25519 signature
  *   message:      string — the signed message (must match expected format)
  */
@@ -28,12 +30,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { address, displayName, description, website, category, signature, message } = body as {
+  const { address, displayName, description, website, category, tempoAddress, signature, message } = body as {
     address?: string;
     displayName?: string;
     description?: string;
     website?: string;
     category?: string;
+    tempoAddress?: string | null;
     signature?: string;
     message?: string;
   };
@@ -80,6 +83,15 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Validate Tempo address (EVM 0x… 42-char). Declared-only Tier 3 signal —
+  // we do NOT verify ownership here; cross-chain wallet linkage is future work.
+  if (tempoAddress && !TEMPO_ADDRESS_REGEX.test(tempoAddress)) {
+    return NextResponse.json(
+      { error: 'tempoAddress must be a valid EVM-style 0x… 42-character address' },
+      { status: 400 },
+    );
+  }
+
   // Validate message format: "AgentKarma: Claim wallet {address} at {timestamp}"
   const messagePrefix = `AgentKarma: Claim wallet ${address} at `;
   if (!message.startsWith(messagePrefix)) {
@@ -115,6 +127,7 @@ export async function POST(request: NextRequest) {
       description ?? null,
       website ?? null,
       category ?? null,
+      tempoAddress ?? null,
     );
   } catch (err) {
     console.error('[claim] DB error:', err);

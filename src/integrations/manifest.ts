@@ -27,7 +27,8 @@
  *       { "kind": "x402",  "url": "https://api.weatherbot.example/x402" },
  *       { "kind": "mcp",   "url": "https://api.weatherbot.example/mcp" },
  *       { "kind": "http",  "url": "https://api.weatherbot.example" }
- *     ]
+ *     ],
+ *     "tempoAddress": "0xabcdef0123456789abcdef0123456789abcdef01"
  *   }
  *
  * All fields except `schema` are optional. When `wallet` is present and matches
@@ -35,6 +36,7 @@
  */
 
 import type { ParsedManifest, ManifestSourceType } from '@/db/schema';
+import { isTempoAddress } from '@/db/schema';
 import { PublicKey } from '@solana/web3.js';
 import nacl from 'tweetnacl';
 
@@ -232,6 +234,9 @@ export function parseAgentKarmaManifest(raw: unknown): ParsedManifest | null {
     website:     strOrNull(obj.website),
     github:      strOrNull(obj.github),
     category:    strOrNull(obj.category),
+    // Tier 3 declared MPP/Tempo address — validated but not verified. Cross-rail
+    // ownership proofs (signed pairing statement) are future work.
+    tempoAddress: isTempoAddress(obj.tempoAddress) ? (obj.tempoAddress as string) : null,
   };
 
   if (Array.isArray(obj.capabilities)) {

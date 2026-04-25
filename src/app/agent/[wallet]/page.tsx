@@ -28,6 +28,7 @@ import { ClaimBanner } from '@/components/karma/claim-banner';
 import { FeedbackSection } from '@/components/karma/feedback-section';
 import { ScoreChart } from '@/components/karma/score-chart';
 import { ManifestCard } from '@/components/karma/manifest-card';
+import { TempoCard } from '@/components/karma/tempo-card';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -355,6 +356,7 @@ export default async function AgentProfilePage({
   const agentDescription = walletRow?.description;
   const agentWebsite = walletRow?.website;
   const agentCategory = walletRow?.category;
+  const agentTempoAddress = walletRow?.tempo_address;
 
   return (
     <div className="space-y-6">
@@ -513,6 +515,8 @@ export default async function AgentProfilePage({
       </div>
 
       {manifests.length > 0 && <ManifestCard manifest={manifests[0]} />}
+
+      {agentTempoAddress && <TempoCard tempoAddress={agentTempoAddress} />}
 
       <Suspense fallback={<CardSkeleton title="Score Trend" rows={3} />}>
         <ScoreTrendCard wallet={wallet} tier={tier} />
