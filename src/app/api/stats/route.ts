@@ -15,7 +15,10 @@ export async function GET(request: NextRequest) {
     headers: {
       ...gate.headers,
       ...corsHeaders(),
-      'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+      // Live counter polls this every 6s with cache:'no-store' on the client.
+      // Keep the CDN window tight so the visible count moves with real ingest
+      // instead of plateauing for 30+ seconds at off-peak rates.
+      'Cache-Control': 'public, s-maxage=5, stale-while-revalidate=20',
     },
   });
 }

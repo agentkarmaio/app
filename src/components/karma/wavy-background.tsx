@@ -61,9 +61,7 @@ export function WavyBackground({
     };
 
     const render = () => {
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = '#08090a';
-      ctx.fillRect(0, 0, w, h);
+      ctx.clearRect(0, 0, w, h);
       ctx.globalAlpha = opacity;
       drawWave(5);
       animationId = requestAnimationFrame(render);

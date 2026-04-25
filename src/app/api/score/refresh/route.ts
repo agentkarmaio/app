@@ -56,6 +56,11 @@ export async function POST(request: NextRequest) {
       confidenceBadge: score.confidenceBadge,
       autonomyScore: autonomy?.score ?? null,
       autonomyLabel: autonomy?.label ?? null,
+      metricSuccessRate: score.metrics.successRate,
+      metricDiversity:   score.metrics.diversity,
+      metricVolume:      score.metrics.volume,
+      metricAge:         score.metrics.age,
+      metricCadence:     score.metrics.cadence,
     });
     await insertScoreSnapshot(
       wallet,
@@ -130,6 +135,11 @@ export async function POST(request: NextRequest) {
       confidenceBadge: finalScore.confidenceBadge,
       autonomyScore: autonomy?.score ?? null,
       autonomyLabel: autonomy?.label ?? null,
+      metricSuccessRate: finalScore.metrics.successRate,
+      metricDiversity:   finalScore.metrics.diversity,
+      metricVolume:      finalScore.metrics.volume,
+      metricAge:         finalScore.metrics.age,
+      metricCadence:     finalScore.metrics.cadence,
     });
     await insertScoreSnapshot(
       address,

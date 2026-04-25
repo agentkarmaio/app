@@ -10,10 +10,13 @@ import { SOLANA_FACILITATORS, getFacilitatorName } from '@/config/facilitators';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { KarmaCatchingUp } from '@/components/karma/karma-catching-up';
+import { AgentsExplorer } from '@/components/karma/agents-explorer';
 import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 import type { TrustTier } from '@/db/schema';
 import { formatUsdcAmount } from '@/lib/format';
 
+type ExploreTab = 'agents' | 'activity';
 type TimeWindow = '1d' | '7d' | '30d' | 'all';
 
 const TIME_WINDOWS: { key: TimeWindow; label: string; days: number | null }[] = [
@@ -24,45 +27,89 @@ const TIME_WINDOWS: { key: TimeWindow; label: string; days: number | null }[] = 
 ];
 
 interface Props {
-  searchParams: Promise<{ f?: string; t?: TimeWindow }>;
+  searchParams: Promise<Record<string, string | undefined>>;
 }
 
 export default async function ExplorePage({ searchParams }: Props) {
-  const { f: selectedFacilitator, t: timeParam } = await searchParams;
-  const timeWindow: TimeWindow = (timeParam && TIME_WINDOWS.find((w) => w.key === timeParam))
-    ? timeParam
+  const params = await searchParams;
+  const tab: ExploreTab = params.tab === 'activity' ? 'activity' : 'agents';
+  const selectedFacilitator = params.f;
+  const timeWindow: TimeWindow = (params.t && TIME_WINDOWS.find((w) => w.key === params.t))
+    ? params.t as TimeWindow
     : 'all';
   const daysBack = TIME_WINDOWS.find((w) => w.key === timeWindow)?.days ?? null;
   const sinceIso = daysBack != null
     ? new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString()
     : undefined;
 
+  // Breakout: the root <main> clamps to max-w-5xl with px-4. This page wants
+  // the full viewport so the left filter rail can sit near the edge and the
+  // 11-column table can stretch. No horizontal padding on the outer — each
+  // child section re-applies its own, asymmetric for the agents layout so the
+  // filter rail pulls all the way left with just enough inset to breathe.
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-[32px] font-[510] leading-tight tracking-[-0.704px] text-[#f7f8f8]">
+    <div className="relative md:left-1/2 md:right-1/2 md:-ml-[50vw] md:-mr-[50vw] md:w-screen space-y-6">
+      <div className="px-4 md:px-6 xl:px-8 max-w-5xl">
+        <h1 className="text-[30px] font-[510] leading-tight tracking-[-0.704px] text-[#f7f8f8]">
           Explore
         </h1>
-        <p className="mt-1.5 text-[15px] text-[#8a8f98] tracking-[-0.165px]">
-          Browse x402 facilitators and recent agent payments on Solana.
+        <p className="mt-1 text-[14px] text-[#8a8f98] tracking-[-0.165px]">
+          {tab === 'agents'
+            ? 'Filter and sort every scored agent by behavior, autonomy, and receipts.'
+            : 'Browse x402 facilitators and recent agent payments on Solana.'}
         </p>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-        <Suspense fallback={<SidebarSkeleton />}>
-          <FacilitatorSidebarAsync
-            selected={selectedFacilitator}
-            timeWindow={timeWindow}
-          />
-        </Suspense>
-        <Suspense fallback={<ActivitySkeleton />} key={`${selectedFacilitator ?? ''}-${timeWindow}`}>
-          <RecentActivityAsync
-            selectedFacilitator={selectedFacilitator}
-            timeWindow={timeWindow}
-            sinceIso={sinceIso}
-          />
-        </Suspense>
+      <div className="px-4 md:px-6 xl:px-8">
+        <TabNav active={tab} />
       </div>
+
+      {tab === 'agents' ? (
+        <div className="pl-3 md:pl-4 pr-4 md:pr-8 xl:pr-10">
+          <AgentsExplorer />
+        </div>
+      ) : (
+        <div className="pl-3 md:pl-4 pr-4 md:pr-8 xl:pr-10 grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+          <Suspense fallback={<SidebarSkeleton />}>
+            <FacilitatorSidebarAsync
+              selected={selectedFacilitator}
+              timeWindow={timeWindow}
+            />
+          </Suspense>
+          <Suspense fallback={<ActivitySkeleton />} key={`${selectedFacilitator ?? ''}-${timeWindow}`}>
+            <RecentActivityAsync
+              selectedFacilitator={selectedFacilitator}
+              timeWindow={timeWindow}
+              sinceIso={sinceIso}
+            />
+          </Suspense>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TabNav({ active }: { active: ExploreTab }) {
+  const tabs: { key: ExploreTab; label: string }[] = [
+    { key: 'agents',   label: 'Agents' },
+    { key: 'activity', label: 'Activity' },
+  ];
+  return (
+    <div className="border-b border-[rgb(255_255_255/0.06)] flex gap-5">
+      {tabs.map((t) => (
+        <Link
+          key={t.key}
+          href={t.key === 'agents' ? '/explore?tab=agents' : '/explore?tab=activity'}
+          className={cn(
+            "pb-2.5 -mb-px border-b-2 text-[13px] font-[510] tracking-[-0.165px] transition-colors",
+            active === t.key
+              ? "border-[#5e6ad2] text-[#f7f8f8]"
+              : "border-transparent text-[#8a8f98] hover:text-[#f7f8f8]",
+          )}
+        >
+          {t.label}
+        </Link>
+      ))}
     </div>
   );
 }

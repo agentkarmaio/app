@@ -231,6 +231,11 @@ export async function runIndexer(
       confidenceBadge: walletScore.confidenceBadge,
       autonomyScore: autonomy?.score ?? null,
       autonomyLabel: autonomy?.label ?? null,
+      metricSuccessRate: walletScore.metrics.successRate,
+      metricDiversity:   walletScore.metrics.diversity,
+      metricVolume:      walletScore.metrics.volume,
+      metricAge:         walletScore.metrics.age,
+      metricCadence:     walletScore.metrics.cadence,
     });
     await insertScoreSnapshot(
       address,

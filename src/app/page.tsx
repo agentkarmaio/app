@@ -4,6 +4,7 @@ import { StatsCards } from '@/components/karma/stats-cards';
 import { LeaderboardWithLoadMore } from '@/components/karma/leaderboard-with-load-more';
 import { Hero } from '@/components/karma/hero';
 import { FacilitatorList } from '@/components/karma/facilitator-list';
+import { BuiltWith } from '@/components/karma/built-with';
 import { Tour } from '@/components/karma/tour';
 import { KarmaCatchingUp } from '@/components/karma/karma-catching-up';
 import type { LeaderboardEntry } from '@/components/karma/leaderboard-table';
@@ -17,6 +18,7 @@ export default function HomePage() {
       <Suspense fallback={<StatsSkeleton />}>
         <StatsSection />
       </Suspense>
+      <BuiltWith />
       <Suspense fallback={<LeaderboardSkeleton />}>
         <LeaderboardSection />
       </Suspense>

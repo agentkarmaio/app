@@ -43,11 +43,26 @@ export const walletsTable = pgTable('wallets', {
   // Autonomy Confidence (RFC v0.3 §5.5) — orthogonal to karma
   autonomy_score:  numeric('autonomy_score', { precision: 6, scale: 2 }),
   autonomy_label:  text('autonomy_label'),
+  // Denormalized Tier-2 metric values (0–1) so the Explore table can filter
+  // + sort on them without joining scores/signal_events for every query.
+  metric_success_rate: numeric('metric_success_rate', { precision: 5, scale: 4 }),
+  metric_diversity:    numeric('metric_diversity',    { precision: 5, scale: 4 }),
+  metric_volume:       numeric('metric_volume',       { precision: 5, scale: 4 }),
+  metric_age:          numeric('metric_age',          { precision: 5, scale: 4 }),
+  metric_cadence:      numeric('metric_cadence',      { precision: 5, scale: 4 }),
+  // Deferred-scoring queue: set by the webhook/indexer when new txs land,
+  // cleared by the rescore worker after scores are recomputed. Keeps the
+  // webhook hot path O(batch-size) instead of O(wallet-history).
+  scoring_dirty_at:    timestamp('scoring_dirty_at', { withTimezone: true }),
 }, (table) => [
   index('idx_wallets_score').on(table.score),
   index('idx_wallets_provider_score').on(table.provider_score),
   index('idx_wallets_confidence_badge').on(table.confidence_badge),
   index('idx_wallets_autonomy_score').on(table.autonomy_score),
+  index('idx_wallets_metric_cadence').on(table.metric_cadence),
+  index('idx_wallets_metric_success_rate').on(table.metric_success_rate),
+  index('idx_wallets_metric_diversity').on(table.metric_diversity),
+  index('idx_wallets_scoring_dirty_at').on(table.scoring_dirty_at),
 ]);
 
 export const transactionsTable = pgTable('transactions', {
@@ -214,6 +229,14 @@ export interface Wallet {
   confidence_badge: ConfidenceBadge;
   autonomy_score?: number | null;
   autonomy_label?: AutonomyLabel | null;
+  // Denormalized Tier-2 metrics (0–1, nullable until first score recompute)
+  metric_success_rate?: number | null;
+  metric_diversity?: number | null;
+  metric_volume?: number | null;
+  metric_age?: number | null;
+  metric_cadence?: number | null;
+  // Deferred-scoring queue sentinel. Non-null = awaiting recompute.
+  scoring_dirty_at?: string | null;
 }
 
 export type AutonomyLabel = 'agent-like' | 'mixed' | 'human-like';

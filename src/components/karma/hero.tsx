@@ -32,9 +32,40 @@ export function Hero() {
     <section className="relative pb-12 pt-10 sm:pt-16 lg:pb-20 lg:pt-20">
       <div
         aria-hidden
-        className="pointer-events-none absolute top-0 h-full overflow-hidden -z-10"
+        className="pointer-events-none absolute -top-32 h-[calc(100%+10rem)] overflow-hidden -z-10 sm:-top-40 sm:h-[calc(100%+12rem)] lg:-top-48 lg:h-[calc(100%+14rem)]"
         style={{ left: 'calc(50% - 50vw)', width: '100vw' }}
       >
+        <div
+          className="absolute inset-x-0 top-0 h-full overflow-hidden"
+          style={{
+            opacity: 0.16,
+            filter: 'saturate(0.35) contrast(1.05) hue-rotate(200deg) brightness(0.9)',
+            maskImage:
+              'linear-gradient(to bottom, black 0%, black 30%, rgba(0,0,0,0.6) 55%, rgba(0,0,0,0.25) 75%, transparent 95%)',
+            WebkitMaskImage:
+              'linear-gradient(to bottom, black 0%, black 30%, rgba(0,0,0,0.6) 55%, rgba(0,0,0,0.25) 75%, transparent 95%)',
+          }}
+        >
+          <video
+            autoPlay
+            muted
+            loop
+            playsInline
+            preload="auto"
+            className="size-full object-cover"
+          >
+            <source src="/backgrounds/win98-clouds.webm" type="video/webm" />
+            <source src="/backgrounds/win98-clouds.mp4" type="video/mp4" />
+          </video>
+        </div>
+        <div
+          className="absolute inset-0"
+          style={{
+            background:
+              'linear-gradient(180deg, rgba(94,106,210,0.08) 0%, rgba(94,106,210,0.03) 40%, transparent 70%)',
+            mixBlendMode: 'screen',
+          }}
+        />
         <WavyBackground
           opacity={0.22}
           blur={28}

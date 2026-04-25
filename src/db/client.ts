@@ -57,6 +57,12 @@ export interface UpsertWalletOpts {
   confidenceBadge?: ConfidenceBadge;
   autonomyScore?: number | null;
   autonomyLabel?: AutonomyLabel | null;
+  // Denormalized Tier-2 metrics for Explore table filtering/sort.
+  metricSuccessRate?: number | null;
+  metricDiversity?: number | null;
+  metricVolume?: number | null;
+  metricAge?: number | null;
+  metricCadence?: number | null;
 }
 
 export async function upsertWallet(
@@ -84,6 +90,11 @@ export async function upsertWallet(
   if ('consumerScore' in opts) row.consumer_score = opts.consumerScore;
   if ('autonomyScore' in opts) row.autonomy_score = opts.autonomyScore;
   if ('autonomyLabel' in opts) row.autonomy_label = opts.autonomyLabel;
+  if ('metricSuccessRate' in opts) row.metric_success_rate = opts.metricSuccessRate;
+  if ('metricDiversity' in opts)   row.metric_diversity    = opts.metricDiversity;
+  if ('metricVolume' in opts)      row.metric_volume       = opts.metricVolume;
+  if ('metricAge' in opts)         row.metric_age          = opts.metricAge;
+  if ('metricCadence' in opts)     row.metric_cadence      = opts.metricCadence;
 
   const { error } = await supabase
     .from('wallets')
@@ -135,6 +146,81 @@ export async function getLeaderboard(
 
   const { data, error, count } = await q
     .order('score', { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (error) throw error;
+  return { wallets: (data ?? []) as Wallet[], total: count ?? 0 };
+}
+
+// --- Agents Explorer ---------------------------------------------------------
+//
+// Powers the /explore Agents tab. Richer than getLeaderboard — filters +
+// multi-field sort + pagination on denormalized Tier-2 metrics. All sortable
+// columns are indexed (see schema.ts) so large-fleet queries stay cheap.
+
+export type AgentSortField =
+  | 'provider_score' | 'consumer_score' | 'tx_count' | 'last_seen'
+  | 'autonomy_score' | 'metric_cadence' | 'metric_success_rate'
+  | 'metric_diversity' | 'metric_volume' | 'metric_age';
+
+export interface AgentsExploreFilters {
+  tiers?: TrustTier[];
+  confidenceBadges?: ConfidenceBadge[];
+  autonomyLabels?: AutonomyLabel[];
+  status?: LivenessStatus;
+  claimed?: boolean;
+  minProviderScore?: number;
+  minCadence?: number;
+  minDiversity?: number;
+  minSuccessRate?: number;
+  search?: string;          // substring match on address/display_name
+}
+
+export interface AgentsExploreSort {
+  field: AgentSortField;
+  direction: 'asc' | 'desc';
+}
+
+export async function getAgents(
+  limit = 25,
+  offset = 0,
+  filters: AgentsExploreFilters = {},
+  sort: AgentsExploreSort = { field: 'provider_score', direction: 'desc' },
+): Promise<LeaderboardPage> {
+  let q = supabase
+    .from('wallets')
+    .select('*', { count: 'exact' })
+    .gt('tx_count', 0);
+
+  if (filters.tiers?.length) q = q.in('trust_tier', filters.tiers);
+  if (filters.confidenceBadges?.length) q = q.in('confidence_badge', filters.confidenceBadges);
+  if (filters.autonomyLabels?.length) q = q.in('autonomy_label', filters.autonomyLabels);
+  if (filters.claimed != null) q = q.eq('claimed', filters.claimed);
+  if (filters.minProviderScore != null) q = q.gte('provider_score', filters.minProviderScore);
+  if (filters.minCadence != null) q = q.gte('metric_cadence', filters.minCadence);
+  if (filters.minDiversity != null) q = q.gte('metric_diversity', filters.minDiversity);
+  if (filters.minSuccessRate != null) q = q.gte('metric_success_rate', filters.minSuccessRate);
+
+  if (filters.status) {
+    const now = Date.now();
+    const iso = (hoursAgo: number) => new Date(now - hoursAgo * 3600_000).toISOString();
+    switch (filters.status) {
+      case 'Active':   q = q.gte('last_seen', iso(24)); break;
+      case 'Recent':   q = q.lt('last_seen', iso(24)).gte('last_seen', iso(7 * 24)); break;
+      case 'Dormant':  q = q.lt('last_seen', iso(7 * 24)).gte('last_seen', iso(90 * 24)); break;
+      case 'Inactive': q = q.lt('last_seen', iso(90 * 24)); break;
+    }
+  }
+
+  if (filters.search) {
+    const term = filters.search.replace(/[%_]/g, '').trim();
+    if (term) q = q.or(`address.ilike.%${term}%,display_name.ilike.%${term}%`);
+  }
+
+  // Sort with a stable tiebreaker on address so pagination is deterministic.
+  const { data, error, count } = await q
+    .order(sort.field, { ascending: sort.direction === 'asc', nullsFirst: false })
+    .order('address', { ascending: true })
     .range(offset, offset + limit - 1);
 
   if (error) throw error;
@@ -305,6 +391,82 @@ export async function getAllTransactions(): Promise<Transaction[]> {
 
   if (error) throw error;
   return (data ?? []) as Transaction[];
+}
+
+// Bounded history fetch for a single wallet. Used by the rescore worker so
+// cadence/autonomy/score compute stays O(limit) no matter how large the
+// wallet's lifetime tx count is. Default 5000 ≫ MIN_TX_FOR_CADENCE (10) and
+// is enough to reflect automation patterns for whale wallets.
+export async function getRecentTransactionsForWallet(
+  address: string,
+  limit = 5000,
+): Promise<Transaction[]> {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('*')
+    .eq('wallet_address', address)
+    .order('timestamp', { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []) as Transaction[];
+}
+
+// --- Deferred Scoring Queue --------------------------------------------------
+//
+// The webhook hot path marks wallets dirty; a cron worker drains the queue.
+// Keeps webhook response time bounded so Helius never auto-disables the
+// webhook on 24h failure rate.
+
+export async function markWalletsDirty(addresses: string[]): Promise<void> {
+  if (addresses.length === 0) return;
+  const now = new Date().toISOString();
+  // Chunk to respect Supabase URL limits on .in() filters.
+  for (let i = 0; i < addresses.length; i += 500) {
+    const chunk = addresses.slice(i, i + 500);
+    const { error } = await supabase
+      .from('wallets')
+      .update({ scoring_dirty_at: now })
+      .in('address', chunk);
+    if (error) throw error;
+  }
+}
+
+/**
+ * Pop up to `limit` oldest dirty wallet addresses and clear their dirty flag.
+ * Not strictly atomic — two concurrent workers could claim the same wallet —
+ * but scoring is idempotent (upsert + snapshot), so the cost of a collision
+ * is a duplicate snapshot row, not corrupt state. `--skip-running` on the
+ * Servel cron prevents overlap in practice.
+ */
+export async function claimDirtyWallets(limit = 100): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('wallets')
+    .select('address')
+    .not('scoring_dirty_at', 'is', null)
+    .order('scoring_dirty_at', { ascending: true })
+    .limit(limit);
+
+  if (error) throw error;
+  const addresses = (data ?? []).map((row: { address: string }) => row.address);
+  if (addresses.length === 0) return [];
+
+  const { error: clearError } = await supabase
+    .from('wallets')
+    .update({ scoring_dirty_at: null })
+    .in('address', addresses);
+  if (clearError) throw clearError;
+
+  return addresses;
+}
+
+export async function countDirtyWallets(): Promise<number> {
+  const { count, error } = await supabase
+    .from('wallets')
+    .select('address', { count: 'exact', head: true })
+    .not('scoring_dirty_at', 'is', null);
+  if (error) throw error;
+  return count ?? 0;
 }
 
 // --- Score Snapshots ---------------------------------------------------------

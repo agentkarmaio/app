@@ -4,9 +4,11 @@ import {
   getWallet,
   upsertAgentManifest,
   insertSignalEvents,
+  setWalletTempoAddress,
 } from '@/db/client';
 import { resolveManifest } from '@/integrations/manifest';
 import { buildManifestSignal } from '@/scoring/signals';
+import { isTempoAddress } from '@/db/schema';
 
 /**
  * POST /api/agent/manifest/refresh
@@ -74,6 +76,15 @@ export async function POST(request: NextRequest) {
     })],
     { overwrite: true },
   );
+
+  // Mirror a manifest-declared Tempo (MPP) address onto the wallet row so the
+  // profile can render it without re-parsing the raw manifest. Declared-only,
+  // never blended into Karma.
+  const declaredTempo = (result.parsed as { tempoAddress?: string | null }).tempoAddress;
+  if (isTempoAddress(declaredTempo)) {
+    try { await setWalletTempoAddress(wallet, declaredTempo); }
+    catch (err) { console.error('[manifest/refresh] tempo_address update failed:', err); }
+  }
 
   return NextResponse.json({
     wallet,

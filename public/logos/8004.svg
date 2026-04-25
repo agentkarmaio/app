@@ -1,0 +1,5 @@
+<svg width="76" height="20" viewBox="0 0 76 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M10 2 L18 10 L10 18 L2 10 Z" stroke="#ffffff" stroke-width="1.4" fill="none" />
+  <path d="M10 5.5 L14.5 10 L10 14.5 L5.5 10 Z" fill="#ffffff" fill-opacity="0.55" />
+  <text x="26" y="15" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="600" letter-spacing="1" fill="#ffffff">8004</text>
+</svg>
