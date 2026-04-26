@@ -11,7 +11,6 @@ import { WalletAddress } from '@/components/karma/wallet-address';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { KarmaCatchingUp } from '@/components/karma/karma-catching-up';
 import { AgentsExplorer } from '@/components/karma/agents-explorer';
-import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { TrustTier } from '@/db/schema';
 import { formatUsdcAmount } from '@/lib/format';
@@ -171,9 +170,9 @@ async function RecentActivityAsync({
 
 function SidebarSkeleton() {
   return (
-    <div className="space-y-2">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="h-9 w-full animate-pulse rounded-md bg-[rgb(255_255_255/0.03)]" />
+    <div className="space-y-1.5 pt-1">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div key={i} className="h-6 w-full animate-pulse rounded bg-[rgb(255_255_255/0.03)]" style={{ width: `${85 - i * 4}%` }} />
       ))}
     </div>
   );
@@ -181,15 +180,15 @@ function SidebarSkeleton() {
 
 function ActivitySkeleton() {
   return (
-    <div className="rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
-      <div className="border-b border-[rgb(255_255_255/0.05)] px-4 py-3">
-        <div className="h-4 w-32 animate-pulse rounded bg-[rgb(255_255_255/0.04)]" />
+    <div className="rounded-lg border border-[rgb(255_255_255/0.06)] overflow-hidden">
+      <div className="bg-[rgb(255_255_255/0.015)] border-b border-[rgb(255_255_255/0.06)] px-4 py-2.5">
+        <div className="h-3 w-32 animate-pulse rounded bg-[rgb(255_255_255/0.04)]" />
       </div>
-      <div className="divide-y divide-[rgb(255_255_255/0.05)]">
+      <div>
         {Array.from({ length: 8 }).map((_, i) => (
-          <div key={i} className="flex items-center justify-between gap-4 px-4 py-3">
-            <div className="h-4 w-48 animate-pulse rounded bg-[rgb(255_255_255/0.04)]" />
-            <div className="h-4 w-24 animate-pulse rounded bg-[rgb(255_255_255/0.04)]" />
+          <div key={i} className="border-b border-[rgb(255_255_255/0.04)] last:border-0 flex items-center justify-between gap-4 px-4 py-3">
+            <div className="h-2.5 w-48 animate-pulse rounded-full bg-[rgb(255_255_255/0.04)]" />
+            <div className="h-2.5 w-24 animate-pulse rounded-full bg-[rgb(255_255_255/0.04)]" />
           </div>
         ))}
       </div>
@@ -239,65 +238,73 @@ function FacilitatorSidebar({
 
   return (
     <div className="space-y-2">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-[13px] font-[510] text-[#62666d] tracking-[-0.13px]">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-[590] uppercase tracking-[0.1em] text-[#62666d]">
           Facilitators
-        </h2>
+        </span>
         {selected && (
           <Link
             href={buildHref(undefined, timeWindow)}
-            className="text-[12px] font-[510] text-[#5e6ad2] hover:text-[#828fff] transition-colors"
+            className="text-[11px] font-[510] text-[#62666d] hover:text-[#f7f8f8] transition-colors"
           >
-            Clear filter
+            Clear
           </Link>
         )}
       </div>
 
-      <Link
-        href={buildHref(undefined, timeWindow)}
-        className={`flex items-center justify-between rounded-md px-3 py-2 text-[13px] font-[510] transition-colors ${
-          !selected
-            ? 'bg-[rgb(255_255_255/0.05)] text-[#f7f8f8] border border-[rgb(255_255_255/0.08)]'
-            : 'text-[#8a8f98] hover:bg-[rgb(255_255_255/0.03)] hover:text-[#d0d6e0]'
-        }`}
-      >
-        <span>All facilitators</span>
-        <span className="text-[11px] tabular-nums text-[#62666d]">{totalTxCount}</span>
-      </Link>
+      <div className="space-y-px">
+        <Link
+          href={buildHref(undefined, timeWindow)}
+          className={cn(
+            "group/row relative flex items-center justify-between px-2 py-1 rounded transition-colors",
+            !selected
+              ? "bg-[#5e6ad2]/12 text-[#f7f8f8]"
+              : "text-[#9aa0a8] hover:text-[#f7f8f8] hover:bg-[rgb(255_255_255/0.04)]",
+          )}
+        >
+          <span className="text-[12px] font-[510]">All facilitators</span>
+          <span className="text-[11px] tabular-nums text-[#62666d] group-hover/row:text-[#8a8f98]">
+            {totalTxCount.toLocaleString()}
+          </span>
+        </Link>
 
-      {combined.map((c) => {
-        const isSelected = selected && c.addresses.includes(selected);
-        const widthPct = c.totalVolume > 0 ? (c.totalVolume / maxVolume) * 100 : 0;
+        {combined.map((c) => {
+          const isSelected = selected && c.addresses.includes(selected);
+          const widthPct = c.totalVolume > 0 ? (c.totalVolume / maxVolume) * 100 : 0;
 
-        return (
-          <Link
-            key={c.name}
-            href={buildHref(c.firstAddr, timeWindow)}
-            className={`relative flex items-center justify-between overflow-hidden rounded-md px-3 py-2 transition-colors ${
-              isSelected
-                ? 'bg-[rgb(255_255_255/0.05)] text-[#f7f8f8] border border-[rgb(255_255_255/0.08)]'
-                : 'text-[#8a8f98] hover:bg-[rgb(255_255_255/0.03)] hover:text-[#d0d6e0]'
-            }`}
-          >
-            {widthPct > 0 && (
-              <div
-                aria-hidden
-                className="pointer-events-none absolute inset-y-0 left-0 bg-[rgb(94_106_210/0.10)]"
-                style={{ width: `${widthPct}%` }}
-              />
-            )}
-            <div className="relative flex items-center gap-2">
-              <div className={`size-1.5 rounded-full ${isSelected ? 'bg-[#7170ff]' : 'bg-[#5e6ad2]'}`} />
-              <span className="text-[13px] font-[510] capitalize">{c.name}</span>
-            </div>
-            {c.txCount > 0 && (
-              <span className="relative text-[11px] tabular-nums text-[#62666d]">
-                {c.txCount}
+          return (
+            <Link
+              key={c.name}
+              href={buildHref(c.firstAddr, timeWindow)}
+              className={cn(
+                "group/row relative flex items-center justify-between overflow-hidden px-2 py-1 rounded transition-colors",
+                isSelected
+                  ? "bg-[#5e6ad2]/12 text-[#f7f8f8]"
+                  : "text-[#9aa0a8] hover:text-[#f7f8f8] hover:bg-[rgb(255_255_255/0.04)]",
+              )}
+            >
+              {widthPct > 0 && (
+                <div
+                  aria-hidden
+                  className={cn(
+                    "pointer-events-none absolute inset-y-0 left-0",
+                    isSelected ? "bg-[#5e6ad2]/[0.05]" : "bg-[rgb(255_255_255/0.02)]",
+                  )}
+                  style={{ width: `${widthPct}%` }}
+                />
+              )}
+              <span className="relative text-[12px] font-[510] capitalize truncate">
+                {c.name}
               </span>
-            )}
-          </Link>
-        );
-      })}
+              {c.txCount > 0 && (
+                <span className="relative text-[11px] tabular-nums text-[#62666d] group-hover/row:text-[#8a8f98] shrink-0 ml-2">
+                  {c.txCount.toLocaleString()}
+                </span>
+              )}
+            </Link>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -310,16 +317,17 @@ function TimeFilterChips({
   timeWindow: TimeWindow;
 }) {
   return (
-    <div className="flex items-center gap-1 rounded-md border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] p-0.5">
+    <div className="flex items-center gap-0.5">
       {TIME_WINDOWS.map((w) => (
         <Link
           key={w.key}
           href={buildHref(selectedFacilitator, w.key)}
-          className={`rounded px-2 py-0.5 text-[11px] font-[510] tabular-nums transition-colors ${
+          className={cn(
+            "px-1.5 py-0.5 rounded text-[11px] font-[510] tabular-nums transition-colors",
             timeWindow === w.key
-              ? 'bg-[rgb(255_255_255/0.06)] text-[#f7f8f8]'
-              : 'text-[#62666d] hover:text-[#d0d6e0]'
-          }`}
+              ? "bg-[#5e6ad2]/14 text-[#a8b0ff] ring-1 ring-inset ring-[#5e6ad2]/30"
+              : "text-[#8a8f98] hover:text-[#f7f8f8] hover:bg-[rgb(255_255_255/0.04)]",
+          )}
         >
           {w.label}
         </Link>
@@ -344,19 +352,16 @@ function RecentActivity({
     : null;
 
   return (
-    <div className="rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
-      <div className="border-b border-[rgb(255_255_255/0.05)] px-4 py-3 flex items-center justify-between gap-2">
+    <div className="rounded-lg border border-[rgb(255_255_255/0.06)] overflow-hidden">
+      <div className="bg-[rgb(255_255_255/0.015)] border-b border-[rgb(255_255_255/0.06)] px-4 py-2 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
-          <h2 className="text-[13px] font-[510] text-[#62666d] tracking-[-0.13px]">
+          <span className="text-[10px] font-[590] uppercase tracking-[0.08em] text-[#62666d]">
             Recent Payments
-          </h2>
+          </span>
           {facilitatorLabel && (
-            <Badge
-              variant="outline"
-              className="bg-[rgb(94_106_210/0.12)] text-[#828fff] border-[rgb(94_106_210/0.2)] text-[10px] font-[510] capitalize"
-            >
+            <span className="text-[10px] font-[510] capitalize px-1.5 py-0.5 rounded text-[#a8b0ff] bg-[#5e6ad2]/14 ring-1 ring-inset ring-[#5e6ad2]/30">
               {facilitatorLabel}
-            </Badge>
+            </span>
           )}
         </div>
         <TimeFilterChips selectedFacilitator={selectedFacilitator} timeWindow={timeWindow} />
@@ -364,40 +369,47 @@ function RecentActivity({
 
       {transactions.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <p className="text-[14px] text-[#8a8f98]">No transactions in this window.</p>
-          <p className="mt-1 text-[12px] text-[#62666d]">
+          <p className="text-[13px] text-[#8a8f98]">No transactions in this window.</p>
+          <p className="mt-1 text-[11px] text-[#62666d]">
             Try widening the time filter or clearing the facilitator filter.
           </p>
         </div>
       ) : (
-        <div className="divide-y divide-[rgb(255_255_255/0.05)]">
+        <div>
           {transactions.map((tx) => {
             const tier = tierMap.get(tx.wallet_address);
             return (
               <div
                 key={tx.id}
-                className="flex items-center justify-between gap-4 px-4 py-2.5 hover:bg-[rgb(255_255_255/0.02)] transition-colors"
+                className="group border-b border-[rgb(255_255_255/0.04)] last:border-0 flex items-center justify-between gap-4 px-4 py-2.5 hover:bg-[rgb(255_255_255/0.025)] transition-colors text-[12px]"
               >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className={`size-1.5 shrink-0 rounded-full ${tx.success ? 'bg-[#10b981]' : 'bg-[#e5484d]'}`} />
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div
+                    aria-hidden
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      tx.success ? "bg-[#10b981]" : "bg-[#e5484d]",
+                    )}
+                  />
                   <Link
                     href={`/agent/${tx.wallet_address}`}
-                    className="flex items-center gap-2 hover:underline underline-offset-4"
+                    className="font-mono text-[#d0d6e0] hover:text-[#a8b0ff] transition-colors"
                   >
-                    <WalletAddress address={tx.wallet_address} copyable={false} className="text-[#d0d6e0]" />
-                    {tier && tier !== 'Unrated' && <TierBadge tier={tier} size="sm" />}
+                    <WalletAddress address={tx.wallet_address} copyable={false} />
                   </Link>
+                  {tier && tier !== 'Unrated' && <TierBadge tier={tier} size="sm" />}
                   {!selectedFacilitator && (
-                    <span className="hidden sm:inline text-[11px] font-[510] capitalize text-[#62666d]">
+                    <span className="hidden sm:inline text-[11px] capitalize text-[#62666d]">
                       via {getFacilitatorName(tx.facilitator) ?? tx.facilitator.slice(0, 6)}
                     </span>
                   )}
                 </div>
                 <div className="flex items-center gap-4 shrink-0">
-                  <span className="text-[13px] font-[510] tabular-nums text-[#d0d6e0]">
-                    {formatUsdcAmount(Number(tx.amount))} <span className="text-[#62666d] text-[11px]">USDC</span>
+                  <span className="font-[510] tabular-nums text-[#d0d6e0]">
+                    {formatUsdcAmount(Number(tx.amount))}
+                    <span className="text-[#62666d] text-[10px] ml-1">USDC</span>
                   </span>
-                  <span className="hidden sm:inline text-[12px] tabular-nums text-[#62666d]">
+                  <span className="hidden sm:inline text-[11px] tabular-nums text-[#62666d] w-12 text-right">
                     {new Date(tx.timestamp).toLocaleDateString('en-US', {
                       month: 'short',
                       day: 'numeric',
@@ -407,9 +419,11 @@ function RecentActivity({
                     href={`https://solscan.io/tx/${tx.tx_signature}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="font-mono text-[11px] text-[#62666d] hover:text-[#8a8f98] transition-colors"
+                    onClick={(e) => e.stopPropagation()}
+                    className="font-mono text-[10px] text-[#4b4e54] group-hover:text-[#62666d] hover:!text-[#a8b0ff] transition-colors"
+                    title={tx.tx_signature}
                   >
-                    {tx.tx_signature.slice(0, 8)}..
+                    {tx.tx_signature.slice(0, 6)}…
                   </a>
                 </div>
               </div>
