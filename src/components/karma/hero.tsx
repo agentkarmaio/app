@@ -95,16 +95,7 @@ export function Hero() {
 
       <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,380px)] lg:items-center lg:gap-16 xl:grid-cols-[minmax(0,1fr)_minmax(0,420px)] xl:gap-20">
         <div>
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-            <div className="flex items-center gap-2">
-              <span className="relative flex size-1.5">
-                <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#10b981] opacity-60" />
-                <span className="relative inline-flex size-1.5 rounded-full bg-[#10b981]" />
-              </span>
-              <span className="text-[11px] font-[510] uppercase tracking-[0.12em] text-[#8a8f98]">
-                Reputation layer for AI agents · Live on Solana
-              </span>
-            </div>
+          <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
             <LiveFlow />
           </div>
 
