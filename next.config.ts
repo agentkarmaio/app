@@ -7,6 +7,12 @@ const nextConfig: NextConfig = {
       { source: "/deck/", destination: "/deck/index.html", permanent: false },
     ];
   },
+  async rewrites() {
+    return [
+      { source: "/_or/ingest/:path*", destination: "https://replay.noras.systems/ingest/:path*" },
+      { source: "/_or/ingest", destination: "https://replay.noras.systems/ingest" },
+    ];
+  },
 };
 
 export default nextConfig;

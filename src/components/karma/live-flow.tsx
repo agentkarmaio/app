@@ -37,10 +37,10 @@ function useCountUp(value: number, duration = 900) {
   return display;
 }
 
-export function LiveFlow() {
-  const [stats, setStats] = useState<Stats | null>(null);
+export function LiveFlow({ initial }: { initial?: Stats }) {
+  const [stats, setStats] = useState<Stats | null>(initial ?? null);
   const [pulseKey, setPulseKey] = useState(0);
-  const prevTxRef = useRef<number | null>(null);
+  const prevTxRef = useRef<number | null>(initial?.totalTransactions ?? null);
 
   useEffect(() => {
     let cancelled = false;

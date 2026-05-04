@@ -3,6 +3,7 @@ import { WavyBackground } from '@/components/karma/wavy-background';
 import { LiveTicker } from '@/components/karma/live-ticker';
 import { LiveFlow } from '@/components/karma/live-flow';
 import { TrustGraphMini } from '@/components/karma/trust-graph-mini';
+import { cachedStats } from '@/db/cached';
 
 const PROTOCOLS = [
   { label: 'x402', role: 'payments' },
@@ -27,7 +28,15 @@ function LegendDiamond({ color }: { color: string }) {
   );
 }
 
-export function Hero() {
+export async function Hero() {
+  const initialStats = await cachedStats().catch(() => null);
+  const liveFlowInitial = initialStats
+    ? {
+        totalAgents: initialStats.totalAgents,
+        totalTransactions: initialStats.totalTransactions,
+      }
+    : undefined;
+
   return (
     <section className="relative pb-12 pt-10 sm:pt-16 lg:pb-20 lg:pt-20">
       <div
@@ -95,8 +104,8 @@ export function Hero() {
 
       <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,380px)] lg:items-center lg:gap-16 xl:grid-cols-[minmax(0,1fr)_minmax(0,420px)] xl:gap-20">
         <div>
-          <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
-            <LiveFlow />
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <LiveFlow initial={liveFlowInitial} />
           </div>
 
           <h1

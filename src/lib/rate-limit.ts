@@ -31,7 +31,7 @@ const LIMITS: Record<RateLimitName, LimitSpec> = {
   stats: { limit: 60, window: '1 m' },
   score: { limit: 30, window: '1 m' },
   badge: { limit: 30, window: '1 m' },
-  explore: { limit: 30, window: '1 m' },
+  explore: { limit: 180, window: '1 m' },
   leaderboard: { limit: 30, window: '1 m' },
   graph: { limit: 30, window: '1 m' },
   search: { limit: 30, window: '1 m' },
