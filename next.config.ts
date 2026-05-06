@@ -9,8 +9,8 @@ const nextConfig: NextConfig = {
   },
   async rewrites() {
     return [
-      { source: "/_or/ingest/:path*", destination: "https://replay.noras.systems/ingest/:path*" },
-      { source: "/_or/ingest", destination: "https://replay.noras.systems/ingest" },
+      { source: "/_or/ingest/:path*", destination: "/api/or-ingest/:path*" },
+      { source: "/_or/ingest", destination: "/api/or-ingest" },
     ];
   },
 };

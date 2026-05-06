@@ -28,6 +28,125 @@ function LegendDiamond({ color }: { color: string }) {
   );
 }
 
+function KarmaMechanicsChart() {
+  const linePath =
+    'M 4 32 C 14 32 24 30 34 24 C 44 14 54 8 64 8 C 78 8 86 11 98 15 C 126 12 156 8 200 5 C 222 6 242 14 276 28';
+  const fillPath = `${linePath} L 276 34 L 4 34 Z`;
+
+  const markers = [
+    { x: 64, y: 8, color: '#10b981', delay: '1.45s' },
+    { x: 200, y: 5, color: '#8a92ff', delay: '1.75s' },
+    { x: 276, y: 28, color: '#6b7280', delay: '2.05s' },
+  ];
+
+  return (
+    <div className="mt-3 max-w-[260px] sm:max-w-[380px]">
+      <svg
+        aria-hidden
+        viewBox="0 0 280 38"
+        className="block w-full overflow-visible"
+        style={{ height: 'auto' }}
+      >
+        <defs>
+          <linearGradient id="karmaMechLine" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#10b981" />
+            <stop offset="46%" stopColor="#8a92ff" />
+            <stop offset="78%" stopColor="#7170ff" />
+            <stop offset="100%" stopColor="#4f5258" />
+          </linearGradient>
+          <linearGradient id="karmaMechFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#7170ff" stopOpacity="0.14" />
+            <stop offset="60%" stopColor="#7170ff" stopOpacity="0.04" />
+            <stop offset="100%" stopColor="#7170ff" stopOpacity="0" />
+          </linearGradient>
+          <filter
+            id="karmaMechGlow"
+            x="-200%"
+            y="-200%"
+            width="500%"
+            height="500%"
+          >
+            <feGaussianBlur stdDeviation="2" />
+          </filter>
+        </defs>
+
+        <path d={fillPath} fill="url(#karmaMechFill)" className="karma-mech-fill" />
+
+        <path
+          d={linePath}
+          fill="none"
+          stroke="url(#karmaMechLine)"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="karma-mech-line"
+        />
+
+        {markers.map((m) => (
+          <g
+            key={`${m.x}-${m.y}`}
+            className="karma-mech-marker"
+            style={{ animationDelay: m.delay }}
+          >
+            <circle
+              cx={m.x}
+              cy={m.y}
+              r="4"
+              fill={m.color}
+              opacity="0.32"
+              filter="url(#karmaMechGlow)"
+              className="karma-mech-pulse"
+            />
+            <circle
+              cx={m.x}
+              cy={m.y}
+              r="2.2"
+              fill={m.color}
+              stroke="rgba(255,255,255,0.92)"
+              strokeWidth="0.55"
+            />
+          </g>
+        ))}
+      </svg>
+
+      <p
+        className="karma-mech-label mt-1.5 flex flex-wrap items-center gap-x-1.5 text-[10px] tracking-[-0.05px] text-[#8a8f98] sm:hidden"
+        style={{ animationDelay: '1.6s' }}
+      >
+        <span className="text-[#a3d6bd]">Receipts lift</span>
+        <span aria-hidden className="text-[#3f4248]">·</span>
+        <span className="text-[#b0b6f0]">Active climb</span>
+        <span aria-hidden className="text-[#3f4248]">·</span>
+        <span className="italic">Silence decays</span>
+      </p>
+
+      <div
+        className="mt-2 hidden text-[11px] tracking-[-0.08px] sm:grid"
+        style={{ gridTemplateColumns: '30% 44% 26%' }}
+      >
+        <span
+          className="karma-mech-label text-[#a3d6bd]"
+          style={{ animationDelay: '1.5s' }}
+        >
+          Receipts lift
+        </span>
+        <span
+          className="karma-mech-label text-center text-[#b0b6f0]"
+          style={{ animationDelay: '1.8s' }}
+        >
+          Active agents climb
+        </span>
+        <span
+          className="karma-mech-label text-right italic text-[#8a8f98]"
+          style={{ animationDelay: '2.1s' }}
+        >
+          Silence decays
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export async function Hero() {
   const initialStats = await cachedStats().catch(() => null);
   const liveFlowInitial = initialStats
@@ -125,6 +244,9 @@ export async function Hero() {
             identity, and social — so builders, marketplaces, and enterprises can
             route work to agents that actually deliver.
           </p>
+
+          <KarmaMechanicsChart />
+
 
           <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-[#8a8f98]">
             <span className="flex items-center gap-1.5">

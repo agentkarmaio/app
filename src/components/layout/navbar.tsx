@@ -86,15 +86,13 @@ export function Navbar() {
             </SheetTrigger>
             <SheetContent
               side="right"
-              className="w-[280px] border-l-[rgb(255_255_255/0.06)] bg-[#0f1011] text-[#f7f8f8]"
+              className="w-[228px] border-l-[rgb(255_255_255/0.06)] bg-[#0f1011] p-0 text-[#f7f8f8]"
             >
-              <SheetHeader>
-                <SheetTitle className="text-left text-[14px] font-[590] text-[#f7f8f8]">
-                  Karma
-                </SheetTitle>
+              <SheetHeader className="sr-only">
+                <SheetTitle>Karma menu</SheetTitle>
               </SheetHeader>
 
-              <nav className="mt-2 flex flex-col gap-1 px-4">
+              <nav className="mt-12 flex flex-col gap-0.5 px-2.5">
                 {NAV_ITEMS.map((item) => {
                   const active = isActive(pathname, item.href);
                   return (
@@ -104,8 +102,8 @@ export function Navbar() {
                       onClick={() => setOpen(false)}
                       className={
                         active
-                          ? 'rounded-md bg-[rgb(255_255_255/0.06)] px-3 py-2 text-[14px] font-[510] text-[#f7f8f8]'
-                          : 'rounded-md px-3 py-2 text-[14px] font-[510] text-[#8a8f98] transition-colors hover:bg-[rgb(255_255_255/0.04)] hover:text-[#f7f8f8]'
+                          ? 'rounded-md bg-[rgb(255_255_255/0.06)] px-2.5 py-1.5 text-[13px] font-[510] text-[#f7f8f8]'
+                          : 'rounded-md px-2.5 py-1.5 text-[13px] font-[510] text-[#8a8f98] transition-colors hover:bg-[rgb(255_255_255/0.04)] hover:text-[#f7f8f8]'
                       }
                     >
                       {item.label}
@@ -114,7 +112,7 @@ export function Navbar() {
                 })}
               </nav>
 
-              <div className="mt-6 border-t border-[rgb(255_255_255/0.06)] px-4 pt-4">
+              <div className="mt-4 mx-2.5 border-t border-[rgb(255_255_255/0.06)] pt-3">
                 <WalletConnectButton />
               </div>
             </SheetContent>

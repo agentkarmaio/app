@@ -366,6 +366,90 @@
   }
 }
 
+@keyframes karma-mech-draw {
+  from {
+    stroke-dashoffset: 360;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes karma-mech-fade {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes karma-mech-marker {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes karma-mech-pulse {
+  0%, 100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+.karma-mech-line {
+  stroke-dasharray: 360;
+  stroke-dashoffset: 360;
+  animation: karma-mech-draw 1.9s cubic-bezier(0.22, 1, 0.36, 1) 0.15s forwards;
+}
+
+.karma-mech-fill {
+  opacity: 0;
+  animation: karma-mech-fade 1.6s ease-out 0.7s forwards;
+}
+
+.karma-mech-marker {
+  opacity: 0;
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: karma-mech-marker 520ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.karma-mech-pulse {
+  animation: karma-mech-pulse 2.6s ease-in-out 2.4s infinite;
+}
+
+.karma-mech-label {
+  opacity: 0;
+  animation: karma-mech-fade 600ms ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .karma-mech-line,
+  .karma-mech-fill,
+  .karma-mech-marker,
+  .karma-mech-pulse,
+  .karma-mech-label {
+    animation: none !important;
+    stroke-dashoffset: 0 !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
 /* ------------------------------------------------------------------
  * Solana wallet-adapter modal — restyle to match Karma design system
  * Overrides defaults from @solana/wallet-adapter-react-ui/styles.css
