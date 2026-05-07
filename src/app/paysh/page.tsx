@@ -322,7 +322,7 @@ function ProviderTable({ rows }: { rows: RankedProvider[] }) {
 }
 
 function ProviderRow({ row }: { row: RankedProvider }) {
-  const externalUrl = `https://pay.sh/skills/${row.fqn}`;
+  const externalUrl = `https://pay.sh/services/${row.fqn}`;
 
   return (
     <div className="group border-b border-[rgb(255_255_255/0.04)] last:border-0 px-4 py-3 hover:bg-[rgb(255_255_255/0.025)] transition-colors text-[13px] grid grid-cols-1 md:grid-cols-[minmax(0,2.4fr)_64px_72px_minmax(0,1fr)_84px_140px_28px] gap-2 md:gap-3 items-center">

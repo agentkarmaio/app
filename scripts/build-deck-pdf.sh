@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Render public/deck/index.html to public/deck.pdf using headless Chrome.
+# Render public/deck/index.html to private/deck.pdf using headless Chrome.
+# The site at /deck.pdf 302s to /deck (email-gated viewer). The viewer streams
+# the PDF from /api/deck/file, which checks the signed `ak_deck` cookie and
+# reads the file from private/ — outside the static-served public/ tree.
 # Zero deps: relies on macOS system Chrome / Chromium / Edge.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INPUT="$ROOT/public/deck/index.html"
-OUTPUT="$ROOT/public/deck.pdf"
+OUTPUT="$ROOT/private/deck.pdf"
+mkdir -p "$(dirname "$OUTPUT")"
 
 # Find a usable headless-capable Chromium browser.
 CHROME=""

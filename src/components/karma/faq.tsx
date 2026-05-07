@@ -23,6 +23,50 @@
  */
 
 import type { ReactNode } from 'react';
+import Link from 'next/link';
+
+/**
+ * Inline link styling for FAQ answers. Internal `/...` paths use Next's
+ * Link for client-side nav; absolute URLs use a plain anchor with
+ * noopener+noreferrer.
+ */
+function FaqLink({
+  href,
+  children,
+}: {
+  href: string;
+  children: ReactNode;
+}) {
+  const isInternal = href.startsWith('/') && !href.startsWith('//');
+  const className =
+    'font-[510] text-[#a9b0ff] transition-colors hover:text-[#c0c6ff] underline-offset-2 hover:underline';
+  if (isInternal) {
+    return (
+      <Link href={href} className={className}>
+        {children}
+      </Link>
+    );
+  }
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className}
+    >
+      {children}
+    </a>
+  );
+}
+
+/** Inline `<code>`-styled span for endpoints / paths inside FAQ answers. */
+function FaqMono({ children }: { children: ReactNode }) {
+  return (
+    <code className="rounded bg-[rgb(255_255_255/0.05)] px-1 py-0.5 text-[12px] font-mono text-[#d0d6e0]">
+      {children}
+    </code>
+  );
+}
 
 /** Inline copy of the brand confidence dot used by ConfidenceBadge. */
 function ConfidenceDot({ color }: { color: string }) {
@@ -56,12 +100,43 @@ const FAQS: {
     question: 'What is AgentKarma?',
     answer:
       "AgentKarma is the reputation layer for autonomous on-chain agents on Solana. It computes a passive, manipulation-resistant trust score for any wallet with a public on-chain footprint and publishes every score as a portable ERC-8004 attestation that any app can read. AgentKarma is x402-first, not x402-only — it ingests x402 payments, pay.sh routing receipts, behavioral signals, declared identity, and social signals across the full Solana agent economy.",
+    renderAnswer: () => (
+      <>
+        AgentKarma is the reputation layer for autonomous on-chain agents on
+        Solana. It computes a passive, manipulation-resistant trust score for
+        any wallet with a public on-chain footprint and publishes every score
+        as a portable ERC-8004 attestation that any app can read. AgentKarma is{' '}
+        <em>x402-first, not x402-only</em> — it ingests x402 payments,{' '}
+        <FaqLink href="/paysh">pay.sh routing receipts</FaqLink>, behavioral
+        signals, declared identity, and social signals across the full Solana
+        agent economy. Full spec at the{' '}
+        <FaqLink href="/protocol">Karma Protocol RFC</FaqLink>.
+      </>
+    ),
   },
   {
     id: 'how-is-karma-calculated',
     question: 'How is Karma calculated?',
     answer:
       "Karma blends a four-tier signal spectrum with default weights 60% / 25% / 10% / 5%. Tier 1 is receipt-gated attestation (x402 + pay.sh receipts plus signed delivery feedback). Tier 2 is behavioral evidence (counterparty-graph diversity, transaction volume, success rate, account age, cadence). Tier 3 is declared identity (agentkarma.json manifest, MCP descriptor, x402 'accepts' response, GitHub or domain ownership proofs, cross-chain ERC-8004 attestations). Tier 4 is social and derivative signals. When a tier has no data, its weight is redistributed proportionally across present tiers — new agents are not zero-scored.",
+    renderAnswer: () => (
+      <>
+        Karma blends a{' '}
+        <FaqLink href="/protocol">four-tier signal spectrum</FaqLink>{' '}
+        with default weights 60% / 25% / 10% / 5%. Tier 1 is receipt-gated
+        attestation (x402 +{' '}
+        <FaqLink href="/paysh">pay.sh</FaqLink>{' '}receipts plus signed
+        delivery feedback). Tier 2 is behavioral evidence (counterparty-graph
+        diversity, transaction volume, success rate, account age, cadence).
+        Tier 3 is declared identity (agentkarma.json manifest, MCP descriptor,
+        x402 &lsquo;accepts&rsquo; response, GitHub or domain ownership proofs,
+        cross-chain ERC-8004 attestations). Tier 4 is social and derivative
+        signals. When a tier has no data, its weight is redistributed
+        proportionally across present tiers — new agents are not zero-scored.
+        Full term definitions at{' '}
+        <FaqLink href="/glossary">/glossary</FaqLink>.
+      </>
+    ),
   },
   {
     id: 'two-faced-karma',
@@ -95,48 +170,154 @@ const FAQS: {
     question: 'What is Autonomy Confidence?',
     answer:
       "Autonomy Confidence is a separate 0–100 score, computed per wallet, that answers 'is this wallet actually behaving like an autonomous agent?'. It is orthogonal to Karma and never blended into it. Signals include cadence regularity, inter-transaction latency variance, concurrent activity depth, and counterparty breadth. Labels: agent-like, mixed, or human-like.",
+    renderAnswer: () => (
+      <>
+        Autonomy Confidence is a separate 0–100 score, computed per wallet,
+        that answers &lsquo;is this wallet actually behaving like an autonomous
+        agent?&rsquo;. It is orthogonal to Karma and never blended into it.
+        Signals include cadence regularity, inter-transaction latency variance,
+        concurrent activity depth, and counterparty breadth. Labels: agent-like,
+        mixed, or human-like. Defined in{' '}
+        <FaqLink href="/protocol">RFC §5.5</FaqLink>.
+      </>
+    ),
   },
   {
     id: 'no-token',
     question: 'Does AgentKarma have a token?',
     answer:
       "No. AgentKarma will never issue a tradable token. The reason is structural, not ideological: a reputation oracle whose scoring parameters are token-voted can be tilted by the largest holder, and a primitive where agents stake into higher scores is one where reputation is for sale. AgentKarma's economic security IS the score — karma is time-locked earned behavior. Every score is already published as an ERC-8004 attestation on-chain, making reputation a portable, tokenized primitive without a tradable asset.",
+    renderAnswer: () => (
+      <>
+        No. AgentKarma will never issue a tradable token. The reason is
+        structural, not ideological: a reputation oracle whose scoring
+        parameters are token-voted can be tilted by the largest holder, and a
+        primitive where agents stake into higher scores is one where reputation
+        is for sale. AgentKarma&apos;s economic security IS the score — karma
+        is time-locked earned behavior. Every score is already published as an
+        ERC-8004 attestation on-chain, making reputation a portable, tokenized
+        primitive without a tradable asset. See the{' '}
+        <FaqLink href="/protocol">protocol design invariants</FaqLink>.
+      </>
+    ),
   },
   {
     id: 'non-routing',
     question: 'Does AgentKarma proxy or relay agent calls?',
     answer:
       "No. The non-routing mandate is a protocol-level invariant. AgentKarma scores wallets and links to their declared endpoints; agents serve their own traffic. Routing inherits liability for downtime, bad outputs, and chargebacks, and it conflicts with neutral reputation. AgentKarma is a bureau, not a postal service.",
+    renderAnswer: () => (
+      <>
+        No. The{' '}
+        <FaqLink href="/protocol">non-routing mandate</FaqLink>{' '}
+        is a protocol-level invariant. AgentKarma scores wallets and links to
+        their declared endpoints; agents serve their own traffic. Routing
+        inherits liability for downtime, bad outputs, and chargebacks, and it
+        conflicts with neutral reputation. AgentKarma is a bureau, not a postal
+        service.
+      </>
+    ),
   },
   {
     id: 'how-to-use-the-api',
     question: 'How do I look up an agent\'s karma programmatically?',
     answer:
       "Three options. (1) REST: GET https://agentkarma.io/api/v2/score/{wallet} returns Provider + Consumer Karma, confidence badge, autonomy, and tier breakdown. (2) Embeddable badge: GET https://agentkarma.io/api/badge/{wallet}?format=svg renders a CORS-safe badge. (3) MCP: connect to https://agentkarma.io/mcp (streamable-http) and call get_karma, get_provider_karma, get_consumer_karma, get_confidence, search_agents, or get_attestations.",
+    renderAnswer: () => (
+      <>
+        Three options.{' '}
+        <strong className="font-[590] text-[#d0d6e0]">(1)</strong>{' '}
+        REST: <FaqMono>GET /api/v2/score/{'{wallet}'}</FaqMono> returns Provider
+        + Consumer Karma, confidence badge, autonomy, and tier breakdown.{' '}
+        <strong className="font-[590] text-[#d0d6e0]">(2)</strong>{' '}
+        <FaqLink href="/widget">Embeddable badge</FaqLink>:{' '}
+        <FaqMono>GET /api/badge/{'{wallet}'}?format=svg</FaqMono> renders a
+        CORS-safe SVG.{' '}
+        <strong className="font-[590] text-[#d0d6e0]">(3)</strong>{' '}
+        <FaqLink href="/docs/mcp">MCP server</FaqLink>: connect to{' '}
+        <FaqMono>https://agentkarma.io/mcp</FaqMono> (streamable-http) and call{' '}
+        <FaqMono>get_karma</FaqMono>, <FaqMono>get_provider_karma</FaqMono>,{' '}
+        <FaqMono>get_consumer_karma</FaqMono>, <FaqMono>get_confidence</FaqMono>,{' '}
+        <FaqMono>search_agents</FaqMono>, or <FaqMono>get_attestations</FaqMono>.
+      </>
+    ),
   },
   {
     id: 'how-to-claim',
     question: 'How does an agent operator claim a wallet?',
     answer:
       "Claiming is wallet-signed and optional. Visit the agent profile page at https://agentkarma.io/agent/{wallet}, sign the claim message with the wallet's keypair, and provide a display name, description, website, and category. Claiming enriches the public profile but does not change the score — unclaimed agents are scored identically. To unlock Tier 3 manifest signals, also publish a self-hosted /.well-known/agentkarma.json file declaring the wallet.",
+    renderAnswer: () => (
+      <>
+        Claiming is wallet-signed and optional. Visit the agent profile at{' '}
+        <FaqMono>/agent/{'{wallet}'}</FaqMono>, sign the claim message with the
+        wallet&apos;s keypair, and provide a display name, description,
+        website, and category. Claiming enriches the public profile but does
+        not change the score — unclaimed agents are scored identically. To
+        unlock Tier 3 manifest signals, also publish a self-hosted{' '}
+        <FaqMono>/.well-known/agentkarma.json</FaqMono> file declaring the
+        wallet —{' '}
+        <FaqLink href="/specimen/agentkarma.json">
+          see the specimen agent&apos;s manifest
+        </FaqLink>{' '}
+        for a working example.
+      </>
+    ),
   },
   {
     id: 'why-not-credit-bureau',
     question: 'Is AgentKarma a credit bureau?',
     answer:
       "No. AgentKarma is a reputation layer for any autonomous agent with a Solana footprint, not just agents that transact in stablecoins. It scores public-good agents (free oracles, archivists, open-source research bots) via voluntary attestations and tip signals, governance-only agents via Tier 4 evidence, and trading or DeFi agents via behavioral signals — none of which appear on a credit-style ledger. The 'credit bureau' framing was dropped on 2026-04-17.",
+    renderAnswer: () => (
+      <>
+        No. AgentKarma is a reputation layer for any autonomous agent with a
+        Solana footprint, not just agents that transact in stablecoins. It
+        scores public-good agents (free oracles, archivists, open-source
+        research bots) via voluntary attestations and tip signals,
+        governance-only agents via Tier 4 evidence, and trading or DeFi agents
+        via behavioral signals — none of which appear on a credit-style
+        ledger. The &lsquo;credit bureau&rsquo; framing was dropped on
+        2026-04-17. Current positioning lives in the{' '}
+        <FaqLink href="/protocol">Karma Protocol RFC</FaqLink>.
+      </>
+    ),
   },
   {
     id: 'erc-8004',
     question: 'What is ERC-8004 and why does AgentKarma publish to it?',
     answer:
       "ERC-8004 is an open attestation standard for agent identity and reputation. AgentKarma publishes every karma score back to ERC-8004 on-chain so any app can read karma without integrating with AgentKarma directly. The reputation is the attestation: scores are portable across protocols, marketplaces, and chains by design.",
+    renderAnswer: () => (
+      <>
+        ERC-8004 is an{' '}
+        <FaqLink href="https://eips.ethereum.org/EIPS/eip-8004">
+          open attestation standard
+        </FaqLink>{' '}
+        for agent identity and reputation. AgentKarma publishes every karma
+        score back to ERC-8004 on-chain so any app can read karma without
+        integrating with AgentKarma directly. The reputation IS the
+        attestation: scores are portable across protocols, marketplaces, and
+        chains by design — see{' '}
+        <FaqLink href="/protocol">how the protocol writes scores</FaqLink>.
+      </>
+    ),
   },
   {
     id: 'paysh-support',
     question: 'Does AgentKarma support pay.sh?',
     answer:
       "Yes. pay.sh routed receipts (both x402-on-Solana and MPP-on-Solana) are first-class Tier 1 signals. The /paysh page at https://agentkarma.io/paysh ranks every provider in the live pay.sh skills catalog by Provider Karma. AgentKarma is non-routing — it scores pay.sh providers but never proxies pay.sh calls.",
+    renderAnswer: () => (
+      <>
+        Yes. pay.sh routed receipts (both x402-on-Solana and MPP-on-Solana) are
+        first-class Tier 1 signals. The{' '}
+        <FaqLink href="/paysh">/paysh provider directory</FaqLink>{' '}
+        ranks every provider in the live pay.sh skills catalog by Provider
+        Karma. AgentKarma is non-routing — it scores pay.sh providers but
+        never proxies pay.sh calls.
+      </>
+    ),
   },
 ];
 

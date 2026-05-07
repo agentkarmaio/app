@@ -22,7 +22,10 @@ const STATIC_ROUTES: { path: string; changeFrequency: MetadataRoute.Sitemap[numb
   { path: '/faq',        changeFrequency: 'monthly', priority: 0.7 },
 ];
 
-export const revalidate = 3600;
+// Render at runtime, not build time. The build container may not have
+// Supabase reachable; the deployed runtime always does. Cloudflare can
+// still edge-cache via the response's Cache-Control if we add it later.
+export const dynamic = 'force-dynamic';
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const now = new Date();
@@ -43,32 +46,24 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     priority: 0.5,
   }));
 
-  // Top-N agents by score. Sitemap is regenerated hourly so churn is fine.
-  let agentEntries: MetadataRoute.Sitemap = [];
-  try {
-    const { wallets } = await getLeaderboard(MAX_AGENTS_IN_SITEMAP, 0);
-    agentEntries = wallets.map((w) => ({
-      url: `${SITE}/agent/${w.address}`,
-      lastModified: w.last_seen ? new Date(w.last_seen) : (w.updated_at ? new Date(w.updated_at) : now),
-      changeFrequency: 'daily',
-      priority: w.claimed ? 0.7 : 0.4,
-    }));
-  } catch {
-    // DB unreachable — emit static portion only. Better than 500.
-  }
+  // Top-N agents by score. Let DB errors propagate — caching an empty
+  // sitemap as success would pin the staleness for the full revalidate
+  // window. Throwing means Next.js retries on the next request.
+  const { wallets } = await getLeaderboard(MAX_AGENTS_IN_SITEMAP, 0);
+  const agentEntries: MetadataRoute.Sitemap = wallets.map((w) => ({
+    url: `${SITE}/agent/${w.address}`,
+    lastModified: w.last_seen ? new Date(w.last_seen) : (w.updated_at ? new Date(w.updated_at) : now),
+    changeFrequency: 'daily',
+    priority: w.claimed ? 0.7 : 0.4,
+  }));
 
-  let orgEntries: MetadataRoute.Sitemap = [];
-  try {
-    const orgs = await listOrganizations();
-    orgEntries = orgs.map((o) => ({
-      url: `${SITE}/org/${o.slug}`,
-      lastModified: o.created_at ? new Date(o.created_at) : now,
-      changeFrequency: 'weekly',
-      priority: 0.7,
-    }));
-  } catch {
-    // see above
-  }
+  const orgs = await listOrganizations();
+  const orgEntries: MetadataRoute.Sitemap = orgs.map((o) => ({
+    url: `${SITE}/org/${o.slug}`,
+    lastModified: o.created_at ? new Date(o.created_at) : now,
+    changeFrequency: 'weekly',
+    priority: 0.7,
+  }));
 
   return [...staticEntries, ...payshEntries, ...orgEntries, ...agentEntries];
 }

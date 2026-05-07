@@ -267,7 +267,7 @@ export function LeaderboardWithLoadMore({
               : 'View all agents'}
           </span>
           <span aria-hidden className="transition-transform duration-150 group-hover:translate-x-0.5">
-            \u2192
+            →
           </span>
         </a>
       )}

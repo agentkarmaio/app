@@ -13,6 +13,7 @@ import {
   SPECIMEN_CONSUMER_ADDRESS,
   SPECIMEN_PRICE_USDC,
 } from '@/config/specimen';
+import { ConfidenceBadge } from '@/components/karma/confidence-badge';
 
 export const metadata: Metadata = {
   title: 'Specimen Agent · AgentKarma',
@@ -100,7 +101,10 @@ export default function SpecimenPage() {
         <h2 className="text-base font-semibold">Live reputation</h2>
         <p className="text-muted-foreground">
           As the specimen consumer issues real x402 payments, watch the wallet&apos;s
-          confidence badge climb from ⚪ declared → 🟡 behavior-inferred → 🟢 receipt-backed
+          confidence badge climb from{' '}
+          <ConfidenceBadge badge="declared" size="sm" />{' '}→{' '}
+          <ConfidenceBadge badge="behavior-inferred" size="sm" />{' '}→{' '}
+          <ConfidenceBadge badge="receipt-backed" size="sm" />{' '}
           on its{' '}
           <Link href={`/agent/${SPECIMEN_CONSUMER_ADDRESS}`} className="underline">profile</Link>.
         </p>

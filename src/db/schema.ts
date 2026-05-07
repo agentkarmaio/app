@@ -179,6 +179,25 @@ export const agentManifestsTable = pgTable('agent_manifests', {
   uniqueIndex('uniq_agent_manifests_source').on(table.agent_wallet, table.source_type),
 ]);
 
+// --- Deck Views (pitch-deck visitor identification) -------------------------
+//
+// Captured when a visitor submits the email gate at /deck (and on every
+// returning-visitor load). Used both for OpenReplay correlation and lead
+// follow-up. Not joined to wallets — these are humans, not agents.
+
+export const deckViewsTable = pgTable('deck_views', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  email:        text('email').notNull(),
+  is_returning: boolean('is_returning').notNull().default(false),
+  ip:           text('ip'),
+  user_agent:   text('user_agent'),
+  referrer:     text('referrer'),
+  created_at:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_deck_views_email').on(table.email),
+  index('idx_deck_views_created_at').on(table.created_at),
+]);
+
 // --- Indexer Cursor State ----------------------------------------------------
 
 export const indexerCursorsTable = pgTable('indexer_cursors', {

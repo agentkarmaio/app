@@ -15,7 +15,15 @@ import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
 import type { TrustTier, ConfidenceBadge, AutonomyLabel } from '@/db/schema';
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
+const DEFAULT_PAGE_SIZE = 25;
+type PageSize = typeof PAGE_SIZE_OPTIONS[number];
+
+function clampPageSize(raw: string | null): PageSize {
+  const n = parseInt(raw ?? '', 10);
+  if (PAGE_SIZE_OPTIONS.includes(n as PageSize)) return n as PageSize;
+  return DEFAULT_PAGE_SIZE;
+}
 
 type AgentSortField =
   | 'provider_score' | 'consumer_score' | 'tx_count' | 'last_seen'
@@ -103,6 +111,7 @@ export function AgentsExplorer() {
     search: searchParams.get('q') ?? '',
     sortBy:  (searchParams.get('sortBy')  ?? 'provider_score') as AgentSortField,
     sortDir: (searchParams.get('sortDir') ?? 'desc') as 'asc' | 'desc',
+    pageSize: clampPageSize(searchParams.get('per')),
   }), [searchParams]);
 
   const filterKey = searchParams.toString();
@@ -140,7 +149,7 @@ export function AgentsExplorer() {
     setLoading(true);
     setError(null);
     const q = new URLSearchParams(apiQuery);
-    q.set('limit',  String(PAGE_SIZE));
+    q.set('limit',  String(filters.pageSize));
     q.set('offset', '0');
     fetch(`/api/explore/agents?${q.toString()}`, { signal: controller.signal, cache: 'no-store' })
       .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
@@ -220,7 +229,7 @@ export function AgentsExplorer() {
     setError(null);
     try {
       const q = new URLSearchParams(apiQuery);
-      q.set('limit',  String(PAGE_SIZE));
+      q.set('limit',  String(filters.pageSize));
       q.set('offset', String(offset));
       const r = await fetch(`/api/explore/agents?${q.toString()}`, { cache: 'no-store' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -315,14 +324,25 @@ export function AgentsExplorer() {
           />
         </div>
 
-        {/* Meta row: result count + active chips if any */}
-        <div className="flex items-center justify-between text-[11px] text-[#62666d] h-5">
+        {/* Meta row: result count · pending indicator · per-page selector */}
+        <div className="flex items-center justify-between gap-3 text-[11px] text-[#62666d] h-5">
           <span className="tabular-nums">
             {total != null
               ? `${total.toLocaleString()} ${total === 1 ? 'agent' : 'agents'}`
               : ' '}
           </span>
-          {isPending && <span className="text-[#62666d]">Updating…</span>}
+          <div className="flex items-center gap-3">
+            {isPending && <span className="text-[#62666d]">Updating…</span>}
+            <PageSizeSelector
+              value={filters.pageSize}
+              onChange={(n) =>
+                updateParams((p) => {
+                  if (n === DEFAULT_PAGE_SIZE) p.delete('per');
+                  else p.set('per', String(n));
+                })
+              }
+            />
+          </div>
         </div>
 
         {/* Table */}
@@ -377,10 +397,46 @@ export function AgentsExplorer() {
               disabled={loading}
               className="text-[12px] font-[510] text-[#8a8f98] hover:text-[#f7f8f8] transition-colors disabled:opacity-50"
             >
-              {loading ? 'Loading…' : `Load ${Math.min(PAGE_SIZE, total - entries.length)} more →`}
+              {loading ? 'Loading…' : `Load ${Math.min(filters.pageSize, total - entries.length)} more →`}
             </button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Page-size selector ─────────────────────────────────────────────────────
+
+function PageSizeSelector({
+  value,
+  onChange,
+}: {
+  value: PageSize;
+  onChange: (n: PageSize) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[10px] uppercase tracking-[0.08em] text-[#4f5258]">Per page</span>
+      <div className="flex items-center rounded-md border border-[rgb(255_255_255/0.06)] bg-[rgb(255_255_255/0.02)] p-0.5">
+        {PAGE_SIZE_OPTIONS.map((n) => {
+          const active = n === value;
+          return (
+            <button
+              key={n}
+              type="button"
+              onClick={() => onChange(n)}
+              aria-pressed={active}
+              className={
+                active
+                  ? 'rounded-[4px] bg-[rgb(255_255_255/0.06)] px-2 py-0.5 text-[11px] font-[590] tabular-nums text-[#f7f8f8]'
+                  : 'rounded-[4px] px-2 py-0.5 text-[11px] font-[510] tabular-nums text-[#8a8f98] transition-colors hover:text-[#f7f8f8]'
+              }
+            >
+              {n}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

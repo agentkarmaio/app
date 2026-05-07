@@ -51,6 +51,85 @@ function shortAddr(addr: string): string {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
 }
 
+/**
+ * Stub shown when a wallet is queried but the indexer hasn't seen it yet.
+ *
+ * Per the protocol promise, "if your wallet touched the chain, you have a
+ * score" — but our indexer only ingests x402 + pay.sh flows. Unknown
+ * wallets used to 404; that contradicted the promise. Now we render a
+ * minimal profile that acknowledges the address exists, links out to
+ * Solscan, and surfaces the claim path so the operator can pull the agent
+ * into the index manually.
+ */
+function UnindexedAgentStub({ wallet }: { wallet: string }) {
+  return (
+    <div className="space-y-6">
+      <Link
+        href="/"
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft className="size-4" />
+        Back to Leaderboard
+      </Link>
+
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
+            Agent profile
+          </h1>
+          <ConfidenceBadge badge="declared" size="sm" />
+        </div>
+        <div className="flex items-center gap-3">
+          <WalletAddress address={wallet} truncate={false} className="text-muted-foreground" />
+          <a
+            href={`https://solscan.io/account/${wallet}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ExternalLink className="size-3.5" />
+          </a>
+        </div>
+      </header>
+
+      <Separator />
+
+      <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
+            Not indexed yet
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4 text-[13.5px] leading-relaxed text-[#b4bcd0]">
+          <p>
+            AgentKarma hasn&apos;t indexed any on-chain activity for this wallet.
+            The indexer currently ingests x402 payments + pay.sh routed
+            settlement; arbitrary wallet activity is rolled in via seeded-graph
+            expansion as the wallet shows up as a counterparty of a known agent.
+          </p>
+          <p>
+            Two ways to surface this wallet in AgentKarma:
+          </p>
+          <ul className="ml-4 list-disc space-y-1.5 text-[13px]">
+            <li>
+              Have the wallet send or receive an x402 payment (or a pay.sh
+              routed settlement) — the indexer picks it up automatically on the
+              next webhook tick.
+            </li>
+            <li>
+              Claim it: prove ownership with a wallet signature, declare a
+              public manifest, and the agent enters the directory immediately
+              with a ⚪ <span className="font-[510] text-[#d0d6e0]">Declared</span> confidence badge.
+            </li>
+          </ul>
+        </CardContent>
+      </Card>
+
+      <ClaimBanner walletAddress={wallet} />
+    </div>
+  );
+}
+
 export async function generateMetadata(
   { params }: { params: Promise<{ wallet: string }> },
 ): Promise<Metadata> {
@@ -380,7 +459,7 @@ export default async function AgentProfilePage({
 
   if (!walletRow) {
     const anyTx = await getTransactionCount(wallet).catch(() => 0);
-    if (anyTx === 0) notFound();
+    if (anyTx === 0) return <UnindexedAgentStub wallet={wallet} />;
   }
 
   // Single source of truth for this page: recompute the score from current

@@ -27,7 +27,7 @@ const NAV_GROUPS: { heading: string; links: { label: string; href: string; exter
     links: [
       { label: 'FAQ', href: '/faq' },
       { label: 'Glossary', href: '/glossary' },
-      { label: 'Pitch deck', href: '/deck.pdf', external: true },
+      { label: 'Pitch deck', href: '/deck' },
       { label: 'agentkarma.json', href: '/.well-known/agentkarma.json', external: true },
       { label: 'llms.txt', href: '/llms.txt', external: true },
     ],
@@ -133,31 +133,40 @@ export function Footer() {
           ))}
         </div>
 
-        <div className="mt-10 flex flex-col items-start justify-between gap-3 border-t border-[rgb(255_255_255/0.04)] pt-5 sm:flex-row sm:items-center">
-          <p className="text-[11px] text-[#4f5258]">
-            © {new Date().getFullYear()} AgentKarma · Built by{' '}
-            <a
-              href="https://x.com/agentkarmaio"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[#62666d] transition-colors hover:text-[#d0d6e0]"
-            >
-              Kerem Noras
-            </a>{' '}
-            for Colosseum Frontier
-          </p>
-          <p className="text-[11px] text-[#4f5258]">
-            <a href="/sitemap.xml" className="transition-colors hover:text-[#d0d6e0]">
-              sitemap
-            </a>{' '}
-            ·{' '}
-            <a href="/robots.txt" className="transition-colors hover:text-[#d0d6e0]">
-              robots
-            </a>{' '}
-            ·{' '}
-            <a href="/.well-known/mcp/server-card.json" className="transition-colors hover:text-[#d0d6e0]">
-              MCP card
-            </a>
+        <div className="mt-10 border-t border-[rgb(255_255_255/0.04)] pt-5">
+          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-[#4f5258]">
+            <span>© {new Date().getFullYear()} AgentKarma</span>
+            <span aria-hidden>·</span>
+            <span className="inline-flex items-center gap-1">
+              Built by{' '}
+              <a
+                href="https://kerem.noras.tech"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[#62666d] transition-colors hover:text-[#d0d6e0]"
+              >
+                Kerem Noras
+              </a>{' '}
+              at
+              <a
+                href="https://noras.tech"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="noras.tech"
+                className="ml-0.5 inline-flex items-center gap-1 text-[#62666d] transition-colors hover:text-[#d0d6e0]"
+              >
+                <Image
+                  src="/logos/norastech.svg"
+                  alt=""
+                  width={12}
+                  height={12}
+                  className="size-3 shrink-0 opacity-80"
+                />
+                <span>noras.tech</span>
+              </a>
+            </span>
+            <span aria-hidden>·</span>
+            <span>for Colosseum Frontier</span>
           </p>
         </div>
       </div>

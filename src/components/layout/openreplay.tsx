@@ -2,11 +2,13 @@
 
 import { useEffect, useRef } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
+import { registerOpenReplayTracker } from "@/lib/openreplay";
 
 type TrackerInstance = {
   start: () => void;
   use: (plugin: unknown) => void;
   setUserID: (id: string) => void;
+  setMetadata?: (key: string, value: string) => void;
 };
 
 export function OpenReplay() {
@@ -29,6 +31,7 @@ export function OpenReplay() {
       tracker.use(trackerAssist({}));
       tracker.start();
       trackerRef.current = tracker;
+      registerOpenReplayTracker(tracker);
     })();
     return () => {
       cancelled = true;
@@ -37,8 +40,8 @@ export function OpenReplay() {
 
   useEffect(() => {
     const tracker = trackerRef.current;
-    if (!tracker) return;
-    tracker.setUserID(publicKey ? publicKey.toBase58() : "");
+    if (!tracker || !publicKey) return;
+    tracker.setUserID(publicKey.toBase58());
   }, [publicKey]);
 
   return null;

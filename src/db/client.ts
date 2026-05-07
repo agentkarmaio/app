@@ -675,6 +675,45 @@ export async function getWalletTiers(
   return out;
 }
 
+// --- Deck Views --------------------------------------------------------------
+
+export interface InsertDeckViewInput {
+  email: string;
+  isReturning?: boolean;
+  ip?: string | null;
+  userAgent?: string | null;
+  referrer?: string | null;
+}
+
+export async function insertDeckView(input: InsertDeckViewInput): Promise<void> {
+  const { error } = await supabase
+    .from('deck_views')
+    .insert({
+      email:        input.email,
+      is_returning: input.isReturning ?? false,
+      ip:           input.ip ?? null,
+      user_agent:   input.userAgent ?? null,
+      referrer:     input.referrer ?? null,
+    });
+  if (error) throw error;
+}
+
+/**
+ * Count of distinct emails that have viewed the pitch deck. Cheap at low
+ * scale (early-stage funnel — < few thousand rows). If the table grows past
+ * ~10k rows, swap in a SQL function that does the distinct on the server.
+ */
+export async function getDeckUniqueViewerCount(): Promise<number> {
+  const { data, error } = await supabase
+    .from('deck_views')
+    .select('email')
+    .limit(10000);
+  if (error) throw error;
+  const unique = new Set<string>();
+  for (const row of (data ?? []) as { email: string }[]) unique.add(row.email);
+  return unique.size;
+}
+
 // --- Indexer Cursors ----------------------------------------------------------
 
 export async function getCursor(facilitator: string): Promise<IndexerCursor | null> {

@@ -3,8 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   async redirects() {
     return [
-      { source: "/deck", destination: "/deck/index.html", permanent: false },
-      { source: "/deck/", destination: "/deck/index.html", permanent: false },
+      // The actual PDF lives at /files/deck.pdf so iframe/PDF.js can fetch it;
+      // /deck.pdf 302s to the gated, OpenReplay-recorded viewer page.
+      { source: "/deck.pdf", destination: "/deck", permanent: false },
     ];
   },
   async rewrites() {

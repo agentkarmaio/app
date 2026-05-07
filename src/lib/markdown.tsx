@@ -1,6 +1,10 @@
-// Shared markdown renderer — used by /protocol.
+// Shared markdown renderer — used by /protocol and /glossary.
 // Minimal parser supporting: headings, code blocks, tables, lists,
-// paragraphs, and horizontal separators. Inline: code and bold only.
+// paragraphs, and horizontal separators. Inline: code, bold, and the
+// project's confidence-badge emoji tokens (🟢 / 🟡 / ⚪) which are swapped
+// for the brand DiamondDot SVG so rendered docs match the rest of the UI.
+
+import type { ReactNode } from 'react';
 
 export interface MarkdownSection {
   type: 'heading' | 'paragraph' | 'code' | 'table' | 'list' | 'separator';
@@ -8,7 +12,37 @@ export interface MarkdownSection {
   text?: string;
   lang?: string;
   rows?: string[][];
+  /** Marks a list whose items all describe a confidence tier — rendered as
+   *  a uniform structured block instead of an inline bullet list. */
+  kind?: 'confidence-list';
 }
+
+/** Brand confidence dot — same shape as ConfidenceBadge's. */
+function ConfidenceDot({ color }: { color: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 10 10"
+      className="inline-block size-2.5 shrink-0 align-[-1px]"
+    >
+      <path
+        d="M5 0.6 L9.4 5 L5 9.4 L0.6 5 Z"
+        fill={color}
+        stroke="#08090a"
+        strokeWidth="0.6"
+        strokeLinejoin="miter"
+      />
+      <path d="M5 0.6 L5 5 L0.6 5 Z" fill="#ffffff" fillOpacity="0.22" />
+      <path d="M9.4 5 L5 9.4 L5 5 Z" fill="#000000" fillOpacity="0.25" />
+    </svg>
+  );
+}
+
+const CONFIDENCE_EMOJI_COLOR: Record<string, string> = {
+  '🟢': '#10b981',
+  '🟡': '#f5a623',
+  '⚪': '#8a8f98',
+};
 
 export function parseMarkdown(md: string): MarkdownSection[] {
   const lines = md.split('\n');
@@ -63,7 +97,13 @@ export function parseMarkdown(md: string): MarkdownSection[] {
         items.push(lines[i].replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, ''));
         i++;
       }
-      sections.push({ type: 'list', text: items.join('\n') });
+      const allConfidence =
+        items.length > 0 && items.every((it) => /^[🟢🟡⚪]\s/u.test(it));
+      sections.push({
+        type: 'list',
+        text: items.join('\n'),
+        ...(allConfidence ? { kind: 'confidence-list' as const } : {}),
+      });
       continue;
     }
 
@@ -75,7 +115,9 @@ export function parseMarkdown(md: string): MarkdownSection[] {
         !lines[i].startsWith('#') &&
         !lines[i].startsWith('```') &&
         !lines[i].startsWith('|') &&
-        !lines[i].startsWith('---')
+        !lines[i].startsWith('---') &&
+        !lines[i].match(/^[-*]\s/) &&
+        !lines[i].match(/^\d+\.\s/)
       ) {
         paraLines.push(lines[i]);
         i++;
@@ -90,7 +132,7 @@ export function parseMarkdown(md: string): MarkdownSection[] {
   return sections;
 }
 
-export function Section({ type, level, text, lang, rows }: MarkdownSection) {
+export function Section({ type, level, text, lang, rows, kind }: MarkdownSection) {
   if (type === 'separator') {
     return <hr className="border-[rgb(255_255_255/0.06)]" />;
   }
@@ -152,6 +194,44 @@ export function Section({ type, level, text, lang, rows }: MarkdownSection) {
 
   if (type === 'list') {
     const items = (text ?? '').split('\n');
+
+    if (kind === 'confidence-list') {
+      // Uniform structured block: dot · label · description, aligned. No
+      // bullet markers, no inline emojis. Same visual rhythm whether the
+      // list lives in /glossary, /protocol, or anywhere else markdown is
+      // rendered on the site.
+      return (
+        <div className="my-3 overflow-hidden rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
+          {items.map((raw, i) => {
+            const m = raw.match(/^([🟢🟡⚪])\s+(.+)$/u);
+            if (!m) return null;
+            const [, emoji, rest] = m;
+            const color = CONFIDENCE_EMOJI_COLOR[emoji] ?? '#8a8f98';
+            const labelMatch = rest.match(/^\*\*([^*]+)\*\*\s+—\s+(.+)$/);
+            const label = labelMatch ? labelMatch[1] : null;
+            const description = labelMatch ? labelMatch[2] : rest;
+            return (
+              <div
+                key={i}
+                className={
+                  'grid grid-cols-[auto_minmax(0,160px)_minmax(0,1fr)] items-baseline gap-x-4 px-4 py-3 ' +
+                  (i > 0 ? 'border-t border-[rgb(255_255_255/0.06)]' : '')
+                }
+              >
+                <ConfidenceDot color={color} />
+                <span className="text-[13px] font-[590] tracking-[-0.13px] text-[#f7f8f8]">
+                  {label ?? ' '}
+                </span>
+                <span className="text-[13px] leading-relaxed text-[#b4bcd0]">
+                  <InlineCode text={description} />
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
     return (
       <ul className="list-disc pl-5 space-y-1">
         {items.map((item, i) => (
@@ -171,10 +251,13 @@ export function Section({ type, level, text, lang, rows }: MarkdownSection) {
 }
 
 export function InlineCode({ text }: { text: string }) {
-  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
+  // Split on inline code, bold, and the three confidence emojis.
+  // The /u flag is required for the multi-byte 🟢🟡 codepoints.
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|🟢|🟡|⚪)/gu);
   return (
     <>
-      {parts.map((part, i) => {
+      {parts.map((part, i): ReactNode => {
+        if (!part) return null;
         if (part.startsWith('`') && part.endsWith('`')) {
           return (
             <code
@@ -191,6 +274,9 @@ export function InlineCode({ text }: { text: string }) {
               {part.slice(2, -2)}
             </strong>
           );
+        }
+        if (CONFIDENCE_EMOJI_COLOR[part]) {
+          return <ConfidenceDot key={i} color={CONFIDENCE_EMOJI_COLOR[part]} />;
         }
         return <span key={i}>{part}</span>;
       })}
