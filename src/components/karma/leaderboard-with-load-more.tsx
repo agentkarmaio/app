@@ -27,10 +27,29 @@ type TierFilter = 'All' | TrustTier;
 const STATUS_OPTIONS: StatusFilter[] = ['All', 'Active', 'Recent', 'Dormant', 'Inactive'];
 const TIER_OPTIONS: TierFilter[] = ['All', 'Excellent', 'Very Good', 'Good', 'Fair', 'Poor', 'Unrated'];
 
-export function LeaderboardWithLoadMore({ initial }: { initial: LeaderboardEntry[] }) {
+export function LeaderboardWithLoadMore({
+  initial,
+  mode = 'full',
+  totalHint,
+}: {
+  initial: LeaderboardEntry[];
+  /**
+   * `full` — infinite scroll via IntersectionObserver (used at /explore).
+   * `preview` — show first page only with a "View all" CTA so this can sit
+   *  above terminal page content (FAQ + footer) on the home page without
+   *  fighting for scroll real estate.
+   */
+  mode?: 'full' | 'preview';
+  /**
+   * Optional initial value for `total`. Used in preview mode so the
+   * "View all N agents" CTA can show a count without an extra fetch.
+   */
+  totalHint?: number | null;
+}) {
+  const isPreview = mode === 'preview';
   const [entries, setEntries] = useState<LeaderboardEntry[]>(initial);
-  const [hasMore, setHasMore] = useState(initial.length >= PAGE_SIZE);
-  const [total, setTotal] = useState<number | null>(null);
+  const [hasMore, setHasMore] = useState(!isPreview && initial.length >= PAGE_SIZE);
+  const [total, setTotal] = useState<number | null>(totalHint ?? null);
   const [isPending, startTransition] = useTransition();
   const [isFiltering, setIsFiltering] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -150,6 +169,7 @@ export function LeaderboardWithLoadMore({ initial }: { initial: LeaderboardEntry
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
+    if (isPreview) return; // preview mode never lazy-loads
     if (!hasMore || isPending || !sentinelRef.current) return;
     const el = sentinelRef.current;
     const observer = new IntersectionObserver(
@@ -160,7 +180,7 @@ export function LeaderboardWithLoadMore({ initial }: { initial: LeaderboardEntry
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [hasMore, isPending, loadMore]);
+  }, [hasMore, isPending, loadMore, isPreview]);
 
   const headerCount =
     total !== null && (status !== 'All' || tier !== 'All')
@@ -228,13 +248,28 @@ export function LeaderboardWithLoadMore({ initial }: { initial: LeaderboardEntry
           <LeaderboardTable entries={entries} pulsingAddresses={pulsing} />
         </div>
       )}
-      {hasMore && (
+      {!isPreview && hasMore && (
         <div
           ref={sentinelRef}
           className="flex items-center justify-center border-t border-[rgb(255_255_255/0.05)] px-4 py-3 text-[12px] text-[#62666d]"
         >
           {isPending ? 'Loading\u2026' : '\u00a0'}
         </div>
+      )}
+      {isPreview && entries.length > 0 && (
+        <a
+          href="/explore"
+          className="group flex items-center justify-center gap-1.5 border-t border-[rgb(255_255_255/0.05)] px-4 py-3 text-[12px] font-[510] text-[#8a8f98] transition-colors hover:bg-[rgb(255_255_255/0.02)] hover:text-[#a9b0ff]"
+        >
+          <span>
+            {total != null
+              ? `View all ${total.toLocaleString()} agents`
+              : 'View all agents'}
+          </span>
+          <span aria-hidden className="transition-transform duration-150 group-hover:translate-x-0.5">
+            \u2192
+          </span>
+        </a>
       )}
       {error && (
         <p className="px-4 pb-3 text-center text-[12px] text-red-400/80">{error}</p>

@@ -133,7 +133,10 @@ export async function verifyPayment(input: VerifyInput): Promise<VerifyResult> {
   const memoIx = tx.instructions.find((ix) => ix.programId === MEMO_PROGRAM_ID);
   if (!memoIx?.data) return { ok: false, code: 'memo_missing', message: 'No memo instruction' };
 
-  const memo = decodeMemo(memoIx.data);
+  // Helius enhanced returns memo program data base58-encoded; decode then
+  // parse as UTF-8. Falls back to UTF-8-direct in case API behaviour changes.
+  const memoStr = decodeMemoData(memoIx.data);
+  const memo = memoStr ? decodeMemo(memoStr) : null;
   if (!memo) return { ok: false, code: 'memo_invalid', message: `Bad memo format: ${memoIx.data}` };
   if (memo.resource !== input.expectedResource || memo.nonce !== input.expectedNonce) {
     return {
@@ -153,6 +156,44 @@ export async function verifyPayment(input: VerifyInput): Promise<VerifyResult> {
     payerWallet: matching.fromUserAccount,
     amountUsdc: matching.tokenAmount,
     txTimestamp: tx.timestamp,
-    memo: memoIx.data,
+    memo: memoStr ?? memoIx.data,
   };
+}
+
+const BS58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function bs58Decode(str: string): Uint8Array | null {
+  const BASE = BigInt(58);
+  const MASK = BigInt(0xff);
+  const EIGHT = BigInt(8);
+  const ZERO = BigInt(0);
+
+  let num = ZERO;
+  for (const ch of str) {
+    const idx = BS58_ALPHABET.indexOf(ch);
+    if (idx === -1) return null;
+    num = num * BASE + BigInt(idx);
+  }
+  let leadingZeros = 0;
+  for (const ch of str) {
+    if (ch === '1') leadingZeros++;
+    else break;
+  }
+  const bytes: number[] = [];
+  while (num > ZERO) {
+    bytes.unshift(Number(num & MASK));
+    num = num >> EIGHT;
+  }
+  return Uint8Array.from([...new Array(leadingZeros).fill(0), ...bytes]);
+}
+
+function decodeMemoData(raw: string): string | null {
+  if (raw.startsWith('agentkarma-specimen:')) return raw;
+  const bytes = bs58Decode(raw);
+  if (!bytes) return null;
+  try {
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  } catch {
+    return null;
+  }
 }

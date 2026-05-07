@@ -23,7 +23,7 @@ export default function HomePage() {
       <Suspense fallback={<LeaderboardSkeleton />}>
         <LeaderboardSection />
       </Suspense>
-      <FAQ />
+      <FAQ variant="compact" />
     </div>
   );
 }
@@ -39,9 +39,13 @@ async function StatsSection() {
 
 async function LeaderboardSection() {
   let leaderboard: LeaderboardEntry[] = [];
+  let totalAgents: number | null = null;
   let dbError = false;
   try {
-    leaderboard = await cachedLeaderboardEntries();
+    [leaderboard, totalAgents] = await Promise.all([
+      cachedLeaderboardEntries(),
+      cachedStats().then((s) => s?.totalAgents ?? null).catch(() => null),
+    ]);
   } catch {
     dbError = true;
   }
@@ -56,7 +60,11 @@ async function LeaderboardSection() {
         data-tour="leaderboard"
         className="scroll-mt-24 rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]"
       >
-        <LeaderboardWithLoadMore initial={leaderboard} />
+        <LeaderboardWithLoadMore
+          initial={leaderboard}
+          mode="preview"
+          totalHint={totalAgents}
+        />
       </div>
       {!hasData && <FacilitatorList />}
     </>

@@ -4,6 +4,7 @@ import "@solana/wallet-adapter-react-ui/styles.css";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { cn } from "@/lib/utils";
 import { Navbar } from "@/components/layout/navbar";
+import { Footer } from "@/components/layout/footer";
 import { OpenReplay } from "@/components/layout/openreplay";
 import { SolanaWalletProvider } from "@/components/wallet/wallet-provider";
 
@@ -158,6 +159,7 @@ export default function RootLayout({
           <main className="mx-auto max-w-5xl px-4 py-8">
             {children}
           </main>
+          <Footer />
         </SolanaWalletProvider>
         <script
           type="application/ld+json"

@@ -107,10 +107,10 @@ After a few calls land:
 1. **Indexer picks them up.** `bun run indexer:full` — should log the
    `agentkarma-specimen` facilitator with N tx.
 2. **Consumer wallet enters DB.** Hit
-   `/api/v2/wallet/AwHpZNJA1PyWGSsqbMhFcgyJRR1bYvQTnq2DtH8ud7uZ` — non-zero
+   `/api/v2/agent/AwHpZNJA1PyWGSsqbMhFcgyJRR1bYvQTnq2DtH8ud7uZ` — non-zero
    `tx_count` + Tier 2 metrics populated.
 3. **Confidence badge.** Check the wallet page at
-   `/wallet/AwHpZNJA1PyWGSsqbMhFcgyJRR1bYvQTnq2DtH8ud7uZ`. Should be 🟢
+   `/agent/AwHpZNJA1PyWGSsqbMhFcgyJRR1bYvQTnq2DtH8ud7uZ`. Should be 🟢
    receipt-backed once Tier 1 fires.
 4. **Publish attestation.** `bun run publish 5`. Look for the consumer wallet
    in the output with a `tx:` signature. That tx is the on-chain ERC-8004

@@ -72,7 +72,7 @@ const server = Bun.serve({
   <li><code>GET /echo</code> &mdash; payment-gated, ${SPECIMEN_PRICE_USDC} USDC</li>
   <li><code>GET /quote</code> &mdash; payment-gated, ${SPECIMEN_PRICE_USDC} USDC</li>
 </ul>
-<p>Reputation profile: <a href="https://agentkarma.io/wallet/${SPECIMEN_PROVIDER_ADDRESS}">agentkarma.io/wallet/${SPECIMEN_PROVIDER_ADDRESS.slice(0, 8)}&hellip;</a></p>
+<p>Reputation profile: <a href="https://agentkarma.io/agent/${SPECIMEN_PROVIDER_ADDRESS}">agentkarma.io/agent/${SPECIMEN_PROVIDER_ADDRESS.slice(0, 8)}&hellip;</a></p>
 </body></html>`;
       return new Response(html, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
     }

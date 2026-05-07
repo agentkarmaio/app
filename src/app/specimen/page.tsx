@@ -57,13 +57,13 @@ export default function SpecimenPage() {
         <h2 className="text-base font-semibold">Wallets</h2>
         <p className="flex flex-wrap items-baseline gap-x-3">
           <span className="text-muted-foreground">provider</span>
-          <Link href={`/wallet/${SPECIMEN_PROVIDER_ADDRESS}`} className="break-all underline-offset-2 hover:underline">
+          <Link href={`/agent/${SPECIMEN_PROVIDER_ADDRESS}`} className="break-all underline-offset-2 hover:underline">
             {SPECIMEN_PROVIDER_ADDRESS}
           </Link>
         </p>
         <p className="flex flex-wrap items-baseline gap-x-3">
           <span className="text-muted-foreground">consumer</span>
-          <Link href={`/wallet/${SPECIMEN_CONSUMER_ADDRESS}`} className="break-all underline-offset-2 hover:underline">
+          <Link href={`/agent/${SPECIMEN_CONSUMER_ADDRESS}`} className="break-all underline-offset-2 hover:underline">
             {SPECIMEN_CONSUMER_ADDRESS}
           </Link>
         </p>
@@ -102,7 +102,7 @@ export default function SpecimenPage() {
           As the specimen consumer issues real x402 payments, watch the wallet&apos;s
           confidence badge climb from ⚪ declared → 🟡 behavior-inferred → 🟢 receipt-backed
           on its{' '}
-          <Link href={`/wallet/${SPECIMEN_CONSUMER_ADDRESS}`} className="underline">profile</Link>.
+          <Link href={`/agent/${SPECIMEN_CONSUMER_ADDRESS}`} className="underline">profile</Link>.
         </p>
       </section>
 

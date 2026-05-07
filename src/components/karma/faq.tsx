@@ -1,10 +1,14 @@
 /**
  * AgentKarma FAQ — citation-friendly Q/A for AI answer engines + classical SEO.
  *
- * Server component. Mounts inline on the home page and at /faq. Emits a
- * `FAQPage` JSON-LD block so Google rich results + LLM crawlers can lift each
- * answer verbatim. Each Q gets an HTML id so external content can deep-link
- * to a specific answer.
+ * Server component. Two variants:
+ *  - `expanded` (default) — full bordered layout. Used at /faq.
+ *  - `compact` — collapsed <details> accordion, no chrome. Used inline on
+ *    home so it doesn't compete with the leaderboard's lazy-load scroll
+ *    sentinel for vertical real estate.
+ *
+ * The `FAQPage` JSON-LD block is emitted regardless of variant so answer
+ * engines lift each Q/A verbatim whether the visual is expanded or collapsed.
  *
  * Content rules (DO NOT BREAK):
  *  - Stable canonical voice — match PITCH.md.
@@ -13,9 +17,40 @@
  *  - Do not reference "this page", "above", "below" — answers are republished
  *    by AI engines out of order.
  *  - Never use the dropped "credit bureau" framing.
+ *  - `answer` is the canonical plain-text — feeds JSON-LD and microdata.
+ *    `renderAnswer` is an optional richer visual override (brand icons,
+ *    monospace, links). Keep both in sync semantically.
  */
 
-const FAQS: { id: string; question: string; answer: string }[] = [
+import type { ReactNode } from 'react';
+
+/** Inline copy of the brand confidence dot used by ConfidenceBadge. */
+function ConfidenceDot({ color }: { color: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 10 10"
+      className="inline-block size-2.5 shrink-0 align-[-1px]"
+    >
+      <path
+        d="M5 0.6 L9.4 5 L5 9.4 L0.6 5 Z"
+        fill={color}
+        stroke="#08090a"
+        strokeWidth="0.6"
+        strokeLinejoin="miter"
+      />
+      <path d="M5 0.6 L5 5 L0.6 5 Z" fill="#ffffff" fillOpacity="0.22" />
+      <path d="M9.4 5 L5 9.4 L5 5 Z" fill="#000000" fillOpacity="0.25" />
+    </svg>
+  );
+}
+
+const FAQS: {
+  id: string;
+  question: string;
+  answer: string;
+  renderAnswer?: () => ReactNode;
+}[] = [
   {
     id: 'what-is-agentkarma',
     question: 'What is AgentKarma?',
@@ -38,7 +73,22 @@ const FAQS: { id: string; question: string; answer: string }[] = [
     id: 'confidence-badge',
     question: 'What does the confidence badge mean?',
     answer:
-      "Every AgentKarma score carries a required confidence badge. 🟢 Receipt-backed means Tier 1 signals are present (highest trust). 🟡 Behavior-inferred means only Tier 2 or Tier 3 evidence (medium trust). ⚪ Declared means only Tier 4 or self-claim signals (lowest trust). A score without a confidence badge is non-conformant per the Karma Protocol.",
+      "Every AgentKarma score carries a required confidence badge. Receipt-backed means Tier 1 signals are present (highest trust). Behavior-inferred means only Tier 2 or Tier 3 evidence (medium trust). Declared means only Tier 4 or self-claim signals (lowest trust). A score without a confidence badge is non-conformant per the Karma Protocol.",
+    renderAnswer: () => (
+      <>
+        Every AgentKarma score carries a required confidence badge.{' '}
+        <ConfidenceDot color="#10b981" />{' '}
+        <span className="font-[510] text-[#d0d6e0]">Receipt-backed</span> means
+        Tier 1 signals are present (highest trust).{' '}
+        <ConfidenceDot color="#f5a623" />{' '}
+        <span className="font-[510] text-[#d0d6e0]">Behavior-inferred</span>{' '}
+        means only Tier 2 or Tier 3 evidence (medium trust).{' '}
+        <ConfidenceDot color="#8a8f98" />{' '}
+        <span className="font-[510] text-[#d0d6e0]">Declared</span> means only
+        Tier 4 or self-claim signals (lowest trust). A score without a
+        confidence badge is non-conformant per the Karma Protocol.
+      </>
+    ),
   },
   {
     id: 'autonomy-confidence',
@@ -100,7 +150,100 @@ const FAQ_LD = {
   })),
 } as const;
 
-export function FAQ({ heading = 'Frequently asked questions' }: { heading?: string }) {
+export type FAQVariant = 'expanded' | 'compact';
+
+export function FAQ({
+  variant = 'expanded',
+  heading,
+}: {
+  variant?: FAQVariant;
+  heading?: string;
+}) {
+  return variant === 'compact'
+    ? <FAQCompact heading={heading} />
+    : <FAQExpanded heading={heading ?? 'Frequently asked questions'} />;
+}
+
+function StructuredDataScript() {
+  return (
+    <script
+      type="application/ld+json"
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
+      dangerouslySetInnerHTML={{ __html: JSON.stringify(FAQ_LD) }}
+    />
+  );
+}
+
+/**
+ * Compact variant — native <details> accordion, no card chrome. Designed
+ * to live above the lazy-loading leaderboard without interrupting scroll.
+ */
+function FAQCompact({ heading }: { heading?: string }) {
+  return (
+    <section
+      id="faq"
+      aria-labelledby="faq-heading"
+      className="space-y-3"
+      itemScope
+      itemType="https://schema.org/FAQPage"
+    >
+      <StructuredDataScript />
+      <div className="flex items-baseline justify-between gap-3 px-1">
+        <h2
+          id="faq-heading"
+          className="text-[12px] font-[510] uppercase tracking-[0.12em] text-[#62666d]"
+        >
+          {heading ?? 'Reputation, in answer form'}
+        </h2>
+        <a
+          href="/faq"
+          className="text-[11px] font-[510] text-[#62666d] transition-colors hover:text-[#a9b0ff]"
+        >
+          All {FAQS.length} →
+        </a>
+      </div>
+      <div className="divide-y divide-[rgb(255_255_255/0.04)]">
+        {FAQS.map((f) => (
+          <details
+            key={f.id}
+            id={f.id}
+            className="group py-2.5 [&_summary::-webkit-details-marker]:hidden [&_summary]:list-none"
+            itemScope
+            itemProp="mainEntity"
+            itemType="https://schema.org/Question"
+          >
+            <summary className="flex cursor-pointer items-center gap-2 text-[13.5px] font-[510] tracking-[-0.1px] text-[#d0d6e0] transition-colors hover:text-[#f7f8f8]">
+              <span
+                aria-hidden
+                className="text-[10px] text-[#4f5258] transition-transform duration-150 group-open:rotate-90"
+              >
+                ▶
+              </span>
+              <span itemProp="name">{f.question}</span>
+            </summary>
+            <div
+              className="mt-2 pl-[18px] text-[13px] leading-relaxed text-[#8a8f98]"
+              itemScope
+              itemProp="acceptedAnswer"
+              itemType="https://schema.org/Answer"
+            >
+              {/* Hidden plain-text mirror so microdata stays clean even when
+                  the visible body uses richer JSX (icons, inline marks). */}
+              <meta itemProp="text" content={f.answer} />
+              {f.renderAnswer ? f.renderAnswer() : f.answer}
+            </div>
+          </details>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Expanded variant — bordered card layout. Used on the dedicated /faq page
+ * where the FAQ is the main content.
+ */
+function FAQExpanded({ heading }: { heading: string }) {
   return (
     <section
       id="faq"
@@ -109,11 +252,7 @@ export function FAQ({ heading = 'Frequently asked questions' }: { heading?: stri
       itemScope
       itemType="https://schema.org/FAQPage"
     >
-      <script
-        type="application/ld+json"
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(FAQ_LD) }}
-      />
+      <StructuredDataScript />
       <header className="space-y-1">
         <h2
           id="faq-heading"
@@ -152,7 +291,8 @@ export function FAQ({ heading = 'Frequently asked questions' }: { heading?: stri
               itemProp="acceptedAnswer"
               itemType="https://schema.org/Answer"
             >
-              <span itemProp="text">{f.answer}</span>
+              <meta itemProp="text" content={f.answer} />
+              {f.renderAnswer ? f.renderAnswer() : f.answer}
             </dd>
           </div>
         ))}
