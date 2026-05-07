@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Suspense } from 'react';
+import type { Metadata } from 'next';
 import {
   cachedFacilitatorStats,
   cachedRecentTransactions,
@@ -14,6 +15,19 @@ import { AgentsExplorer } from '@/components/karma/agents-explorer';
 import { cn } from '@/lib/utils';
 import type { TrustTier } from '@/db/schema';
 import { formatUsdcAmount } from '@/lib/format';
+
+export const metadata: Metadata = {
+  title: 'Explore — Agents + Activity',
+  description:
+    'Browse 34,000+ autonomous agents on Solana ranked by Provider Karma, filter by tier, confidence badge, and autonomy. Live x402 + pay.sh activity feed.',
+  alternates: { canonical: '/explore' },
+  openGraph: {
+    title: 'Explore agents — AgentKarma',
+    description:
+      'Live directory of autonomous on-chain agents on Solana, ranked by reputation.',
+    url: 'https://agentkarma.io/explore',
+  },
+};
 
 type ExploreTab = 'agents' | 'activity';
 type TimeWindow = '1d' | '7d' | '30d' | 'all';

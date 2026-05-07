@@ -1,6 +1,6 @@
 import Image from 'next/image';
 
-type Tech = {
+type TechWithLogo = {
   name: string;
   href: string;
   logo: string;
@@ -8,6 +8,20 @@ type Tech = {
   height: number;
   heightClass: string;
 };
+
+type TechWithWordmark = {
+  name: string;
+  href: string;
+  /** Plain-text wordmark when no SVG asset is available. Rendered in mono. */
+  wordmark: string;
+  heightClass: string;
+};
+
+type Tech = TechWithLogo | TechWithWordmark;
+
+function hasLogo(t: Tech): t is TechWithLogo {
+  return 'logo' in t;
+}
 
 const STACK: Tech[] = [
   {
@@ -32,6 +46,14 @@ const STACK: Tech[] = [
     logo: '/logos/x402.svg',
     width: 1512,
     height: 558,
+    heightClass: 'h-[14px] sm:h-[16px]',
+  },
+  {
+    name: 'pay.sh',
+    href: 'https://pay.sh',
+    logo: '/logos/paysh.png',
+    width: 343,
+    height: 133,
     heightClass: 'h-[14px] sm:h-[16px]',
   },
   {
@@ -68,14 +90,22 @@ export function BuiltWith() {
             aria-label={tech.name}
             className="group inline-flex h-5 items-center"
           >
-            <Image
-              src={tech.logo}
-              alt={tech.name}
-              width={tech.width}
-              height={tech.height}
-              className={`${tech.heightClass} w-auto opacity-25 grayscale transition-[opacity,filter] duration-200 group-hover:opacity-70 group-hover:grayscale-0`}
-              unoptimized
-            />
+            {hasLogo(tech) ? (
+              <Image
+                src={tech.logo}
+                alt={tech.name}
+                width={tech.width}
+                height={tech.height}
+                className={`${tech.heightClass} w-auto opacity-25 grayscale transition-[opacity,filter] duration-200 group-hover:opacity-70 group-hover:grayscale-0`}
+                unoptimized
+              />
+            ) : (
+              <span
+                className={`${tech.heightClass} inline-flex items-center font-mono text-[13px] font-[510] tracking-[-0.01em] text-[#f7f8f8] opacity-25 transition-opacity duration-200 group-hover:opacity-70`}
+              >
+                {tech.wordmark}
+              </span>
+            )}
           </a>
         ))}
       </div>

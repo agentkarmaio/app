@@ -11,6 +11,7 @@
 
 import { getHeliusApiKey } from '../indexer/helius';
 import { ALL_FACILITATOR_ADDRESSES } from '../config/facilitators';
+import { SPECIMEN_ADDRESSES } from '../config/specimen';
 
 const HELIUS_WEBHOOK_API = 'https://api-mainnet.helius-rpc.com/v0/webhooks';
 
@@ -25,10 +26,12 @@ async function main() {
   const apiKey = getHeliusApiKey();
   const secret = process.env.HELIUS_WEBHOOK_SECRET;
 
+  const watchedAddresses = [...new Set([...ALL_FACILITATOR_ADDRESSES, ...SPECIMEN_ADDRESSES])];
+
   const payload: Record<string, unknown> = {
     webhookURL: webhookUrl,
     webhookType: 'enhanced',
-    accountAddresses: ALL_FACILITATOR_ADDRESSES,
+    accountAddresses: watchedAddresses,
     transactionTypes: ['TRANSFER'],
   };
 
@@ -39,7 +42,7 @@ async function main() {
   console.log(`Creating Helius webhook...`);
   console.log(`  URL:           ${webhookUrl}`);
   console.log(`  Type:          enhanced`);
-  console.log(`  Addresses:     ${ALL_FACILITATOR_ADDRESSES.length} facilitators`);
+  console.log(`  Addresses:     ${watchedAddresses.length} (${ALL_FACILITATOR_ADDRESSES.length} facilitators + ${SPECIMEN_ADDRESSES.length} specimen)`);
   console.log(`  Auth header:   ${secret ? 'yes' : 'none'}`);
 
   const res = await fetch(`${HELIUS_WEBHOOK_API}?api-key=${apiKey}`, {

@@ -1,4 +1,5 @@
 import { USDC_MINT } from '../config/facilitators';
+import { detectPayshRouted } from './paysh-fingerprint';
 import type { Transaction } from '../db/schema';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -156,6 +157,74 @@ export function extractX402Payment(
   }
 
   return null;
+}
+
+// ─── pay.sh Detection (sprint A1) ────────────────────────────────────────────
+
+
+/**
+ * Wrapper: classifies a parsed Helius tx as pay.sh-routed and, when it is,
+ * extracts the payer wallet so the indexer can emit a `paysh_routed`
+ * Tier 1 signal_event.
+ *
+ * The payer wallet identification reuses the same heuristic as
+ * extractX402Payment: the source of the largest non-operator token transfer
+ * is the agent making the payment. Falls back to the first signer when
+ * tokenTransfers is empty (Token-2022 with extensions occasionally lacks
+ * the typed view in Helius output).
+ */
+export interface PayshExtractedPayment {
+  wallet: string;
+  operatorAddress: string;
+  operatorId: string;
+  protocol: 'x402' | 'mpp' | 'hybrid';
+  txSignature: string;
+  observedAt: string;
+}
+
+export function extractPayshPayment(
+  tx: HeliusEnhancedTransaction,
+): PayshExtractedPayment | null {
+  const det = detectPayshRouted(tx);
+  if (!det.isPaysh || !det.operator || !det.operatorId || !det.protocol) return null;
+
+  // Identify payer wallet: the source of the first token transfer NOT going
+  // to the operator address. Skip transfers where source == operator (those
+  // are the operator/platform fee splits, not the user payment).
+  const knownOperatorAddrs = new Set<string>();
+  knownOperatorAddrs.add(det.operator);
+  let payer: string | null = null;
+  for (const t of tx.tokenTransfers ?? []) {
+    if (!t.fromUserAccount) continue;
+    if (knownOperatorAddrs.has(t.fromUserAccount)) continue;
+    if (t.fromUserAccount === tx.feePayer) continue; // sponsored gas keypair
+    payer = t.fromUserAccount;
+    break;
+  }
+  // Fallback: balance-change negative on a non-operator account.
+  if (!payer) {
+    for (const entry of tx.accountData ?? []) {
+      for (const change of entry.tokenBalanceChanges ?? []) {
+        const raw = parseFloat(change.rawTokenAmount.tokenAmount);
+        if (!Number.isFinite(raw) || raw >= 0) continue;
+        if (knownOperatorAddrs.has(change.userAccount)) continue;
+        if (change.userAccount === tx.feePayer) continue;
+        payer = change.userAccount;
+        break;
+      }
+      if (payer) break;
+    }
+  }
+  if (!payer) return null;
+
+  return {
+    wallet: payer,
+    operatorAddress: det.operator,
+    operatorId: det.operatorId,
+    protocol: det.protocol,
+    txSignature: tx.signature,
+    observedAt: new Date(tx.timestamp * 1000).toISOString(),
+  };
 }
 
 // ─── Concurrency Pool ────────────────────────────────────────────────────────

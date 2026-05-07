@@ -835,6 +835,33 @@ export async function getLatestSignalValues(
   return out;
 }
 
+/**
+ * Count signal_events of a given kind, grouped by wallet. Used by scoring
+ * to know how many pay.sh-routed receipts a wallet has accumulated.
+ */
+export async function countSignalEventsByKind(
+  agentWallets: string[],
+  kind: string,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (agentWallets.length === 0) return out;
+
+  for (let i = 0; i < agentWallets.length; i += 100) {
+    const chunk = agentWallets.slice(i, i + 100);
+    const { data, error } = await supabase
+      .from('signal_events')
+      .select('agent_wallet')
+      .eq('kind', kind)
+      .in('agent_wallet', chunk);
+
+    if (error) throw error;
+    for (const row of (data ?? []) as { agent_wallet: string }[]) {
+      out.set(row.agent_wallet, (out.get(row.agent_wallet) ?? 0) + 1);
+    }
+  }
+  return out;
+}
+
 export async function getSignalEventsForWallets(
   agentWallets: string[],
 ): Promise<Map<string, SignalEvent[]>> {

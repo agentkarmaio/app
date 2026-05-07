@@ -259,6 +259,31 @@ const TIER2_METRIC_WEIGHTS = {
   age: 0.20,
 } as const;
 
+/**
+ * Optional pay.sh-routed Tier 1 contribution.
+ *
+ * Per docs/SIGNAL-ARCHITECTURE.md §"pay.sh and operator-attested settlement",
+ * the operator's fee-payer signature on a multi-split settlement is itself
+ * an implicit, non-repudiable delivery attestation — Tier 1.
+ *
+ * Score blend rule: pay.sh-routed contribution is `max(existing_tier1, paysh)`
+ * (NOT a sum). One Tier 1 signal per tx, never two — a wallet that has BOTH
+ * an 8004 attestation and pay.sh-routed receipts cannot exceed `1.0` here, so
+ * the wallet is not double-credited against vanilla x402-with-feedback.
+ *
+ * Strength curve: a single high-confidence pay.sh receipt is already a
+ * max-strength Tier 1 signal (the operator broadcast IS the attestation), so
+ * we ramp to 1.0 within just a few receipts. Reasoning: unlike behavioral
+ * Tier 2 where many txs build evidence, every pay.sh tx *is* an attestation.
+ */
+function payshTier1Strength(receiptCount: number): number {
+  if (receiptCount <= 0) return 0;
+  if (receiptCount >= 3) return 1.0;
+  // 1 → 0.85, 2 → 0.95
+  if (receiptCount === 1) return 0.85;
+  return 0.95;
+}
+
 export function calculateScore(
   transactions: ScoringTransaction[],
   attestation = 0,
@@ -266,6 +291,7 @@ export function calculateScore(
   feedbackCount?: number,
   cadenceScore?: number | null,
   manifestScore?: number | null,
+  payshRoutedCount?: number | null,
 ): WalletScore {
   if (transactions.length === 0) {
     throw new Error('calculateScore requires at least one transaction');
@@ -317,6 +343,24 @@ export function calculateScore(
   } else if (onChain > 0) {
     blendedAttestation = onChain;
     tier1 = onChain;
+  }
+
+  // pay.sh-routed Tier 1 contribution (sprint A1). Combine via `max` against
+  // existing 8004 + feedback Tier 1 — never sum, never double-count.
+  const payshCount = typeof payshRoutedCount === 'number' && payshRoutedCount > 0
+    ? payshRoutedCount
+    : 0;
+  if (payshCount > 0) {
+    const payshStrength = payshTier1Strength(payshCount);
+    if (tier1 == null || payshStrength > tier1) {
+      tier1 = payshStrength;
+    }
+    // Surface in the displayed `attestation` metric too, capped by 1.0,
+    // so /api/v2 clients see a non-zero attestation even when the wallet
+    // has no on-chain 8004 / local feedback.
+    if (payshStrength > blendedAttestation) {
+      blendedAttestation = payshStrength;
+    }
   }
 
   // Tier 3 from manifest signal (Phase H1). Tier 4 deferred.
@@ -401,6 +445,7 @@ export function calculateScores(
   attestations?: Map<string, number>,
   cadenceScores?: Map<string, number>,
   manifestScores?: Map<string, number>,
+  payshRoutedCounts?: Map<string, number>,
 ): Map<string, WalletScore> {
   const byWallet = new Map<string, ScoringTransaction[]>();
   for (const tx of allTransactions) {
@@ -420,6 +465,7 @@ export function calculateScores(
         undefined,
         cadenceScores?.get(address) ?? null,
         manifestScores?.get(address) ?? null,
+        payshRoutedCounts?.get(address) ?? null,
       ),
     );
   }

@@ -5,6 +5,12 @@
  * any follow-up feedback is a behavioral fact (the wallet moved USDC through
  * a facilitator). The pairing with a signed delivery feedback (Tier 1) is
  * emitted separately by the feedback endpoint.
+ *
+ * pay.sh sprint A1 (2026-05-06): pay.sh-routed payments emit a Tier 1
+ * `paysh_routed` signal — the operator's fee-payer signature on the
+ * multi-split settlement is itself an implicit, non-repudiable delivery
+ * attestation. See docs/SIGNAL-ARCHITECTURE.md §"pay.sh and operator-attested
+ * settlement" for the full reasoning.
  */
 
 import type { Transaction } from '@/db/schema';
@@ -46,6 +52,48 @@ export function buildX402PaymentSignals(
   txs: Pick<Transaction, 'wallet_address' | 'facilitator' | 'amount' | 'timestamp' | 'success' | 'tx_signature'>[],
 ): InsertSignalEventInput[] {
   return txs.map((tx) => buildX402PaymentSignal(tx as Transaction));
+}
+
+/**
+ * Build the Tier 1 `paysh_routed` signal for a single pay.sh-routed payment.
+ *
+ * `signed_by` = pay.sh operator address (the gateway whose feePayer signed
+ * the multi-split settlement — the implicit attester). `value = 1.0` because
+ * a pay.sh-routed broadcast is a max-strength receipt-gated attestation; we
+ * do not down-weight by amount the way Tier 2 x402 does.
+ *
+ * Idempotent: the unique index on (agent_wallet, kind, tx_ref) makes
+ * re-emission a no-op so the indexer + backfill can both run.
+ */
+export interface PayshRoutedSignalInput {
+  walletAddress: string;
+  txSignature: string;
+  operatorAddress: string;
+  observedAt?: string | Date;
+  protocol?: 'x402' | 'mpp' | 'hybrid';
+  operatorId?: string;
+}
+
+export function buildPayshRoutedSignal(
+  input: PayshRoutedSignalInput,
+): InsertSignalEventInput {
+  const out: InsertSignalEventInput = {
+    agentWallet: input.walletAddress,
+    tier: 1,
+    kind: 'paysh_routed',
+    face: 'provider',
+    weight: 1.0,
+    value: 1.0,
+    signedBy: input.operatorAddress,
+    txRef: input.txSignature,
+    payload: {
+      operator: input.operatorAddress,
+      operatorId: input.operatorId ?? null,
+      protocol: input.protocol ?? null,
+    },
+  };
+  if (input.observedAt !== undefined) out.observedAt = input.observedAt;
+  return out;
 }
 
 /**

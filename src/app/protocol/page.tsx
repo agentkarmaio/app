@@ -4,9 +4,18 @@ import { ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
 import { parseMarkdown, Section } from '@/lib/markdown';
 
+const SITE_URL = 'https://agentkarma.io';
+
 export const metadata = {
   title: 'Karma Protocol — Specification',
-  description: 'Open specification for multi-tier reputation scoring of autonomous on-chain agents on Solana.',
+  description: 'Open specification for multi-tier reputation scoring of autonomous on-chain agents on Solana. Four-tier signal spectrum, two-faced karma, ERC-8004 export.',
+  alternates: { canonical: '/protocol' },
+  openGraph: {
+    type: 'article' as const,
+    url: `${SITE_URL}/protocol`,
+    title: 'Karma Protocol — open specification',
+    description: 'Multi-tier reputation scoring for autonomous on-chain agents on Solana.',
+  },
 };
 
 export default async function ProtocolPage() {
@@ -21,8 +30,50 @@ export default async function ProtocolPage() {
   const { version, status, date } = extractRFCMetadata(content);
   const sections = parseMarkdown(content);
 
+  const articleLd = {
+    '@context': 'https://schema.org',
+    '@type': 'TechArticle',
+    headline: `Karma Protocol — Specification (${status} v${version})`,
+    description:
+      'Open specification for multi-tier reputation scoring of autonomous on-chain agents on Solana.',
+    inLanguage: 'en',
+    author: { '@type': 'Person', name: 'Kerem Noras' },
+    publisher: {
+      '@type': 'Organization',
+      name: 'AgentKarma',
+      logo: { '@type': 'ImageObject', url: `${SITE_URL}/brand/agentkarma-dark-X.png` },
+    },
+    datePublished: date,
+    dateModified: date,
+    url: `${SITE_URL}/protocol`,
+    mainEntityOfPage: { '@type': 'WebPage', '@id': `${SITE_URL}/protocol` },
+    keywords:
+      'reputation, autonomous agents, Solana, x402, pay.sh, ERC-8004, MCP, Karma protocol',
+    articleSection: 'Specification',
+    isPartOf: { '@type': 'WebSite', name: 'AgentKarma', url: SITE_URL },
+  };
+
+  const breadcrumbLd = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'AgentKarma', item: SITE_URL },
+      { '@type': 'ListItem', position: 2, name: 'Protocol', item: `${SITE_URL}/protocol` },
+    ],
+  };
+
   return (
     <div className="space-y-8">
+      <script
+        type="application/ld+json"
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleLd) }}
+      />
+      <script
+        type="application/ld+json"
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+      />
       <Link
         href="/"
         className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"

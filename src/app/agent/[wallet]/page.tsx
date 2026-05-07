@@ -1,6 +1,7 @@
 import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
+import type { Metadata } from 'next';
 import { ArrowLeft, ExternalLink, Globe, Verified } from 'lucide-react';
 import {
   getWallet,
@@ -43,6 +44,59 @@ const CATEGORY_LABELS: Record<string, string> = {
   utility: 'Utility',
   other: 'Other',
 };
+
+const SITE_URL = 'https://agentkarma.io';
+
+function shortAddr(addr: string): string {
+  return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+}
+
+export async function generateMetadata(
+  { params }: { params: Promise<{ wallet: string }> },
+): Promise<Metadata> {
+  const { wallet } = await params;
+  if (!wallet || wallet.length < 32) {
+    return { title: 'Agent not found' };
+  }
+
+  const row = await getWallet(wallet).catch(() => null);
+  const name = row?.display_name ?? `Agent ${shortAddr(wallet)}`;
+  const score = Number(row?.provider_score ?? row?.score ?? 0);
+  const tier = row?.trust_tier ?? 'Unrated';
+  const badge = row?.confidence_badge ?? 'declared';
+  const txCount = row?.tx_count ?? 0;
+
+  const badgeLabel = badge === 'receipt-backed'
+    ? 'Receipt-backed'
+    : badge === 'behavior-inferred'
+      ? 'Behavior-inferred'
+      : 'Declared';
+
+  const title = `${name} — Karma ${score.toFixed(0)}/100 · ${tier}`;
+  const description =
+    `${name}: Provider Karma ${score.toFixed(1)}/100, trust tier ${tier}, confidence ${badgeLabel}. `
+    + `${txCount.toLocaleString()} on-chain transactions indexed. `
+    + `Live reputation snapshot for autonomous agent ${wallet} on Solana via AgentKarma.`;
+
+  const canonical = `/agent/${wallet}`;
+  return {
+    title,
+    description,
+    alternates: { canonical },
+    openGraph: {
+      type: 'profile',
+      url: `${SITE_URL}${canonical}`,
+      title,
+      description,
+      siteName: 'AgentKarma',
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
+    },
+  };
+}
 
 function CardSkeleton({ title, rows = 5 }: { title: string; rows?: number }) {
   return (
@@ -358,8 +412,55 @@ export default async function AgentProfilePage({
   const agentCategory = walletRow?.category;
   const agentTempoAddress = walletRow?.tempo_address;
 
+  const agentLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Thing',
+    name: displayName ?? `Agent ${shortAddr(wallet)}`,
+    identifier: wallet,
+    url: `${SITE_URL}/agent/${wallet}`,
+    description:
+      agentDescription
+      ?? `Autonomous on-chain agent on Solana. Provider Karma ${providerScore.toFixed(1)}/100, trust tier ${tier}, confidence ${confidenceBadge}.`,
+    sameAs: [
+      `https://solscan.io/account/${wallet}`,
+      ...(agentWebsite ? [agentWebsite] : []),
+    ],
+    additionalProperty: [
+      { '@type': 'PropertyValue', name: 'Provider Karma', value: Number(providerScore.toFixed(1)), maxValue: 100 },
+      ...(consumerScore != null
+        ? [{ '@type': 'PropertyValue', name: 'Consumer Karma', value: Number(consumerScore.toFixed(1)), maxValue: 100 }]
+        : []),
+      { '@type': 'PropertyValue', name: 'Trust Tier', value: tier },
+      { '@type': 'PropertyValue', name: 'Confidence Badge', value: confidenceBadge },
+      ...(autonomyScore != null && autonomyLabel
+        ? [{ '@type': 'PropertyValue', name: 'Autonomy Confidence', value: Math.round(autonomyScore), unitText: autonomyLabel }]
+        : []),
+      { '@type': 'PropertyValue', name: 'Transactions Indexed', value: txCount },
+    ],
+  };
+
+  const breadcrumbLd = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'AgentKarma', item: SITE_URL },
+      { '@type': 'ListItem', position: 2, name: 'Agents', item: `${SITE_URL}/explore` },
+      { '@type': 'ListItem', position: 3, name: displayName ?? shortAddr(wallet), item: `${SITE_URL}/agent/${wallet}` },
+    ],
+  };
+
   return (
     <div className="space-y-6">
+      <script
+        type="application/ld+json"
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(agentLd) }}
+      />
+      <script
+        type="application/ld+json"
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+      />
       <Link
         href="/"
         className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"

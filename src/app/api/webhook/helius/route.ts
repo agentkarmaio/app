@@ -11,6 +11,7 @@ import {
 } from '@/db/client';
 import { buildX402PaymentSignals } from '@/scoring/signals';
 import { ALL_FACILITATOR_ADDRESSES } from '@/config/facilitators';
+import { SPECIMEN_ADDRESSES } from '@/config/specimen';
 import type { Transaction } from '@/db/schema';
 import { verifyHeliusWebhook } from '@/lib/api-auth';
 
@@ -43,9 +44,10 @@ export async function POST(request: NextRequest) {
   }
 
   const parsed: Omit<Transaction, 'id'>[] = [];
+  const ROUTABLE_RECIPIENTS = [...ALL_FACILITATOR_ADDRESSES, ...SPECIMEN_ADDRESSES];
   for (const tx of body) {
-    for (const facilitator of ALL_FACILITATOR_ADDRESSES) {
-      const payment = extractX402Payment(tx, facilitator);
+    for (const recipient of ROUTABLE_RECIPIENTS) {
+      const payment = extractX402Payment(tx, recipient);
       if (payment) {
         parsed.push(payment);
         break;

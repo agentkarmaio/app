@@ -29,13 +29,26 @@ const ROLE_LABELS: Record<string, { label: string; className: string }> = {
   },
 };
 
+const SITE_URL = 'https://agentkarma.io';
+
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const org = await getOrganization(slug).catch(() => null);
   if (!org) return { title: 'Organization not found' };
+  const title = `${org.name} — AgentKarma Fleet`;
+  const description = org.description
+    ?? `Fleet reputation for ${org.name} on AgentKarma — aggregate Provider Karma across the organization's claimed agent wallets.`;
   return {
-    title: `${org.name} — AgentKarma Fleet`,
-    description: org.description ?? `Fleet reputation for ${org.name} on AgentKarma.`,
+    title,
+    description,
+    alternates: { canonical: `/org/${slug}` },
+    openGraph: {
+      type: 'profile',
+      url: `${SITE_URL}/org/${slug}`,
+      title,
+      description,
+    },
+    twitter: { card: 'summary_large_image', title, description },
   };
 }
 
@@ -70,8 +83,48 @@ export default async function OrgPage({
   const behaviorCount = presentWallets.filter((w) => w.confidence_badge === 'behavior-inferred').length;
   const declaredCount = presentWallets.filter((w) => w.confidence_badge === 'declared').length;
 
+  const orgLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Organization',
+    name: org.name,
+    url: `${SITE_URL}/org/${slug}`,
+    description: org.description ?? undefined,
+    sameAs: org.website ? [org.website] : undefined,
+    member: presentWallets.map((w) => ({
+      '@type': 'Thing',
+      name: w.display_name ?? w.address,
+      identifier: w.address,
+      url: `${SITE_URL}/agent/${w.address}`,
+    })),
+    additionalProperty: [
+      { '@type': 'PropertyValue', name: 'Member Agents', value: memberCount },
+      { '@type': 'PropertyValue', name: 'Avg Provider Karma', value: Number(avgProviderScore.toFixed(1)), maxValue: 100 },
+      { '@type': 'PropertyValue', name: 'Combined Transactions', value: totalTx },
+    ],
+  };
+
+  const breadcrumbLd = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'AgentKarma', item: SITE_URL },
+      { '@type': 'ListItem', position: 2, name: 'Fleets', item: `${SITE_URL}/enterprise` },
+      { '@type': 'ListItem', position: 3, name: org.name, item: `${SITE_URL}/org/${slug}` },
+    ],
+  };
+
   return (
     <div className="space-y-10">
+      <script
+        type="application/ld+json"
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(orgLd) }}
+      />
+      <script
+        type="application/ld+json"
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+      />
       {/* Enterprise context strip */}
       <div className="flex items-center justify-between gap-3 rounded-lg border border-[rgb(113_112_255/0.18)] bg-[rgb(113_112_255/0.04)] px-3 py-2 text-[11px]">
         <div className="flex items-center gap-2 text-[#8a92ff]">

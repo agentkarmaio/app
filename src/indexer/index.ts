@@ -19,14 +19,46 @@ import {
   ALL_FACILITATOR_ADDRESSES,
   getFacilitatorName,
 } from '../config/facilitators';
+import {
+  PAYSH_OPERATOR_ADDRESSES,
+  getPayshOperatorByAddress,
+} from '../config/paysh-operators';
+import {
+  SPECIMEN_ADDRESSES,
+  SPECIMEN_FACILITATOR_LABEL,
+  SPECIMEN_PROVIDER_ADDRESS,
+} from '../config/specimen';
 import type { Transaction } from '../db/schema';
-import { insertTransactions, upsertWallet, insertScoreSnapshot, getTransactionsForWallets, getCursor, upsertCursor, insertSignalEvents, getLatestSignalValues } from '../db/client';
+import {
+  insertTransactions,
+  upsertWallet,
+  insertScoreSnapshot,
+  getTransactionsForWallets,
+  getCursor,
+  upsertCursor,
+  insertSignalEvents,
+  getLatestSignalValues,
+  countSignalEventsByKind,
+  type InsertSignalEventInput,
+} from '../db/client';
 import { calculateScores } from '../scoring';
-import { buildX402PaymentSignals, buildCadenceSignal, buildAutonomySignal } from '../scoring/signals';
+import {
+  buildX402PaymentSignals,
+  buildCadenceSignal,
+  buildAutonomySignal,
+  buildPayshRoutedSignal,
+} from '../scoring/signals';
 import { computeCadence } from '../scoring/cadence';
 import { computeAutonomy, type AutonomyResult } from '../scoring/autonomy';
 import { readAttestations } from '../integrations/attestation';
-import { parseTransactionsBatch, extractX402Payment, withConcurrency } from './helius';
+import {
+  parseTransactionsBatch,
+  extractX402Payment,
+  extractPayshPayment,
+  withConcurrency,
+  type HeliusEnhancedTransaction,
+  type PayshExtractedPayment,
+} from './helius';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -49,12 +81,17 @@ function getConnection(): Connection {
  * 1. getSignaturesForAddress — one RPC call to get signature list
  * 2. parseTransactionsBatch — one Helius API call per 100 sigs (batch parsing)
  * 3. extractX402Payment — filter for USDC payments
+ * 4. extractPayshPayment — opportunistically tag pay.sh-routed txs (sprint A1)
  */
 export async function fetchTransactionsForFacilitator(
   address: string,
   limit: number = DEFAULT_LIMIT,
   options?: { until?: string; before?: string },
-): Promise<{ transactions: Omit<Transaction, 'id'>[]; latestSignature: string | null }> {
+): Promise<{
+  transactions: Omit<Transaction, 'id'>[];
+  paysh: PayshExtractedPayment[];
+  latestSignature: string | null;
+}> {
   const connection = getConnection();
   const pubkey = new PublicKey(address);
 
@@ -67,13 +104,13 @@ export async function fetchTransactionsForFacilitator(
     signatures = await connection.getSignaturesForAddress(pubkey, sigOpts);
   } catch (err) {
     console.error(`[indexer] Failed to get signatures for ${address}:`, err);
-    return { transactions: [], latestSignature: null };
+    return { transactions: [], paysh: [], latestSignature: null };
   }
 
   if (signatures.length === 0) {
     const name = getFacilitatorName(address) ?? 'unknown';
     console.log(`[indexer] ${address} (${name}): 0 new signatures`);
-    return { transactions: [], latestSignature: null };
+    return { transactions: [], paysh: [], latestSignature: null };
   }
 
   const latestSignature = signatures[0].signature;
@@ -83,14 +120,28 @@ export async function fetchTransactionsForFacilitator(
   const parsed = await parseTransactionsBatch(sigStrings);
 
   const results: Omit<Transaction, 'id'>[] = [];
+  const payshHits: PayshExtractedPayment[] = [];
   for (const tx of parsed) {
     const payment = extractX402Payment(tx, address);
     if (payment) results.push(payment);
+
+    // Pay.sh fingerprint runs orthogonally — a single tx can be both x402-
+    // recorded (as a payer transfer) and pay.sh-routed (operator gateway).
+    const paysh = extractPayshPayment(tx);
+    if (paysh) payshHits.push(paysh);
   }
 
-  const name = getFacilitatorName(address) ?? 'unknown';
-  console.log(`[indexer] ${address} (${name}): ${results.length}/${signatures.length} USDC txs`);
-  return { transactions: results, latestSignature };
+  const facName = getFacilitatorName(address);
+  const paysh = getPayshOperatorByAddress(address);
+  const isSpecimen = address === SPECIMEN_PROVIDER_ADDRESS;
+  const name = facName
+    ?? (paysh ? `pay.sh:${paysh.id}` : null)
+    ?? (isSpecimen ? SPECIMEN_FACILITATOR_LABEL : 'unknown');
+  console.log(
+    `[indexer] ${address} (${name}): ${results.length}/${signatures.length} USDC txs` +
+    (payshHits.length > 0 ? ` (+${payshHits.length} pay.sh-routed)` : ''),
+  );
+  return { transactions: results, paysh: payshHits, latestSignature };
 }
 
 /**
@@ -101,11 +152,21 @@ export async function fetchTransactionsForFacilitator(
 export async function fetchAllX402Transactions(
   limit: number = DEFAULT_LIMIT,
   options?: { backfill?: boolean },
-): Promise<Omit<Transaction, 'id'>[]> {
+): Promise<{ transactions: Omit<Transaction, 'id'>[]; paysh: PayshExtractedPayment[] }> {
   const backfill = options?.backfill ?? false;
 
+  // Iteration set: existing x402 facilitators + pay.sh operator addresses
+  // (Track A2 — MPP-on-Solana coverage) + the AgentKarma specimen agent
+  // (mainnet end-to-end exercise). Set-dedup handles overlaps where a
+  // pay.sh operator's feePayer is already a known x402 facilitator.
+  const iterationAddresses = [...new Set([
+    ...ALL_FACILITATOR_ADDRESSES,
+    ...PAYSH_OPERATOR_ADDRESSES,
+    ...SPECIMEN_ADDRESSES,
+  ])];
+
   const results = await withConcurrency(
-    ALL_FACILITATOR_ADDRESSES,
+    iterationAddresses,
     FACILITATOR_CONCURRENCY,
     async (address) => {
       // Load cursor for incremental indexing (skip in backfill mode)
@@ -122,13 +183,17 @@ export async function fetchAllX402Transactions(
         await upsertCursor(address, result.latestSignature);
       }
 
-      return result.transactions;
+      return result;
     },
   );
 
-  const all = results.flat();
-  console.log(`[indexer] Total x402 transactions fetched: ${all.length}`);
-  return all;
+  const allTxs = results.flatMap((r) => r.transactions);
+  const allPaysh = results.flatMap((r) => r.paysh);
+  console.log(
+    `[indexer] Total x402 transactions fetched: ${allTxs.length}` +
+    (allPaysh.length > 0 ? ` (${allPaysh.length} pay.sh-routed)` : ''),
+  );
+  return { transactions: allTxs, paysh: allPaysh };
 }
 
 // ─── Indexer Run ─────────────────────────────────────────────────────────────
@@ -148,17 +213,22 @@ export async function runIndexer(
   fetched: number;
   inserted: number;
   scored: number;
+  payshSignals: number;
 }> {
   console.log(`[indexer] Starting ${options?.backfill ? 'backfill' : 'incremental'} indexer run...`);
 
-  const transactions = await fetchAllX402Transactions(limit, options);
-  if (transactions.length === 0) {
+  const { transactions, paysh } = await fetchAllX402Transactions(limit, options);
+  if (transactions.length === 0 && paysh.length === 0) {
     console.log('[indexer] No new transactions found');
-    return { fetched: 0, inserted: 0, scored: 0 };
+    return { fetched: 0, inserted: 0, scored: 0, payshSignals: 0 };
   }
 
-  // Ensure wallet records exist before inserting transactions (FK constraint)
-  const uniqueWallets = [...new Set(transactions.map((tx) => tx.wallet_address))];
+  // Ensure wallet records exist before inserting transactions (FK constraint).
+  // Includes pay.sh-routed payer wallets so the FK on signal_events resolves.
+  const uniqueWallets = [...new Set([
+    ...transactions.map((tx) => tx.wallet_address),
+    ...paysh.map((p) => p.wallet),
+  ])];
   console.log(`[indexer] Creating ${uniqueWallets.length} wallet records...`);
   for (const addr of uniqueWallets) {
     await upsertWallet(addr, 0, 'Unrated', 0);
@@ -171,8 +241,27 @@ export async function runIndexer(
   const signalsInserted = await insertSignalEvents(buildX402PaymentSignals(transactions));
   if (signalsInserted > 0) console.log(`[indexer] Emitted ${signalsInserted} Tier 2 signal_events`);
 
+  // Emit Tier 1 paysh_routed signals (sprint A1). Idempotent on tx_signature.
+  let payshSignalsInserted = 0;
+  if (paysh.length > 0) {
+    const payshSignals: InsertSignalEventInput[] = paysh.map((p) =>
+      buildPayshRoutedSignal({
+        walletAddress: p.wallet,
+        txSignature: p.txSignature,
+        operatorAddress: p.operatorAddress,
+        operatorId: p.operatorId,
+        protocol: p.protocol,
+        observedAt: p.observedAt,
+      }),
+    );
+    payshSignalsInserted = await insertSignalEvents(payshSignals);
+    if (payshSignalsInserted > 0) {
+      console.log(`[indexer] Emitted ${payshSignalsInserted} Tier 1 paysh_routed signal_events`);
+    }
+  }
+
   // Re-query full DB history for affected wallets so scores reflect ALL transactions
-  const affectedWallets = [...new Set(transactions.map((tx) => tx.wallet_address))];
+  const affectedWallets = uniqueWallets;
   console.log(`[indexer] Fetching full history for ${affectedWallets.length} affected wallets...`);
   const allTxsForAffected = await getTransactionsForWallets(affectedWallets);
 
@@ -220,7 +309,15 @@ export async function runIndexer(
   // to the blended score; wallets with no manifest get null and weight redistributes.
   const manifestScores = await getLatestSignalValues(affectedWallets, 'manifest');
 
-  const scores = calculateScores(allTxsForAffected, attestations, cadenceScores, manifestScores);
+  // Pay.sh-routed counts feed Tier 1 alongside 8004 + feedback. Counts are
+  // pulled from signal_events so the score reflects historical receipts even
+  // when this run found zero new pay.sh hits.
+  const payshCounts = await countSignalEventsByKind(affectedWallets, 'paysh_routed');
+  if (payshCounts.size > 0) {
+    console.log(`[indexer] ${payshCounts.size} wallets have pay.sh-routed receipts in history`);
+  }
+
+  const scores = calculateScores(allTxsForAffected, attestations, cadenceScores, manifestScores, payshCounts);
 
   let scored = 0;
   for (const [address, walletScore] of scores) {
@@ -249,5 +346,8 @@ export async function runIndexer(
   }
 
   console.log(`[indexer] Scored ${scored} wallets`);
-  return { fetched: transactions.length, inserted, scored };
+  return { fetched: transactions.length, inserted, scored, payshSignals: payshSignalsInserted };
 }
+
+// Re-export type for downstream callers (webhooks, scripts, etc.)
+export type { HeliusEnhancedTransaction };
