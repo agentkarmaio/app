@@ -15,39 +15,56 @@ const DeckViewer = dynamic(
 const STORAGE_KEY = "ak:deck:viewer-email";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-type GateState = "checking" | "gated" | "open";
+type GateState = "gated" | "open";
 
-export function DeckGate({ viewerCount = 0 }: { viewerCount?: number }) {
-  const [state, setState] = useState<GateState>("checking");
+type DeckGateProps = {
+  viewerCount?: number;
+  initialAuthed?: boolean;
+  initialEmail?: string | null;
+};
+
+export function DeckGate({
+  viewerCount = 0,
+  initialAuthed = false,
+  initialEmail = null,
+}: DeckGateProps) {
+  // Start in the right state synchronously based on the server-verified
+  // ak_deck cookie. No "checking" flash on returning visitors.
+  const [state, setState] = useState<GateState>(initialAuthed ? "open" : "gated");
   const [email, setEmail] = useState("");
-  const [identified, setIdentified] = useState<string | null>(null);
+  const [identified, setIdentified] = useState<string | null>(initialEmail);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      let stored: string | null = null;
+    // If the server already verified our cookie, just push identity into
+    // OpenReplay — no localStorage round-trip, no extra POST. The session is
+    // already authed for /api/deck/file.
+    if (initialAuthed && initialEmail) {
+      identify(initialEmail);
       try {
-        stored = localStorage.getItem(STORAGE_KEY);
+        localStorage.setItem(STORAGE_KEY, initialEmail);
       } catch {
-        // localStorage unavailable — fall through to gated.
+        // ignore
       }
-      if (stored && EMAIL_RE.test(stored)) {
-        identify(stored);
-        // Awaited so the auth cookie is set before the viewer fetches the PDF.
-        await recordView(stored, true);
-        if (cancelled) return;
+      return;
+    }
+    // Cookie missing/expired but localStorage may still have an email from a
+    // previous session — auto-identify and re-issue the cookie quietly.
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(STORAGE_KEY);
+    } catch {
+      // localStorage unavailable — stay gated.
+    }
+    if (stored && EMAIL_RE.test(stored)) {
+      identify(stored);
+      void recordView(stored, true).then(() => {
         setIdentified(stored);
         setState("open");
-        return;
-      }
-      if (!cancelled) setState("gated");
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+      });
+    }
+  }, [initialAuthed, initialEmail]);
 
   function identify(value: string) {
     setOpenReplayUserID(value);
@@ -100,8 +117,6 @@ export function DeckGate({ viewerCount = 0 }: { viewerCount?: number }) {
     setError(null);
     setState("gated");
   }
-
-  if (state === "checking") return <ViewerLoading />;
 
   if (state === "gated") {
     return (
@@ -170,9 +185,14 @@ export function DeckGate({ viewerCount = 0 }: { viewerCount?: number }) {
 }
 
 function ViewerLoading() {
+  // Silent placeholder. Aspect-locked to the deck (16:9) so the height
+  // matches what react-pdf will render — no layout jump on chunk swap.
+  // Note: avoid `items-center` on the outer flex — it triggers a browser
+  // circular-sizing bug with aspect-ratio + w-full children, collapsing the
+  // card to 0×0. Default stretch keeps the cross-axis determined.
   return (
-    <div className="flex min-h-[60vh] items-center justify-center text-xs text-muted-foreground">
-      Loading…
+    <div className="flex flex-col gap-4">
+      <div className="aspect-[16/9] w-full rounded-lg border border-border bg-card" />
     </div>
   );
 }

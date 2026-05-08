@@ -24,6 +24,7 @@
 
 import type { ReactNode } from 'react';
 import Link from 'next/link';
+import { ChevronRight } from 'lucide-react';
 
 /**
  * Inline link styling for FAQ answers. Internal `/...` paths use Next's
@@ -356,54 +357,65 @@ function StructuredDataScript() {
 }
 
 /**
- * Compact variant — native <details> accordion, no card chrome. Designed
- * to live above the lazy-loading leaderboard without interrupting scroll.
+ * Compact variant — native <details> accordion inside a single bordered
+ * card. Designed to live above the lazy-loading leaderboard without
+ * interrupting scroll, but with enough chrome to read as a deliberate UI
+ * block instead of an unstyled list.
  */
 function FAQCompact({ heading }: { heading?: string }) {
   return (
     <section
       id="faq"
       aria-labelledby="faq-heading"
-      className="space-y-3"
+      className="space-y-4"
       itemScope
       itemType="https://schema.org/FAQPage"
     >
       <StructuredDataScript />
       <div className="flex items-baseline justify-between gap-3 px-1">
-        <h2
-          id="faq-heading"
-          className="text-[12px] font-[510] uppercase tracking-[0.12em] text-[#62666d]"
-        >
-          {heading ?? 'Reputation, in answer form'}
-        </h2>
-        <a
+        <div className="space-y-0.5">
+          <h2
+            id="faq-heading"
+            className="text-[14px] font-[590] tracking-[-0.14px] text-[#f7f8f8]"
+          >
+            {heading ?? 'Frequently asked'}
+          </h2>
+          <p className="text-[11.5px] text-[#62666d]">
+            {FAQS.length} answers · plain definitions for AgentKarma
+          </p>
+        </div>
+        <Link
           href="/faq"
-          className="text-[11px] font-[510] text-[#62666d] transition-colors hover:text-[#a9b0ff]"
+          className="inline-flex items-center gap-1 text-[11px] font-[510] text-[#a9b0ff] transition-colors hover:text-[#c0c6ff]"
         >
-          All {FAQS.length} →
-        </a>
+          Open dedicated page
+          <ChevronRight aria-hidden className="size-3" />
+        </Link>
       </div>
-      <div className="divide-y divide-[rgb(255_255_255/0.04)]">
+      <div className="overflow-hidden rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] divide-y divide-[rgb(255_255_255/0.04)]">
         {FAQS.map((f) => (
           <details
             key={f.id}
             id={f.id}
-            className="group py-2.5 [&_summary::-webkit-details-marker]:hidden [&_summary]:list-none"
+            className="group [&_summary::-webkit-details-marker]:hidden [&_summary]:list-none"
             itemScope
             itemProp="mainEntity"
             itemType="https://schema.org/Question"
           >
-            <summary className="flex cursor-pointer items-center gap-2 text-[13.5px] font-[510] tracking-[-0.1px] text-[#d0d6e0] transition-colors hover:text-[#f7f8f8]">
-              <span
+            <summary className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-[rgb(255_255_255/0.025)] group-open:bg-[rgb(255_255_255/0.025)]">
+              <ChevronRight
                 aria-hidden
-                className="text-[10px] text-[#4f5258] transition-transform duration-150 group-open:rotate-90"
+                className="size-3.5 shrink-0 text-[#62666d] transition-all duration-150 group-open:rotate-90 group-open:text-[#a9b0ff]"
+              />
+              <span
+                className="text-[13.5px] font-[510] tracking-[-0.13px] text-[#d0d6e0] transition-colors group-hover:text-[#f7f8f8] group-open:text-[#f7f8f8]"
+                itemProp="name"
               >
-                ▶
+                {f.question}
               </span>
-              <span itemProp="name">{f.question}</span>
             </summary>
             <div
-              className="mt-2 pl-[18px] text-[13px] leading-relaxed text-[#8a8f98]"
+              className="border-l-2 border-[rgb(94_106_210/0.20)] mx-4 mb-4 ml-[1.625rem] pl-3 text-[13px] leading-relaxed text-[#8a8f98]"
               itemScope
               itemProp="acceptedAnswer"
               itemType="https://schema.org/Answer"

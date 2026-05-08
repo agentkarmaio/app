@@ -58,10 +58,10 @@ export function DeckViewer() {
   const options = useMemo(() => documentOptions, []);
 
   return (
-    <div className="flex flex-col items-center gap-4">
+    <div className="flex flex-col gap-4">
       <div
         ref={containerRef}
-        className="w-full overflow-hidden rounded-lg border border-border bg-card"
+        className="aspect-[16/9] w-full overflow-hidden rounded-lg border border-border bg-card"
       >
         <Document
           file={PDF_FILE}
@@ -81,7 +81,7 @@ export function DeckViewer() {
         </Document>
       </div>
 
-      <div className="flex items-center gap-3 text-sm text-muted-foreground">
+      <div className="flex items-center gap-3 self-center text-sm text-muted-foreground">
         <Button
           variant="outline"
           size="sm"
@@ -111,11 +111,9 @@ export function DeckViewer() {
 }
 
 function DeckSkeleton() {
-  return (
-    <div className="flex h-[60vh] w-full items-center justify-center text-xs text-muted-foreground">
-      Loading deck…
-    </div>
-  );
+  // Silent placeholder. Aspect-locked to the deck (16:9) so the height
+  // matches what react-pdf will render — no layout jump on chunk swap.
+  return <div className="aspect-[16/9] w-full" />;
 }
 
 function DeckError() {

@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { getClientIp } from "@/lib/rate-limit";
 
 const UPSTREAM = "https://replay.noras.systems/ingest";
 
@@ -27,6 +28,17 @@ const handle = async (
   req.headers.forEach((value, key) => {
     if (!HOP_BY_HOP.has(key.toLowerCase())) headers.set(key, value);
   });
+
+  // OpenReplay geolocates from the leftmost X-Forwarded-For. Behind Cloudflare
+  // + Traefik the original client IP can get buried; pin it explicitly so
+  // sessions show the visitor's location, not the Servel host.
+  const clientIp = getClientIp(req);
+  if (clientIp && clientIp !== "unknown") {
+    headers.set("x-forwarded-for", clientIp);
+    headers.set("x-real-ip", clientIp);
+  }
+  const cfIp = req.headers.get("cf-connecting-ip");
+  if (cfIp) headers.set("x-forwarded-for", cfIp);
 
   const hasBody = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
 

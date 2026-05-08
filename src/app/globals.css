@@ -131,7 +131,10 @@
     font-feature-settings: "cv01", "ss03";
   }
   html {
-    @apply font-sans antialiased;
+    @apply bg-background font-sans antialiased;
+    /* Pin the html background so route transitions / scroll bounce don't
+       flash the browser's default white. */
+    color-scheme: dark;
   }
 }
 
@@ -273,7 +276,7 @@
   transition: transform 400ms cubic-bezier(0.2, 0.8, 0.2, 1),
     filter 400ms ease-out;
   transform-origin: center;
-  filter: drop-shadow(0 0 0.5px rgb(113 112 255 / 0.4));
+  filter: drop-shadow(0 0 0.5px rgb(212 168 90 / 0.4));
 }
 
 .karma-logo-wrap::after {
@@ -306,7 +309,7 @@
 
 .karma-logo-group:hover .karma-logo {
   transform: scale(1.04);
-  filter: drop-shadow(0 0 6px rgb(113 112 255 / 0.55));
+  filter: drop-shadow(0 0 6px rgb(212 168 90 / 0.55));
 }
 
 .karma-logo-group:hover .karma-logo-wrap::after {

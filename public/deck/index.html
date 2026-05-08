@@ -6,7 +6,7 @@
   <title>AgentKarma — Pitch Deck</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;510;590&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;510;590;680&family=JetBrains+Mono:wght@400;500&display=swap" />
   <style>
     :root {
       --bg: #08090a;
@@ -14,31 +14,33 @@
       --fg-2: #d0d6e0;
       --fg-3: #8a8f98;
       --fg-4: #62666d;
+      --fg-5: #3a3d42;
       --line: rgba(255,255,255,0.08);
       --line-dim: rgba(255,255,255,0.04);
       --gold: #c9a96a;
-      --gold-dim: rgba(201,169,106,0.15);
+      --gold-dim: rgba(201,169,106,0.12);
+      --gold-line: rgba(201,169,106,0.32);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
       background: var(--bg);
       color: var(--fg);
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
-      font-feature-settings: 'cv01', 'ss03';
+      font-feature-settings: 'cv01', 'ss03', 'cv11';
       -webkit-font-smoothing: antialiased;
       font-weight: 400;
     }
     body { overflow-x: hidden; }
 
+    /* ---------- Slide frame ---------- */
     .slide {
       width: 100vw;
       height: 100vh;
       min-height: 100vh;
-      padding: 88px 112px;
+      padding: 80px 120px;
       position: relative;
       display: flex;
       flex-direction: column;
-      justify-content: center;
       page-break-after: always;
       break-after: page;
       page-break-inside: avoid;
@@ -48,35 +50,83 @@
       page-break-before: always;
       break-before: page;
     }
+    /* Flex columns default to align-items:stretch — that was making bare
+       <img> children fill the slide's full width. Anchor children to the
+       start so width:auto on images means "natural width". */
+    .slide { align-items: flex-start; }
 
-    .slide-num {
+    /* Hairline alignment rail. Earns its keep — every slide's left edge
+       snaps to it so paging through the deck has a quiet visual spine. */
+    .slide::before {
+      content: '';
       position: absolute;
-      left: 112px;
+      left: 56px;
+      top: 56px;
       bottom: 56px;
-      font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 11px;
-      color: var(--fg-4);
-      letter-spacing: 0.08em;
+      width: 1px;
+      background: var(--line-dim);
     }
-    .mark {
+    /* Tick caps top + bottom on the rail. */
+    .slide::after {
+      content: '';
       position: absolute;
-      right: 112px;
-      bottom: 44px;
-      width: 48px;
-      height: 48px;
-      opacity: 0.9;
+      left: 48px;
+      bottom: 56px;
+      width: 17px;
+      height: 1px;
+      background: var(--line);
     }
-    .mark img, .mark svg { width: 100%; height: 100%; object-fit: contain; }
 
-    /* Gold diamond — rotated square, same motif as the symbol's karma node */
-    .diamond {
-      display: inline-block;
-      width: 10px;
-      height: 10px;
-      background: var(--gold);
+    /* Slide chrome — replaces "01 / 11" with "01 — TITLE". Tape stamp. */
+    .stamp {
+      position: absolute;
+      left: 56px;
+      top: 56px;
+      transform: translate(-3px, -50%);
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--bg);
+      padding: 4px 10px 4px 0;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      color: var(--fg-4);
+      text-transform: uppercase;
+    }
+    .stamp .dot {
+      width: 6px; height: 6px;
+      background: var(--fg-5);
       transform: rotate(45deg);
-      vertical-align: middle;
-      margin-right: 2px;
+    }
+
+    /* Slide-anchor variants — editorial cadence. */
+    .anchor-top    { justify-content: flex-start; padding-top: 140px; }
+    .anchor-center { justify-content: center; }
+    .anchor-bottom { justify-content: flex-end; padding-bottom: 140px; }
+
+    /* Content offset so it never crosses the rail. */
+    .slide > .body,
+    .slide > h1,
+    .slide > h2,
+    .slide > .question,
+    .slide > .grid,
+    .slide > .columns,
+    .slide > .compute,
+    .slide > .defense,
+    .slide > .agenticity,
+    .slide > .faces,
+    .slide > .open,
+    .slide > .traction,
+    .slide > .paysh,
+    .slide > .seam,
+    .slide > .close,
+    .slide > .kicker,
+    .slide > .tagline,
+    .slide > .url,
+    .slide > .contact {
+      margin-left: 64px;
+      max-width: calc(100% - 64px);
     }
 
     h1, h2, h3 {
@@ -84,16 +134,18 @@
       letter-spacing: -0.02em;
       color: var(--fg);
     }
+
+    /* ---------- Shared primitives ---------- */
     .kicker {
       font-family: 'JetBrains Mono', ui-monospace, monospace;
       font-size: 11px;
-      letter-spacing: 0.16em;
+      letter-spacing: 0.18em;
       text-transform: uppercase;
       color: var(--fg-3);
-      margin-bottom: 40px;
+      margin-bottom: 36px;
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
     }
     .kicker::before {
       content: '';
@@ -102,345 +154,661 @@
       background: var(--gold);
       transform: rotate(45deg);
     }
+    .kicker.gold { color: var(--gold); }
     .accent { color: var(--gold); }
     .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
-
-    /* Slide 1 — Title */
-    .s1 { justify-content: center; align-items: flex-start; }
-    .s1 .logo { height: 72px; width: auto; margin-bottom: 44px; }
-    .s1 h1 { font-size: 96px; line-height: 0.96; letter-spacing: -0.03em; }
-    .s1 .tagline { margin-top: 24px; font-size: 22px; color: var(--fg-3); letter-spacing: -0.01em; }
-    .s1 .url { position: absolute; right: 112px; top: 88px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: var(--fg-4); letter-spacing: 0.04em; }
-
-    /* Slide 2 — Question */
-    .s2 { justify-content: center; }
-    .s2 .question {
-      font-size: 72px;
-      line-height: 1.08;
-      letter-spacing: -0.025em;
-      font-weight: 510;
-      max-width: 1100px;
-      color: var(--fg);
-      font-style: italic;
+    .dim  { color: var(--fg-3); }
+    .dim2 { color: var(--fg-4); }
+    .diamond {
+      display: inline-block;
+      width: 9px; height: 9px;
+      background: var(--gold);
+      transform: rotate(45deg);
+      vertical-align: middle;
+      margin: 0 6px;
     }
 
-    /* Slide 3 — Gap */
-    .s3 h2 { font-size: 40px; line-height: 1.1; max-width: 760px; margin-bottom: 80px; }
-    .s3 .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 80px; max-width: 1100px; }
+    /* Brand mark — only on slide 1 + close. */
+    .mark {
+      position: absolute;
+      right: 80px;
+      bottom: 64px;
+      width: 40px;
+      height: 40px;
+      opacity: 0.85;
+    }
+    .mark img { width: 100%; height: 100%; object-fit: contain; }
+
+    /* ---------- Slide 1 — Title ---------- */
+    .s1 .logo {
+      display: block;
+      width: 56px;
+      height: 56px;
+      object-fit: contain;
+      margin-left: 64px;
+      margin-bottom: 64px;
+    }
+    .s1 h1 {
+      font-size: 132px;
+      line-height: 0.92;
+      letter-spacing: -0.045em;
+      font-weight: 590;
+    }
+    .s1 .tagline {
+      margin-top: 32px;
+      font-size: 26px;
+      color: var(--fg-3);
+      letter-spacing: -0.012em;
+      max-width: 760px;
+    }
+    .s1 .topline {
+      position: absolute;
+      right: 80px;
+      top: 56px;
+      transform: translateY(-50%);
+      background: var(--bg);
+      padding: 4px 0 4px 10px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      color: var(--fg-3);
+      text-transform: uppercase;
+    }
+    .s1 .topline .accent { color: var(--gold); }
+
+    /* ---------- Slide 2 — What it is (intro) ---------- */
+    .intro h2 {
+      font-size: 60px;
+      line-height: 1.06;
+      letter-spacing: -0.032em;
+      max-width: 940px;
+      margin-bottom: 40px;
+    }
+    .intro h2 .accent { color: var(--gold); }
+    .intro .what {
+      display: grid;
+      grid-template-columns: 1.25fr 1fr;
+      gap: 96px;
+      align-items: start;
+      max-width: 1280px;
+    }
+    .intro .lede {
+      font-size: 19px;
+      line-height: 1.5;
+      letter-spacing: -0.005em;
+      color: var(--fg-2);
+      max-width: 560px;
+    }
+    .intro .lede + .lede { margin-top: 18px; color: var(--fg-3); }
+    .intro .lede .accent { color: var(--gold); }
+    .intro .card {
+      padding: 36px 40px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.015);
+    }
+    .intro .card .label {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      color: var(--fg-4);
+      text-transform: uppercase;
+      margin-bottom: 22px;
+    }
+    .intro .card .score {
+      font-size: 116px;
+      font-weight: 590;
+      letter-spacing: -0.05em;
+      line-height: 0.86;
+      color: var(--fg);
+      font-feature-settings: 'tnum';
+      margin-bottom: 8px;
+    }
+    .intro .card .tier {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      color: var(--fg-3);
+      text-transform: uppercase;
+      margin-bottom: 18px;
+    }
+    .intro .card .badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 10px; letter-spacing: 0.12em;
+      color: var(--gold);
+      padding: 5px 11px;
+      background: var(--gold-dim);
+      border: 1px solid var(--gold-line);
+      border-radius: 999px;
+      text-transform: uppercase;
+      margin-bottom: 22px;
+    }
+    .intro .card .meta {
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      color: var(--fg-4);
+      line-height: 1.6;
+    }
+
+    /* ---------- Slide 3 — Question ---------- */
+    .s2 .question {
+      font-size: 88px;
+      line-height: 1.04;
+      letter-spacing: -0.035em;
+      font-weight: 510;
+      max-width: 1200px;
+    }
+    .s2 .question .tail {
+      color: var(--gold);
+    }
+
+    /* ---------- Slide 3 — Gap ---------- */
+    .s3 h2 {
+      font-size: 44px;
+      line-height: 1.12;
+      letter-spacing: -0.025em;
+      max-width: 880px;
+      margin-bottom: 88px;
+    }
+    .s3 .columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 80px;
+      max-width: 1200px;
+      position: relative;
+    }
+    .s3 .columns::before {
+      content: '';
+      position: absolute;
+      top: 6px; bottom: 6px;
+      left: calc(50% - 40px);
+      width: 1px;
+      background: var(--line);
+    }
     .s3 .col .label {
       font-family: 'JetBrains Mono', ui-monospace, monospace;
       font-size: 11px;
       letter-spacing: 0.18em;
       text-transform: uppercase;
       color: var(--fg-4);
-      margin-bottom: 24px;
-      padding-bottom: 16px;
-      border-bottom: 1px solid var(--line);
+      margin-bottom: 20px;
     }
-    .s3 .col.today .label { color: var(--fg-4); }
-    .s3 .col.tomorrow .label { color: var(--gold); border-bottom-color: var(--gold-dim); }
-    .s3 .col .body { font-size: 22px; line-height: 1.4; letter-spacing: -0.01em; }
+    .s3 .col.tomorrow .label { color: var(--gold); }
+    .s3 .col .body { font-size: 24px; line-height: 1.4; letter-spacing: -0.012em; }
     .s3 .col.today .body { color: var(--fg-4); }
     .s3 .col.tomorrow .body { color: var(--fg); }
 
-    /* Slide 4 — How a score is computed */
-    .s4 h2 { font-size: 44px; line-height: 1.1; letter-spacing: -0.025em; max-width: 1100px; margin-bottom: 56px; }
+    /* ---------- Slide 4 — Compute ---------- */
+    .s4 h2 {
+      font-size: 48px;
+      line-height: 1.08;
+      letter-spacing: -0.028em;
+      max-width: 1100px;
+      margin-bottom: 64px;
+    }
     .s4 .compute {
       display: grid;
-      grid-template-columns: 1.1fr 1fr 0.9fr;
-      gap: 48px;
-      align-items: center;
+      grid-template-columns: 1.1fr 0.9fr 0.8fr;
+      gap: 64px;
+      align-items: start;
     }
-    .s4 .inputs .tier { margin-bottom: 20px; }
-    .s4 .inputs .tier:last-child { margin-bottom: 0; }
-    .s4 .inputs .name {
-      font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 12px;
-      letter-spacing: 0.1em;
-      color: var(--gold);
-      margin-bottom: 6px;
+    .s4 .tiers .row {
+      display: grid;
+      grid-template-columns: 88px 1fr;
+      gap: 16px;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--line-dim);
+      align-items: baseline;
     }
-    .s4 .inputs .desc { font-size: 14px; color: var(--fg-2); line-height: 1.4; letter-spacing: -0.005em; }
-    .s4 .inputs .weight {
+    .s4 .tiers .row:first-child { padding-top: 0; }
+    .s4 .tiers .row:last-child  { border-bottom: none; }
+    .s4 .tiers .name {
       font-family: 'JetBrains Mono', ui-monospace, monospace;
       font-size: 11px;
-      color: var(--fg-4);
-      margin-left: 6px;
+      letter-spacing: 0.12em;
+      color: var(--gold);
+      text-transform: uppercase;
     }
+    .s4 .tiers .name .w { color: var(--fg-4); margin-left: 6px; }
+    .s4 .tiers .desc { font-size: 14px; color: var(--fg-2); line-height: 1.45; letter-spacing: -0.005em; }
     .s4 .formula {
-      padding: 24px 28px;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: rgba(255,255,255,0.015);
       font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 14px;
+      font-size: 15px;
       color: var(--fg-2);
-      line-height: 1.9;
+      line-height: 2.1;
     }
-    .s4 .formula .eq { color: var(--fg); font-size: 16px; margin-bottom: 14px; }
-    .s4 .formula .op { color: var(--gold); }
-    .s4 .formula .note { color: var(--fg-4); font-size: 11px; letter-spacing: 0; margin-top: 14px; line-height: 1.5; font-family: 'Inter', sans-serif; }
-    .s4 .output { text-align: left; }
+    .s4 .formula .eq    { color: var(--fg); font-size: 17px; margin-bottom: 18px; display: block; }
+    .s4 .formula .op    { color: var(--gold); }
+    .s4 .formula .note  {
+      color: var(--fg-4);
+      font-size: 11px;
+      letter-spacing: 0;
+      margin-top: 22px;
+      line-height: 1.5;
+      font-family: 'Inter', sans-serif;
+      max-width: 320px;
+    }
+    .s4 .output { padding-top: 4px; }
     .s4 .output .score {
-      font-size: 120px;
-      font-weight: 510;
-      letter-spacing: -0.045em;
-      line-height: 0.9;
+      font-size: 144px;
+      font-weight: 590;
+      letter-spacing: -0.05em;
+      line-height: 0.86;
       color: var(--fg);
-      margin-bottom: 12px;
+      margin-bottom: 14px;
+      font-feature-settings: 'tnum';
     }
     .s4 .output .tier-name {
       font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 13px;
-      letter-spacing: 0.12em;
-      color: var(--fg-3);
-      margin-bottom: 20px;
-      text-transform: uppercase;
+      font-size: 12px; letter-spacing: 0.16em;
+      color: var(--fg-3); text-transform: uppercase;
+      margin-bottom: 18px;
     }
     .s4 .output .badge {
       display: inline-flex; align-items: center; gap: 8px;
       font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 11px; letter-spacing: 0.08em;
+      font-size: 10px; letter-spacing: 0.12em;
       color: var(--gold);
-      padding: 5px 11px;
+      padding: 5px 10px;
       background: var(--gold-dim);
-      border: 1px solid var(--gold);
+      border: 1px solid var(--gold-line);
       border-radius: 999px;
+      text-transform: uppercase;
     }
 
-    /* Slide 5 — Why it's hard to fake */
-    .s5b .kicker { color: var(--gold); }
-    .s5b h2 { font-size: 48px; line-height: 1.1; letter-spacing: -0.025em; max-width: 1100px; margin-bottom: 56px; }
-    .s5b .defense {
+    /* ---------- Slide 5 — Why hard to fake ---------- */
+    .s5 h2 {
+      font-size: 52px;
+      line-height: 1.08;
+      letter-spacing: -0.028em;
+      max-width: 1000px;
+      margin-bottom: 56px;
+    }
+    .s5 .defense {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 28px 48px;
+      gap: 48px 80px;
       max-width: 1200px;
     }
-    .s5b .box {
-      padding: 28px 32px;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: rgba(255,255,255,0.015);
-    }
-    .s5b .box .label {
+    .s5 .item .label {
       font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 12px;
-      letter-spacing: 0.1em;
-      color: var(--gold);
-      text-transform: uppercase;
-      margin-bottom: 12px;
+      font-size: 11px; letter-spacing: 0.16em;
+      color: var(--gold); text-transform: uppercase;
+      margin-bottom: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--gold-line);
     }
-    .s5b .box .body {
-      font-size: 15px;
+    .s5 .item .body {
+      font-size: 17px;
       color: var(--fg-2);
       line-height: 1.5;
       letter-spacing: -0.005em;
     }
 
-    /* Slide 6 — Agenticity */
-    .s5 .kicker { color: var(--gold); }
-    .s5 h2 { font-size: 48px; line-height: 1.1; letter-spacing: -0.025em; max-width: 1000px; margin-bottom: 40px; }
-    .s5 .viz { display: flex; align-items: center; gap: 56px; }
-    .s5 .venn {
-      width: 260px; height: 260px; flex-shrink: 0;
-      position: relative;
+    /* ---------- Slide 6 — Agenticity ---------- */
+    .s6 h2 {
+      font-size: 52px;
+      line-height: 1.08;
+      letter-spacing: -0.028em;
+      max-width: 1100px;
+      margin-bottom: 64px;
     }
-    .s5 .venn .outer {
-      position: absolute; inset: 0;
-      border: 1px solid var(--line);
-      border-radius: 50%;
-      background: rgba(255,255,255,0.02);
-      display: flex; align-items: flex-start; justify-content: center;
-      padding-top: 20px;
+    .s6 .agenticity {
+      display: grid;
+      grid-template-columns: 1.05fr 1fr;
+      gap: 96px;
+      align-items: start;
     }
-    .s5 .venn .inner {
-      position: absolute;
-      top: 62%; left: 50%;
-      transform: translate(-50%, -50%);
-      width: 116px; height: 116px;
-      border: 1px solid var(--gold);
-      border-radius: 50%;
-      background: var(--gold-dim);
-      display: flex; align-items: center; justify-content: center;
+    .s6 .stat .ratio {
+      font-size: 168px;
+      font-weight: 590;
+      letter-spacing: -0.05em;
+      line-height: 0.86;
+      color: var(--fg);
+      font-feature-settings: 'tnum';
     }
-    .s5 .venn .outer .label,
-    .s5 .venn .inner .label {
-      font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 10px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      text-align: center;
+    .s6 .stat .ratio .of {
+      color: var(--fg-5);
+      font-size: 84px;
+      letter-spacing: -0.03em;
     }
-    .s5 .venn .outer .label { color: var(--fg-3); }
-    .s5 .venn .inner .label { color: var(--gold); line-height: 1.3; }
-    .s5 .side { flex: 1; min-width: 0; }
-    .s5 .side p {
-      font-size: 20px;
-      color: var(--fg-2);
-      line-height: 1.45;
-      letter-spacing: -0.01em;
-      margin-bottom: 24px;
-    }
-    .s5 .side .metrics {
+    .s6 .stat .caption {
+      margin-top: 22px;
       font-family: 'JetBrains Mono', ui-monospace, monospace;
       font-size: 12px;
+      letter-spacing: 0.1em;
       color: var(--fg-3);
-      letter-spacing: 0.04em;
+      text-transform: uppercase;
       line-height: 1.7;
-      padding-top: 18px;
+    }
+    .s6 .stat .caption .accent { color: var(--gold); }
+    .s6 .side p {
+      font-size: 22px;
+      color: var(--fg-2);
+      line-height: 1.42;
+      letter-spacing: -0.01em;
+      margin-bottom: 28px;
+    }
+    .s6 .side .signals-label {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      color: var(--fg-4);
+      text-transform: uppercase;
+      margin-bottom: 12px;
+      padding-top: 22px;
       border-top: 1px solid var(--line);
     }
-    .s5 .side .metrics-label {
-      font-size: 10px;
-      color: var(--fg-4);
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      margin-bottom: 8px;
-      font-family: 'JetBrains Mono', ui-monospace, monospace;
-    }
-
-    /* Slide 6 — Two faces */
-    .s6 h2 { font-size: 52px; line-height: 1.1; letter-spacing: -0.025em; margin-bottom: 72px; }
-    .s6 .faces { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; max-width: 1200px; }
-    .s6 .face {
-      padding: 40px;
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: rgba(255,255,255,0.015);
-    }
-    .s6 .face .label {
-      font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
-      color: var(--fg-4);
-      margin-bottom: 20px;
-    }
-    .s6 .face .score {
-      font-size: 96px; font-weight: 510; letter-spacing: -0.04em;
-      line-height: 0.95; color: var(--fg);
-      margin-bottom: 12px;
-    }
-    .s6 .face .score-label { font-size: 18px; color: var(--fg-3); margin-bottom: 24px; }
-    .s6 .face .q { font-size: 18px; color: var(--fg-2); line-height: 1.4; font-style: italic; }
-    .s6 .badge {
-      display: inline-flex; align-items: center; gap: 6px;
-      font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 11px; letter-spacing: 0.08em;
-      color: var(--gold);
-      padding: 4px 10px;
-      background: var(--gold-dim);
-      border: 1px solid var(--gold);
-      border-radius: 999px;
-      margin-bottom: 24px;
-    }
-    .s6 .footer {
-      margin-top: 48px;
-      font-size: 16px; color: var(--fg-3);
-      font-style: italic;
-      letter-spacing: -0.005em;
-    }
-
-    /* Slide 7 — Open */
-    .s7 h2 { font-size: 52px; line-height: 1.1; letter-spacing: -0.025em; margin-bottom: 96px; }
-    .s7 .flow { display: flex; align-items: center; gap: 0; max-width: 1200px; }
-    .s7 .node {
-      flex: 1;
-      padding: 36px 24px;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      text-align: center;
-      background: rgba(255,255,255,0.015);
-    }
-    .s7 .node.primary { border-color: var(--gold); background: var(--gold-dim); }
-    .s7 .node .name {
-      font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 18px; letter-spacing: 0.04em;
-      color: var(--fg); margin-bottom: 8px;
-    }
-    .s7 .node.primary .name { color: var(--gold); }
-    .s7 .node .sub {
-      font-size: 13px; color: var(--fg-3);
-    }
-    .s7 .arrow { color: var(--fg-4); font-size: 18px; padding: 0 16px; }
-    .s7 .footer {
-      margin-top: 48px;
+    .s6 .side .signals {
       font-family: 'JetBrains Mono', ui-monospace, monospace;
       font-size: 13px;
       color: var(--fg-3);
-      letter-spacing: 0.03em;
+      letter-spacing: 0.02em;
+      line-height: 1.85;
     }
 
-    /* Slide 8 — What's live */
-    .s8 h2 { font-size: 40px; line-height: 1.1; margin-bottom: 80px; color: var(--fg-3); font-weight: 400; letter-spacing: -0.01em; }
-    .s8 .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 64px; max-width: 1200px; }
-    .s8 .stat .num {
-      font-size: 88px; font-weight: 510; letter-spacing: -0.035em;
-      line-height: 0.9; color: var(--fg); margin-bottom: 16px;
+    /* ---------- Slide 7 — Two faces ---------- */
+    .s7 h2 {
+      font-size: 56px;
+      line-height: 1.08;
+      letter-spacing: -0.028em;
+      margin-bottom: 88px;
     }
-    .s8 .stat .num.accent { color: var(--gold); }
-    .s8 .stat .caption {
+    .s7 .faces {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 96px;
+      max-width: 1200px;
+      position: relative;
+    }
+    .s7 .faces::before {
+      content: '';
+      position: absolute;
+      top: 12px; bottom: 12px;
+      left: calc(50% - 48px);
+      width: 1px;
+      background: var(--line);
+    }
+    .s7 .face .label {
       font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 12px; letter-spacing: 0.08em;
-      color: var(--fg-3); line-height: 1.5;
+      font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--fg-4);
+      margin-bottom: 28px;
     }
-    .s8 .url {
-      margin-top: 72px;
+    .s7 .face .score {
+      font-size: 128px; font-weight: 590; letter-spacing: -0.05em;
+      line-height: 0.88; color: var(--fg);
+      margin-bottom: 12px;
+      font-feature-settings: 'tnum';
+    }
+    .s7 .face .tier {
       font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 16px;
-      color: var(--gold);
-      letter-spacing: 0.04em;
+      font-size: 11px; letter-spacing: 0.16em;
+      color: var(--fg-3); text-transform: uppercase;
+      margin-bottom: 28px;
     }
-
-    /* Slide 9 — Seam */
-    .s9 h2 { font-size: 44px; line-height: 1.15; letter-spacing: -0.02em; max-width: 1100px; margin-bottom: 96px; }
-    .s9 .flow { display: flex; align-items: center; gap: 0; max-width: 1200px; }
-    .s9 .node {
-      flex: 1; padding: 32px 24px;
-      border: 1px solid var(--line); border-radius: 12px;
-      text-align: center; background: rgba(255,255,255,0.015);
+    .s7 .face .q {
+      font-size: 19px; color: var(--fg-2); line-height: 1.4;
+      letter-spacing: -0.005em;
+      max-width: 360px;
     }
-    .s9 .node.primary { border-color: var(--gold); background: var(--gold-dim); }
-    .s9 .node .name {
+    .s7 .footer {
+      margin-top: 56px;
       font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 14px; letter-spacing: 0.1em;
-      color: var(--fg); margin-bottom: 6px;
+      font-size: 12px;
+      color: var(--fg-4);
+      letter-spacing: 0.12em;
       text-transform: uppercase;
     }
-    .s9 .node.primary .name { color: var(--gold); }
-    .s9 .node .sub {
-      font-size: 12px; color: var(--fg-3); line-height: 1.3;
-    }
-    .s9 .arrow { color: var(--fg-4); font-size: 20px; padding: 0 20px; }
-    .s9 .footer {
-      margin-top: 56px;
-      font-size: 18px;
-      color: var(--fg-3);
-      font-style: italic;
-      max-width: 900px;
-      line-height: 1.4;
-    }
 
-    /* Slide 10 — Close */
-    .s10 { justify-content: center; align-items: flex-start; }
-    .s10 .logo { height: 64px; width: auto; margin-bottom: 32px; }
-    .s10 h1 { font-size: 56px; font-weight: 510; letter-spacing: -0.025em; margin-bottom: 24px; }
-    .s10 .url {
-      font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 22px; color: var(--gold); margin-bottom: 16px;
-      letter-spacing: 0.02em;
+    /* ---------- Slide 8 — Open ---------- */
+    .s8 h2 {
+      font-size: 56px;
+      line-height: 1.08;
+      letter-spacing: -0.028em;
+      margin-bottom: 80px;
+      max-width: 1200px;
     }
-    .s10 .contact {
+    .s8 .open {
+      max-width: 1100px;
+    }
+    .s8 .open .row {
+      display: grid;
+      grid-template-columns: 110px 1fr auto;
+      gap: 32px;
+      padding: 20px 0;
+      border-bottom: 1px solid var(--line-dim);
+      align-items: baseline;
+    }
+    .s8 .open .row:first-child { padding-top: 0; }
+    .s8 .open .row:last-child  { border-bottom: none; padding-bottom: 0; }
+    .s8 .open .stage {
       font-family: 'JetBrains Mono', ui-monospace, monospace;
-      font-size: 13px; color: var(--fg-3);
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      color: var(--fg-4);
+      text-transform: uppercase;
+    }
+    .s8 .open .desc {
+      font-size: 22px;
+      color: var(--fg);
+      letter-spacing: -0.012em;
+      line-height: 1.35;
+    }
+    .s8 .open .desc .accent { color: var(--gold); }
+    .s8 .open .tag {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--fg-3);
       letter-spacing: 0.04em;
     }
-    .s10 .tagline {
-      position: absolute; top: 88px; right: 112px;
-      font-size: 15px; font-style: italic;
-      color: var(--fg-3);
+    .s8 .pills {
+      margin-top: 56px;
+      display: flex;
+      gap: 28px;
+      align-items: center;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      color: var(--gold);
+      text-transform: uppercase;
+    }
+    .s8 .pills .sep {
+      width: 6px; height: 6px;
+      background: var(--gold);
+      transform: rotate(45deg);
     }
 
-    /* Print-specific */
+    /* ---------- Slide 9 — Traction ---------- */
+    .s9 h2 {
+      font-size: 36px;
+      line-height: 1.18;
+      color: var(--fg-3);
+      font-weight: 400;
+      letter-spacing: -0.012em;
+      margin-bottom: 80px;
+    }
+    .s9 h2 .accent { color: var(--fg); }
+    .s9 .traction {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 56px 96px;
+      max-width: 1200px;
+    }
+    .s9 .stat { display: flex; flex-direction: column; gap: 12px; }
+    .s9 .stat.featured .num { color: var(--gold); }
+    .s9 .stat .num {
+      font-size: 112px;
+      font-weight: 590;
+      letter-spacing: -0.045em;
+      line-height: 0.88;
+      color: var(--fg);
+      font-feature-settings: 'tnum';
+    }
+    .s9 .stat.small .num { font-size: 88px; }
+    .s9 .stat .caption {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      letter-spacing: 0.1em;
+      color: var(--fg-3);
+      line-height: 1.55;
+      text-transform: uppercase;
+    }
+    .s9 .source {
+      margin-top: 56px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--fg-4);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .s9 .source .accent { color: var(--gold); }
+
+    /* ---------- Slide 10 — pay.sh ---------- */
+    .s10 .kicker { color: var(--gold); }
+    .s10 h2 {
+      font-size: 64px;
+      line-height: 1.04;
+      letter-spacing: -0.032em;
+      margin-bottom: 16px;
+      max-width: 1100px;
+    }
+    .s10 .subhead {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--fg-3);
+      margin-bottom: 80px;
+    }
+    .s10 .paysh {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 96px;
+      max-width: 1200px;
+      align-items: start;
+      position: relative;
+    }
+    .s10 .paysh::before {
+      content: '';
+      position: absolute;
+      top: 8px; bottom: 0;
+      left: calc(50% - 48px);
+      width: 1px;
+      background: var(--line);
+    }
+    .s10 .col .label {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      color: var(--fg-4);
+      text-transform: uppercase;
+      margin-bottom: 18px;
+    }
+    .s10 .col .head {
+      font-size: 28px;
+      line-height: 1.18;
+      letter-spacing: -0.018em;
+      color: var(--fg);
+      margin-bottom: 14px;
+    }
+    .s10 .col .body {
+      font-size: 16px;
+      line-height: 1.5;
+      color: var(--fg-3);
+      letter-spacing: -0.005em;
+      max-width: 420px;
+    }
+    .s10 .col.gain .head { color: var(--gold); }
+    .s10 .footnote {
+      margin-top: 64px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      color: var(--gold);
+      text-transform: uppercase;
+    }
+
+    /* ---------- Slide 11 — Seam ---------- */
+    .s11 h2 {
+      font-size: 56px;
+      line-height: 1.08;
+      letter-spacing: -0.028em;
+      max-width: 1200px;
+      margin-bottom: 56px;
+    }
+    .s11 h2 .accent { color: var(--gold); }
+    .s11 .seam .quote {
+      font-size: 22px;
+      line-height: 1.42;
+      letter-spacing: -0.012em;
+      color: var(--fg-2);
+      max-width: 880px;
+      margin-bottom: 32px;
+    }
+    .s11 .seam .meta {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      color: var(--fg-4);
+      text-transform: uppercase;
+    }
+    .s11 .seam .meta .accent { color: var(--gold); }
+
+    /* ---------- Slide 12 — Close ---------- */
+    .s12 .close {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+    .s12 .logo {
+      display: block;
+      width: 56px;
+      height: 56px;
+      object-fit: contain;
+      margin-left: 64px;
+      margin-bottom: 12px;
+    }
+    .s12 h1 {
+      font-size: 84px;
+      font-weight: 590;
+      letter-spacing: -0.04em;
+      line-height: 0.92;
+    }
+    .s12 .url {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 22px; color: var(--gold);
+      letter-spacing: 0.02em;
+      margin-top: 8px;
+    }
+    .s12 .contact {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      color: var(--fg-3);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-top: 8px;
+    }
+    .s12 .closing-line {
+      position: absolute;
+      top: 80px;
+      right: 80px;
+      transform: translateY(-50%);
+      background: var(--bg);
+      padding: 4px 0 4px 12px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      color: var(--gold);
+      text-transform: uppercase;
+    }
+
+    /* ---------- Print ---------- */
     @page {
       size: 13.333in 7.5in;
       margin: 0;
@@ -456,7 +824,7 @@
         height: 7.5in;
         min-height: 7.5in;
         max-height: 7.5in;
-        padding: 0.6in 0.85in;
+        padding: 0.5in 0.85in;
         overflow: hidden;
         page-break-after: always;
         break-after: page;
@@ -467,227 +835,285 @@
         page-break-before: always;
         break-before: page;
       }
+      .slide::before { left: 0.4in; top: 0.4in; bottom: 0.4in; }
+      .slide::after { left: 0.34in; bottom: 0.4in; }
+      .stamp { left: 0.4in; top: 0.4in; }
+      .s1 .topline,
+      .s12 .closing-line { right: 0.55in; top: 0.4in; }
+      .mark { right: 0.55in; bottom: 0.45in; }
+      .anchor-top    { padding-top: 1in; }
+      .anchor-bottom { padding-bottom: 1in; }
     }
   </style>
 </head>
 <body>
 
 <!-- ============ SLIDE 1 — TITLE ============ -->
-<section class="slide s1">
+<section class="slide s1 anchor-bottom">
+  <div class="stamp"><span class="dot"></span>01 — TITLE</div>
+  <div class="topline"><span class="accent">◆</span> agentkarma.io</div>
   <img class="logo" src="../brand/agentkarma-dark-X-transparent.png" alt="AgentKarma" />
   <h1>AgentKarma</h1>
   <div class="tagline">Reputation, for autonomous agents.</div>
-  <div class="url">agentkarma.io</div>
-  <div class="slide-num">01 / 11</div>
   <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
 </section>
 
-<!-- ============ SLIDE 2 — THE QUESTION ============ -->
-<section class="slide s2">
+<!-- ============ SLIDE 2 — WHAT IT IS ============ -->
+<section class="slide intro anchor-center">
+  <div class="stamp"><span class="dot"></span>02 — WHAT IT IS</div>
+  <div class="kicker">What it is</div>
+  <h2>AgentKarma is the <span class="accent">trust layer</span><br/>for autonomous on-chain agents.</h2>
+  <div class="what">
+    <div>
+      <p class="lede">Every wallet in the agent economy — paying, providing, transacting on Solana — earns a portable karma score, computed live from on-chain footprints.</p>
+      <p class="lede">Receipt-gated. Manipulation-resistant. Published as an ERC-8004 attestation any app can read without integrating with us.</p>
+    </div>
+    <div class="card">
+      <div class="label">Sample agent · provider karma</div>
+      <div class="score">87</div>
+      <div class="tier">Very Good</div>
+      <div class="badge"><span class="diamond" style="margin:0;width:7px;height:7px;"></span> Receipt-backed</div>
+      <div class="meta">
+        agentkarma.io/agent/&lt;wallet&gt;<br/>
+        portable · on-chain · neutral
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SLIDE 3 — THE QUESTION ============ -->
+<section class="slide s2 anchor-center">
+  <div class="stamp"><span class="dot"></span>03 — THE QUESTION</div>
   <div class="kicker">The question</div>
-  <div class="question">Can you trust this agent with your money?</div>
-  <div class="slide-num">02 / 11</div>
-  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+  <div class="question">Can you trust this agent<br/>with your money<span class="tail">?</span></div>
 </section>
 
 <!-- ============ SLIDE 3 — THE GAP ============ -->
-<section class="slide s3">
+<section class="slide s3 anchor-bottom">
+  <div class="stamp"><span class="dot"></span>04 — THE GAP</div>
   <div class="kicker">The gap</div>
-  <h2>Value moves on-chain. Trust doesn't.</h2>
+  <h2>Value moves on-chain.<br/>Trust doesn't.</h2>
   <div class="columns">
     <div class="col today">
       <div class="label">Today</div>
-      <div class="body">Wallet address. Self-declared description. Guess.</div>
+      <div class="body">Wallet address. Self-declared description. <span class="dim2">Guess.</span></div>
     </div>
     <div class="col tomorrow">
       <div class="label">With a trust layer</div>
-      <div class="body">Verifiable behavior. Portable score. Decision.</div>
+      <div class="body">Verifiable behavior. Portable score. <span class="accent">Decision.</span></div>
     </div>
   </div>
-  <div class="slide-num">03 / 11</div>
-  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
 </section>
 
-<!-- ============ SLIDE 4 — HOW A KARMA SCORE IS COMPUTED ============ -->
-<section class="slide s4">
+<!-- ============ SLIDE 4 — HOW A SCORE IS COMPUTED ============ -->
+<section class="slide s4 anchor-center">
+  <div class="stamp"><span class="dot"></span>05 — METHOD</div>
   <div class="kicker">Under the hood</div>
-  <h2>How a karma score is computed.</h2>
+  <h2>How a karma score<br/>is computed.</h2>
   <div class="compute">
-    <div class="inputs">
-      <div class="tier">
-        <div class="name">TIER 1 · RECEIPTS <span class="weight">60%</span></div>
-        <div class="desc">x402 payment + wallet-signed delivery feedback</div>
+    <div class="tiers">
+      <div class="row">
+        <div class="name">T1 · Receipts<span class="w">60%</span></div>
+        <div class="desc">x402 payment + wallet-signed delivery feedback.</div>
       </div>
-      <div class="tier">
-        <div class="name">TIER 2 · BEHAVIOR <span class="weight">25%</span></div>
-        <div class="desc">volume · counterparty diversity · cadence · liveness</div>
+      <div class="row">
+        <div class="name">T2 · Behavior<span class="w">25%</span></div>
+        <div class="desc">Volume · counterparty diversity · cadence · liveness.</div>
       </div>
-      <div class="tier">
-        <div class="name">TIER 3 · IDENTITY <span class="weight">10%</span></div>
-        <div class="desc">agent manifest · domain / GitHub proof · 8004 attestations</div>
+      <div class="row">
+        <div class="name">T3 · Identity<span class="w">10%</span></div>
+        <div class="desc">Manifest · domain / GitHub proof · ERC-8004 attestations.</div>
       </div>
-      <div class="tier">
-        <div class="name">TIER 4 · SOCIAL <span class="weight">5%</span></div>
-        <div class="desc">Farcaster · governance · directory listings</div>
+      <div class="row">
+        <div class="name">T4 · Social<span class="w">5%</span></div>
+        <div class="desc">Farcaster · governance · directory listings.</div>
       </div>
     </div>
     <div class="formula">
-      <div class="eq">Karma</div>
-      <div><span class="op">=</span> 0.60 &middot; T<sub>1</sub></div>
-      <div><span class="op">+</span> 0.25 &middot; T<sub>2</sub></div>
-      <div><span class="op">+</span> 0.10 &middot; T<sub>3</sub></div>
-      <div><span class="op">+</span> 0.05 &middot; T<sub>4</sub></div>
+      <span class="eq">Karma score</span>
+      <div><span class="op">=</span>&nbsp; 0.60 · T₁</div>
+      <div><span class="op">+</span>&nbsp; 0.25 · T₂</div>
+      <div><span class="op">+</span>&nbsp; 0.10 · T₃</div>
+      <div><span class="op">+</span>&nbsp; 0.05 · T₄</div>
       <div class="note">Missing tiers redistribute weight — a new agent isn't scored as zero. Recent signals outweigh old. Confidence badge makes evidence quality explicit.</div>
     </div>
     <div class="output">
       <div class="score">87</div>
-      <div class="tier-name">VERY GOOD</div>
-      <div class="badge"><span class="diamond"></span> Receipt-backed</div>
+      <div class="tier-name">Very Good</div>
+      <div class="badge"><span class="diamond" style="margin:0;width:7px;height:7px;"></span> Receipt-backed</div>
     </div>
   </div>
-  <div class="slide-num">04 / 11</div>
-  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
 </section>
 
-<!-- ============ SLIDE 5 — WHY IT'S HARD TO FAKE ============ -->
-<section class="slide s5b">
-  <div class="kicker">Defense in depth</div>
-  <h2>Why a karma score is hard to fake.</h2>
+<!-- ============ SLIDE 5 — WHY HARD TO FAKE ============ -->
+<section class="slide s5 anchor-top">
+  <div class="stamp"><span class="dot"></span>06 — DEFENSE</div>
+  <div class="kicker gold">Defense in depth</div>
+  <h2>Why a karma score<br/>is hard to fake.</h2>
   <div class="defense">
-    <div class="box">
+    <div class="item">
       <div class="label">Receipt gating</div>
       <div class="body">No attestation without a verified on-chain payment. Spam costs real USDC, per attempt, forever.</div>
     </div>
-    <div class="box">
+    <div class="item">
       <div class="label">Counterparty diversity</div>
       <div class="body">Same-cluster reviews get discounted. One friendly wallet doesn't make a crowd — and a tight cluster of three doesn't either.</div>
     </div>
-    <div class="box">
+    <div class="item">
       <div class="label">Temporal decay</div>
       <div class="body">Recent behavior weighs more than historical. Old scores fade. Liveness feeds directly into Provider Karma.</div>
     </div>
-    <div class="box">
+    <div class="item">
       <div class="label">Attester diversity</div>
       <div class="body">Small groups hyping the same agent see diminishing returns on every additional attestation. Cabals are visible, not rewarded.</div>
     </div>
   </div>
-  <div class="slide-num">05 / 11</div>
-  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
 </section>
 
 <!-- ============ SLIDE 6 — AGENTICITY ============ -->
-<section class="slide s5">
-  <div class="kicker">The wedge</div>
-  <h2>Not every x402 wallet is really an agent.</h2>
-  <div class="viz">
-    <div class="venn">
-      <div class="outer"><div class="label">x402-active wallets</div></div>
-      <div class="inner"><div class="label">verified<br/>agentic behavior</div></div>
+<section class="slide s6 anchor-center">
+  <div class="stamp"><span class="dot"></span>07 — THE WEDGE</div>
+  <div class="kicker gold">The wedge</div>
+  <h2>Not every wallet<br/>is really an agent.</h2>
+  <div class="agenticity">
+    <div class="stat">
+      <div class="ratio">~12<span class="dim2" style="color:var(--fg-3);font-size:84px;">%</span></div>
+      <div class="caption">of x402-active wallets show <span class="accent">machine-like behavior</span><br/>cadence · latency · concurrency · determinism</div>
     </div>
     <div class="side">
-      <p><em>Autonomy Confidence</em> is a second 0–100 score, orthogonal to Karma. Karma asks <em>"is this trustworthy?"</em>&nbsp; Autonomy asks <em>"is this even an agent?"</em></p>
-      <div class="metrics">
-        <div class="metrics-label">Signals</div>
-        cadence &middot; latency variance &middot; concurrency<br/>
-        memo determinism &middot; counterparty breadth &middot; compute efficiency
+      <p>Autonomy Confidence is a second 0–100 score, orthogonal to Karma.</p>
+      <p><span class="accent">Karma</span> asks "is this trustworthy?"<br/><span class="accent">Autonomy</span> asks "is this even an agent?"</p>
+      <div class="signals-label">Signals</div>
+      <div class="signals">
+        cadence · latency variance · concurrency<br/>
+        memo determinism · counterparty breadth<br/>
+        gas efficiency · burst patterns
       </div>
     </div>
   </div>
-  <div class="slide-num">06 / 11</div>
-  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
 </section>
 
-<!-- ============ SLIDE 6 — TWO FACES ============ -->
-<section class="slide s6">
-  <div class="kicker">Two faces</div>
-  <h2>Same wallet. Two questions.</h2>
+<!-- ============ SLIDE 7 — TWO FACES ============ -->
+<section class="slide s7 anchor-bottom">
+  <div class="stamp"><span class="dot"></span>08 — TWO FACES</div>
+  <div class="kicker">Same wallet · two questions</div>
+  <h2>Provider, and consumer.<br/>Never collapsed.</h2>
   <div class="faces">
     <div class="face">
-      <div class="badge"><span class="diamond"></span> Receipt-backed</div>
-      <div class="label">Provider Karma</div>
+      <div class="label">Provider karma</div>
       <div class="score">87</div>
-      <div class="q">Will this agent deliver when paid?</div>
+      <div class="tier">Very Good · Receipt-backed</div>
+      <div class="q">Will this agent <span class="accent">deliver</span> when paid?</div>
     </div>
     <div class="face">
-      <div class="badge"><span class="diamond"></span> Receipt-backed</div>
-      <div class="label">Consumer Karma</div>
+      <div class="label">Consumer karma</div>
       <div class="score">61</div>
-      <div class="q">Will this agent pay cleanly when it consumes?</div>
+      <div class="tier">Fair · Behavior-inferred</div>
+      <div class="q">Will this agent <span class="accent">pay cleanly</span> when it consumes?</div>
     </div>
   </div>
-  <div class="footer">Marketplace economics require both.</div>
-  <div class="slide-num">07 / 11</div>
-  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
+  <div class="footer">A strong provider can be a weak consumer. Marketplace economics need both.</div>
 </section>
 
-<!-- ============ SLIDE 7 — OPEN ============ -->
-<section class="slide s7">
+<!-- ============ SLIDE 8 — OPEN BY DESIGN ============ -->
+<section class="slide s8 anchor-top">
+  <div class="stamp"><span class="dot"></span>09 — OPEN</div>
   <div class="kicker">Open by design</div>
-  <h2>Every score a portable attestation. No routing. No token.</h2>
-  <div class="flow">
-    <div class="node"><div class="name">x402 · MCP · receipts</div><div class="sub">inputs</div></div>
-    <div class="arrow">→</div>
-    <div class="node primary"><div class="name">AgentKarma</div><div class="sub">scoring</div></div>
-    <div class="arrow">→</div>
-    <div class="node"><div class="name">ERC-8004</div><div class="sub">portable export</div></div>
-  </div>
-  <div class="footer" style="margin-top: 56px; font-size: 15px; letter-spacing: 0.12em; color: var(--gold);">NEUTRAL &nbsp;·&nbsp; PORTABLE &nbsp;·&nbsp; UNPURCHASABLE</div>
-  <div class="footer" style="margin-top: 20px;">Any app reads. No lock-in. No call relay. No tradable token — the attestation <em>is</em> the primitive.</div>
-  <div class="slide-num">08 / 11</div>
-  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
-</section>
-
-<!-- ============ SLIDE 8 — WHAT'S LIVE ============ -->
-<section class="slide s8">
-  <div class="kicker">What's live</div>
-  <h2>Running on Solana mainnet today.</h2>
-  <div class="grid">
-    <div class="stat">
-      <div class="num accent">107k+</div>
-      <div class="caption">X402 PAYMENTS<br/>INDEXED</div>
+  <h2>Every score, a portable<br/>attestation. <span class="accent">No routing.</span> <span class="dim">No token.</span></h2>
+  <div class="open">
+    <div class="row">
+      <div class="stage">In</div>
+      <div class="desc">x402 · MCP · any receipt-emitting protocol</div>
+      <div class="tag">signals</div>
     </div>
-    <div class="stat">
-      <div class="num">34k+</div>
-      <div class="caption">WALLETS<br/>INDEXED</div>
+    <div class="row">
+      <div class="stage">Through</div>
+      <div class="desc"><span class="accent">AgentKarma</span> — four-tier scoring · two-faced output</div>
+      <div class="tag">scoring</div>
     </div>
-    <div class="stat">
-      <div class="num">22</div>
-      <div class="caption">FACILITATOR<br/>ADDRESSES</div>
-    </div>
-    <div class="stat">
-      <div class="num">4</div>
-      <div class="caption">SIGNAL TIERS<br/>LIVE</div>
+    <div class="row">
+      <div class="stage">Out</div>
+      <div class="desc">ERC-8004 attestation, on-chain, any app reads</div>
+      <div class="tag">portable</div>
     </div>
   </div>
-  <div class="url">agentkarma.io &nbsp;·&nbsp; live counts at /api/stats</div>
-  <div class="slide-num">09 / 11</div>
-  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
-</section>
-
-<!-- ============ SLIDE 9 — THE SEAM ============ -->
-<section class="slide s9">
-  <div class="kicker">The seam</div>
-  <h2>As regulated money lands on Solana, trust becomes infrastructure.</h2>
-  <div class="flow">
-    <div class="node"><div class="name">SDP</div><div class="sub">Solana Developer Platform</div></div>
-    <div class="arrow">→</div>
-    <div class="node primary"><div class="name">AgentKarma</div><div class="sub">verification primitive</div></div>
-    <div class="arrow">→</div>
-    <div class="node"><div class="name">Agent Economy</div><div class="sub">on-chain autonomous flows</div></div>
+  <div class="pills">
+    <span>Neutral</span>
+    <span class="sep"></span>
+    <span>Portable</span>
+    <span class="sep"></span>
+    <span>Unpurchasable</span>
   </div>
-  <div class="footer">"Which agents can touch this money?" will become a compliance question — long before anyone calls it one.</div>
-  <div class="slide-num">10 / 11</div>
-  <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
 </section>
 
-<!-- ============ SLIDE 10 — CLOSE ============ -->
-<section class="slide s10">
-  <div class="tagline">Check their Karma.</div>
+<!-- ============ SLIDE 9 — TRACTION ============ -->
+<section class="slide s9 anchor-center">
+  <div class="stamp"><span class="dot"></span>10 — TRACTION</div>
+  <div class="kicker">Live · Solana mainnet</div>
+  <h2>Already on. <span class="accent">No demo.</span> No staging.<br/>Indexer running on production data.</h2>
+  <div class="traction">
+    <div class="stat featured">
+      <div class="num">295k</div>
+      <div class="caption">x402 payments<br/>indexed</div>
+    </div>
+    <div class="stat small">
+      <div class="num">$103k</div>
+      <div class="caption">USDC volume<br/>routed through</div>
+    </div>
+    <div class="stat">
+      <div class="num">78k</div>
+      <div class="caption">wallets indexed<br/>and scored</div>
+    </div>
+    <div class="stat small">
+      <div class="num">15</div>
+      <div class="caption">facilitators<br/>monitored real-time</div>
+    </div>
+  </div>
+  <div class="source"><span class="accent">◆</span> Live counts at agentkarma.io/api/stats</div>
+</section>
+
+<!-- ============ SLIDE 10 — PAY.SH PROOF ============ -->
+<section class="slide s10 anchor-bottom">
+  <div class="stamp"><span class="dot"></span>11 — PAY.SH</div>
+  <div class="kicker gold">This week · proof</div>
+  <h2>pay.sh shipped the rails.<br/>The trust layer was missing.</h2>
+  <div class="subhead">Solana Foundation × Google Cloud · May 5, 2026</div>
+  <div class="paysh">
+    <div class="col loss">
+      <div class="label">What pay.sh does</div>
+      <div class="head">75 agent-payable APIs.</div>
+      <div class="body">Wallet address → paid call. No account, no API key, settled in stablecoins on Solana.</div>
+    </div>
+    <div class="col gain">
+      <div class="label">What's missing</div>
+      <div class="head">Zero quality signal.</div>
+      <div class="body">Identical pricing brackets, no success-rate data, no counterparty history. Every agent looks the same.</div>
+    </div>
+  </div>
+  <div class="footnote">◆ Reputation, not routing. Every pay.sh tx is a Tier 1 receipt.</div>
+</section>
+
+<!-- ============ SLIDE 11 — THE SEAM ============ -->
+<section class="slide s11 anchor-top">
+  <div class="stamp"><span class="dot"></span>12 — THE SEAM</div>
+  <div class="kicker">Where this gets bigger</div>
+  <h2>As regulated money lands<br/>on Solana, trust becomes<br/><span class="accent">infrastructure.</span></h2>
+  <div class="seam">
+    <p class="quote">"Which agents can touch this money?" stops being a hobbyist question when institutional money flows through autonomous counterparties. It becomes a compliance question.</p>
+    <div class="meta">SDP <span class="accent">→</span> AgentKarma <span class="accent">→</span> Autonomous agent economy</div>
+  </div>
+</section>
+
+<!-- ============ SLIDE 12 — CLOSE ============ -->
+<section class="slide s12 anchor-center">
+  <div class="stamp"><span class="dot"></span>13 — CLOSE</div>
+  <div class="closing-line">◆ Check their karma.</div>
   <img class="logo" src="../brand/agentkarma-dark-X-transparent.png" alt="AgentKarma" />
-  <h1>AgentKarma</h1>
-  <div class="url">agentkarma.io</div>
-  <div class="contact">@agentkarmaio&nbsp; ·&nbsp; kerem@noras.tech</div>
-  <div class="slide-num">11 / 11</div>
+  <div class="close">
+    <h1>AgentKarma</h1>
+    <div class="url">agentkarma.io</div>
+    <div class="contact">@agentkarmaio &nbsp;·&nbsp; kerem@noras.tech</div>
+  </div>
   <div class="mark"><img src="../brand/agentkarma-dark-X-transparent.png" alt="" /></div>
 </section>
 

@@ -27,7 +27,6 @@ const NAV_GROUPS: { heading: string; links: { label: string; href: string; exter
     links: [
       { label: 'FAQ', href: '/faq' },
       { label: 'Glossary', href: '/glossary' },
-      { label: 'Pitch deck', href: '/deck' },
       { label: 'agentkarma.json', href: '/.well-known/agentkarma.json', external: true },
       { label: 'llms.txt', href: '/llms.txt', external: true },
     ],
