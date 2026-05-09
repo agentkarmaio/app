@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getWallet, getTransactions, getLatestSignalValues } from '@/db/client';
+import { PublicKey } from '@solana/web3.js';
+import { getWallet, getTransactions, getLatestSignalValues, enqueueWalletScan } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy } from '@/scoring/autonomy';
@@ -13,14 +14,22 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ wallet: string }> }
 ) {
-  const gate = await enforceRateLimit('score', request);
-  if (!gate.ok) return gate.response;
-
   const { wallet } = await params;
 
-  if (!wallet || wallet.length < 32) {
+  // Validate wallet format BEFORE rate limiting — invalid input shouldn't
+  // consume rate budget. PublicKey constructor throws on bad base58 / wrong
+  // byte length, covering the previous `length < 32` heuristic.
+  if (!wallet) {
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
   }
+  try {
+    new PublicKey(wallet);
+  } catch {
+    return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
+  }
+
+  const gate = await enforceRateLimit('score', request);
+  if (!gate.ok) return gate.response;
 
   const [walletRow, transactions] = await Promise.all([
     getWallet(wallet),
@@ -28,7 +37,32 @@ export async function GET(
   ]);
 
   if (!walletRow && transactions.length === 0) {
-    return NextResponse.json({ error: 'Wallet not found' }, { status: 404 });
+    // Unknown wallet: enqueue a regressive scan and return 202 Accepted so
+    // the client can poll. Use the dedicated `wallet-scan-enqueue` bucket
+    // (3/min/IP) — cheaper than the score budget and prevents scan-flooding
+    // from arbitrary 404 traffic. The 202 response uses the scan-enqueue
+    // gate's headers (it's the gate that authorized this code path).
+    const scanGate = await enforceRateLimit('wallet-scan-enqueue', request);
+    if (!scanGate.ok) return scanGate.response;
+
+    const result = await enqueueWalletScan(wallet);
+
+    return NextResponse.json(
+      {
+        address: wallet,
+        scanning: true,
+        enqueued: result.enqueued,
+        reason: result.reason ?? null,
+      },
+      {
+        status: 202,
+        headers: {
+          ...scanGate.headers,
+          ...corsHeaders(),
+          'Cache-Control': 'no-store',
+        },
+      },
+    );
   }
 
   const identity = walletRow?.claimed ? {
@@ -63,6 +97,29 @@ export async function GET(
   } : null;
 
   if (transactions.length === 0) {
+    // Scan in flight against this stub? Surface 202 so the client poller
+    // keeps polling instead of treating the empty payload as "done".
+    const scanInFlight =
+      walletRow?.scan_state === 'pending' || walletRow?.scan_state === 'scanning';
+    if (scanInFlight) {
+      return NextResponse.json(
+        {
+          address: wallet,
+          scanning: true,
+          state: walletRow?.scan_state,
+          hitCount: walletRow?.scan_hit_count ?? 0,
+          attempts: walletRow?.scan_attempts ?? 0,
+        },
+        {
+          status: 202,
+          headers: {
+            ...gate.headers,
+            ...corsHeaders(),
+            'Cache-Control': 'no-store',
+          },
+        },
+      );
+    }
     return NextResponse.json({
       address: wallet,
       score: walletRow?.score ?? 0,

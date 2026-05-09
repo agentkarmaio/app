@@ -12,6 +12,8 @@ import {
   getScoreHistory,
   getAgentManifestsForWallet,
   getLatestSignalValues,
+  getWalletScanState,
+  type WalletScanInfo,
 } from '@/db/client';
 import { calculateScore, type WalletScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
@@ -30,6 +32,7 @@ import { FeedbackSection } from '@/components/karma/feedback-section';
 import { ScoreChart } from '@/components/karma/score-chart';
 import { ManifestCard } from '@/components/karma/manifest-card';
 import { TempoCard } from '@/components/karma/tempo-card';
+import { ScanPoller } from '@/components/scan-poller';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -126,6 +129,105 @@ function UnindexedAgentStub({ wallet }: { wallet: string }) {
       </Card>
 
       <ClaimBanner walletAddress={wallet} />
+    </div>
+  );
+}
+
+/**
+ * Stub shown when an unknown wallet has been enqueued for a regressive scan
+ * and the worker either hasn't started ('pending') or is mid-scan ('scanning').
+ *
+ * Replaces UnindexedAgentStub for that window so the user understands why the
+ * page is empty and that work is in flight. The embedded ScanPoller polls
+ * /api/score/[wallet] every 5s and triggers `router.refresh()` when the route
+ * flips from 202 to 200, so the page seamlessly transitions to the full
+ * profile without a manual reload.
+ */
+function ScanningAgentStub({
+  wallet,
+  scanState,
+}: {
+  wallet: string;
+  scanState: WalletScanInfo;
+}) {
+  const isScanning = scanState.state === 'scanning';
+  const statusLine = isScanning ? 'Scanning history…' : 'Queued for scan';
+  const hits = scanState.hitCount ?? 0;
+  const attempts = scanState.attempts ?? 0;
+
+  return (
+    <div className="space-y-6">
+      <Link
+        href="/"
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft className="size-4" />
+        Back to Leaderboard
+      </Link>
+
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
+            Agent profile
+          </h1>
+          <Badge
+            variant="outline"
+            className="border-[rgb(94_106_210/0.25)] bg-[rgb(94_106_210/0.10)] text-[#828fff] text-[10px] px-1.5 py-0 font-[510]"
+          >
+            {statusLine}
+          </Badge>
+        </div>
+        <div className="flex items-center gap-3">
+          <span
+            className="font-mono text-[13px] tracking-tight text-[#b4bcd0]"
+            style={{ fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)' }}
+            title={wallet}
+          >
+            {shortAddr(wallet)}
+          </span>
+          <a
+            href={`https://solscan.io/account/${wallet}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ExternalLink className="size-3.5" />
+          </a>
+        </div>
+      </header>
+
+      <Separator />
+
+      <Card className="border-[rgb(94_106_210/0.18)] bg-[rgb(94_106_210/0.04)]">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
+            {statusLine}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4 text-[13.5px] leading-relaxed text-[#b4bcd0]">
+          <p>
+            AgentKarma is scanning this wallet&apos;s history for x402 + pay.sh
+            activity. This usually completes within ~30 seconds.
+          </p>
+          {(hits > 0 || attempts > 1) && (
+            <ul className="ml-4 list-disc space-y-1 text-[12.5px] text-[#8a8f98]">
+              {hits > 0 && (
+                <li>
+                  Found <span className="font-[590] text-[#d0d6e0]">{hits}</span>{' '}
+                  {hits === 1 ? 'receipt' : 'receipts'} so far
+                </li>
+              )}
+              {attempts > 1 && (
+                <li>
+                  Retry attempt{' '}
+                  <span className="font-[590] text-[#d0d6e0]">{attempts}</span>
+                </li>
+              )}
+            </ul>
+          )}
+          <ScanPoller wallet={wallet} />
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -457,9 +559,17 @@ export default async function AgentProfilePage({
     notFound();
   }
 
-  if (!walletRow) {
-    const anyTx = await getTransactionCount(wallet).catch(() => 0);
-    if (anyTx === 0) return <UnindexedAgentStub wallet={wallet} />;
+  // Show the live "Scanning history…" stub when a regressive scan is in
+  // flight. Note enqueueWalletScan upserts a stub wallet row when state goes
+  // to 'pending', so walletRow is non-null during a scan — the gate is
+  // tx_count + scan_state, not walletRow presence.
+  const txCountForGate = walletRow?.tx_count ?? await getTransactionCount(wallet).catch(() => 0);
+  if (txCountForGate === 0) {
+    const scanState = await getWalletScanState(wallet).catch(() => null);
+    if (scanState && (scanState.state === 'pending' || scanState.state === 'scanning')) {
+      return <ScanningAgentStub wallet={wallet} scanState={scanState} />;
+    }
+    if (!walletRow) return <UnindexedAgentStub wallet={wallet} />;
   }
 
   // Single source of truth for this page: recompute the score from current
@@ -677,7 +787,7 @@ export default async function AgentProfilePage({
                 <dd className="text-muted-foreground">
                   {walletRow?.first_seen
                     ? new Date(walletRow.first_seen).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                    : '\u2014'}
+                    : '—'}
                 </dd>
               </div>
               <Separator />
@@ -686,7 +796,7 @@ export default async function AgentProfilePage({
                 <dd className="text-muted-foreground">
                   {walletRow?.last_seen
                     ? new Date(walletRow.last_seen).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                    : '\u2014'}
+                    : '—'}
                 </dd>
               </div>
             </dl>

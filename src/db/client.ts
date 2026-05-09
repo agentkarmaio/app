@@ -11,7 +11,7 @@ import type {
   Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating, LivenessStatus,
   ConfidenceBadge, SignalEvent, SignalTier, KarmaFace, AutonomyLabel,
   AgentManifest, ManifestSourceType, ParsedManifest,
-  Organization, OrganizationMember,
+  Organization, OrganizationMember, WalletScanState,
 } from './schema';
 
 // --- Supabase Client ---------------------------------------------------------
@@ -471,6 +471,229 @@ export async function countDirtyWallets(): Promise<number> {
     .not('scoring_dirty_at', 'is', null);
   if (error) throw error;
   return count ?? 0;
+}
+
+// --- Wallet-Scan Queue (Phase H+) -------------------------------------------
+//
+// Regressive history scans pull a wallet's full Helius signature stream so we
+// can backfill x402 receipts the facilitator-side indexer never saw (e.g. when
+// a brand-new agent is queried before our cursors have caught up to its
+// genesis block). Decoupled from the dirty-queue: scans are heavier than
+// rescoring, throttled per wallet, and tolerate stale workers via crash
+// recovery. Idempotent throughout — `insertTransactions` and `signal_events`
+// dedupe on natural unique keys.
+
+export interface WalletScanInfo {
+  state: WalletScanState | null;
+  requestedAt: string | null;
+  completedAt: string | null;
+  attempts: number;
+  hitCount: number;
+  partial: boolean;
+  lastError: string | null;
+}
+
+export interface EnqueueWalletScanResult {
+  enqueued: boolean;
+  reason?: 'invalid' | 'in_progress' | 'cooldown' | 'already_indexed';
+}
+
+const SCAN_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Enqueue a wallet for regressive history scan. Idempotent. Cooldown rules:
+ * - already pending/scanning → no-op (reason: 'in_progress')
+ * - completed within last 24h → no-op (reason: 'cooldown')
+ * - wallet has tx_count > 0 (already indexed via facilitator-side scan) → no-op (reason: 'already_indexed')
+ * Otherwise upsert wallet stub with scan_state='pending', scan_requested_at=now().
+ */
+export async function enqueueWalletScan(address: string): Promise<EnqueueWalletScanResult> {
+  if (!address || typeof address !== 'string') {
+    return { enqueued: false, reason: 'invalid' };
+  }
+
+  const { data, error } = await supabase
+    .from('wallets')
+    .select('tx_count, scan_state, scan_completed_at')
+    .eq('address', address)
+    .maybeSingle();
+
+  if (error && error.code !== 'PGRST116') throw error;
+
+  if (data) {
+    const row = data as { tx_count: number | null; scan_state: WalletScanState | null; scan_completed_at: string | null };
+    if (row.scan_state === 'pending' || row.scan_state === 'scanning') {
+      return { enqueued: false, reason: 'in_progress' };
+    }
+    if ((row.tx_count ?? 0) > 0) {
+      return { enqueued: false, reason: 'already_indexed' };
+    }
+    // Cooldown applies only to successful scans. Failed scans are eligible
+    // for immediate retry — the worker's per-tick recoverStuckScans handles
+    // genuinely-stuck rows; here we let the operator/UI re-enqueue freely.
+    if (row.scan_state === 'done' && row.scan_completed_at) {
+      const completedMs = new Date(row.scan_completed_at).getTime();
+      if (Date.now() - completedMs < SCAN_COOLDOWN_MS) {
+        return { enqueued: false, reason: 'cooldown' };
+      }
+    }
+  }
+
+  const now = new Date().toISOString();
+  const row: Record<string, unknown> = {
+    address,
+    scan_state: 'pending',
+    scan_requested_at: now,
+    updated_at: now,
+  };
+  // Insert-only defaults for first-time stubs; existing rows preserve these.
+  if (!data) {
+    row.score = 0;
+    row.trust_tier = 'Unrated';
+    row.tx_count = 0;
+  }
+
+  const { error: upsertError } = await supabase
+    .from('wallets')
+    .upsert(row, { onConflict: 'address' });
+  if (upsertError) throw upsertError;
+
+  return { enqueued: true };
+}
+
+/**
+ * Atomically claim up to `limit` pending scans, flipping their state to 'scanning'
+ * and incrementing scan_attempts. Mirrors claimDirtyWallets — non-atomic across
+ * concurrent workers but scan body is idempotent (insertTransactions / signal_events
+ * have unique constraints), so collisions are tolerable. Order by scan_requested_at ASC.
+ */
+export async function claimWalletScans(limit = 5): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('wallets')
+    .select('address, scan_attempts, scan_requested_at')
+    .eq('scan_state', 'pending')
+    .order('scan_requested_at', { ascending: true, nullsFirst: true })
+    .limit(limit);
+
+  if (error) throw error;
+  const rows = (data ?? []) as { address: string; scan_attempts: number | null; scan_requested_at: string | null }[];
+  if (rows.length === 0) return [];
+
+  const now = new Date().toISOString();
+  const claimed: string[] = [];
+  // Per-row update so we can preserve existing scan_requested_at and bump
+  // attempts atomically against the pre-read value.
+  for (const row of rows) {
+    const update: Record<string, unknown> = {
+      scan_state: 'scanning',
+      scan_attempts: (row.scan_attempts ?? 0) + 1,
+      updated_at: now,
+    };
+    if (!row.scan_requested_at) update.scan_requested_at = now;
+
+    const { error: updateError } = await supabase
+      .from('wallets')
+      .update(update)
+      .eq('address', row.address);
+    if (updateError) throw updateError;
+    claimed.push(row.address);
+  }
+
+  return claimed;
+}
+
+/**
+ * Mark scan complete. Sets scan_state='done', scan_completed_at=now(),
+ * scan_hit_count=hits, scan_partial=partial, scan_last_error=null.
+ */
+export async function markWalletScanComplete(
+  address: string,
+  hits: number,
+  partial: boolean,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('wallets')
+    .update({
+      scan_state: 'done',
+      scan_completed_at: now,
+      scan_hit_count: hits,
+      scan_partial: partial,
+      scan_last_error: null,
+      updated_at: now,
+    })
+    .eq('address', address);
+  if (error) throw error;
+}
+
+/**
+ * Mark scan failed. Sets scan_state='failed', scan_completed_at=now(),
+ * scan_last_error=err. Preserves scan_attempts for retry visibility.
+ */
+export async function markWalletScanFailed(address: string, err: string): Promise<void> {
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('wallets')
+    .update({
+      scan_state: 'failed',
+      scan_completed_at: now,
+      scan_last_error: err,
+      updated_at: now,
+    })
+    .eq('address', address);
+  if (error) throw error;
+}
+
+/**
+ * Read current scan state for a single wallet. Returns null if wallet row absent.
+ */
+export async function getWalletScanState(address: string): Promise<WalletScanInfo | null> {
+  const { data, error } = await supabase
+    .from('wallets')
+    .select('scan_state, scan_requested_at, scan_completed_at, scan_attempts, scan_hit_count, scan_partial, scan_last_error')
+    .eq('address', address)
+    .maybeSingle();
+
+  if (error && error.code !== 'PGRST116') throw error;
+  if (!data) return null;
+
+  const row = data as {
+    scan_state: WalletScanState | null;
+    scan_requested_at: string | null;
+    scan_completed_at: string | null;
+    scan_attempts: number | null;
+    scan_hit_count: number | null;
+    scan_partial: boolean | null;
+    scan_last_error: string | null;
+  };
+
+  return {
+    state:       row.scan_state,
+    requestedAt: row.scan_requested_at,
+    completedAt: row.scan_completed_at,
+    attempts:    row.scan_attempts ?? 0,
+    hitCount:    row.scan_hit_count ?? 0,
+    partial:     row.scan_partial ?? false,
+    lastError:   row.scan_last_error,
+  };
+}
+
+/**
+ * Sweep orphaned 'scanning' rows older than `staleMs` ms back to 'pending'.
+ * Recovers from worker crashes mid-scan. Call at top of every worker tick.
+ * Returns count of rows recovered.
+ */
+export async function recoverStuckScans(staleMs: number): Promise<number> {
+  const cutoff = new Date(Date.now() - staleMs).toISOString();
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('wallets')
+    .update({ scan_state: 'pending', updated_at: now })
+    .eq('scan_state', 'scanning')
+    .lt('scan_requested_at', cutoff)
+    .select('address');
+  if (error) throw error;
+  return data?.length ?? 0;
 }
 
 // --- Score Snapshots ---------------------------------------------------------

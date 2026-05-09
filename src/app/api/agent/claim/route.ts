@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PublicKey } from '@solana/web3.js';
 import nacl from 'tweetnacl';
-import { claimWallet } from '@/db/client';
+import { claimWallet, enqueueWalletScan } from '@/db/client';
 import { TEMPO_ADDRESS_REGEX } from '@/db/schema';
 
 const VALID_CATEGORIES = ['ai', 'data', 'defi', 'infra', 'social', 'utility', 'other'];
@@ -133,6 +133,14 @@ export async function POST(request: NextRequest) {
     console.error('[claim] DB error:', err);
     return NextResponse.json({ error: 'Failed to save claim' }, { status: 500 });
   }
+
+  // Trigger regressive scan for the claimer's wallet — historical activity
+  // not yet indexed because no facilitator-side scan has touched it.
+  // Idempotent: enqueueWalletScan handles dedup (in_progress, cooldown, already_indexed).
+  // Fire-and-forget: claim should return promptly; scan is bonus, not critical.
+  enqueueWalletScan(address).catch((err) => {
+    console.error('[claim] enqueueWalletScan failed:', err);
+  });
 
   return NextResponse.json({
     success: true,

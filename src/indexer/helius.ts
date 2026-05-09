@@ -105,7 +105,14 @@ export async function parseTransactionsBatch(
 
 // ─── Payment Extraction ──────────────────────────────────────────────────────
 
-export function extractX402Payment(
+/**
+ * Core extraction. Given a parsed tx and a known facilitator address, return
+ * the USDC payment (payer wallet + amount) flowing into that facilitator, or
+ * null if the tx is not an x402 payment to this facilitator.
+ *
+ * Both public wrappers — facilitator-keyed and wallet-keyed — delegate here.
+ */
+function extractX402PaymentCore(
   tx: HeliusEnhancedTransaction,
   facilitatorAddress: string,
 ): Omit<Transaction, 'id'> | null {
@@ -157,6 +164,81 @@ export function extractX402Payment(
   }
 
   return null;
+}
+
+/**
+ * Facilitator-keyed extractor. Used by the original facilitator-side indexer
+ * pass: we already know the facilitator we're scanning, so we only need to
+ * find the payer side of the USDC transfer.
+ */
+export function extractX402Payment(
+  tx: HeliusEnhancedTransaction,
+  facilitatorAddress: string,
+): Omit<Transaction, 'id'> | null {
+  return extractX402PaymentCore(tx, facilitatorAddress);
+}
+
+/**
+ * Wallet-keyed extractor. Used by the regressive wallet-history scan: we are
+ * iterating signatures for `wallet` and need to discover, on each tx, whether
+ * the *counterparty* is a known x402 facilitator.
+ *
+ * Algorithm:
+ *  1. Skip failed txs — only successful settlements count as receipts.
+ *  2. Strategy A: scan USDC token transfers. If wallet is the sender and the
+ *     recipient is in the facilitator set, we have a hit.
+ *  3. Strategy B: same logic over `accountData.tokenBalanceChanges` for
+ *     edge cases where Helius drops the typed view.
+ *  4. Resolve the facilitator address, delegate to the core extractor for
+ *     row construction, then verify the wallet matches (defensive sanity
+ *     check — if the core extractor inferred a different payer, drop the hit).
+ */
+export function extractX402PaymentForWallet(
+  tx: HeliusEnhancedTransaction,
+  wallet: string,
+  facilitatorSet: ReadonlySet<string>,
+): { facilitator: string; payment: Omit<Transaction, 'id'> } | null {
+  if (tx.transactionError !== null) return null;
+
+  let facilitator: string | null = null;
+
+  // Strategy A: USDC token transfers where wallet → facilitator.
+  for (const t of tx.tokenTransfers ?? []) {
+    if (t.mint !== USDC_MINT) continue;
+    if (t.tokenAmount <= 0) continue;
+    if (t.fromUserAccount !== wallet) continue;
+    if (!facilitatorSet.has(t.toUserAccount)) continue;
+    facilitator = t.toUserAccount;
+    break;
+  }
+
+  // Strategy B: balance-change view. Find a USDC change where wallet decreases
+  // and another USDC change where a facilitator account increases, in the same tx.
+  if (!facilitator) {
+    let walletDebited = false;
+    let facilitatorCredited: string | null = null;
+    for (const entry of tx.accountData ?? []) {
+      for (const change of entry.tokenBalanceChanges ?? []) {
+        if (change.mint !== USDC_MINT) continue;
+        const raw = parseFloat(change.rawTokenAmount.tokenAmount);
+        if (!Number.isFinite(raw) || raw === 0) continue;
+        if (raw < 0 && change.userAccount === wallet) walletDebited = true;
+        if (raw > 0 && facilitatorSet.has(change.userAccount)) {
+          facilitatorCredited = change.userAccount;
+        }
+      }
+    }
+    if (walletDebited && facilitatorCredited) facilitator = facilitatorCredited;
+  }
+
+  if (!facilitator) return null;
+
+  const payment = extractX402PaymentCore(tx, facilitator);
+  if (!payment) return null;
+  // Defensive: ensure the inferred payer matches the wallet under scan.
+  if (payment.wallet_address !== wallet) return null;
+
+  return { facilitator, payment };
 }
 
 // ─── pay.sh Detection (sprint A1) ────────────────────────────────────────────

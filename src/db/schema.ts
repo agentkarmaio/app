@@ -54,6 +54,16 @@ export const walletsTable = pgTable('wallets', {
   // cleared by the rescore worker after scores are recomputed. Keeps the
   // webhook hot path O(batch-size) instead of O(wallet-history).
   scoring_dirty_at:    timestamp('scoring_dirty_at', { withTimezone: true }),
+  // Wallet-side regressive scan queue. NULL = never scanned. State machine:
+  // pending → scanning → done | failed. Drives the worker drain in
+  // instrumentation.ts (mirrors scoring_dirty_at pattern).
+  scan_state:          text('scan_state'),
+  scan_requested_at:   timestamp('scan_requested_at',   { withTimezone: true }),
+  scan_completed_at:   timestamp('scan_completed_at',   { withTimezone: true }),
+  scan_attempts:       integer('scan_attempts').notNull().default(0),
+  scan_hit_count:      integer('scan_hit_count').notNull().default(0),
+  scan_partial:        boolean('scan_partial').notNull().default(false),
+  scan_last_error:     text('scan_last_error'),
 }, (table) => [
   index('idx_wallets_score').on(table.score),
   index('idx_wallets_provider_score').on(table.provider_score),
@@ -63,6 +73,7 @@ export const walletsTable = pgTable('wallets', {
   index('idx_wallets_metric_success_rate').on(table.metric_success_rate),
   index('idx_wallets_metric_diversity').on(table.metric_diversity),
   index('idx_wallets_scoring_dirty_at').on(table.scoring_dirty_at),
+  index('idx_wallets_scan_state').on(table.scan_state),
 ]);
 
 export const transactionsTable = pgTable('transactions', {
@@ -256,7 +267,17 @@ export interface Wallet {
   metric_cadence?: number | null;
   // Deferred-scoring queue sentinel. Non-null = awaiting recompute.
   scoring_dirty_at?: string | null;
+  // Wallet-side regressive scan queue (Phase H+ — backfill on lookup).
+  scan_state?: WalletScanState | null;
+  scan_requested_at?: string | null;
+  scan_completed_at?: string | null;
+  scan_attempts?: number;
+  scan_hit_count?: number;
+  scan_partial?: boolean;
+  scan_last_error?: string | null;
 }
+
+export type WalletScanState = 'pending' | 'scanning' | 'done' | 'failed';
 
 export type AutonomyLabel = 'agent-like' | 'mixed' | 'human-like';
 

@@ -36,6 +36,11 @@ export const SOLANA_FACILITATORS: Record<string, string[]> = {
 };
 
 export const ALL_FACILITATOR_ADDRESSES = Object.values(SOLANA_FACILITATORS).flat();
+/**
+ * Set view of `ALL_FACILITATOR_ADDRESSES` for O(1) membership tests on the
+ * wallet-side regressive scan hot path.
+ */
+export const ALL_FACILITATOR_ADDRESSES_SET: ReadonlySet<string> = new Set(ALL_FACILITATOR_ADDRESSES);
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 export function isX402Payment(recipient: string): boolean {

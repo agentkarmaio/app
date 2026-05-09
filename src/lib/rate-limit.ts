@@ -24,6 +24,7 @@ export type RateLimitName =
   | 'feedback-get'
   | 'agent-history'
   | 'score-refresh'
+  | 'wallet-scan-enqueue'
   | 'deck-identify';
 
 type LimitSpec = { limit: number; window: `${number} s` | `${number} m` };
@@ -39,6 +40,7 @@ const LIMITS: Record<RateLimitName, LimitSpec> = {
   'feedback-get': { limit: 30, window: '1 m' },
   'agent-history': { limit: 30, window: '1 m' },
   'score-refresh': { limit: 5, window: '1 m' },
+  'wallet-scan-enqueue': { limit: 3, window: '1 m' },
   'deck-identify': { limit: 10, window: '1 m' },
 };
 

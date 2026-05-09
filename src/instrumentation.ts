@@ -11,15 +11,28 @@
  * duplicate snapshot rows per collision).
  *
  * Tuning:
- *   SCORING_WORKER_INTERVAL_MS  default 60_000
- *   SCORING_WORKER_BATCH        default 200   (wallets per tick)
- *   SCORING_WORKER_TX_WINDOW    default 5000  (recent tx rows per wallet)
- *   SCORING_WORKER_DISABLED     set to "1" to skip registering the loop
+ *   SCORING_WORKER_INTERVAL_MS       default 60_000
+ *   SCORING_WORKER_BATCH             default 200   (wallets per tick)
+ *   SCORING_WORKER_TX_WINDOW         default 5000  (recent tx rows per wallet)
+ *   SCORING_WORKER_DISABLED          set to "1" to skip registering the loop
+ *   WALLET_SCAN_WORKER_INTERVAL_MS   default 30_000
+ *   WALLET_SCAN_WORKER_BATCH         default 1     (wallets per tick — bounds Helius load)
+ *   WALLET_SCAN_WORKER_DISABLED      set to "1" to skip registering the loop
+ *   WALLET_SCAN_STALE_MS             default 600_000  (10 min — recover stuck 'scanning' rows)
  */
 
 export async function register() {
   // nodejs runtime only — edge runtime has no setInterval + no DB access.
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
+
+  const { startWatchdog } = await import('./lib/helius-watchdog');
+  startWatchdog();
+
+  await registerScoringWorker();
+  await registerWalletScanWorker();
+}
+
+async function registerScoringWorker() {
   if (process.env.SCORING_WORKER_DISABLED === '1') {
     console.log('[scoring-worker] disabled via env');
     return;
@@ -32,8 +45,6 @@ export async function register() {
   // Lazy-import so Next's build/edge compilers don't pull scoring deps into
   // the client bundle or try to resolve server-only modules at build time.
   const { drainOnce } = await import('./scripts/rescore-dirty');
-  const { startWatchdog } = await import('./lib/helius-watchdog');
-  startWatchdog();
 
   let running = false;
 
@@ -57,14 +68,52 @@ export async function register() {
   };
 
   const timer = setInterval(() => { void tick(); }, intervalMs);
-  // Next can tear down the server in dev/test; allow the process to exit.
   if (typeof timer.unref === 'function') timer.unref();
 
   console.log(
     `[scoring-worker] registered · interval=${intervalMs}ms batch=${batch} ` +
     `tx_window=${txWindow}`,
   );
-  // Prime a single drain so start-up catches any queued work without waiting
-  // for the first interval tick.
+  void tick();
+}
+
+async function registerWalletScanWorker() {
+  if (process.env.WALLET_SCAN_WORKER_DISABLED === '1') {
+    console.log('[wallet-scan-worker] disabled via env');
+    return;
+  }
+
+  const intervalMs = Number(process.env.WALLET_SCAN_WORKER_INTERVAL_MS) || 30_000;
+  const batch      = Number(process.env.WALLET_SCAN_WORKER_BATCH)       || 1;
+  const staleMs    = Number(process.env.WALLET_SCAN_STALE_MS)           || 600_000;
+
+  const { runWalletScanWorker } = await import('./indexer/wallet-scan');
+  const { recoverStuckScans }   = await import('./db/client');
+
+  let running = false;
+
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const recovered = await recoverStuckScans(staleMs);
+      if (recovered > 0) {
+        console.log(`[wallet-scan-worker] recovered ${recovered} stuck scans`);
+      }
+      await runWalletScanWorker(batch);
+    } catch (err) {
+      console.error('[wallet-scan-worker] tick failed:', err instanceof Error ? err.message : err);
+    } finally {
+      running = false;
+    }
+  };
+
+  const timer = setInterval(() => { void tick(); }, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+
+  console.log(
+    `[wallet-scan-worker] registered · interval=${intervalMs}ms batch=${batch} ` +
+    `stale=${staleMs}ms`,
+  );
   void tick();
 }

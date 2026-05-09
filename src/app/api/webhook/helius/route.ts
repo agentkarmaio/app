@@ -4,6 +4,8 @@ import {
   type HeliusEnhancedTransaction,
 } from '@/indexer/helius';
 import {
+  enqueueWalletScan,
+  getWallet,
   insertTransactions,
   upsertWallet,
   insertSignalEvents,
@@ -21,6 +23,9 @@ import { verifyHeliusWebhook } from '@/lib/api-auth';
 // - insert transactions (idempotent via tx_signature unique)
 // - emit Tier-2 x402 payment signals (one row per tx, no history read)
 // - mark affected wallets dirty so the rescore cron recomputes scores
+// - enqueue regressive scan for FRESHLY-OBSERVED counterparties (wallets
+//   we'd never indexed before this tick) — captures historical activity
+//   for new entrants without flooding the queue on every webhook
 //
 // Previously this handler re-fetched every tx for each affected wallet and
 // recomputed cadence/autonomy/score inline. With 20k+ txs/day, that path
@@ -61,6 +66,16 @@ export async function POST(request: NextRequest) {
 
   const uniqueWallets = [...new Set(parsed.map((p) => p.wallet_address))];
 
+  // Detect freshly-observed wallets BEFORE the upsert: if `getWallet` returns
+  // null, this webhook tick is the first time we've seen the address. We
+  // enqueue regressive scans only for these — every-webhook flooding would
+  // hammer the queue, and the 24h cooldown inside `enqueueWalletScan` is a
+  // backstop, not the primary gate.
+  const preExistence = await Promise.all(
+    uniqueWallets.map(async (addr) => ({ addr, existed: (await getWallet(addr)) !== null })),
+  );
+  const freshWallets = preExistence.filter((w) => !w.existed).map((w) => w.addr);
+
   // Create wallet rows before FK-constrained tx inserts. Score/tier stay at
   // their defaults for brand-new wallets until the rescore cron picks them up.
   await Promise.all(
@@ -71,9 +86,30 @@ export async function POST(request: NextRequest) {
   await insertSignalEvents(buildX402PaymentSignals(parsed));
   await markWalletsDirty(uniqueWallets);
 
+  // Fire-and-forget regressive scan enqueue for fresh wallets. Bounded by
+  // `freshWallets.length` (≤ unique counterparties in this batch). Each call
+  // is internally idempotent. We still gather via `allSettled` so a single
+  // failure doesn't sink the rest, and we log them without surfacing to the
+  // webhook caller (Helius doesn't need to know about scan-queue health).
+  let scansEnqueued = 0;
+  if (freshWallets.length > 0) {
+    const results = await Promise.allSettled(
+      freshWallets.map((addr) => enqueueWalletScan(addr)),
+    );
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.status === 'rejected') {
+        console.error(`[webhook] enqueueWalletScan failed for ${freshWallets[i]}:`, r.reason);
+      } else if (r.value.enqueued) {
+        scansEnqueued++;
+      }
+    }
+  }
+
   return NextResponse.json({
     processed: body.length,
     inserted,
     dirty: uniqueWallets.length,
+    scansEnqueued,
   });
 }
