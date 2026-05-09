@@ -26,7 +26,7 @@ export function OpenReplay() {
       if (cancelled) return;
       const tracker = new Tracker({
         projectKey: "kFAjfUrPUfjAJEoutGuT",
-        ingestPoint: `${window.location.origin}/_or/ingest`,
+        ingestPoint: "https://replay.noras.systems/ingest",
       }) as unknown as TrackerInstance;
       tracker.use(trackerAssist({}));
       tracker.start();

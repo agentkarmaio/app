@@ -66,7 +66,7 @@ export const cachedStats = defineCache(() => getStats(), {
 
 export const cachedLeaderboardEntries = defineCache(
   async () => {
-    const page = await getLeaderboard(25);
+    const page = await getLeaderboard(25, 0, {}, { withCount: false });
     const wallets = page.wallets;
     const addresses = wallets.map((w) => w.address);
     const [deliveryMap, historyMap] = await Promise.all([

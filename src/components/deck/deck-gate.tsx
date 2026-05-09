@@ -14,17 +14,22 @@ const DeckViewer = dynamic(
 
 const STORAGE_KEY = "ak:deck:viewer-email";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const ANON_PREFIX = "anon-";
 
 type GateState = "gated" | "open";
 
 type DeckGateProps = {
-  viewerCount?: number;
+  viewCount?: number;
   initialAuthed?: boolean;
   initialEmail?: string | null;
 };
 
+function isAnonEmail(value: string | null): boolean {
+  return Boolean(value && value.startsWith(ANON_PREFIX));
+}
+
 export function DeckGate({
-  viewerCount = 0,
+  viewCount = 0,
   initialAuthed = false,
   initialEmail = null,
 }: DeckGateProps) {
@@ -34,12 +39,9 @@ export function DeckGate({
   const [email, setEmail] = useState("");
   const [identified, setIdentified] = useState<string | null>(initialEmail);
   const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [submitting, setSubmitting] = useState<"none" | "email" | "skip">("none");
 
   useEffect(() => {
-    // If the server already verified our cookie, just push identity into
-    // OpenReplay — no localStorage round-trip, no extra POST. The session is
-    // already authed for /api/deck/file.
     if (initialAuthed && initialEmail) {
       identify(initialEmail);
       try {
@@ -49,15 +51,13 @@ export function DeckGate({
       }
       return;
     }
-    // Cookie missing/expired but localStorage may still have an email from a
-    // previous session — auto-identify and re-issue the cookie quietly.
     let stored: string | null = null;
     try {
       stored = localStorage.getItem(STORAGE_KEY);
     } catch {
       // localStorage unavailable — stay gated.
     }
-    if (stored && EMAIL_RE.test(stored)) {
+    if (stored && (EMAIL_RE.test(stored) || isAnonEmail(stored))) {
       identify(stored);
       void recordView(stored, true).then(() => {
         setIdentified(stored);
@@ -72,37 +72,73 @@ export function DeckGate({
     setOpenReplayMetadata("identified_at", new Date().toISOString());
   }
 
-  async function recordView(value: string, isReturning: boolean) {
+  async function recordView(
+    value: string | null,
+    isReturning: boolean,
+  ): Promise<{ email: string; anonymous: boolean } | null> {
     try {
-      await fetch("/api/deck/identify", {
+      const res = await fetch("/api/deck/identify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: value, isReturning }),
+        body: JSON.stringify({ email: value ?? "", isReturning }),
       });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { email?: string; anonymous?: boolean };
+      if (typeof data.email !== "string") return null;
+      return { email: data.email, anonymous: Boolean(data.anonymous) };
     } catch {
-      // Network blip — viewer will surface the auth failure if the cookie
-      // didn't get set; the user can re-submit the gate to retry.
+      return null;
     }
   }
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  async function submitWithEmail(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const value = email.trim().toLowerCase();
-    if (!EMAIL_RE.test(value)) {
-      setError("Please enter a valid email.");
+    if (!value) {
+      // Empty input is treated as "skip" — view anonymously.
+      await viewAnonymously();
       return;
     }
-    setSubmitting(true);
-    try {
-      localStorage.setItem(STORAGE_KEY, value);
-    } catch {
-      // ignore — we still identify in-memory for this session
+    if (!EMAIL_RE.test(value)) {
+      setError("Please enter a valid email or skip.");
+      return;
     }
-    identify(value);
-    await recordView(value, false);
-    setIdentified(value);
+    setSubmitting("email");
     setError(null);
-    setSubmitting(false);
+    const result = await recordView(value, false);
+    if (!result) {
+      setSubmitting("none");
+      setError("Couldn't save — try again or skip.");
+      return;
+    }
+    try {
+      localStorage.setItem(STORAGE_KEY, result.email);
+    } catch {
+      // ignore
+    }
+    identify(result.email);
+    setIdentified(result.email);
+    setSubmitting("none");
+    setState("open");
+  }
+
+  async function viewAnonymously() {
+    setSubmitting("skip");
+    setError(null);
+    const result = await recordView(null, false);
+    if (!result) {
+      setSubmitting("none");
+      setError("Couldn't open the deck — try again.");
+      return;
+    }
+    try {
+      localStorage.setItem(STORAGE_KEY, result.email);
+    } catch {
+      // ignore
+    }
+    identify(result.email);
+    setIdentified(result.email);
+    setSubmitting("none");
     setState("open");
   }
 
@@ -112,7 +148,7 @@ export function DeckGate({
     } catch {
       // ignore
     }
-    setEmail(identified ?? "");
+    setEmail(isAnonEmail(identified) ? "" : identified ?? "");
     setIdentified(null);
     setError(null);
     setState("gated");
@@ -129,48 +165,67 @@ export function DeckGate({
             Reputation layer for autonomous on-chain agents.
           </h1>
           <p className="text-sm text-muted-foreground">
-            Drop your email to view the deck. We use it only to follow up if
-            you have questions — no list, no spam.
+            Email is optional — drop it if you want a follow-up, or skip and
+            view anonymously. No list, no spam.
           </p>
         </div>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+        <form onSubmit={submitWithEmail} className="flex flex-col gap-3">
           <Input
             type="email"
             inputMode="email"
             autoComplete="email"
-            placeholder="you@company.com"
+            placeholder="you@company.com (optional)"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            required
             aria-invalid={error ? true : undefined}
             className="h-10"
           />
           {error ? (
             <p className="text-xs text-destructive">{error}</p>
           ) : null}
-          <Button type="submit" size="lg" className="h-10" disabled={submitting}>
-            {submitting ? "Loading…" : "View deck →"}
+          <Button
+            type="submit"
+            size="lg"
+            className="h-10"
+            disabled={submitting !== "none"}
+          >
+            {submitting === "email" ? "Loading…" : "View deck →"}
           </Button>
+          <button
+            type="button"
+            onClick={viewAnonymously}
+            disabled={submitting !== "none"}
+            className="text-center text-xs text-muted-foreground/70 underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50"
+          >
+            {submitting === "skip" ? "Loading…" : "Skip — view anonymously"}
+          </button>
         </form>
-        {viewerCount > 0 ? (
+        {viewCount > 0 ? (
           <p className="flex items-center gap-1.5 text-xs text-muted-foreground/60">
             <Eye className="size-3" aria-hidden />
             <span className="font-mono tabular-nums">
-              {viewerCount.toLocaleString()}
+              {viewCount.toLocaleString()}
             </span>
-            <span>{viewerCount === 1 ? "viewer" : "viewers"}</span>
+            <span>{viewCount === 1 ? "view" : "views"}</span>
           </p>
         ) : null}
       </div>
     );
   }
 
+  const anon = isAnonEmail(identified);
   return (
     <div className="flex flex-col gap-3">
       <DeckViewer />
       {identified ? (
         <p className="text-center text-xs text-muted-foreground/70">
-          Viewing as <span className="font-mono">{identified}</span>
+          {anon ? (
+            <>Viewing anonymously</>
+          ) : (
+            <>
+              Viewing as <span className="font-mono">{identified}</span>
+            </>
+          )}
           <button
             type="button"
             onClick={handleSwitch}
@@ -187,9 +242,6 @@ export function DeckGate({
 function ViewerLoading() {
   // Silent placeholder. Aspect-locked to the deck (16:9) so the height
   // matches what react-pdf will render — no layout jump on chunk swap.
-  // Note: avoid `items-center` on the outer flex — it triggers a browser
-  // circular-sizing bug with aspect-ratio + w-full children, collapsing the
-  // card to 0×0. Default stretch keeps the cross-axis determined.
   return (
     <div className="flex flex-col gap-4">
       <div className="aspect-[16/9] w-full rounded-lg border border-border bg-card" />

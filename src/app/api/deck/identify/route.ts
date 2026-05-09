@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { insertDeckView } from '@/db/client';
 import {
@@ -9,9 +10,20 @@ import {
 import { enforceRateLimit, getClientIp } from '@/lib/rate-limit';
 
 const Body = z.object({
-  email: z.string().trim().toLowerCase().email().max(254),
+  email: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .email()
+    .max(254)
+    .optional()
+    .or(z.literal('')),
   isReturning: z.boolean().optional(),
 });
+
+function makeAnonEmail() {
+  return `anon-${randomBytes(4).toString('hex')}@agentkarma.io`;
+}
 
 export async function POST(request: NextRequest) {
   const gate = await enforceRateLimit('deck-identify', request);
@@ -29,9 +41,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'invalid_email' }, { status: 400 });
   }
 
+  const submitted = parsed.data.email && parsed.data.email.length > 0
+    ? parsed.data.email
+    : null;
+  const email = submitted ?? makeAnonEmail();
+  const anonymous = submitted === null;
+
   try {
     await insertDeckView({
-      email: parsed.data.email,
+      email,
       isReturning: parsed.data.isReturning ?? false,
       ip: getClientIp(request),
       userAgent: request.headers.get('user-agent'),
@@ -42,10 +60,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'persist_failed' }, { status: 500 });
   }
 
-  const res = NextResponse.json({ ok: true }, { headers: gate.headers });
+  const res = NextResponse.json(
+    { ok: true, email, anonymous },
+    { headers: gate.headers },
+  );
   res.cookies.set({
     name: DECK_COOKIE_NAME,
-    value: makeDeckCookie(parsed.data.email),
+    value: makeDeckCookie(email),
     httpOnly: true,
     sameSite: 'lax',
     secure: true,

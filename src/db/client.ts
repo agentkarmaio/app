@@ -117,10 +117,14 @@ export async function getLeaderboard(
   limit = 25,
   offset = 0,
   filters: LeaderboardFilters = {},
+  opts: { withCount?: boolean } = {},
 ): Promise<LeaderboardPage> {
+  // count: 'exact' over 86k+ wallets is the slow path. Skip when caller doesn't
+  // need the total (e.g. homepage cache, where only the page rows are used).
+  const withCount = opts.withCount ?? true;
   let q = supabase
     .from('wallets')
-    .select('*', { count: 'exact' })
+    .select('*', withCount ? { count: 'exact' } : {})
     .gt('score', 0);
 
   if (filters.tier) q = q.eq('trust_tier', filters.tier);
@@ -699,19 +703,14 @@ export async function insertDeckView(input: InsertDeckViewInput): Promise<void> 
 }
 
 /**
- * Count of distinct emails that have viewed the pitch deck. Cheap at low
- * scale (early-stage funnel — < few thousand rows). If the table grows past
- * ~10k rows, swap in a SQL function that does the distinct on the server.
+ * Total deck-view count — every visit counts (HEAD-only count query, cheap).
  */
-export async function getDeckUniqueViewerCount(): Promise<number> {
-  const { data, error } = await supabase
+export async function getDeckViewCount(): Promise<number> {
+  const { count, error } = await supabase
     .from('deck_views')
-    .select('email')
-    .limit(10000);
+    .select('*', { count: 'exact', head: true });
   if (error) throw error;
-  const unique = new Set<string>();
-  for (const row of (data ?? []) as { email: string }[]) unique.add(row.email);
-  return unique.size;
+  return count ?? 0;
 }
 
 // --- Indexer Cursors ----------------------------------------------------------
