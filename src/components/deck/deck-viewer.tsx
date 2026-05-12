@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
+import { Maximize2, X } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -24,18 +25,31 @@ export function DeckViewer() {
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [width, setWidth] = useState<number>(900);
   const [loadError, setLoadError] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
+  // Track container width; works for both inline and fullscreen since the
+  // ref points at the same DOM node across mode changes (single mounted tree).
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
-      if (entry) setWidth(Math.min(1280, Math.floor(entry.contentRect.width)));
+      if (entry) setWidth(Math.min(1920, Math.floor(entry.contentRect.width)));
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [fullscreen]);
+
+  // Lock body scroll while fullscreen so iOS doesn't bounce the page behind.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [fullscreen]);
 
   const onDocumentLoadSuccess = useCallback(
     ({ numPages }: { numPages: number }) => {
@@ -60,14 +74,18 @@ export function DeckViewer() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && fullscreen) {
+        setFullscreen(false);
+        return;
+      }
       if (e.key === "ArrowRight" || e.key === " ") goNext();
       else if (e.key === "ArrowLeft") goPrev();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [goPrev, goNext]);
+  }, [goPrev, goNext, fullscreen]);
 
-  // Touch swipe navigation for mobile.
+  // Touch swipe navigation — same ref node in both modes.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -101,29 +119,96 @@ export function DeckViewer() {
 
   if (loadError) return <DeckFallback />;
 
+  const deck = (
+    <div
+      ref={containerRef}
+      className={cn(
+        "select-none overflow-hidden touch-pan-y",
+        fullscreen
+          ? "flex aspect-[16/9] max-h-full max-w-full items-center justify-center"
+          : "aspect-[16/9] w-full rounded-lg border border-border bg-card",
+      )}
+    >
+      <Document
+        file={PDF_FILE}
+        onLoadSuccess={onDocumentLoadSuccess}
+        onLoadError={onDocumentLoadError}
+        options={options}
+        loading={<DeckSkeleton />}
+        error={<DeckFallback />}
+        className="flex justify-center"
+      >
+        <Page
+          pageNumber={pageNumber}
+          width={width}
+          renderTextLayer={false}
+          renderAnnotationLayer={false}
+          loading={<DeckSkeleton />}
+        />
+      </Document>
+    </div>
+  );
+
+  if (fullscreen) {
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Pitch deck — fullscreen"
+        className="fixed inset-0 z-50 flex flex-col bg-black"
+      >
+        <div className="flex flex-1 items-center justify-center overflow-hidden p-2">
+          {deck}
+        </div>
+
+        <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between p-3">
+          <span className="pointer-events-auto rounded-md bg-black/60 px-2 py-1 font-mono text-xs tabular-nums text-white/90 backdrop-blur">
+            {numPages === 0 ? "—" : `${pageNumber} / ${numPages}`}
+          </span>
+          <button
+            type="button"
+            onClick={() => setFullscreen(false)}
+            aria-label="Exit fullscreen"
+            className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-md bg-black/60 text-white/90 backdrop-blur transition hover:bg-black/80"
+          >
+            <X className="size-5" />
+          </button>
+        </div>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center gap-3">
+          <button
+            type="button"
+            onClick={goPrev}
+            disabled={pageNumber <= 1}
+            className="pointer-events-auto inline-flex h-9 items-center rounded-md bg-black/60 px-3 text-sm text-white/90 backdrop-blur transition hover:bg-black/80 disabled:opacity-40"
+          >
+            ← Prev
+          </button>
+          <button
+            type="button"
+            onClick={goNext}
+            disabled={!numPages || pageNumber >= numPages}
+            className="pointer-events-auto inline-flex h-9 items-center rounded-md bg-black/60 px-3 text-sm text-white/90 backdrop-blur transition hover:bg-black/80 disabled:opacity-40"
+          >
+            Next →
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4">
-      <div
-        ref={containerRef}
-        className="aspect-[16/9] w-full select-none overflow-hidden rounded-lg border border-border bg-card touch-pan-y"
-      >
-        <Document
-          file={PDF_FILE}
-          onLoadSuccess={onDocumentLoadSuccess}
-          onLoadError={onDocumentLoadError}
-          options={options}
-          loading={<DeckSkeleton />}
-          error={<DeckFallback />}
-          className="flex justify-center"
+      <div className="relative">
+        {deck}
+        <button
+          type="button"
+          onClick={() => setFullscreen(true)}
+          aria-label="Enter fullscreen"
+          className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-md bg-background/70 text-muted-foreground backdrop-blur transition hover:bg-background hover:text-foreground"
         >
-          <Page
-            pageNumber={pageNumber}
-            width={width}
-            renderTextLayer={false}
-            renderAnnotationLayer={false}
-            loading={<DeckSkeleton />}
-          />
-        </Document>
+          <Maximize2 className="size-4" />
+        </button>
       </div>
 
       <div className="flex items-center justify-center gap-3 text-sm text-muted-foreground">
@@ -153,8 +238,12 @@ export function DeckViewer() {
         </Button>
       </div>
       <p className="text-center text-xs text-muted-foreground/60">
-        <span className="sm:hidden">Swipe or tap prev/next</span>
-        <span className="hidden sm:inline">Use ← → to navigate</span>
+        <span className="sm:hidden">
+          Swipe or tap prev/next · tap ⤢ for fullscreen
+        </span>
+        <span className="hidden sm:inline">
+          Use ← → to navigate · click ⤢ for fullscreen
+        </span>
       </p>
     </div>
   );

@@ -8,8 +8,8 @@
         "8004-solana": "^0.8.3",
         "@base-ui/react": "^1.3.0",
         "@modelcontextprotocol/sdk": "^1.29.0",
-        "@openreplay/tracker": "^18",
-        "@openreplay/tracker-assist": "^11",
+        "@openreplay/tracker": "~17.2.9",
+        "@openreplay/tracker-assist": "~11.0.13",
         "@solana/spl-token": "^0.4.14",
         "@solana/wallet-adapter-base": "^0.9.27",
         "@solana/wallet-adapter-ledger": "^0.9.29",
@@ -380,7 +380,7 @@
 
     "@openreplay/network-proxy": ["@openreplay/network-proxy@1.2.4", "", {}, "sha512-egSeDXscqPXllrBKf7QIDRbEDWLyKsCmtnNgtL0ORG/99rVAJpYny6KnZLggfbBbwQedIGeliQzZDhmIZOkkxQ=="],
 
-    "@openreplay/tracker": ["@openreplay/tracker@18.0.6", "", { "dependencies": { "@openreplay/network-proxy": "^1.2.4", "error-stack-parser": "^2.1.4", "error-stack-parser-es": "^0.1.5", "web-vitals": "^5.1.0" } }, "sha512-UlwpZQrPNys5qARbwZbEcuCLiNi1tHe/L+6UL1t7TWc+lOTqno8Bmo3WVnSDwCOQMTVqypC6jufeEBIH99Q6Tg=="],
+    "@openreplay/tracker": ["@openreplay/tracker@17.2.9", "", { "dependencies": { "@openreplay/network-proxy": "^1.2.2", "error-stack-parser": "^2.1.4", "error-stack-parser-es": "^0.1.5", "web-vitals": "^5.1.0" } }, "sha512-eZ8bm61cPUPBPV8yYn3MBvuoeDwCKWAjjvN9DSZm3cqFEEtzgiYoPBXnyjLPfwvUvVsofI8JnYDakSu/0R3G/g=="],
 
     "@openreplay/tracker-assist": ["@openreplay/tracker-assist@11.0.13", "", { "dependencies": { "csstype": "^3.1.3", "fflate": "^0.8.2", "socket.io-client": "^4.8.1" }, "peerDependencies": { "@openreplay/tracker": ">=14.0.14" } }, "sha512-cp/lufPcDtxEOz9cscUDlh1R6wse6cweZk/sKSTzf8MmkcWpmpNpfZfyEIblZLIFuLsdce1Sw2GT2BiwJcQFKA=="],
 
