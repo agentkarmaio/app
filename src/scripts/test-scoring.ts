@@ -71,6 +71,7 @@ function generateMockTransactions(): Transaction[] {
 
       transactions.push({
         id: `mock-${sigIndex}`,
+        chain: 'solana',
         wallet_address: wallet,
         facilitator: randomChoice(walletFacilitators),
         amount: parseFloat(randomBetween(0.1, 50).toFixed(6)),

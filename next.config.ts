@@ -14,6 +14,9 @@ const nextConfig: NextConfig = {
       // beginning with "." as private, so the route handler lives under
       // `app/well-known/...` and we rewrite the canonical URL to it.
       { source: "/.well-known/mcp/server-card.json", destination: "/well-known/mcp/server-card.json" },
+      // ERC-8004 agent registration file. AK's Celo IdentityRegistry record
+      // (tokenId minted from 0xCfc0…5b96) references this URI as its agentURI.
+      { source: "/.well-known/agent.json", destination: "/well-known/agent.json" },
       // llmstxt.org spec — surface llms.txt + llms-full.txt at the well-known
       // location too. The canonical URL is the root one, but answer engines
       // probing /.well-known/ expect to find them there.

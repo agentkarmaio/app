@@ -128,6 +128,7 @@ function extractX402PaymentCore(
 
   if (payerTransfer && payerTransfer.tokenAmount > 0) {
     return {
+      chain: 'solana',
       wallet_address: payerTransfer.fromUserAccount,
       facilitator: facilitatorAddress,
       amount: payerTransfer.tokenAmount,
@@ -153,6 +154,7 @@ function extractX402PaymentCore(
       if (amount <= 0) continue;
 
       return {
+        chain: 'solana',
         wallet_address: change.userAccount,
         facilitator: facilitatorAddress,
         amount,

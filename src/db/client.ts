@@ -12,7 +12,15 @@ import type {
   ConfidenceBadge, SignalEvent, SignalTier, KarmaFace, AutonomyLabel,
   AgentManifest, ManifestSourceType, ParsedManifest,
   Organization, OrganizationMember, WalletScanState,
+  Chain,
 } from './schema';
+
+// Every DB helper that takes a wallet address optionally takes a chain. The
+// default is 'solana' for back-compat with all pre-existing callers — Solana
+// is what the DB held until 0004_multichain.sql. NEW Celo paths must pass
+// `'celo'` explicitly. Composite-PK enforcement happens at the schema layer,
+// so a missing chain doesn't corrupt data — it just resolves to Solana rows.
+const DEFAULT_CHAIN: Chain = 'solana';
 
 // --- Supabase Client ---------------------------------------------------------
 // Lazy: only instantiated on first access. Keeps `next build` from crashing
@@ -39,10 +47,11 @@ export const supabase = new Proxy({} as SupabaseClient, {
 
 // --- Wallet Queries ----------------------------------------------------------
 
-export async function getWallet(address: string): Promise<Wallet | null> {
+export async function getWallet(address: string, chain: Chain = DEFAULT_CHAIN): Promise<Wallet | null> {
   const { data, error } = await supabase
     .from('wallets')
     .select('*')
+    .eq('chain', chain)
     .eq('address', address)
     .single();
 
@@ -71,6 +80,7 @@ export async function upsertWallet(
   trustTier: TrustTier,
   txCount: number,
   opts: UpsertWalletOpts = {},
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<void> {
   // Back-compat: when Phase-F fields aren't supplied, mirror `score` into
   // `provider_score` and default the badge to 'declared'.
@@ -78,6 +88,7 @@ export async function upsertWallet(
   const confidenceBadge: ConfidenceBadge = opts.confidenceBadge ?? 'declared';
 
   const row: Record<string, unknown> = {
+    chain,
     address,
     score,
     provider_score: providerScore,
@@ -98,7 +109,7 @@ export async function upsertWallet(
 
   const { error } = await supabase
     .from('wallets')
-    .upsert(row, { onConflict: 'address' });
+    .upsert(row, { onConflict: 'chain,address' });
 
   if (error) throw error;
 }

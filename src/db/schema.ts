@@ -7,12 +7,30 @@
 
 import {
   pgTable, text, timestamp, integer, numeric, boolean, uuid, index, uniqueIndex, jsonb,
+  primaryKey, foreignKey,
 } from 'drizzle-orm/pg-core';
+
+// ─── Chain dimension ─────────────────────────────────────────────────────────
+//
+// Every agent identity is keyed by (chain, address). Adding a chain extends
+// this union and feeds the composite primary key on `wallets` plus every
+// foreign key that references it. NEVER reuse a value across chains —
+// addresses are format-disjoint today (Solana base58 vs EVM 0x40hex) but the
+// composite PK is the durable correctness guarantee.
+
+export const CHAINS = ['solana', 'celo'] as const;
+export type Chain = (typeof CHAINS)[number];
+export const DEFAULT_CHAIN: Chain = 'solana';
+
+export function isChain(value: unknown): value is Chain {
+  return typeof value === 'string' && (CHAINS as readonly string[]).includes(value);
+}
 
 // --- Drizzle Table Definitions (for drizzle-kit push) -------------------------
 
 export const walletsTable = pgTable('wallets', {
-  address:         text('address').primaryKey(),
+  chain:           text('chain').notNull().default('solana').$type<Chain>(),
+  address:         text('address').notNull(),
   first_seen:      timestamp('first_seen', { withTimezone: true }).notNull().defaultNow(),
   last_seen:       timestamp('last_seen',  { withTimezone: true }).notNull().defaultNow(),
   tx_count:        integer('tx_count').notNull().default(0),
@@ -64,7 +82,18 @@ export const walletsTable = pgTable('wallets', {
   scan_hit_count:      integer('scan_hit_count').notNull().default(0),
   scan_partial:        boolean('scan_partial').notNull().default(false),
   scan_last_error:     text('scan_last_error'),
+  // Self Protocol attestation (Tier 3 declared — see RFC §5.5). Filled by the
+  // /api/v2/self/verify endpoint when a wallet's controlling human completes
+  // a passport scan via the Self mobile app. self_nullifier is the unique
+  // per-(user, scope) marker from the ZK proof — proof-of-presence, not the
+  // passport data itself.
+  self_nullifier:      text('self_nullifier'),
+  self_verified_at:    timestamp('self_verified_at', { withTimezone: true }),
+  self_scope:          text('self_scope'),
 }, (table) => [
+  primaryKey({ columns: [table.chain, table.address], name: 'wallets_pkey' }),
+  index('idx_wallets_chain').on(table.chain),
+  index('idx_wallets_address').on(table.address),
   index('idx_wallets_score').on(table.score),
   index('idx_wallets_provider_score').on(table.provider_score),
   index('idx_wallets_confidence_badge').on(table.confidence_badge),
@@ -78,21 +107,28 @@ export const walletsTable = pgTable('wallets', {
 
 export const transactionsTable = pgTable('transactions', {
   id:             uuid('id').primaryKey().defaultRandom(),
-  wallet_address: text('wallet_address').notNull().references(() => walletsTable.address, { onDelete: 'cascade' }),
+  chain:          text('chain').notNull().default('solana').$type<Chain>(),
+  wallet_address: text('wallet_address').notNull(),
   facilitator:    text('facilitator').notNull(),
   amount:         numeric('amount', { precision: 20, scale: 6 }).notNull().default('0'),
   timestamp:      timestamp('timestamp', { withTimezone: true }).notNull(),
   success:        boolean('success').notNull().default(true),
   tx_signature:   text('tx_signature').unique().notNull(),
 }, (table) => [
-  index('idx_transactions_wallet_address').on(table.wallet_address),
+  foreignKey({
+    columns: [table.chain, table.wallet_address],
+    foreignColumns: [walletsTable.chain, walletsTable.address],
+    name: 'transactions_chain_wallet_address_fkey',
+  }).onDelete('cascade'),
+  index('idx_transactions_chain_wallet_address').on(table.chain, table.wallet_address),
   index('idx_transactions_facilitator').on(table.facilitator),
   index('idx_transactions_timestamp').on(table.timestamp),
 ]);
 
 export const scoresTable = pgTable('scores', {
   id:             uuid('id').primaryKey().defaultRandom(),
-  wallet_address: text('wallet_address').notNull().references(() => walletsTable.address, { onDelete: 'cascade' }),
+  chain:          text('chain').notNull().default('solana').$type<Chain>(),
+  wallet_address: text('wallet_address').notNull(),
   score:          numeric('score', { precision: 6, scale: 2 }).notNull(),
   success_rate:   numeric('success_rate', { precision: 5, scale: 4 }).notNull().default('0'),
   diversity:      numeric('diversity', { precision: 5, scale: 4 }).notNull().default('0'),
@@ -100,7 +136,12 @@ export const scoresTable = pgTable('scores', {
   age:            integer('age').notNull().default(0),
   calculated_at:  timestamp('calculated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
-  index('idx_scores_wallet_address').on(table.wallet_address),
+  foreignKey({
+    columns: [table.chain, table.wallet_address],
+    foreignColumns: [walletsTable.chain, walletsTable.address],
+    name: 'scores_chain_wallet_address_fkey',
+  }).onDelete('cascade'),
+  index('idx_scores_chain_wallet_address').on(table.chain, table.wallet_address),
   index('idx_scores_calculated_at').on(table.calculated_at),
 ]);
 
@@ -108,13 +149,19 @@ export const scoresTable = pgTable('scores', {
 
 export const feedbackTable = pgTable('feedback', {
   id:              uuid('id').primaryKey().defaultRandom(),
-  agent_wallet:    text('agent_wallet').notNull().references(() => walletsTable.address, { onDelete: 'cascade' }),
+  chain:           text('chain').notNull().default('solana').$type<Chain>(),
+  agent_wallet:    text('agent_wallet').notNull(),
   consumer_wallet: text('consumer_wallet').notNull(),
   rating:          text('rating').notNull(),  // 'delivered' | 'failed'
   tx_signature:    text('tx_signature').notNull().unique(), // one feedback per tx
   created_at:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
-  index('idx_feedback_agent_wallet').on(table.agent_wallet),
+  foreignKey({
+    columns: [table.chain, table.agent_wallet],
+    foreignColumns: [walletsTable.chain, walletsTable.address],
+    name: 'feedback_chain_agent_wallet_fkey',
+  }).onDelete('cascade'),
+  index('idx_feedback_chain_agent_wallet').on(table.chain, table.agent_wallet),
   index('idx_feedback_tx_signature').on(table.tx_signature),
 ]);
 
@@ -122,7 +169,8 @@ export const feedbackTable = pgTable('feedback', {
 
 export const signalEventsTable = pgTable('signal_events', {
   id:           uuid('id').primaryKey().defaultRandom(),
-  agent_wallet: text('agent_wallet').notNull().references(() => walletsTable.address, { onDelete: 'cascade' }),
+  chain:        text('chain').notNull().default('solana').$type<Chain>(),
+  agent_wallet: text('agent_wallet').notNull(),
   tier:         integer('tier').notNull(),
   kind:         text('kind').notNull(),
   face:         text('face').notNull().default('provider'),
@@ -134,7 +182,12 @@ export const signalEventsTable = pgTable('signal_events', {
   observed_at:  timestamp('observed_at', { withTimezone: true }).notNull().defaultNow(),
   created_at:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
-  index('idx_signal_events_agent_wallet').on(table.agent_wallet),
+  foreignKey({
+    columns: [table.chain, table.agent_wallet],
+    foreignColumns: [walletsTable.chain, walletsTable.address],
+    name: 'signal_events_chain_agent_wallet_fkey',
+  }).onDelete('cascade'),
+  index('idx_signal_events_chain_agent_wallet').on(table.chain, table.agent_wallet),
   index('idx_signal_events_tier').on(table.tier),
   index('idx_signal_events_face').on(table.face),
   index('idx_signal_events_observed_at').on(table.observed_at),
@@ -142,9 +195,9 @@ export const signalEventsTable = pgTable('signal_events', {
   // Dedup same external event across retries. Rows with NULL tx_ref (synthetic
   // signals) don't collide because Postgres treats NULLs as distinct in unique
   // indexes — same effect as a partial index but Supabase-js `.upsert()` needs
-  // a non-partial target to match ON CONFLICT.
+  // a non-partial target to match ON CONFLICT. Now chain-scoped.
   uniqueIndex('uniq_signal_events_dedup')
-    .on(table.agent_wallet, table.kind, table.tx_ref),
+    .on(table.chain, table.agent_wallet, table.kind, table.tx_ref),
 ]);
 
 // --- Organizations (Enterprise fleet view) ----------------------------------
@@ -162,20 +215,27 @@ export const organizationsTable = pgTable('organizations', {
 export const organizationMembersTable = pgTable('organization_members', {
   id:               uuid('id').primaryKey().defaultRandom(),
   organization_slug: text('organization_slug').notNull().references(() => organizationsTable.slug, { onDelete: 'cascade' }),
-  agent_wallet:     text('agent_wallet').notNull().references(() => walletsTable.address, { onDelete: 'cascade' }),
+  chain:            text('chain').notNull().default('solana').$type<Chain>(),
+  agent_wallet:     text('agent_wallet').notNull(),
   role:             text('role'),
   added_at:         timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
+  foreignKey({
+    columns: [table.chain, table.agent_wallet],
+    foreignColumns: [walletsTable.chain, walletsTable.address],
+    name: 'organization_members_chain_agent_wallet_fkey',
+  }).onDelete('cascade'),
   index('idx_org_members_slug').on(table.organization_slug),
-  index('idx_org_members_wallet').on(table.agent_wallet),
-  uniqueIndex('uniq_org_members').on(table.organization_slug, table.agent_wallet),
+  index('idx_org_members_chain_wallet').on(table.chain, table.agent_wallet),
+  uniqueIndex('uniq_org_members').on(table.organization_slug, table.chain, table.agent_wallet),
 ]);
 
 // --- Agent Manifests (Phase H1 — Tier 3 declared identity) ------------------
 
 export const agentManifestsTable = pgTable('agent_manifests', {
   id:           uuid('id').primaryKey().defaultRandom(),
-  agent_wallet: text('agent_wallet').notNull().references(() => walletsTable.address, { onDelete: 'cascade' }),
+  chain:        text('chain').notNull().default('solana').$type<Chain>(),
+  agent_wallet: text('agent_wallet').notNull(),
   source_type:  text('source_type').notNull(), // 'x402_accepts' | 'mcp_descriptor' | 'self_hosted' | 'claim_form'
   url:          text('url'),
   fetched_at:   timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
@@ -184,10 +244,15 @@ export const agentManifestsTable = pgTable('agent_manifests', {
   verified:     boolean('verified').notNull().default(false),
   created_at:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
-  index('idx_agent_manifests_agent_wallet').on(table.agent_wallet),
+  foreignKey({
+    columns: [table.chain, table.agent_wallet],
+    foreignColumns: [walletsTable.chain, walletsTable.address],
+    name: 'agent_manifests_chain_agent_wallet_fkey',
+  }).onDelete('cascade'),
+  index('idx_agent_manifests_chain_agent_wallet').on(table.chain, table.agent_wallet),
   index('idx_agent_manifests_source_type').on(table.source_type),
-  // One manifest row per (wallet, source_type) — resolver overwrites on refresh.
-  uniqueIndex('uniq_agent_manifests_source').on(table.agent_wallet, table.source_type),
+  // One manifest row per (chain, wallet, source_type) — resolver overwrites on refresh.
+  uniqueIndex('uniq_agent_manifests_source').on(table.chain, table.agent_wallet, table.source_type),
 ]);
 
 // --- Deck Views (pitch-deck visitor identification) -------------------------
@@ -231,6 +296,7 @@ export type SignalTier = 1 | 2 | 3 | 4;
 export type KarmaFace = 'provider' | 'consumer';
 
 export interface Wallet {
+  chain: Chain;
   address: string;
   first_seen: string;
   last_seen: string;
@@ -275,6 +341,10 @@ export interface Wallet {
   scan_hit_count?: number;
   scan_partial?: boolean;
   scan_last_error?: string | null;
+  // Self Protocol attestation
+  self_nullifier?: string | null;
+  self_verified_at?: string | null;
+  self_scope?: string | null;
 }
 
 export type WalletScanState = 'pending' | 'scanning' | 'done' | 'failed';
@@ -294,6 +364,7 @@ export interface Organization {
 export interface OrganizationMember {
   id: string;
   organization_slug: string;
+  chain: Chain;
   agent_wallet: string;
   role: string | null;
   added_at: string;
@@ -303,6 +374,7 @@ export type ManifestSourceType = 'x402_accepts' | 'mcp_descriptor' | 'self_hoste
 
 export interface AgentManifest {
   id: string;
+  chain: Chain;
   agent_wallet: string;
   source_type: ManifestSourceType;
   url: string | null;
@@ -338,6 +410,7 @@ export function isTempoAddress(value: unknown): value is string {
 
 export interface SignalEvent {
   id: string;
+  chain: Chain;
   agent_wallet: string;
   tier: SignalTier;
   kind: string;
@@ -363,6 +436,7 @@ export function getLivenessStatus(lastSeen: string | Date): LivenessStatus {
 
 export interface Transaction {
   id: string;
+  chain: Chain;
   wallet_address: string;
   facilitator: string;
   amount: number;
@@ -373,6 +447,7 @@ export interface Transaction {
 
 export interface Score {
   id: string;
+  chain: Chain;
   wallet_address: string;
   score: number;
   success_rate: number;
@@ -386,6 +461,7 @@ export type FeedbackRating = 'delivered' | 'failed';
 
 export interface Feedback {
   id: string;
+  chain: Chain;
   agent_wallet: string;
   consumer_wallet: string;
   rating: FeedbackRating;

@@ -10,7 +10,7 @@
  *   servel job add rescore-karma \
  *     --schedule "* * * * *" \
  *     --app agentkarma \
- *     --command "bun run src/scripts/rescore-dirty.ts" \
+ *     --command "bun run scripts/rescore-dirty.ts" \
  *     --timeout 5m \
  *     --skip-running
  *
@@ -19,8 +19,8 @@
  *   RESCORE_TX_WINDOW    (default 5000)  — tx history rows per wallet
  *
  * Usage:
- *   bun run src/scripts/rescore-dirty.ts             # drain one batch
- *   bun run src/scripts/rescore-dirty.ts 500         # batch size override
+ *   bun run scripts/rescore-dirty.ts             # drain one batch
+ *   bun run scripts/rescore-dirty.ts 500         # batch size override
  */
 
 import {
@@ -163,24 +163,5 @@ export async function drainOnce(
   };
 }
 
-async function main() {
-  const batchSize = Number(process.argv[2]) || Number(process.env.RESCORE_BATCH_SIZE) || DEFAULT_BATCH_SIZE;
-  const txWindow = Number(process.env.RESCORE_TX_WINDOW) || DEFAULT_TX_WINDOW;
-
-  console.log(`[rescore] batch=${batchSize} tx_window=${txWindow}`);
-  const result = await drainOnce(batchSize, txWindow);
-  console.log(`[rescore] claimed=${result.claimed} scored=${result.scored} skipped=${result.skipped} errors=${result.errors.length} remaining=${result.remaining} elapsed=${result.elapsedMs}ms`);
-  if (result.errors.length > 0) {
-    const sample = result.errors.slice(0, 5);
-    console.log(`[rescore] first errors: ${JSON.stringify(sample)}`);
-    process.exit(1);
-  }
-  process.exit(0);
-}
-
-if (import.meta.main) {
-  main().catch((err) => {
-    console.error('[rescore] fatal:', err);
-    process.exit(1);
-  });
-}
+export const RESCORE_DEFAULT_BATCH_SIZE = DEFAULT_BATCH_SIZE;
+export const RESCORE_DEFAULT_TX_WINDOW = DEFAULT_TX_WINDOW;
