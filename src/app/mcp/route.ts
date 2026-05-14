@@ -291,6 +291,39 @@ export async function POST(request: Request) {
 }
 
 export async function GET(request: Request) {
+  // Real MCP clients open a GET SSE stream and carry one of: Accept:
+  // text/event-stream, an Mcp-Session-Id, or an Mcp-Protocol-Version header.
+  // Vanilla liveness probes (8004scan, uptime checkers, browsers) carry none
+  // of these — return a friendly 200 discovery pointer instead of letting the
+  // SDK 4xx the probe and flag the endpoint Unhealthy.
+  const accept = request.headers.get('accept') ?? '';
+  const isMcpClient =
+    accept.includes('text/event-stream') ||
+    request.headers.get('mcp-session-id') !== null ||
+    request.headers.get('mcp-protocol-version') !== null;
+
+  if (!isMcpClient) {
+    const origin = process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io';
+    return Response.json(
+      {
+        server: SERVER_INFO.name,
+        title: SERVER_INFO.title,
+        version: SERVER_INFO.version,
+        transport: 'streamable-http',
+        protocolVersion: '2025-06-18',
+        hint: 'POST JSON-RPC messages to this endpoint to interact with the MCP server.',
+        serverCard: `${origin}/.well-known/mcp/server-card.json`,
+        docs: `${origin}/docs/mcp`,
+      },
+      {
+        status: 200,
+        headers: {
+          ...CORS_HEADERS,
+          'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=900',
+        },
+      },
+    );
+  }
   return handle(request);
 }
 

@@ -196,8 +196,6 @@ export function Footer() {
                 <span>noras.tech</span>
               </a>
             </span>
-            <span aria-hidden>·</span>
-            <span>for Colosseum Frontier</span>
           </p>
         </div>
       </div>

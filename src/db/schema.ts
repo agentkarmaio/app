@@ -87,7 +87,9 @@ export const walletsTable = pgTable('wallets', {
   // a passport scan via the Self mobile app. self_nullifier is the unique
   // per-(user, scope) marker from the ZK proof — proof-of-presence, not the
   // passport data itself.
-  self_nullifier:      text('self_nullifier'),
+  // UNIQUE on (self_nullifier) — one passport (per scope) anchors one wallet.
+  // Doubles as the replay guard since the SDK is stateless.
+  self_nullifier:      text('self_nullifier').unique(),
   self_verified_at:    timestamp('self_verified_at', { withTimezone: true }),
   self_scope:          text('self_scope'),
 }, (table) => [

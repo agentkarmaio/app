@@ -135,36 +135,43 @@ export default async function CeloPage() {
 
       <Card className="mb-8 border-yellow-500/20 bg-yellow-500/[0.03]">
         <CardContent className="p-6">
-          <h2 className="mb-3 text-xl font-semibold">How this sits next to 8004scan</h2>
-          <p className="mb-4 text-sm text-muted-foreground">
-            <strong className="text-foreground">8004scan tells you an agent exists and what others say about it. AgentKarma is one of those others</strong> — but with receipt-gated signals, two-faced scoring, autonomy detection, and a published methodology. The relationship is layered, not competitive.
+          <h2 className="mb-4 text-2xl font-semibold leading-tight">
+            An aggregate score is only as good as its raters.
+          </h2>
+          <p className="mb-5 text-sm text-muted-foreground">
+            <a href="https://8004scan.io" target="_blank" rel="noreferrer" className="font-semibold text-foreground underline-offset-2 hover:underline">8004scan</a>
+            {' '}rolls them up. <strong className="text-foreground">AgentKarma is the one with receipts.</strong>
           </p>
-          <div className="space-y-3 text-sm">
+          <div className="space-y-2 text-sm">
             <div className="rounded-md border border-border bg-card/50 p-3">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Explorer / aggregator</div>
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Explorer</div>
               <div>
                 <a href="https://8004scan.io" target="_blank" rel="noreferrer" className="font-semibold underline-offset-2 hover:underline">8004scan.io</a>
-                {' '}— indexes every IdentityRegistry, rolls raw on-chain feedback into a displayed score. AK does <em>not</em> compete with this.
+                {' '}aggregates every on-chain feedback record into one displayed score per agent.
               </div>
             </div>
-            <div className="rounded-md border border-emerald-500/30 bg-emerald-500/[0.04] p-3">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-emerald-400">Validator ← AK lives here</div>
+            <div className="rounded-md border border-emerald-500/40 bg-emerald-500/[0.06] p-3 shadow-[0_0_0_1px_rgba(16,185,129,0.15)]">
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-emerald-400">Validator ← AgentKarma</div>
               <div>
-                One of the addresses behind 8004scan&apos;s scores. The aggregate is only as good as the raters. AK publishes thoughtful, signal-gated, methodology-open assessments — not anonymous integer scores.
+                Writes one of those records — open methodology, receipt-gated signals, versioned schemes you can audit, contest, replicate.
+                <span className="block mt-1 text-muted-foreground">Most raters publish an integer.</span>
               </div>
             </div>
             <div className="rounded-md border border-border bg-card/50 p-3">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Reputation primitive</div>
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Primitive</div>
               <div>
-                AK&apos;s open{' '}
                 <Link href="/protocol" className="font-semibold underline-offset-2 hover:underline">Karma Protocol RFC</Link>
-                {' '}— the schema other validators can adopt to publish reproducible, contestable scores.
+                {' '}— the open schema any validator can adopt to publish reproducible, contestable scores.
               </div>
             </div>
           </div>
-          <p className="mt-4 text-xs text-muted-foreground">
-            What AK contributes that an anonymous integer doesn&apos;t: receipt-gated Tier 1 · two-faced karma · Autonomy Confidence · published methodology · cross-chain native · no token.
-          </p>
+          <div className="mt-5 flex flex-wrap gap-1.5 text-[10px] font-medium uppercase tracking-wider">
+            {['Receipt-gated', 'Two-faced', 'Autonomy-aware', 'Methodology open', 'Cross-chain', 'No token'].map((chip) => (
+              <span key={chip} className="rounded-full border border-border bg-card/50 px-2 py-0.5 text-muted-foreground">
+                {chip}
+              </span>
+            ))}
+          </div>
         </CardContent>
       </Card>
 

@@ -9,7 +9,7 @@ const PROTOCOLS = [
   { label: 'x402', role: 'payments' },
   { label: '8004', role: 'identity' },
   { label: 'SAS', role: 'attestation' },
-  { label: 'Solana', role: 'settlement' },
+  { label: 'Solana · Celo', role: 'settlement' },
 ];
 
 function LegendDiamond({ color }: { color: string }) {

@@ -4,8 +4,8 @@ import type { NextRequest } from 'next/server';
  * Shared-secret bearer auth helpers for AgentKarma's non-public trigger/write
  * endpoints.
  *
- * Scope: hackathon — we're not running per-consumer API keys yet. All we need
- * is a "only the operator can trigger this" gate.
+ * Scope: we're not running per-consumer API keys yet. All we need is a
+ * "only the operator can trigger this" gate.
  */
 
 type BearerCheck =

@@ -12,10 +12,6 @@ Every score is published as a portable ERC-8004 attestation, readable by any app
 
 Live at **[agentkarma.io](https://agentkarma.io)**.
 
-## Status
-
-🚧 In development — Solana Frontier Hackathon (Apr 6 – May 11, 2026)
-
 ## Stack
 
 - Next.js 15 + shadcn/ui

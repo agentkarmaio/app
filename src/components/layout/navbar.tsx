@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: '/', label: 'Leaderboard' },
   { href: '/explore', label: 'Explore' },
   { href: '/protocol', label: 'Protocol' },
+  { href: '/celo', label: 'Celo' },
   { href: '/widget', label: 'Widget' },
   { href: '/paysh', label: 'pay.sh' },
   { href: '/docs/mcp', label: 'MCP' },

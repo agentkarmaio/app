@@ -64,14 +64,6 @@ const STACK: Tech[] = [
     height: 20,
     heightClass: 'h-[14px] sm:h-[16px]',
   },
-  {
-    name: 'Colosseum',
-    href: 'https://www.colosseum.org',
-    logo: '/logos/colosseum.svg',
-    width: 1777,
-    height: 230,
-    heightClass: 'h-[12px] sm:h-[14px]',
-  },
 ];
 
 export function BuiltWith() {

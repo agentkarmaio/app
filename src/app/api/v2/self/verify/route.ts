@@ -15,11 +15,22 @@
  *     publicSignals: string[],
  *     userContextData: hex string  // contains the EVM address being anchored
  *   }
+ *
+ * Response contract (Self spec — STRICT):
+ *  - ALWAYS HTTP 200, regardless of outcome.
+ *  - Success: { status: 'success', result: true, credentialSubject: {…} }
+ *  - Failure: { status: 'error', result: false, reason, error_code, details? }
+ *  - The mobile app errors with "missing field `status`" if either field is
+ *    absent. Don't change this shape without re-reading docs.self.xyz.
  */
 
 import { NextResponse } from 'next/server';
 import { getSelfVerifier, SELF_SCOPE } from '@/integrations/self';
 import { supabase } from '@/db/client';
+
+// Pin to Node — @selfxyz/core constructs a JsonRpcProvider on first call and
+// can't run in Edge.
+export const runtime = 'nodejs';
 
 interface VerifyBody {
   attestationId?: number;
@@ -28,12 +39,25 @@ interface VerifyBody {
   userContextData?: string;
 }
 
+function selfError(reason: string, errorCode: string, details?: unknown) {
+  return NextResponse.json(
+    {
+      status: 'error',
+      result: false,
+      reason,
+      error_code: errorCode,
+      ...(details !== undefined ? { details } : {}),
+    },
+    { status: 200 }, // Self spec: ALWAYS 200, regardless of outcome.
+  );
+}
+
 export async function POST(req: Request) {
   let body: VerifyBody;
   try {
     body = (await req.json()) as VerifyBody;
   } catch {
-    return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 });
+    return selfError('invalid JSON body', 'BAD_REQUEST');
   }
 
   const { attestationId, proof, publicSignals, userContextData } = body;
@@ -43,18 +67,15 @@ export async function POST(req: Request) {
     publicSignals == null ||
     !userContextData
   ) {
-    return NextResponse.json(
-      { error: 'missing required fields: attestationId, proof, publicSignals, userContextData' },
-      { status: 400 },
+    return selfError(
+      'missing required fields: attestationId, proof, publicSignals, userContextData',
+      'BAD_REQUEST',
     );
   }
 
   // 1=passport, 2=EU ID, 3=Aadhaar, 4=KYC per @selfxyz/core
   if (attestationId !== 1 && attestationId !== 2 && attestationId !== 3 && attestationId !== 4) {
-    return NextResponse.json(
-      { error: 'unsupported attestationId; expected 1, 2, 3, or 4' },
-      { status: 400 },
-    );
+    return selfError('unsupported attestationId; expected 1, 2, 3, or 4', 'BAD_REQUEST');
   }
 
   let result: Awaited<ReturnType<ReturnType<typeof getSelfVerifier>['verify']>>;
@@ -68,14 +89,11 @@ export async function POST(req: Request) {
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: 'verification failed', detail: msg }, { status: 400 });
+    return selfError(msg, 'VERIFICATION_FAILED');
   }
 
   if (!result.isValidDetails?.isValid) {
-    return NextResponse.json(
-      { error: 'proof invalid', details: result.isValidDetails },
-      { status: 400 },
-    );
+    return selfError('proof invalid', 'VERIFICATION_FAILED', result.isValidDetails);
   }
 
   // Extract nullifier + the anchored address. userIdentifier is an EVM addr
@@ -87,10 +105,7 @@ export async function POST(req: Request) {
   const userIdentifier = String(result.userData?.userIdentifier ?? '').toLowerCase();
 
   if (!nullifier || !userIdentifier.startsWith('0x')) {
-    return NextResponse.json(
-      { error: 'verifier returned unexpected shape', result },
-      { status: 502 },
-    );
+    return selfError('verifier returned unexpected shape', 'INTERNAL_ERROR');
   }
 
   // Anchor on the Celo wallet row. The composite PK is (chain, address) so
@@ -111,17 +126,31 @@ export async function POST(req: Request) {
       { onConflict: 'chain,address' },
     );
   if (upsertErr) {
-    return NextResponse.json(
-      { error: 'failed to persist attestation', detail: upsertErr.message },
-      { status: 500 },
-    );
+    // 23505 = unique_violation. Our self_nullifier UNIQUE constraint fires
+    // when this passport already anchored a different wallet. Surface as a
+    // distinct error_code so callers can distinguish replay/sybil from real
+    // persistence failures.
+    if ((upsertErr as { code?: string }).code === '23505') {
+      return selfError(
+        'one passport per scope can anchor at most one wallet — first wallet wins',
+        'NULLIFIER_ALREADY_ANCHORED',
+      );
+    }
+    return selfError(`failed to persist attestation: ${upsertErr.message}`, 'INTERNAL_ERROR');
   }
 
-  return NextResponse.json({
-    ok: true,
-    chain: 'celo',
-    address: userIdentifier,
-    scope: SELF_SCOPE,
-    verifiedAt: now,
-  });
+  return NextResponse.json(
+    {
+      status: 'success',
+      result: true,
+      credentialSubject: {
+        nullifier,
+        userIdentifier,
+        chain: 'celo',
+        scope: SELF_SCOPE,
+        verifiedAt: now,
+      },
+    },
+    { status: 200 },
+  );
 }

@@ -3,7 +3,7 @@
  *
  * Fires one specimen x402 round-trip from the consumer wallet to the
  * specimen agent. Scheduled by `servel job` so the full pipeline keeps
- * exercising on-chain state through the hackathon window.
+ * exercising on-chain state in production.
  *
  * Auth: `Authorization: Bearer ${CRON_SECRET}` required.
  *
