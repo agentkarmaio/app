@@ -44,6 +44,14 @@ export interface CeloX402Facilitator {
  *   3. Inference from public Self Agent ID anchorings — wallets that complete
  *      AK's `/verify-self` flow are candidates for facilitator discovery.
  *
+ * Heuristic discovery NOTE (2026-05-14): a 1000-block scan ranked candidates
+ * by transfer-count × counterparty-diversity. Top 5 candidates were all smart
+ * contracts (DEX routers, Permit2-flavored aggregators) — no EOAs with the
+ * ERC-3009 `transferWithAuthorization` selector (0xe3ee160e) that x402 uses
+ * for gasless relays. Today, Celo's agent-payment surface is too small for
+ * heuristic discovery; reliable population requires Thirdweb outreach. Tools
+ * live: scripts/celo-discover-facilitators.ts, scripts/celo-inspect-candidates.ts.
+ *
  * Empty by default. Add an entry, redeploy, indexer picks it up on next run.
  */
 export const CELO_X402_FACILITATORS: CeloX402Facilitator[] = [];

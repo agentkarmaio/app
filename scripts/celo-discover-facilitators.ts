@@ -83,14 +83,17 @@ async function fetchRangeAdaptive(
   tokenAddr: `0x${string}`,
   start: bigint,
   end: bigint,
-  initialChunk = 100n,
+  initialChunk = BigInt(100),
 ): Promise<Awaited<ReturnType<typeof client.getLogs<typeof ERC20_TRANSFER>>>> {
   const out: Awaited<ReturnType<typeof client.getLogs<typeof ERC20_TRANSFER>>> = [];
+  const ONE = BigInt(1);
+  const TWO = BigInt(2);
+  const MIN_CHUNK = BigInt(25);
   let cursor = start;
   let chunk = initialChunk;
 
   while (cursor <= end) {
-    const stop = cursor + chunk - 1n < end ? cursor + chunk - 1n : end;
+    const stop = cursor + chunk - ONE < end ? cursor + chunk - ONE : end;
     try {
       const logs = await client.getLogs({
         address: tokenAddr,
@@ -99,15 +102,15 @@ async function fetchRangeAdaptive(
         toBlock: stop,
       });
       out.push(...logs);
-      cursor = stop + 1n;
+      cursor = stop + ONE;
       // Grow chunk back up after success, capped at initial.
-      if (chunk < initialChunk) chunk = chunk * 2n > initialChunk ? initialChunk : chunk * 2n;
+      if (chunk < initialChunk) chunk = chunk * TWO > initialChunk ? initialChunk : chunk * TWO;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const tooLarge =
         msg.includes('response too large') || msg.includes('timed out') || msg.includes('timeout');
-      if (tooLarge && chunk > 25n) {
-        chunk = chunk / 2n;
+      if (tooLarge && chunk > MIN_CHUNK) {
+        chunk = chunk / TWO;
         continue; // retry same cursor with smaller chunk
       }
       throw err;

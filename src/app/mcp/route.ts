@@ -26,6 +26,7 @@ import {
   resolveAttestations,
   searchAgents,
 } from '@/lib/karma-resolver';
+import { readAgent, aggregateFeedback } from '@/integrations/erc8004-celo';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -197,6 +198,71 @@ function registerTools(server: McpServer): void {
           txCount: r.txCount,
           profileUrl: profileUrl(r.address),
         })),
+      });
+    },
+  );
+
+  // --- get_celo_agent ---------------------------------------------------
+  server.registerTool(
+    'get_celo_agent',
+    {
+      title: 'Get Celo agent (ERC-8004)',
+      description:
+        'Look up a Celo ERC-8004 agent by its agentId (uint256 NFT tokenId). Returns the IdentityRegistry record (owner, agentURI, declared services from the agent registration JSON) plus aggregate ReputationRegistry feedback (count, average score, recent records). Use this to preflight any agent operating on Celo — same primitive as the Solana karma tools, just on EVM rails.',
+      inputSchema: {
+        agentId: z
+          .number()
+          .int()
+          .positive()
+          .describe('ERC-8004 agentId on Celo mainnet (positive integer).'),
+      },
+      annotations: readOnly(),
+    },
+    async ({ agentId }) => {
+      const id = BigInt(agentId);
+      const [agent, agg] = await Promise.all([
+        readAgent(id),
+        aggregateFeedback(id).catch(() => null),
+      ]);
+      if (!agent) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: 'celo_agent_not_found',
+              agentId,
+              message: `No agent registered with id ${agentId} in Celo IdentityRegistry.`,
+            }),
+          }],
+        };
+      }
+      return jsonResult({
+        chain: 'celo',
+        agentId,
+        owner: agent.owner,
+        agentWallet: agent.agentWallet,
+        tokenURI: agent.tokenURI,
+        registration: agent.registration ?? null,
+        registrationError: agent.registrationError,
+        reputation: agg
+          ? {
+              count: agg.count,
+              average: agg.average,
+              records: agg.records.map((r) => ({
+                client: r.client,
+                value: r.value,
+                tag1: r.tag1,
+                tag2: r.tag2,
+                revoked: r.revoked,
+              })),
+            }
+          : null,
+        explorerUrls: {
+          celoscan: `https://celoscan.io/token/0x8004A169FB4a3325136EB29fA0ceB6D2e539a432?a=${agentId}`,
+          eightthousandfourscan: `https://8004scan.io/agent/${agentId}`,
+          agentkarma: `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io'}/api/v2/celo/${agentId}`,
+        },
       });
     },
   );

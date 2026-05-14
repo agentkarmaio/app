@@ -68,6 +68,11 @@ const SERVER_CARD = {
       title: 'Get attestations',
       description: 'ERC-8004 on-chain attestations and voluntary Tier 1 / Tier 3 signal events for a wallet.',
     },
+    {
+      name: 'get_celo_agent',
+      title: 'Get Celo agent (ERC-8004)',
+      description: 'Look up a Celo ERC-8004 agent by agentId — IdentityRegistry record + aggregate ReputationRegistry feedback.',
+    },
   ],
 } as const;
 
