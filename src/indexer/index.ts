@@ -38,10 +38,11 @@ import {
   upsertCursor,
   insertSignalEvents,
   getLatestSignalValues,
-  countSignalEventsByKind,
+  getPayshOperatorReceiptStats,
   type InsertSignalEventInput,
 } from '../db/client';
 import { calculateScores } from '../scoring';
+import { calculateOperatorScore } from '../scoring/operator';
 import {
   buildX402PaymentSignals,
   buildCadenceSignal,
@@ -214,22 +215,28 @@ export async function runIndexer(
   inserted: number;
   scored: number;
   payshSignals: number;
+  operatorsScored: number;
 }> {
   console.log(`[indexer] Starting ${options?.backfill ? 'backfill' : 'incremental'} indexer run...`);
 
   const { transactions, paysh } = await fetchAllX402Transactions(limit, options);
   if (transactions.length === 0 && paysh.length === 0) {
     console.log('[indexer] No new transactions found');
-    return { fetched: 0, inserted: 0, scored: 0, payshSignals: 0 };
+    return { fetched: 0, inserted: 0, scored: 0, payshSignals: 0, operatorsScored: 0 };
   }
 
-  // Ensure wallet records exist before inserting transactions (FK constraint).
-  // Includes pay.sh-routed payer wallets so the FK on signal_events resolves.
-  const uniqueWallets = [...new Set([
+  // Ensure wallet records exist before inserting transactions/signal_events
+  // (FK constraint). Three wallet roles touched here:
+  //  - x402 payers (`transactions.wallet_address`)
+  //  - pay.sh payer agents (`paysh[].wallet`) — face=consumer signal
+  //  - pay.sh operator gateways (`paysh[].operatorAddress`) — face=provider signal
+  const operatorAddresses = [...new Set(paysh.map((p) => p.operatorAddress))];
+  const payerAddresses = [...new Set([
     ...transactions.map((tx) => tx.wallet_address),
     ...paysh.map((p) => p.wallet),
   ])];
-  console.log(`[indexer] Creating ${uniqueWallets.length} wallet records...`);
+  const uniqueWallets = [...new Set([...payerAddresses, ...operatorAddresses])];
+  console.log(`[indexer] Creating ${uniqueWallets.length} wallet records (${operatorAddresses.length} operators)…`);
   for (const addr of uniqueWallets) {
     await upsertWallet(addr, 0, 'Unrated', 0);
   }
@@ -241,27 +248,47 @@ export async function runIndexer(
   const signalsInserted = await insertSignalEvents(buildX402PaymentSignals(transactions));
   if (signalsInserted > 0) console.log(`[indexer] Emitted ${signalsInserted} Tier 2 signal_events`);
 
-  // Emit Tier 1 paysh_routed signals (sprint A1). Idempotent on tx_signature.
+  // Emit Tier 1 paysh_routed signals (sprint A1, A2-fixed 2026-05-07).
+  // TWO signals per pay.sh-routed tx:
+  //   - face=consumer credits the payer (clean payment discipline)
+  //   - face=provider credits the operator (delivered the call — broadcast IS attestation)
+  // Same kind ('paysh_routed'), distinguished by agent_wallet + face. Existing
+  // unique index (agent_wallet, kind, tx_ref) handles dedup naturally.
   let payshSignalsInserted = 0;
   if (paysh.length > 0) {
-    const payshSignals: InsertSignalEventInput[] = paysh.map((p) =>
+    const payshSignals: InsertSignalEventInput[] = paysh.flatMap((p) => [
       buildPayshRoutedSignal({
-        walletAddress: p.wallet,
+        walletAddress: p.wallet,           // payer
+        face: 'consumer',
         txSignature: p.txSignature,
         operatorAddress: p.operatorAddress,
         operatorId: p.operatorId,
         protocol: p.protocol,
         observedAt: p.observedAt,
+        payerWallet: p.wallet,
       }),
-    );
+      buildPayshRoutedSignal({
+        walletAddress: p.operatorAddress,  // operator (provider face)
+        face: 'provider',
+        txSignature: p.txSignature,
+        operatorAddress: p.operatorAddress,
+        operatorId: p.operatorId,
+        protocol: p.protocol,
+        observedAt: p.observedAt,
+        payerWallet: p.wallet,
+      }),
+    ]);
     payshSignalsInserted = await insertSignalEvents(payshSignals);
     if (payshSignalsInserted > 0) {
-      console.log(`[indexer] Emitted ${payshSignalsInserted} Tier 1 paysh_routed signal_events`);
+      console.log(`[indexer] Emitted ${payshSignalsInserted} Tier 1 paysh_routed signal_events (consumer+provider pairs)`);
     }
   }
 
-  // Re-query full DB history for affected wallets so scores reflect ALL transactions
-  const affectedWallets = uniqueWallets;
+  // Main scoring loop runs only on wallets that have x402-style transactions.
+  // Pay.sh operators have no transactions (they're recipients, not senders)
+  // so they're filtered out here and scored separately in the operator pass below.
+  const operatorSet = new Set(operatorAddresses);
+  const affectedWallets = uniqueWallets.filter((a) => !operatorSet.has(a));
   console.log(`[indexer] Fetching full history for ${affectedWallets.length} affected wallets...`);
   const allTxsForAffected = await getTransactionsForWallets(affectedWallets);
 
@@ -309,15 +336,13 @@ export async function runIndexer(
   // to the blended score; wallets with no manifest get null and weight redistributes.
   const manifestScores = await getLatestSignalValues(affectedWallets, 'manifest');
 
-  // Pay.sh-routed counts feed Tier 1 alongside 8004 + feedback. Counts are
-  // pulled from signal_events so the score reflects historical receipts even
-  // when this run found zero new pay.sh hits.
-  const payshCounts = await countSignalEventsByKind(affectedWallets, 'paysh_routed');
-  if (payshCounts.size > 0) {
-    console.log(`[indexer] ${payshCounts.size} wallets have pay.sh-routed receipts in history`);
-  }
-
-  const scores = calculateScores(allTxsForAffected, attestations, cadenceScores, manifestScores, payshCounts);
+  // NOTE: payshRoutedCount was previously passed here, but the legacy
+  // attribution credited the payer's provider face — wrong direction (the
+  // payer is the consumer in a pay.sh tx, the operator is the provider).
+  // Consumer-face pay.sh signals are now emitted with face='consumer' and
+  // will feed Consumer Karma in a future scoring revision. Operator-side
+  // Provider Karma is computed in the operator pass below.
+  const scores = calculateScores(allTxsForAffected, attestations, cadenceScores, manifestScores);
 
   let scored = 0;
   for (const [address, walletScore] of scores) {
@@ -346,7 +371,41 @@ export async function runIndexer(
   }
 
   console.log(`[indexer] Scored ${scored} wallets`);
-  return { fetched: transactions.length, inserted, scored, payshSignals: payshSignalsInserted };
+
+  // ─── Operator scoring pass (pay.sh provider-side Karma) ───────────────────
+  // Operators have no `transactions` rows so the main calculateScores loop
+  // skips them. We score them from their `paysh_routed` provider-face signals:
+  // unique payer diversity + receipt volume + recency. See scoring/operator.ts.
+  let operatorsScored = 0;
+  const operatorsToScore = operatorAddresses;
+  if (operatorsToScore.length > 0) {
+    const operatorStats = await getPayshOperatorReceiptStats(operatorsToScore);
+    for (const operator of operatorsToScore) {
+      const stats = operatorStats.get(operator);
+      if (!stats || stats.receiptCount === 0) continue;
+      const op = calculateOperatorScore({
+        receiptCount: stats.receiptCount,
+        uniquePayerCount: stats.uniquePayerCount,
+        lastSeen: stats.lastSeen,
+      });
+      await upsertWallet(operator, op.score, op.trustTier, stats.receiptCount, {
+        providerScore: op.score,
+        confidenceBadge: op.confidenceBadge,
+      });
+      operatorsScored++;
+    }
+    if (operatorsScored > 0) {
+      console.log(`[indexer] Scored ${operatorsScored} pay.sh operators (provider-side)`);
+    }
+  }
+
+  return {
+    fetched: transactions.length,
+    inserted,
+    scored,
+    payshSignals: payshSignalsInserted,
+    operatorsScored,
+  };
 }
 
 // Re-export type for downstream callers (webhooks, scripts, etc.)

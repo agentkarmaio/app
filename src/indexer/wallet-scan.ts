@@ -116,15 +116,32 @@ async function defaultGetSignaturesForAddress(
 }
 
 async function defaultRecordPayshSignal(p: PayshExtractedPayment): Promise<void> {
-  const signal = buildPayshRoutedSignal({
-    walletAddress: p.wallet,
-    txSignature: p.txSignature,
-    operatorAddress: p.operatorAddress,
-    operatorId: p.operatorId,
-    protocol: p.protocol,
-    observedAt: p.observedAt,
-  });
-  await dbInsertSignalEvents([signal]);
+  // Emit the symmetric pair (consumer for payer, provider for operator) and
+  // ensure both wallets exist for the FK on signal_events.agent_wallet.
+  await dbUpsertWallet(p.operatorAddress, 0, 'Unrated', 0);
+  const signals = [
+    buildPayshRoutedSignal({
+      walletAddress: p.wallet,
+      face: 'consumer',
+      txSignature: p.txSignature,
+      operatorAddress: p.operatorAddress,
+      operatorId: p.operatorId,
+      protocol: p.protocol,
+      observedAt: p.observedAt,
+      payerWallet: p.wallet,
+    }),
+    buildPayshRoutedSignal({
+      walletAddress: p.operatorAddress,
+      face: 'provider',
+      txSignature: p.txSignature,
+      operatorAddress: p.operatorAddress,
+      operatorId: p.operatorId,
+      protocol: p.protocol,
+      observedAt: p.observedAt,
+      payerWallet: p.wallet,
+    }),
+  ];
+  await dbInsertSignalEvents(signals);
 }
 
 // ─── Core scan ───────────────────────────────────────────────────────────────

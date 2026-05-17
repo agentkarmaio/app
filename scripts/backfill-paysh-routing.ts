@@ -125,17 +125,31 @@ async function main(): Promise<void> {
     return;
   }
 
-  const signals: InsertSignalEventInput[] = hits.map((h) =>
+  // Emit symmetric pair per hit: consumer-face for the payer, provider-face
+  // for the operator (matches the runtime indexer behavior post-2026-05-07).
+  const signals: InsertSignalEventInput[] = hits.flatMap((h) => [
     buildPayshRoutedSignal({
-      walletAddress: h.wallet,
+      walletAddress: h.wallet,            // payer
+      face: 'consumer',
       txSignature: h.txSignature,
       operatorAddress: h.operatorAddress,
       operatorId: h.operatorId,
       protocol: h.protocol,
       observedAt: h.observedAt,
+      payerWallet: h.wallet,
     }),
-  );
-  console.log(`[paysh-backfill] Upserting ${signals.length} paysh_routed signal_events…`);
+    buildPayshRoutedSignal({
+      walletAddress: h.operatorAddress,   // operator
+      face: 'provider',
+      txSignature: h.txSignature,
+      operatorAddress: h.operatorAddress,
+      operatorId: h.operatorId,
+      protocol: h.protocol,
+      observedAt: h.observedAt,
+      payerWallet: h.wallet,
+    }),
+  ]);
+  console.log(`[paysh-backfill] Upserting ${signals.length} paysh_routed signal_events (consumer+provider pairs)…`);
   const inserted = await insertSignalEvents(signals);
   console.log(`[paysh-backfill] New rows: ${inserted} (rest deduped via uniq_signal_events_dedup)`);
 }

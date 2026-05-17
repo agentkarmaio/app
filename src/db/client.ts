@@ -1134,6 +1134,70 @@ export async function countSignalEventsByKind(
   return out;
 }
 
+/**
+ * Aggregate pay.sh `paysh_routed` provider-face signal_events for a set of
+ * operator addresses. Used by the indexer's operator-scoring pass to derive
+ * Provider Karma for gateway operators (who have no `transactions` rows and
+ * cannot be scored by the main scoring engine).
+ *
+ * Returns per operator: receipt count, unique-payer count (extracted from
+ * `payload.payer`), and most-recent `observed_at`. Operators absent from the
+ * input list never appear in the result; operators with zero matching
+ * signals also do not appear.
+ */
+export async function getPayshOperatorReceiptStats(
+  operatorAddresses: string[],
+): Promise<Map<string, { receiptCount: number; uniquePayerCount: number; lastSeen: string | null }>> {
+  const out = new Map<string, { receiptCount: number; uniquePayerCount: number; lastSeen: string | null }>();
+  if (operatorAddresses.length === 0) return out;
+
+  const payersByOperator = new Map<string, Set<string>>();
+
+  for (let i = 0; i < operatorAddresses.length; i += 100) {
+    const chunk = operatorAddresses.slice(i, i + 100);
+    const { data, error } = await supabase
+      .from('signal_events')
+      .select('agent_wallet, payload, observed_at')
+      .eq('kind', 'paysh_routed')
+      .eq('face', 'provider')
+      .in('agent_wallet', chunk);
+
+    if (error) throw error;
+
+    for (const row of (data ?? []) as Array<{
+      agent_wallet: string;
+      payload: Record<string, unknown> | null;
+      observed_at: string;
+    }>) {
+      const existing = out.get(row.agent_wallet);
+      const lastSeen = existing?.lastSeen && existing.lastSeen >= row.observed_at
+        ? existing.lastSeen
+        : row.observed_at;
+      const next = {
+        receiptCount: (existing?.receiptCount ?? 0) + 1,
+        uniquePayerCount: 0,
+        lastSeen,
+      };
+      out.set(row.agent_wallet, next);
+
+      const payer = row.payload && typeof row.payload === 'object'
+        ? (row.payload as { payer?: unknown }).payer
+        : null;
+      if (typeof payer === 'string' && payer.length > 0) {
+        const set = payersByOperator.get(row.agent_wallet) ?? new Set<string>();
+        set.add(payer);
+        payersByOperator.set(row.agent_wallet, set);
+      }
+    }
+  }
+
+  for (const [operator, stats] of out) {
+    stats.uniquePayerCount = payersByOperator.get(operator)?.size ?? 0;
+  }
+
+  return out;
+}
+
 export async function getSignalEventsForWallets(
   agentWallets: string[],
 ): Promise<Map<string, SignalEvent[]>> {

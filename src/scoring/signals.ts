@@ -13,7 +13,7 @@
  * settlement" for the full reasoning.
  */
 
-import type { Transaction } from '@/db/schema';
+import type { Transaction, KarmaFace } from '@/db/schema';
 import type { InsertSignalEventInput } from '@/db/client';
 import type { CadenceResult } from './cadence';
 import type { AutonomyResult } from './autonomy';
@@ -66,9 +66,18 @@ export function buildX402PaymentSignals(
  * re-emission a no-op so the indexer + backfill can both run.
  */
 export interface PayshRoutedSignalInput {
+  /** Wallet the signal is attributed to. For `face='consumer'` this is the payer
+   *  (the agent making the call). For `face='provider'` this is the operator
+   *  (the gateway that delivered + broadcast the settlement). */
   walletAddress: string;
   txSignature: string;
   operatorAddress: string;
+  /** Required: which face this signal credits. Payer side = consumer (paid
+   *  clean). Operator side = provider (delivered the call). */
+  face: KarmaFace;
+  /** Optional: the payer wallet — recorded in payload so operator-side rollups
+   *  can count unique payers without a join across the signal_events table. */
+  payerWallet?: string;
   observedAt?: string | Date;
   protocol?: 'x402' | 'mpp' | 'hybrid';
   operatorId?: string;
@@ -81,7 +90,7 @@ export function buildPayshRoutedSignal(
     agentWallet: input.walletAddress,
     tier: 1,
     kind: 'paysh_routed',
-    face: 'provider',
+    face: input.face,
     weight: 1.0,
     value: 1.0,
     signedBy: input.operatorAddress,
@@ -90,6 +99,7 @@ export function buildPayshRoutedSignal(
       operator: input.operatorAddress,
       operatorId: input.operatorId ?? null,
       protocol: input.protocol ?? null,
+      payer: input.payerWallet ?? null,
     },
   };
   if (input.observedAt !== undefined) out.observedAt = input.observedAt;
