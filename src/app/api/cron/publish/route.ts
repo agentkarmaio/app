@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { publishTopScores } from '@/integrations/publish';
+import { DEFAULT_CHAIN, isChain, type Chain } from '@/db/schema';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; // 5 min — idempotency loop can be slow
@@ -11,7 +12,8 @@ export const maxDuration = 300; // 5 min — idempotency loop can be slow
  * Called by Servel job (see `servel job add publish-karma ...`).
  *
  * Auth: `Authorization: Bearer ${CRON_SECRET}` header required.
- * Body (optional): { "limit": number } — default 50, max 200.
+ * Body (optional): { "limit": number, "chain"?: Chain } — limit default 50,
+ *   max 200; chain default 'solana', validated via isChain (400 on unknown).
  *
  * Returns: { published, skipped, errors, dryRun, details }
  */
@@ -30,17 +32,24 @@ export async function POST(request: NextRequest) {
   }
 
   let limit = 50;
+  let chain: Chain = DEFAULT_CHAIN;
   try {
-    const body = (await request.json().catch(() => ({}))) as { limit?: unknown };
+    const body = (await request.json().catch(() => ({}))) as { limit?: unknown; chain?: unknown };
     if (typeof body.limit === 'number' && body.limit > 0) {
       limit = Math.min(Math.floor(body.limit), 200);
     }
+    if (body.chain !== undefined) {
+      if (!isChain(body.chain)) {
+        return NextResponse.json({ error: `Unknown chain: ${String(body.chain)}` }, { status: 400 });
+      }
+      chain = body.chain;
+    }
   } catch {
-    // ignore — use default
+    // ignore — use defaults
   }
 
   try {
-    const result = await publishTopScores(limit);
+    const result = await publishTopScores(limit, chain);
     return NextResponse.json(result);
   } catch (err) {
     console.error('[cron/publish] Error:', err);
