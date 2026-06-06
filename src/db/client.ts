@@ -28,7 +28,15 @@ const DEFAULT_CHAIN: Chain = 'solana';
 
 let _client: SupabaseClient | null = null;
 
+// Test seam: lets unit tests inject a fake Supabase without a live connection.
+// Production code always goes through getSupabase()/the proxy below.
+let _testClient: SupabaseClient | null = null;
+export function __setSupabaseForTest(client: unknown): void {
+  _testClient = client as SupabaseClient;
+}
+
 function getSupabase(): SupabaseClient {
+  if (_testClient) return _testClient;
   if (_client) return _client;
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -316,6 +324,7 @@ export async function insertTransaction(
   const { error } = await supabase
     .from('transactions')
     .upsert({
+      chain: tx.chain,
       wallet_address: tx.wallet_address,
       facilitator: tx.facilitator,
       amount: tx.amount,
@@ -333,6 +342,7 @@ export async function insertTransactions(
   if (txs.length === 0) return 0;
 
   const rows = txs.map((tx) => ({
+    chain: tx.chain,
     wallet_address: tx.wallet_address,
     facilitator: tx.facilitator,
     amount: tx.amount,
