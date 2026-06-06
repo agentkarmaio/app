@@ -27,6 +27,7 @@ import {
   searchAgents,
 } from '@/lib/karma-resolver';
 import { readAgent, aggregateFeedback } from '@/integrations/erc8004-celo';
+import { getAdapter } from '@/chain-adapters/registry';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -64,6 +65,14 @@ function buildServer(): McpServer {
   const server = new McpServer(SERVER_INFO, { instructions: SERVER_INSTRUCTIONS });
   registerTools(server);
   return server;
+}
+
+/** Tool names registered on a fresh server — used by tests and discovery. */
+export function listRegisteredToolNames(): string[] {
+  const server = buildServer();
+  // McpServer keeps registered tools in `_registeredTools` (keyed by name).
+  const reg = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools;
+  return reg ? Object.keys(reg) : [];
 }
 
 function readOnly() {
@@ -267,6 +276,54 @@ function registerTools(server: McpServer): void {
           eightthousandfourscan: `https://8004scan.io/agent/${agentId}`,
           agentkarma: `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io'}/api/v2/celo/${agentId}`,
         },
+      });
+    },
+  );
+
+  // --- get_stellar_karma -----------------------------------------------
+  server.registerTool(
+    'get_stellar_karma',
+    {
+      title: 'Get Stellar agent Karma (both faces)',
+      description:
+        'Look up the full Karma snapshot for a Stellar agent wallet (G… StrKey address): provider score, consumer score, confidence badge, autonomy, plus the on-chain ERC-8004 attestation value read from the Soroban ReputationRegistry. Same primitive as get_karma (Solana) — Stellar rails. Use BEFORE paying a Stellar agent.',
+      inputSchema: walletShape,
+      annotations: readOnly(),
+    },
+    async ({ wallet: addr }) => {
+      const stellar = getAdapter('stellar');
+      if (!stellar.validateAddress(addr)) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: 'invalid_stellar_address',
+              wallet: addr,
+              message: 'Expected a Stellar StrKey G… Ed25519 address (56 chars).',
+            }),
+          }],
+        };
+      }
+      const onChainAttestation = await stellar.readAttestation(addr).catch(() => 0);
+      const snap = await resolveKarma(addr);
+      if (!snap) return notFound(addr);
+      return jsonResult({
+        chain: 'stellar',
+        address: snap.address,
+        provider: faceJson(snap.provider),
+        consumer: faceJson(snap.consumer),
+        confidenceBadge: snap.confidenceBadge,
+        autonomy: snap.autonomy,
+        identity: snap.identity,
+        txCount: snap.txCount,
+        lastActive: snap.lastActive,
+        onChainAttestation,
+        explorerUrls: {
+          stellarExpert: stellar.explorerAddressUrl(addr),
+          agentkarma: profileUrl(addr),
+        },
+        profileUrl: profileUrl(addr),
       });
     },
   );

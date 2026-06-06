@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { walletSchema } from './route';
+import { walletSchema, listRegisteredToolNames } from './route';
 
 const SOLANA = '3rGu9hPHdgwR8KeZTpPkN4Z5VRBeR3LBs9CAnqJ7yDjZ';      // 44 chars
 const STELLAR = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'; // 56 chars
@@ -26,5 +26,14 @@ describe('walletSchema', () => {
 
   test('rejects too-long strings (>56)', () => {
     expect(walletSchema.safeParse('G'.repeat(57)).success).toBe(false);
+  });
+});
+
+describe('get_stellar_karma registration', () => {
+  test('get_stellar_karma is registered alongside get_karma and get_celo_agent', () => {
+    const names = listRegisteredToolNames();
+    expect(names).toContain('get_karma');
+    expect(names).toContain('get_celo_agent');
+    expect(names).toContain('get_stellar_karma');
   });
 });
