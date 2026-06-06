@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { Menu } from 'lucide-react';
 import { WalletConnectButton } from '@/components/wallet/wallet-connect-button';
+import { ChainSwitcher } from '@/components/layout/chain-switcher';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Leaderboard' },
@@ -96,6 +97,10 @@ export function Navbar() {
               );
             })}
           </nav>
+
+          <div className="hidden md:block">
+            <ChainSwitcher />
+          </div>
 
           <a
             href="https://x.com/agentkarmaio"
