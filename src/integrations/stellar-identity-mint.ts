@@ -1,27 +1,43 @@
 /**
- * stellar-8004 Identity mint — the on-chain half of the Stellar claim flow (U4).
+ * stellar-8004 Identity registration — PREVIEW (simulate) ONLY.
  *
- * On a successful claim (POST /api/agent/claim/stellar), AK mints the agent's
- * 8004 identity on the trionlabs/stellar-8004 Identity Registry so U3's
- * publishAttestation has a registered agentId to target — `give_feedback`
- * reverts without one (spec §2 gating, mirrors the Celo IdentityRegistry
- * precondition in erc8004-celo-publish.ts).
+ * register_with_uri(caller, agentURI) → agentId mints the agent's 8004 identity
+ * on the trionlabs/stellar-8004 Identity Registry so U3's publishAttestation has
+ * a registered agentId to target (give_feedback reverts without one, spec §2).
+ *
+ * ⚠️ AUTH MODEL (verified against identity-registry/src/contract.rs):
+ * register_with_uri calls `caller.require_auth()` and makes `caller` BOTH the
+ * owner AND the agentWallet of the new agentId. So the AGENT must sign its own
+ * register — the caller's authorization is mandatory.
+ *
+ * AK CANNOT mint this for the agent:
+ *   - If AK passes caller = agent's G-address but signs/sources the tx with AK's
+ *     validator key, the agent's `require_auth()` is unsatisfied → the tx FAILS
+ *     on execute (simulate may mask it, which is exactly the trap this module
+ *     used to fall into — see the removed execute path below).
+ *   - If AK instead passes caller = AK's own key, the mint succeeds but binds
+ *     agentWallet to AK, breaking spec §3 (payee == agentWallet). Not acceptable.
+ *
+ * CORRECT DESIGN (on-chain-write milestone, STOP-and-confirm before mainnet):
+ * the agent signs register_with_uri CLIENT-SIDE via Freighter (the same wallet
+ * that signed the claim challenge). The browser builds the tx with the agent's
+ * G-address as caller+source, Freighter `signTransaction` authorizes it, and the
+ * server (or the browser) submits it. Only then does an agentId exist; persist it
+ * via setStellarAgentId. TODO(U4-onchain): implement that agent-signed flow.
+ *
+ * Until that lands, this module exposes ONLY a simulate/preview helper. There is
+ * deliberately NO AK-signed execute path — it would silent-fail or violate the
+ * spec. `mode: 'execute'` is hard-guarded to throw so it can never be invoked
+ * against mainnet by accident.
  *
  * DI for testability (AK rule: no live network in unit tests). The Soroban RPC
- * server and the AK validator keypair are INJECTED via `opts.server` /
- * `opts.keypair`, defaulting to the real mainnet RPC + the loaded validator key
- * in production. Tests inject a mocked rpc.Server and assert the
- * simulate-only path decodes the agentId — they never sign or send.
+ * server and the source keypair are INJECTED via `opts.server` / `opts.keypair`.
+ * Tests inject a mocked rpc.Server and assert the simulate-only path decodes the
+ * agentId — they never sign or send.
  *
  * v1 supports only G… Ed25519 wallets. C… Soroban contract addresses
  * (smart wallets) authenticate via __check_auth, not raw Ed25519, and are
  * rejected before any RPC call (fail-closed).
- *
- * ABI caveat (STOP-and-confirm before mainnet, plan Task 47): the exact
- * `register_with_uri` method name/arg order and whether the agent-signed
- * `setAgentWallet(agentId, agentWallet)` binding is a separate op are pinned to
- * the documented [operator, agentURI] shape (spec §"agentId is a registered
- * u32"). The 'simulate' default makes a wrong ABI fail closed in tests.
  */
 import {
   rpc,
@@ -68,22 +84,30 @@ export interface MintResult {
 }
 
 export interface MintOpts {
-  /** 'simulate' (default — no write, fail-closed) | 'execute'. */
+  /**
+   * 'simulate' (default — no write, fail-closed) is the ONLY supported mode.
+   * 'execute' is hard-guarded to throw: an AK-signed register_with_uri would
+   * silent-fail (agent auth missing) or bind agentWallet to AK (spec §3). The
+   * real mint is the agent-signed client-side flow (see module docblock).
+   */
   mode?: 'simulate' | 'execute';
   /** Injected Soroban RPC server (tests mock this; prod resolves the mainnet RPC). */
   server?: rpc.Server;
-  /** Injected AK validator signer (tests pass a deterministic key; prod loads from env/.keys). */
+  /** Injected source signer for the SIMULATE source account only (no signing). */
   keypair?: Keypair;
 }
 
 /**
- * Mint (or, in simulate mode, resolve) the agent's stellar-8004 identity.
+ * PREVIEW the agent's stellar-8004 identity registration (simulate only).
  *
- * Rejects C… / non-G… addresses before touching the network. In 'simulate'
- * mode decodes the agentId from the simulation retval and never signs/sends.
- * In 'execute' mode it assembles, signs with the injected keypair, sends, and
- * polls for the result. Raises on any simulate/send/tx error — no silent
+ * Rejects C… / non-G… addresses before touching the network, then simulates
+ * register_with_uri and decodes the agentId the call WOULD return. It NEVER
+ * signs or sends — there is no AK-signed execute path (see module docblock for
+ * why; `mode: 'execute'` throws). Raises on any simulate error — no silent
  * fallback (AK core rule).
+ *
+ * The returned agentId is a preview of what an agent-signed register would mint;
+ * it is NOT persisted and NOT a confirmation that any identity exists on-chain.
  */
 export async function mintStellarAgentIdentity(
   agentWalletAddress: string,
@@ -97,10 +121,24 @@ export async function mintStellarAgentIdentity(
   if (!STELLAR_IDENTITY_REGISTRY) throw new Error('Missing STELLAR_IDENTITY_REGISTRY');
 
   const mode = opts.mode ?? 'simulate';
-  const server = opts.server ?? new rpc.Server(resolveStellarRpcUrl(), { allowHttp: false });
-  const validator = opts.keypair ?? loadStellarKeypair();
+  if (mode === 'execute') {
+    // Hard guard: never run an AK-signed register_with_uri. It would silent-fail
+    // (the agent's require_auth is unsatisfied) or, with caller=AK, bind
+    // agentWallet to AK and break spec §3. The correct mint is agent-signed and
+    // client-side — TODO(U4-onchain) in the module docblock. Fail loudly rather
+    // than write garbage to mainnet.
+    throw new Error(
+      'AK-signed register_with_uri is not allowed: register_with_uri requires the ' +
+        "AGENT to sign (caller == owner == agentWallet). Use the agent-signed " +
+        'client-side flow (TODO U4-onchain). Only mode:"simulate" is supported here.',
+    );
+  }
 
-  const source = await server.getAccount(validator.publicKey());
+  const server = opts.server ?? new rpc.Server(resolveStellarRpcUrl(), { allowHttp: false });
+  // Source account for the simulate only — no key ever signs in this path.
+  const sourcePubkey = (opts.keypair ?? loadStellarKeypair()).publicKey();
+
+  const source = await server.getAccount(sourcePubkey);
   const registry = new Contract(STELLAR_IDENTITY_REGISTRY);
 
   const tx = new TransactionBuilder(source, {
@@ -118,31 +156,7 @@ export async function mintStellarAgentIdentity(
     throw new Error(`register_with_uri simulation failed: ${sim.error}`);
   }
 
-  if (mode === 'simulate') {
-    const retval = sim.result?.retval;
-    const agentId = retval != null ? Number(scValToNative(retval)) : null;
-    return { dryRun: true, agentId };
-  }
-
-  const prepared = rpc
-    .assembleTransaction(tx, sim as rpc.Api.SimulateTransactionSuccessResponse)
-    .build();
-  prepared.sign(validator);
-  const sent = await server.sendTransaction(prepared);
-  if (sent.status === 'ERROR') {
-    throw new Error(
-      `register_with_uri send failed: ${JSON.stringify(sent.errorResult ?? sent)}`,
-    );
-  }
-
-  let got = await server.getTransaction(sent.hash);
-  while (got.status === 'NOT_FOUND') {
-    await new Promise((r) => setTimeout(r, 1000));
-    got = await server.getTransaction(sent.hash);
-  }
-  if (got.status !== 'SUCCESS') {
-    throw new Error(`register_with_uri tx failed: ${got.status}`);
-  }
-  const agentId = got.returnValue != null ? Number(scValToNative(got.returnValue)) : null;
-  return { dryRun: false, agentId, txHash: sent.hash };
+  const retval = sim.result?.retval;
+  const agentId = retval != null ? Number(scValToNative(retval)) : null;
+  return { dryRun: true, agentId };
 }

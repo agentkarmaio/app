@@ -78,6 +78,19 @@ describe('mintStellarAgentIdentity simulate (injected rpc)', () => {
     expect(res.txHash).toBeUndefined();
   });
 
+  test('mode:"execute" is hard-guarded — throws, never AK-signs a register', async () => {
+    // An AK-signed register_with_uri would silent-fail (agent auth missing) or
+    // bind agentWallet to AK (spec §3). The execute path MUST refuse outright.
+    await expect(
+      mintStellarAgentIdentity(G, {
+        mode: 'execute',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        server: makeFakeServer(4242) as any,
+        keypair: kp,
+      }),
+    ).rejects.toThrow(/agent-signed|require_auth|not allowed|simulate/i);
+  });
+
   test('raises (no silent fallback) when simulation returns an error', async () => {
     const errServer = {
       async getAccount() {

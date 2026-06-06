@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { claimWallet, enqueueWalletScan, setStellarAgentId } from '@/db/client';
+import { claimWallet, enqueueWalletScan } from '@/db/client';
 import {
   verifyStellarClaimSignature,
   isStellarAddress,
   isStellarContractAddress,
 } from '@/lib/stellar-verify';
-import { mintStellarAgentIdentity } from '@/integrations/stellar-identity-mint';
 
 const VALID_CATEGORIES = ['ai', 'data', 'defi', 'infra', 'social', 'utility', 'other'];
 const CLAIM_WINDOW_MS = 5 * 60 * 1000;
@@ -14,10 +13,19 @@ const CLAIM_WINDOW_MS = 5 * 60 * 1000;
  * POST /api/agent/claim/stellar
  *
  * Claim a Stellar (G…) wallet to enrich its agent profile. Proves ownership
- * via a Freighter Ed25519 signature over the canonical challenge (byte-identical
- * to the Solana route), then mints the agent's stellar-8004 identity so on-chain
- * attestation (U3) is unblocked. C… smart wallets are rejected in v1 — they
- * authenticate via __check_auth, not a raw Ed25519 signature.
+ * via a Freighter SEP-53 signature over the canonical challenge (byte-identical
+ * to the Solana route). C… smart wallets are rejected in v1 — they authenticate
+ * via __check_auth, not a raw Ed25519 signature.
+ *
+ * On-chain 8004 registration is reported as PENDING, not performed here. The
+ * stellar-8004 register_with_uri(caller, agentURI) requires the AGENT to sign
+ * (caller is both owner and agentWallet — contract.rs require_auth). AK cannot
+ * mint it with its own validator key: that would bind agentWallet to AK and
+ * break spec §3 (payee == agentWallet). Minting requires an agent-signed,
+ * client-side register_with_uri (Freighter), tracked in the on-chain-write
+ * milestone. Until then the claim succeeds OFF-CHAIN and the response honestly
+ * marks `onChainRegistration: 'pending'` with a null agentId — never a false
+ * on-chain success.
  *
  * Body:
  *   address:     string — G… Ed25519 wallet address
@@ -117,21 +125,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to save claim' }, { status: 500 });
   }
 
-  // Mint the 8004 identity so U3 can attest on-chain. Non-fatal: the claim
-  // succeeds even if the mint is deferred (badge-gated until agentId lands).
-  // Surface mint failure in the response — no silent fallback (AK core rule).
-  let stellarAgentId: number | null = null;
-  let mintError: string | undefined;
-  try {
-    const mint = await mintStellarAgentIdentity(address, { mode: 'execute' });
-    stellarAgentId = mint.agentId;
-    if (stellarAgentId != null) {
-      await setStellarAgentId(address, stellarAgentId);
-    }
-  } catch (err) {
-    mintError = err instanceof Error ? err.message : 'mint failed';
-    console.error('[claim:stellar] identity mint failed:', err);
-  }
+  // On-chain 8004 registration is NOT performed here — see the route docblock.
+  // register_with_uri must be signed by the AGENT (caller == owner == agentWallet,
+  // contract.rs require_auth). Minting it with AK's validator key would silently
+  // fail on execute (agent auth missing; simulate masks it) AND, if it somehow
+  // landed, bind agentWallet to AK in violation of spec §3. So we report PENDING
+  // honestly rather than fabricate an agentId or a false on-chain success. The
+  // agent-signed client-side register lands in the on-chain-write milestone; the
+  // off-chain claim below is the user-visible value today.
+  const stellarAgentId: number | null = null;
+  const onChainRegistration = 'pending' as const;
 
   // Trigger a regressive scan for the claimer's wallet — fire-and-forget,
   // idempotent (enqueueWalletScan dedups in_progress/cooldown/already_indexed).
@@ -145,6 +148,6 @@ export async function POST(request: NextRequest) {
     displayName,
     claimed: true,
     stellarAgentId,
-    ...(mintError ? { mintError } : {}),
+    onChainRegistration,
   });
 }

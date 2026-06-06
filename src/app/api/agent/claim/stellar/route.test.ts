@@ -10,9 +10,10 @@
  * and is covered by manual/integration verification (plan Task 53), mirroring
  * the Solana claim route which ships no unit test for its write path.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test, beforeEach, afterEach, mock } from 'bun:test';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { __setSupabaseForTest } from '@/db/client';
 import { POST } from './route';
 
 function req(body: unknown): Request {
@@ -110,5 +111,99 @@ describe('POST /api/agent/claim/stellar — guards', () => {
       req({ address, displayName: 'x', signature, message: tamperedMsg }) as never,
     );
     expect(res.status).toBe(401);
+  });
+});
+
+/**
+ * Honest on-chain-registration behavior (BUG 2 — silent false success).
+ *
+ * register_with_uri(caller, agent_uri) requires the AGENT to sign (caller is
+ * both owner and agentWallet, contract.rs require_auth). AK cannot mint it with
+ * its own validator key without binding agentWallet to AK and breaking spec §3
+ * (payee == agentWallet). The route therefore MUST NOT run an AK-signed execute
+ * mint, MUST NOT report on-chain success, and MUST report the on-chain 8004
+ * registration as PENDING while the OFF-CHAIN claim still succeeds.
+ */
+describe('POST /api/agent/claim/stellar — honest on-chain registration', () => {
+  // Minimal chainable Supabase fake: getWallet (insert path), claimWallet
+  // insert, enqueueWalletScan select/upsert all resolve cleanly with no rows.
+  function makeFakeSupabase(captured: string[]) {
+    return {
+      from(table: string) {
+        const builder: Record<string, unknown> = {};
+        builder.select = () => builder;
+        builder.eq = () => builder;
+        builder.single = async () => ({ data: null, error: { code: 'PGRST116' } });
+        builder.maybeSingle = async () => ({ data: null, error: null });
+        builder.insert = (rows: unknown) => {
+          captured.push(`${table}.insert`);
+          void rows;
+          return Promise.resolve({ error: null });
+        };
+        builder.update = (rows: unknown) => {
+          captured.push(`${table}.update`);
+          void rows;
+          const chain: Record<string, unknown> = {};
+          chain.eq = () => chain;
+          chain.then = (resolve: (v: { error: null }) => void) => resolve({ error: null });
+          return chain;
+        };
+        builder.upsert = () => Promise.resolve({ error: null });
+        return builder;
+      },
+    };
+  }
+
+  let captured: string[];
+  beforeEach(() => {
+    captured = [];
+    __setSupabaseForTest(makeFakeSupabase(captured));
+  });
+  afterEach(() => {
+    __setSupabaseForTest(null);
+    mock.restore();
+  });
+
+  test('valid claim → 200, off-chain claimed, on-chain registration PENDING', async () => {
+    const res = await POST(
+      req({ address, displayName: 'My Agent', signature, message }) as never,
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+
+    // Off-chain claim succeeded.
+    expect(json.success).toBe(true);
+    expect(json.claimed).toBe(true);
+    expect(json.displayName).toBe('My Agent');
+
+    // On-chain 8004 registration is honestly reported as not-done — never a
+    // false success, never a fabricated agentId.
+    expect(json.onChainRegistration).toBe('pending');
+    expect(json.stellarAgentId).toBeNull();
+    expect(json.agentId ?? null).toBeNull();
+
+    // The off-chain claim row was written; no agentId was persisted (no mint).
+    expect(captured).toContain('wallets.insert');
+    expect(captured.some((c) => c === 'wallets.update')).toBe(false);
+  });
+
+  test('does NOT invoke the AK-signed execute mint path', async () => {
+    // If the route imported/called mintStellarAgentIdentity in execute mode, a
+    // spy on the module would record a call. The honest route must not.
+    const mintMod = await import('@/integrations/stellar-identity-mint');
+    const spy = mock(mintMod.mintStellarAgentIdentity);
+    mock.module('@/integrations/stellar-identity-mint', () => ({
+      ...mintMod,
+      mintStellarAgentIdentity: spy,
+    }));
+
+    const res = await POST(
+      req({ address, displayName: 'My Agent', signature, message }) as never,
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.onChainRegistration).toBe('pending');
+    expect(json.stellarAgentId).toBeNull();
+    expect(spy).not.toHaveBeenCalled();
   });
 });

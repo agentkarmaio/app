@@ -36,7 +36,7 @@ import {
 // @noble/hashes@2.x exposes sha256 under the `sha2` entrypoint (no `sha256`
 // subpath, no extensionless `sha2`). Verified against the installed v2.0.1.
 import { sha256 } from '@noble/hashes/sha2.js';
-import { readFileSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import { resolve } from 'path';
 import type { PublishResult } from '@/chain-adapters/types';
 import type { WalletScore } from '@/scoring/index';
@@ -106,21 +106,50 @@ export function validatorAddressFromSecret(secret: string): string {
   return keypairFromSecret(secret).publicKey();
 }
 
+/** Injectable fs seam for loadStellarKeypair (lets tests assert the 0600 gate). */
+export interface LoadKeypairDeps {
+  /** Read the keyfile contents (default: fs.readFileSync utf-8). */
+  readFile?: (path: string) => string;
+  /** Return the keyfile's permission bits, e.g. 0o600 (default: fs.statSync mode & 0o777). */
+  fileMode?: (path: string) => number;
+}
+
 /**
  * Load AK's Stellar validator keypair. Precedence:
- *   1. STELLAR_PRIVATE_KEY env (secret seed S...)
- *   2. .keys/agentkarma-stellar.json { "secret": "S..." }  (0600, gitignored)
- * Raises if neither present — no silent fallback (AK core rule).
+ *   1. STELLAR_PRIVATE_KEY env (secret seed S...) — no file, no mode check.
+ *   2. .keys/agentkarma-stellar.json { "secret": "S..." }  (MUST be 0600, gitignored).
+ *
+ * The keyfile holds a secret seed, so we ASSERT it is 0600 (owner-only) rather
+ * than merely claim it in a comment — a group/other-readable seed is a leak.
+ * Raises if neither source is present, or if the keyfile is not 0600 — no silent
+ * fallback (AK core rule).
  */
-export function loadStellarKeypair(env: NodeJS.ProcessEnv = process.env): Keypair {
+export function loadStellarKeypair(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  deps: LoadKeypairDeps = {},
+): Keypair {
   if (env.STELLAR_PRIVATE_KEY) return Keypair.fromSecret(env.STELLAR_PRIVATE_KEY);
+
   const keyfile = resolve('.keys/agentkarma-stellar.json');
-  const { secret } = JSON.parse(readFileSync(keyfile, 'utf-8')) as { secret: string };
+  const readFile = deps.readFile ?? ((p: string) => readFileSync(p, 'utf-8'));
+  const fileMode = deps.fileMode ?? ((p: string) => statSync(p).mode & 0o777);
+
+  const mode = fileMode(keyfile);
+  if (mode !== 0o600) {
+    throw new Error(
+      `Stellar keyfile ${keyfile} has insecure permissions ${mode.toString(8).padStart(3, '0')} ` +
+        `(must be 0600). Run: chmod 600 ${keyfile}`,
+    );
+  }
+
+  const { secret } = JSON.parse(readFile(keyfile)) as { secret: string };
   return Keypair.fromSecret(secret);
 }
 
 /** AK's own validator G... (used as the client scope for get_summary reads). */
-export function getValidatorAddress(env: NodeJS.ProcessEnv = process.env): string {
+export function getValidatorAddress(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
   return loadStellarKeypair(env).publicKey();
 }
 

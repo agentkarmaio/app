@@ -25,6 +25,7 @@ import {
   buildGiveFeedbackArgs,
   keypairFromSecret,
   validatorAddressFromSecret,
+  loadStellarKeypair,
   publishStellarFeedback,
   publishStellarScore,
   DELTA_THRESHOLD,
@@ -134,6 +135,42 @@ describe('keypair handling', () => {
 
   test('rejects a malformed secret (no silent fallback)', () => {
     expect(() => keypairFromSecret('not-a-secret')).toThrow();
+  });
+
+  // ── 0600 keyfile permission assertion (reviewer hardening) ─────────────────
+  // The keyfile path is the secret seed. Loading it from a file MUST assert the
+  // file is 0600 (owner-only), not merely claim it in a comment — a world- or
+  // group-readable seed is a leak. env override path is exempt (no file).
+
+  test('loadStellarKeypair throws when the keyfile is not 0600', () => {
+    const kp = Keypair.random();
+    expect(() =>
+      loadStellarKeypair(
+        {}, // no STELLAR_PRIVATE_KEY → file path
+        {
+          readFile: () => JSON.stringify({ secret: kp.secret() }),
+          fileMode: () => 0o644, // group/other-readable → must be rejected
+        },
+      ),
+    ).toThrow(/0600|permission|mode/i);
+  });
+
+  test('loadStellarKeypair accepts a 0600 keyfile', () => {
+    const kp = Keypair.random();
+    const loaded = loadStellarKeypair(
+      {},
+      {
+        readFile: () => JSON.stringify({ secret: kp.secret() }),
+        fileMode: () => 0o600,
+      },
+    );
+    expect(loaded.publicKey()).toBe(kp.publicKey());
+  });
+
+  test('loadStellarKeypair env override skips the file-mode check', () => {
+    const kp = Keypair.random();
+    const loaded = loadStellarKeypair({ STELLAR_PRIVATE_KEY: kp.secret() });
+    expect(loaded.publicKey()).toBe(kp.publicKey());
   });
 });
 
