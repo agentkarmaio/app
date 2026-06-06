@@ -959,10 +959,14 @@ export async function getDeckViewCount(): Promise<number> {
 
 // --- Indexer Cursors ----------------------------------------------------------
 
-export async function getCursor(facilitator: string): Promise<IndexerCursor | null> {
+export async function getCursor(
+  facilitator: string,
+  chain: Chain = DEFAULT_CHAIN,
+): Promise<IndexerCursor | null> {
   const { data, error } = await supabase
     .from('indexer_cursors')
     .select('*')
+    .eq('chain', chain)
     .eq('facilitator', facilitator)
     .single();
 
@@ -975,15 +979,17 @@ export async function upsertCursor(
   facilitator: string,
   lastSignature: string,
   lastSlot?: number,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<void> {
   const { error } = await supabase
     .from('indexer_cursors')
     .upsert({
+      chain,
       facilitator,
       last_signature: lastSignature,
       last_slot: lastSlot ?? null,
       updated_at: new Date().toISOString(),
-    }, { onConflict: 'facilitator' });
+    }, { onConflict: 'chain,facilitator' });
 
   if (error) throw error;
 }
