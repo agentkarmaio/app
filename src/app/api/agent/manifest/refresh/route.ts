@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PublicKey } from '@solana/web3.js';
+import { resolveChainParam } from '@/lib/chain-detect';
 import {
   getWallet,
   upsertAgentManifest,
@@ -32,7 +32,10 @@ export async function POST(request: NextRequest) {
   if (!wallet) {
     return NextResponse.json({ error: 'Missing wallet' }, { status: 400 });
   }
-  try { new PublicKey(wallet); } catch {
+  // Chain-dispatched address guard: accept any chain's valid address format
+  // (Solana base58, Stellar StrKey G…). No `?chain` pin here — detection by
+  // format is unambiguous since adapters validate disjoint formats.
+  if (!resolveChainParam(null, wallet)) {
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
   }
 
