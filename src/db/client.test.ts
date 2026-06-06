@@ -37,13 +37,23 @@ function makeFakeSupabase(
         chain.then = (resolve: (v: { error: null }) => void) => resolve({ error: null });
         return chain;
       };
-      // chainable select().eq().single()/.maybeSingle() for getCursor + getWallet
+      // chainable select().eq().single()/.maybeSingle() for getCursor + getWallet.
+      // .single() is table-aware: getCursor reads indexer_cursors, getWallet reads
+      // wallets (returns the injected existingWallet, defaulting to null → insert path).
       builder.select = () => builder;
       builder.eq = () => builder;
-      builder.single = async () => ({
-        data: { chain: 'stellar', facilitator: 'CCW', last_signature: '7', last_slot: 7, updated_at: 'now' },
-        error: null,
-      });
+      builder.single = async () => {
+        if (table === 'indexer_cursors') {
+          return {
+            data: { chain: 'stellar', facilitator: 'CCW', last_signature: '7', last_slot: 7, updated_at: 'now' },
+            error: null,
+          };
+        }
+        // wallets: mimic PostgREST PGRST116 (no rows) when absent so getWallet returns null.
+        return existingWallet
+          ? { data: existingWallet, error: null }
+          : { data: null, error: { code: 'PGRST116' } };
+      };
       builder.maybeSingle = async () => ({ data: existingWallet, error: null });
       return builder;
     },

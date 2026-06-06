@@ -259,13 +259,17 @@ export async function claimWallet(
   website: string | null,
   category: string | null,
   tempoAddress: string | null = null,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<void> {
-  // Ensure the wallet row exists (upsert with minimal data if not)
-  const existing = await getWallet(address);
+  // Ensure the wallet row exists (upsert with minimal data if not). Lookup is
+  // chain-scoped so a Stellar claim never matches a Solana row under the same
+  // string and vice-versa — (chain,address) is the composite PK.
+  const existing = await getWallet(address, chain);
   if (!existing) {
     const { error: insertErr } = await supabase
       .from('wallets')
       .insert({
+        chain,
         address,
         score: 0,
         trust_tier: 'Unrated',
@@ -286,6 +290,7 @@ export async function claimWallet(
   const { error } = await supabase
     .from('wallets')
     .update({
+      chain,
       claimed: true,
       display_name: displayName,
       description,
@@ -295,6 +300,7 @@ export async function claimWallet(
       claimed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
+    .eq('chain', chain)
     .eq('address', address);
 
   if (error) throw error;
