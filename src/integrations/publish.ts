@@ -1,22 +1,21 @@
 /**
- * Shared publish logic for karma scores → 8004 attestations.
+ * Shared publish logic: karma scores → on-chain attestations, chain-dispatched.
+ * Used by the CLI (`bun run publish`) and the cron route. Per-wallet writes go
+ * through getAdapter(chain).publishAttestation; idempotency delta-skip stays here.
  *
- * Used by both:
- *   - CLI bootstrap: `bun run publish <limit>`
- *   - Cron endpoint: POST /api/cron/publish
- *
- * Idempotency: before writing, reads the current on-chain average score via
- * sdk.getSummary(). Skips the write if |newScore - onChainScore| < DELTA_THRESHOLD.
+ * Idempotency: before writing, reads the current on-chain score via the adapter
+ * (readAttestation). Skips the write if |newScore - onChainScore| < DELTA_THRESHOLD.
  * This avoids bloating the registry with near-identical feedback entries on each
  * cron fire.
  */
 
-import { PublicKey } from '@solana/web3.js';
-import { getLeaderboard, getTransactions } from '../db/client';
-import { calculateScore } from '../scoring/index';
-import { initSDKFromEnv, writeFeedback, readScore } from './erc8004';
+import type { Chain } from '@/db/schema';
+import { DEFAULT_CHAIN } from '@/db/schema';
+import { getLeaderboard as dbGetLeaderboard, getTransactions as dbGetTransactions } from '../db/client';
+import { calculateScore as scoringCalculateScore } from '../scoring/index';
+import { getAdapter as registryGetAdapter } from '@/chain-adapters/registry';
 
-export interface PublishResult {
+export interface PublishRunResult {
   published: number;
   skipped: number;
   errors: number;
@@ -34,81 +33,78 @@ export interface PublishResult {
 const DELTA_THRESHOLD = 3; // points — min change to justify a new on-chain write
 const RATE_LIMIT_MS = 200;
 
-export async function publishTopScores(limit = 50): Promise<PublishResult> {
-  const sdk = initSDKFromEnv();
-  const dryRun = sdk === null;
+// Test seam — injects pure deps so the dispatch + aggregation logic is unit-
+// testable without DB or chain. Production uses the real imports.
+interface PublishDeps {
+  getLeaderboard: typeof dbGetLeaderboard;
+  getTransactions: typeof dbGetTransactions;
+  calculateScore: typeof scoringCalculateScore;
+  getAdapter: typeof registryGetAdapter;
+}
+let _deps: PublishDeps | null = null;
+export function __setPublishDepsForTest(deps: unknown): void { _deps = deps as PublishDeps; }
+function deps(): PublishDeps {
+  return _deps ?? {
+    getLeaderboard: dbGetLeaderboard,
+    getTransactions: dbGetTransactions,
+    calculateScore: scoringCalculateScore,
+    getAdapter: registryGetAdapter,
+  };
+}
+
+export async function publishTopScores(
+  limit = 50,
+  chain: Chain = DEFAULT_CHAIN,
+): Promise<PublishRunResult> {
+  const { getLeaderboard, getTransactions, calculateScore, getAdapter } = deps();
+  const adapter = getAdapter(chain);
 
   const { wallets } = await getLeaderboard(limit);
-
-  const result: PublishResult = {
-    published: 0,
-    skipped: 0,
-    errors: 0,
-    dryRun,
-    details: [],
-  };
+  const result: PublishRunResult = { published: 0, skipped: 0, errors: 0, dryRun: false, details: [] };
 
   for (const wallet of wallets) {
     try {
       const transactions = await getTransactions(wallet.address, 1000);
       if (transactions.length === 0) {
         result.skipped++;
-        result.details.push({
-          address: wallet.address,
-          status: 'skipped',
-          score: 0,
-          reason: 'no transactions',
-        });
+        result.details.push({ address: wallet.address, status: 'skipped', score: 0, reason: 'no transactions' });
         continue;
       }
 
       const score = calculateScore(transactions);
 
-      // Idempotency check — skip if on-chain score hasn't drifted enough
+      // Idempotency: skip if on-chain score hasn't drifted past the threshold.
       let onChainScore: number | null = null;
-      if (sdk) {
-        try {
-          onChainScore = await readScore(sdk, new PublicKey(wallet.address));
-        } catch {
-          onChainScore = null; // treat read failure as "not published yet"
-        }
-
-        if (onChainScore != null) {
-          const delta = Math.abs(score.score - onChainScore);
-          if (delta < DELTA_THRESHOLD) {
-            result.skipped++;
-            result.details.push({
-              address: wallet.address,
-              status: 'skipped',
-              score: score.score,
-              onChainScore,
-              reason: `delta ${delta.toFixed(1)} < threshold ${DELTA_THRESHOLD}`,
-            });
-            continue;
-          }
+      try { onChainScore = await adapter.readAttestation(wallet.address); } catch { onChainScore = null; }
+      if (onChainScore != null && onChainScore > 0) {
+        const delta = Math.abs(score.score - onChainScore);
+        if (delta < DELTA_THRESHOLD) {
+          result.skipped++;
+          result.details.push({
+            address: wallet.address, status: 'skipped', score: score.score, onChainScore,
+            reason: `delta ${delta.toFixed(1)} < threshold ${DELTA_THRESHOLD}`,
+          });
+          continue;
         }
       }
 
-      const writeResult = await writeFeedback(sdk, wallet.address, score);
-
-      result.published++;
-      result.details.push({
-        address: wallet.address,
-        status: writeResult.dryRun ? 'dry-run' : 'published',
-        score: score.score,
-        onChainScore,
-        signature: writeResult.signature,
-      });
+      const pub = await adapter.publishAttestation(wallet.address, score);
+      if (pub.skipped) {
+        result.skipped++;
+        result.details.push({ address: wallet.address, status: 'skipped', score: score.score, onChainScore, reason: pub.reason });
+      } else {
+        if (pub.dryRun) result.dryRun = true;
+        result.published++;
+        result.details.push({
+          address: wallet.address, status: pub.dryRun ? 'dry-run' : 'published',
+          score: score.score, onChainScore, signature: pub.txId,
+        });
+      }
 
       await new Promise((r) => setTimeout(r, RATE_LIMIT_MS));
     } catch (err) {
       result.errors++;
-      result.details.push({
-        address: wallet.address,
-        status: 'error',
-        score: 0,
-        reason: err instanceof Error ? err.message : String(err),
-      });
+      result.details.push({ address: wallet.address, status: 'error', score: 0, reason: err instanceof Error ? err.message : String(err) });
     }
   }
 
