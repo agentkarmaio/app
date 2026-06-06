@@ -52,7 +52,9 @@ export const STELLAR_WASM_SHA256: Record<'identity' | 'reputation' | 'validation
 const DEFAULT_MAINNET_RPC = 'https://mainnet.sorobanrpc.com';
 
 /** Resolve the Soroban RPC URL: env override wins, else mainnet default. */
-export function resolveStellarRpcUrl(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveStellarRpcUrl(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
   return env.STELLAR_RPC_URL || DEFAULT_MAINNET_RPC;
 }
 
