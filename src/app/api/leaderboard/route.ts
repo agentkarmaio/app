@@ -5,6 +5,7 @@ import {
   getScoreHistoriesForWallets,
 } from '@/db/client';
 import type { LivenessStatus, TrustTier } from '@/db/schema';
+import { parseChain } from '@/lib/leaderboard-params';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
 export async function OPTIONS() {
@@ -30,8 +31,9 @@ export async function GET(request: NextRequest) {
   const offset = Math.max(parseInt(searchParams.get('offset') ?? '0', 10), 0);
   const status = parseStatus(searchParams.get('status'));
   const tier = parseTier(searchParams.get('tier'));
+  const chain = parseChain(searchParams.get('chain'));
 
-  const { wallets, total } = await getLeaderboard(limit, offset, { status, tier });
+  const { wallets, total } = await getLeaderboard(limit, offset, { status, tier, chain });
   const addresses = wallets.map((w) => w.address);
 
   const [deliveryMap, historyMap] = await Promise.all([
