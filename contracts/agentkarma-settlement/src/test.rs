@@ -18,7 +18,7 @@ use soroban_sdk::{
 
 use crate::contract::{SettlementContract, SettlementContractClient};
 use crate::errors::ContractError;
-use crate::storage::DECAY_HALF_LIFE;
+use crate::storage::{DECAY_HALF_LIFE, DEFAULT_RECENCY_WINDOW};
 use crate::types::{FacilitatorRef, KarmaTag, SettlementProof, SettlementSource};
 
 // ── mock stellar-8004 Identity Registry ─────────────────────────────────────
@@ -64,6 +64,14 @@ struct Harness<'a> {
     admin: Address,
 }
 
+/// `max_entry_ttl` for the test ledger, in ledgers. MUST be `>=` the contract's
+/// pinned `MAX_PERSISTENT_TTL` (3_110_400) so the durable replay-store bump
+/// (`extend_ttl(.., MAX_PERSISTENT_TTL)`) is VALID — the host rejects any
+/// `extend_to > max_entry_ttl`. Set well above it (10M) so the GAP-1 durability
+/// tests can advance the ledger far past DEFAULT_RECENCY_WINDOW without the
+/// consumed id becoming un-extendable / lapsing out of the guard.
+const TEST_MAX_ENTRY_TTL: u32 = 10_000_000;
+
 fn set_ledger(env: &Env, sequence: u32) {
     env.ledger().set(LedgerInfo {
         timestamp: 1_700_000_000 + (sequence as u64),
@@ -74,7 +82,7 @@ fn set_ledger(env: &Env, sequence: u32) {
         base_reserve: 10,
         min_temp_entry_ttl: 16,
         min_persistent_entry_ttl: 16,
-        max_entry_ttl: 10_000_000,
+        max_entry_ttl: TEST_MAX_ENTRY_TTL,
     });
 }
 
@@ -568,4 +576,216 @@ fn batched_reads_align_with_input() {
     assert_eq!(scores.len(), 2);
     assert!(scores.get(0).unwrap().is_some());
     assert!(scores.get(1).unwrap().is_none());
+}
+
+// ── GAP 1 — replay protection is DURABLE, not window-bounded ──────────────────
+//
+// The replay backstop MUST be permanent: a consumed settlement_id is rejected
+// FOREVER, independent of the recency window or the (validator-supplied,
+// un-verifiable) `ledger_seq`. Recency decay is a SCORING weight only — never the
+// replay guard. These two cases would both pass pre-fix (when the replay store
+// was TEMPORARY with TTL = recency window) by re-crediting an aged-out id.
+
+#[test]
+fn gap1_replay_rejected_after_recency_window_lapses() {
+    // (a) advance the ledger PAST DEFAULT_RECENCY_WINDOW, then re-submit the SAME
+    // (payer, payee, amount, tx_hash). Must still be SettlementAlreadyConsumed and
+    // the score must be unchanged — the id must NOT have auto-purged.
+    let h = setup();
+    let agent_id = 80u32;
+    let payer = Address::generate(&h.env);
+    let payee = Address::generate(&h.env);
+    h.registry.set_wallet(&agent_id, &payee);
+
+    set_ledger(&h.env, 1_000_000);
+    let p = proof(&h, &payer, &payee, 50_000_000, 1_000_000, 1);
+    h.client
+        .submit_attestation(&h.validator, &agent_id, &p, &KarmaTag::Provider, &90);
+    let after_first = h.client.get_weighted_score(&agent_id).unwrap();
+    assert_eq!(after_first.count, 1);
+
+    // Jump well PAST the full recency window (a temporary-TTL id would have purged).
+    let far_future = 1_000_000 + DEFAULT_RECENCY_WINDOW + DECAY_HALF_LIFE * 4;
+    set_ledger(&h.env, far_future);
+
+    // Re-submit the identical tuple. Durable no-replay → still rejected.
+    let res = h.client.try_submit_attestation(
+        &h.validator,
+        &agent_id,
+        &p,
+        &KarmaTag::Provider,
+        &90,
+    );
+    assert_eq!(res, Err(Ok(ContractError::SettlementAlreadyConsumed)));
+
+    // No re-credit: count and score unchanged.
+    let after_replay = h.client.get_weighted_score(&agent_id).unwrap();
+    assert_eq!(after_replay.count, after_first.count);
+    assert_eq!(after_replay.count, 1);
+
+    // The id is still on record after the window lapsed.
+    let sid = h.client.compute_settlement_id(&p);
+    assert!(h.client.get_settlement_status(&sid).is_some());
+}
+
+#[test]
+fn gap1_undecay_attack_rejected_with_fresh_ledger_seq() {
+    // (b) the un-decay attack: re-submit an already-consumed settlement after the
+    // window, but forge `proof.ledger_seq = now` so the decay math would assign it
+    // FULL un-decayed weight. The DURABLE replay guard must reject BEFORE any
+    // weight is computed → SettlementAlreadyConsumed, no re-credit.
+    let h = setup();
+    let agent_id = 81u32;
+    let payer = Address::generate(&h.env);
+    let payee = Address::generate(&h.env);
+    h.registry.set_wallet(&agent_id, &payee);
+
+    set_ledger(&h.env, 1_000_000);
+    let p = proof(&h, &payer, &payee, 50_000_000, 1_000_000, 1);
+    h.client
+        .submit_attestation(&h.validator, &agent_id, &p, &KarmaTag::Provider, &90);
+    let after_first = h.client.get_weighted_score(&agent_id).unwrap();
+
+    // Far future, past the window.
+    let now = 1_000_000 + DEFAULT_RECENCY_WINDOW + DECAY_HALF_LIFE * 4;
+    set_ledger(&h.env, now);
+
+    // SAME (payer, payee, amount, tx_hash) ⇒ SAME settlement_id (ledger_seq is NOT
+    // part of the id), but ledger_seq forged to `now` to dodge decay. Still rejected.
+    let attack = proof(&h, &payer, &payee, 50_000_000, now, 1);
+    assert_eq!(
+        h.client.compute_settlement_id(&attack),
+        h.client.compute_settlement_id(&p),
+        "ledger_seq must not change the settlement_id"
+    );
+    let res = h.client.try_submit_attestation(
+        &h.validator,
+        &agent_id,
+        &attack,
+        &KarmaTag::Provider,
+        &90,
+    );
+    assert_eq!(res, Err(Ok(ContractError::SettlementAlreadyConsumed)));
+
+    // No re-credit despite the fresh ledger_seq.
+    let after_attack = h.client.get_weighted_score(&agent_id).unwrap();
+    assert_eq!(after_attack.count, after_first.count);
+    assert_eq!(after_attack.count, 1);
+}
+
+// ── GAP 2 — volume_sum saturates rather than bricking attestation ─────────────
+//
+// A long-lived high-volume agent must STAY attestable. Pre-fix, `volume_sum` used
+// checked_add and reverted with ArithmeticOverflow once near u128::MAX — a soft
+// denial-of-attestation. volume_sum is a display/weight aggregate; saturating at
+// astronomical USDC is acceptable and keeps the agent attestable.
+
+#[test]
+fn gap2_near_max_volume_still_attestable_saturates() {
+    let h = setup();
+    let agent_id = 82u32;
+    let payer = Address::generate(&h.env);
+    let payee = Address::generate(&h.env);
+    h.registry.set_wallet(&agent_id, &payee);
+
+    // Drive volume_sum to the top of its range with a sequence of i128::MAX folds.
+    // (Each fold is recency-clamped to MAX_WEIGHT, ~u128::MAX/101, so two folds
+    // already sit near the ceiling.) Pre-fix the SECOND fold reverts with
+    // ArithmeticOverflow on the volume_sum checked_add; post-fix it saturates and
+    // the agent remains attestable.
+    let p1 = proof(&h, &payer, &payee, i128::MAX, 1_000_000, 1);
+    h.client
+        .submit_attestation(&h.validator, &agent_id, &p1, &KarmaTag::Provider, &100);
+    let p2 = proof(&h, &payer, &payee, i128::MAX, 1_000_000, 2);
+    h.client
+        .submit_attestation(&h.validator, &agent_id, &p2, &KarmaTag::Provider, &100);
+
+    // A THIRD fold must NOT revert — volume_sum saturates instead of erroring.
+    let p3 = proof(&h, &payer, &payee, i128::MAX, 1_000_000, 3);
+    let res = h.client.try_submit_attestation(
+        &h.validator,
+        &agent_id,
+        &p3,
+        &KarmaTag::Provider,
+        &100,
+    );
+    assert_eq!(
+        res,
+        Ok(Ok(())),
+        "near-max volume agent must stay attestable (saturating), got {:?}",
+        res
+    );
+
+    let score = h.client.get_weighted_score(&agent_id).unwrap();
+    assert_eq!(score.count, 3);
+    // All folds are outcome 100, so the blended score is pinned at 100 even as
+    // volume saturates.
+    assert_eq!(score.score, 100);
+    // volume_sum saturated rather than overflowing.
+    assert!(score.volume_sum > 0);
+
+    // And a fourth, for good measure — saturation is stable, never panics/reverts.
+    let p4 = proof(&h, &payer, &payee, i128::MAX, 1_000_000, 4);
+    let res4 = h.client.try_submit_attestation(
+        &h.validator,
+        &agent_id,
+        &p4,
+        &KarmaTag::Provider,
+        &100,
+    );
+    assert_eq!(res4, Ok(Ok(())));
+}
+
+// ── GAP 3 — payee binding is the real backstop, not the validator list ────────
+//
+// dod4_admin_cannot_forge only proves a NON-validator admin can't submit. The
+// sharper attack: an admin escalates itself onto the validator list, then submits
+// a fabricated proof for an arbitrary payee. The `payee == agentWallet(agent_id)`
+// binding (against the pinned registry, which has no such binding) is what still
+// stops it — proving the binding, not the allowlist, is the backstop.
+
+#[test]
+fn gap3_self_escalated_admin_still_blocked_by_payee_binding() {
+    let h = setup();
+    let agent_id = 83u32;
+
+    // The agent IS registered, bound to its real wallet.
+    let real_wallet = Address::generate(&h.env);
+    h.registry.set_wallet(&agent_id, &real_wallet);
+
+    // Admin escalates: adds ITSELF to the validator allowlist.
+    let mut vals: Vec<Address> = Vec::new(&h.env);
+    vals.push_back(h.admin.clone());
+    h.client.set_validators(&vals);
+    assert!(h.client.get_validators().iter().any(|v| v == h.admin));
+
+    // Now a validator (the admin), the admin fabricates a proof paying an ARBITRARY
+    // attacker-controlled payee that is NOT the agent's registered wallet.
+    let attacker_payee = Address::generate(&h.env);
+    let payer = Address::generate(&h.env);
+    let forged = proof(&h, &payer, &attacker_payee, 50_000_000, 1_000_000, 9);
+
+    let res = h.client.try_submit_attestation(
+        &h.admin,
+        &agent_id,
+        &forged,
+        &KarmaTag::Provider,
+        &100,
+    );
+    // Validator gate now PASSES (admin escalated). The payee binding is the wall.
+    assert_eq!(res, Err(Ok(ContractError::PayeeWalletMismatch)));
+    assert!(h.client.get_weighted_score(&agent_id).is_none());
+
+    // Even targeting an agent_id with NO registry binding at all → same wall.
+    let unbound_agent = 8383u32;
+    let forged2 = proof(&h, &payer, &attacker_payee, 50_000_000, 1_000_000, 10);
+    let res2 = h.client.try_submit_attestation(
+        &h.admin,
+        &unbound_agent,
+        &forged2,
+        &KarmaTag::Provider,
+        &100,
+    );
+    assert_eq!(res2, Err(Ok(ContractError::PayeeWalletMismatch)));
+    assert!(h.client.get_weighted_score(&unbound_agent).is_none());
 }

@@ -113,7 +113,13 @@ impl SettlementContract {
             return Err(ContractError::PayeeWalletMismatch);
         }
 
-        // (no-replay) one settlement backs at most one attestation.
+        // (no-replay) one settlement backs at most one attestation — FOREVER.
+        // This guard is DURABLE (persistent storage, never windowed): a consumed
+        // settlement_id is rejected permanently, independent of age or the
+        // validator-supplied `ledger_seq`. Recency decay below is a SCORING weight
+        // only; it is NOT the replay backstop. (Were the guard windowed, an
+        // attacker could re-submit a purged id with `ledger_seq = now` and re-earn
+        // full un-decayed weight — the "un-decay attack".)
         let settlement_id = settlement_id(&env, &proof);
         if storage::is_settled(&env, &settlement_id) {
             return Err(ContractError::SettlementAlreadyConsumed);
@@ -124,7 +130,10 @@ impl SettlementContract {
         let now = env.ledger().sequence();
         let updated = fold_settlement(&env, agent_id, tag, &proof, outcome, now)?;
 
-        // Persist + record the consumed id with TTL = recency window.
+        // Persist the score, then record the consumed id DURABLY (no TTL window —
+        // see `mark_settled`). `expires_at` is retained only as the legacy
+        // recency-window hint surfaced by `get_settlement_status`; it does not
+        // bound the replay guard, which is the id's mere presence in storage.
         storage::set_score(&env, agent_id, tag, &updated);
         let window = storage::get_recency_window(&env);
         let expires_at = now.saturating_add(window);
@@ -168,8 +177,9 @@ impl SettlementContract {
         out
     }
 
-    /// `(consumed_at, expires_at)` for a settlement_id, or `None` if unseen /
-    /// already TTL-purged.
+    /// `(consumed_at, expires_at)` for a settlement_id, or `None` if it was never
+    /// consumed. The record is durable, so a consumed id reports `Some(..)` for
+    /// good; `expires_at` is the legacy recency-window hint, not a replay bound.
     pub fn get_settlement_status(env: Env, settlement_id: BytesN<32>) -> Option<(u32, u32)> {
         storage::settlement_status(&env, &settlement_id)
     }
@@ -286,34 +296,36 @@ fn fold_settlement(
 
     // Decay the prior aggregate forward to `now` before folding the new one in,
     // so stale volume ages out even when no fresh settlement references it.
-    let (prior_volume, prior_weighted_outcome, prior_count) = match &prior {
+    let (prior_volume, prior_score, prior_count) = match &prior {
         Some(p) => {
             let prior_age = now.saturating_sub(p.recency_slot);
             let decayed_vol = decay_u128(p.volume_sum, prior_age, half_life)?;
-            // Reconstruct the prior weighted-outcome numerator (score * volume).
-            let prior_num = checked_mul_u128(decayed_vol, p.score as u128)?;
-            (decayed_vol, prior_num, p.count)
+            (decayed_vol, p.score, p.count)
         }
-        None => (0u128, 0u128, 0u32),
+        None => (0u128, 0u32, 0u32),
     };
 
-    // Add the new settlement's contribution.
+    // Add the new settlement's contribution. `volume_sum` SATURATES rather than
+    // reverting: a long-lived high-volume agent must stay attestable, and an
+    // astronomically large (already MAX_WEIGHT-clamped) backed-USDC aggregate is a
+    // display/weight figure where saturation is acceptable — a permanent
+    // ArithmeticOverflow here would be a denial-of-attestation (GAP 2).
     let new_weight_u128 = new_weight as u128;
-    let new_volume = checked_add_u128(prior_volume, new_weight_u128)?;
-    let new_num = checked_add_u128(
-        prior_weighted_outcome,
-        checked_mul_u128(new_weight_u128, outcome as u128)?,
-    )?;
+    let new_volume = prior_volume.saturating_add(new_weight_u128);
     let new_count = prior_count.checked_add(1).ok_or(ContractError::ArithmeticOverflow)?;
 
-    // Volume-weighted mean outcome → [0,100]. Guard div-by-zero: if total decayed
-    // volume rounds to 0 (everything aged out, brand-new dust), fall back to the
-    // raw outcome so a real (if tiny) settlement still registers.
+    // Volume-weighted mean outcome → [0,100]. Blend the prior mean (`prior_score`
+    // over `prior_volume`) with the new outcome (over `new_weight`). Computed by
+    // `blend_weighted_score`, which is overflow-safe for the full u128 weight range
+    // (it down-scales both weights by a common shift before the *100 multiply, so a
+    // WRONG score is never produced — only sub-unit rounding at extreme volume).
+    // Guard div-by-zero: if total decayed volume rounds to 0 (everything aged out,
+    // brand-new dust), fall back to the raw outcome so a real (if tiny) settlement
+    // still registers.
     let score = if new_volume == 0 {
         outcome.min(SCORE_MAX)
     } else {
-        let s = (new_num / new_volume) as u32;
-        s.min(SCORE_MAX)
+        blend_weighted_score(prior_volume, prior_score, new_weight_u128, outcome).min(SCORE_MAX)
     };
 
     Ok(WeightedScore {
@@ -352,10 +364,34 @@ fn shift_right_saturating(value: u128, shifts: u32) -> u128 {
     }
 }
 
-fn checked_mul_u128(a: u128, b: u128) -> Result<u128, ContractError> {
-    a.checked_mul(b).ok_or(ContractError::ArithmeticOverflow)
-}
-
-fn checked_add_u128(a: u128, b: u128) -> Result<u128, ContractError> {
-    a.checked_add(b).ok_or(ContractError::ArithmeticOverflow)
+/// Volume-weighted blend of two [0,100] means: returns
+/// `(w_a*v_a + w_b*v_b) / (w_a + w_b)`, where `v_a`/`v_b ≤ SCORE_MAX.
+///
+/// Overflow-safe across the FULL u128 weight range. The naive numerator
+/// `w_a*v_a + w_b*v_b` can exceed u128 when the weights approach the ceiling
+/// (GAP 2: a near-max `volume_sum` would overflow the reconstruction), so we first
+/// right-shift BOTH weights by a common `k` until `(w_a' + w_b')*SCORE_MAX` is
+/// guaranteed to fit. Shifting both by the same amount preserves the ratio, so the
+/// blended mean is exact apart from sub-unit rounding that only appears at
+/// astronomical (post-clamp) volume — never a WRONG score, only a ≤1 lsb nudge.
+fn blend_weighted_score(w_a: u128, v_a: u32, w_b: u128, v_b: u32) -> u32 {
+    // Largest weight-sum whose ×SCORE_MAX product still fits in u128.
+    let safe_ceiling = u128::MAX / (SCORE_MAX as u128);
+    let mut a = w_a;
+    let mut b = w_b;
+    // Drop a low bit from both until the (over-approximated) sum is in range. Using
+    // saturating_add only to *detect* the over-range case; the shift then shrinks
+    // the true operands proportionally.
+    while a.saturating_add(b) > safe_ceiling {
+        a >>= 1;
+        b >>= 1;
+    }
+    let denom = a + b;
+    if denom == 0 {
+        // Both weights underflowed to 0 via shifting (or were 0): no signal —
+        // average the two means so neither side silently wins.
+        return (v_a + v_b) / 2;
+    }
+    let num = a * (v_a as u128) + b * (v_b as u128);
+    (num / denom) as u32
 }
