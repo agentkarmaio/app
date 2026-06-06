@@ -322,6 +322,46 @@ export async function setWalletTempoAddress(
   if (error) throw error;
 }
 
+// --- Stellar ERC-8004 agentId (single definition; consumed by U3 publish/read
+// and U4 claim) -----------------------------------------------------------------
+//
+// stellar_agent_id is the u32 agentId minted on Stellar's IdentityRegistry
+// (trionlabs/stellar-8004). NULL until the agent claims/registers (U4). The
+// publish path (U3) is identity-gated on this — no agentId, no on-chain feedback.
+
+/**
+ * Read the Stellar ERC-8004 agentId bound to a wallet. Returns null when the
+ * wallet row is absent or the column is unset. Scoped to chain='stellar' since
+ * the column only carries meaning on that chain.
+ */
+export async function getStellarAgentId(address: string): Promise<number | null> {
+  const { data, error } = await supabase
+    .from('wallets')
+    .select('stellar_agent_id')
+    .eq('chain', 'stellar')
+    .eq('address', address)
+    .maybeSingle();
+
+  if (error && error.code !== 'PGRST116') throw error;
+  if (!data) return null;
+  const id = (data as { stellar_agent_id: number | null }).stellar_agent_id;
+  return id ?? null;
+}
+
+/**
+ * Persist the Stellar ERC-8004 agentId on the wallet row after a successful
+ * register_with_uri mint (U4). Chain-scoped to 'stellar' — never touches the
+ * Solana/Celo rows that may share the address string.
+ */
+export async function setStellarAgentId(address: string, agentId: number): Promise<void> {
+  const { error } = await supabase
+    .from('wallets')
+    .update({ stellar_agent_id: agentId, updated_at: new Date().toISOString() })
+    .eq('chain', 'stellar')
+    .eq('address', address);
+  if (error) throw error;
+}
+
 // --- Transaction Queries -----------------------------------------------------
 
 export async function insertTransaction(

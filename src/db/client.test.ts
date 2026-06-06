@@ -8,6 +8,7 @@
 import { describe, expect, test, beforeEach } from 'bun:test';
 import {
   __setSupabaseForTest, insertTransactions, upsertCursor, getCursor, claimWallet,
+  getStellarAgentId, setStellarAgentId,
 } from './client';
 import type { Transaction } from './schema';
 
@@ -115,5 +116,40 @@ describe('claimWallet is chain-aware (C1)', () => {
     expect(updateOp).toBeDefined();
     const row = updateOp!.rows as Record<string, unknown>;
     expect(row.chain).toBe('stellar');
+  });
+});
+
+describe('stellar_agent_id getter/setter (C2)', () => {
+  let captured: Captured[];
+
+  test('getStellarAgentId returns the stored agentId', async () => {
+    captured = [];
+    __setSupabaseForTest(makeFakeSupabase(captured, [], { stellar_agent_id: 9058 }));
+    const id = await getStellarAgentId('GAGENT');
+    expect(id).toBe(9058);
+  });
+
+  test('getStellarAgentId returns null when wallet absent', async () => {
+    captured = [];
+    __setSupabaseForTest(makeFakeSupabase(captured, [], null));
+    const id = await getStellarAgentId('GMISSING');
+    expect(id).toBeNull();
+  });
+
+  test('getStellarAgentId returns null when column is null', async () => {
+    captured = [];
+    __setSupabaseForTest(makeFakeSupabase(captured, [], { stellar_agent_id: null }));
+    const id = await getStellarAgentId('GAGENT');
+    expect(id).toBeNull();
+  });
+
+  test("setStellarAgentId writes the column chain-scoped to stellar", async () => {
+    captured = [];
+    __setSupabaseForTest(makeFakeSupabase(captured, [], { chain: 'stellar', address: 'GAGENT' }));
+    await setStellarAgentId('GAGENT', 9058);
+    const updateOp = captured.find((c) => c.op === 'update' && c.table === 'wallets');
+    expect(updateOp).toBeDefined();
+    const row = updateOp!.rows as Record<string, unknown>;
+    expect(row.stellar_agent_id).toBe(9058);
   });
 });
