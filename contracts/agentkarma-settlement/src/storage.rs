@@ -2,9 +2,25 @@
 //!
 //! - `AGENT_KARMA`  — persistent, keyed by `(agent_id, tag)` so Provider and
 //!   Consumer karma never collapse (invariant #3). Value: `WeightedScore`.
-//! - `SETTLED_IDS`  — TEMPORARY storage keyed by `settlement_id`; TTL bound to
-//!   the recency window (CAP-0053). Beyond the window a settlement is already
-//!   weightless, so auto-purge of its id is safe and replay-irrelevant.
+//! - `SETTLED_IDS`  — PERSISTENT storage keyed by `settlement_id`. This is the
+//!   DURABLE no-replay backstop (gate MUST #3): a consumed settlement_id is
+//!   rejected for as long as the entry lives on-ledger, independent of the
+//!   recency window or the (un-verifiable, validator-supplied) `ledger_seq`. The
+//!   entry's TTL is bumped to `MAX_PERSISTENT_TTL` on write AND re-bumped on every
+//!   `is_settled` read, so a frequently-checked id stays hot and never lapses in
+//!   practice. Recency decay is a SCORING weight ONLY — it MUST NOT double as the
+//!   replay guard (see the un-decay attack: re-submitting with `ledger_seq = now`
+//!   would otherwise re-credit full weight).
+//!
+//!   Honest durability: persistent entries are NOT literally permanent. Each is
+//!   bounded by the network `max_entry_ttl` (~1 year on pubnet) plus rent; an
+//!   entry that is never re-bumped and runs out of TTL is archived, not deleted.
+//!   The backstops beyond on-ledger TTL are (a) the read-path re-bump above for
+//!   anything actively probed, (b) CAP-0053 archival restore for an evicted entry,
+//!   and (c) the off-chain indexer's own dedup index (the indexer never re-submits
+//!   a settlement_id it has already witnessed). Trade-off: the durable set grows
+//!   with settlement volume and carries rent. That is the deliberate cost of
+//!   correctness here — a weightless id is NOT a safely-droppable id, so we keep it.
 //! - `VALIDATORS`   — instance Vec<Address> (AK oracle allowlist).
 //! - `FACILITATORS` — instance Vec<Address> (curated facilitator/MPP set).
 //! - config singletons: admin, recency window, identity-registry address.
@@ -23,9 +39,30 @@ pub const DEFAULT_RECENCY_WINDOW: u32 = 864_000;
 /// Decay half-life in ledgers (~2.5 days → 216_000). Used by the weight engine.
 pub const DECAY_HALF_LIFE: u32 = 216_000;
 
+/// Maximum persistent-entry TTL we ever request, in ledgers.
+///
+/// Pinned to Stellar **pubnet**'s current persistent `max_entry_ttl` of
+/// `3_110_400` ledgers (~1 year at ~5s/ledger). This is a NETWORK PARAMETER, not
+/// a protocol constant — the host rejects `extend_ttl(_, extend_to)` whenever
+/// `extend_to > max_entry_ttl` (it does NOT silently clamp), so requesting more
+/// than the live network value escalates to a host InternalError and panics the
+/// invocation. We therefore pin the documented pubnet value here and treat any
+/// change to it as a review gate. (Stellar docs, state-archival: "each extension
+/// can be at most `max_entry_ttl` ledgers from the current sequence_number".)
+const MAX_PERSISTENT_TTL: u32 = 3_110_400;
+
 /// Bump amount for persistent score TTL on each write (keep ~hot for a window).
 const SCORE_BUMP_AMOUNT: u32 = DEFAULT_RECENCY_WINDOW;
 const SCORE_BUMP_THRESHOLD: u32 = DEFAULT_RECENCY_WINDOW / 2;
+
+/// TTL bump for the DURABLE replay set. Each consumed settlement_id is pushed to
+/// `MAX_PERSISTENT_TTL` on write and re-bumped on every read (see `is_settled`),
+/// so an actively-probed id never lapses. `extend_to` MUST satisfy
+/// `threshold <= extend_to <= max_entry_ttl`; we bump to the pinned pubnet
+/// `MAX_PERSISTENT_TTL` and use half of it as the re-bump threshold so the entry
+/// is topped up well before it can decay out.
+const SETTLED_BUMP_AMOUNT: u32 = MAX_PERSISTENT_TTL;
+const SETTLED_BUMP_THRESHOLD: u32 = MAX_PERSISTENT_TTL / 2;
 
 /// Instance/config storage keys.
 #[contracttype]
@@ -49,8 +86,8 @@ pub struct ScoreKey {
     pub tag: KarmaTag,
 }
 
-/// Temporary replay-store key. Wrapping the raw hash in a struct keeps the
-/// temporary keyspace from colliding with any future temporary entries.
+/// Durable replay-store key. Wrapping the raw hash in a struct keeps the
+/// persistent keyspace from colliding with the per-`(agent, tag)` score keys.
 #[contracttype]
 #[derive(Clone)]
 pub struct SettledKey {
@@ -148,34 +185,60 @@ pub fn set_score(env: &Env, agent_id: u32, tag: KarmaTag, score: &WeightedScore)
         .extend_ttl(&key, SCORE_BUMP_THRESHOLD, SCORE_BUMP_AMOUNT);
 }
 
-// ── settlement replay store (temporary, TTL = recency window) ────────────────
+// ── settlement replay store (PERSISTENT, durable no-replay backstop) ─────────
 
-/// True if this settlement_id has already been consumed within its TTL window.
+/// True if this settlement_id has been consumed. Durable: returns true for the
+/// life of the entry (gate MUST #3, replay rejection holds regardless of age or
+/// `ledger_seq`). On a hit we RE-BUMP the entry's TTL to `MAX_PERSISTENT_TTL`, so
+/// any id that is actively probed (every replay attempt is a probe) keeps itself
+/// hot and never lapses out from under the guard.
 pub fn is_settled(env: &Env, settlement_id: &BytesN<32>) -> bool {
-    env.storage().temporary().has(&SettledKey {
+    let key = SettledKey {
         settlement_id: settlement_id.clone(),
-    })
+    };
+    let present = env.storage().persistent().has(&key);
+    if present {
+        // Read-path re-bump: keep frequently-checked ids alive within max TTL.
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, SETTLED_BUMP_THRESHOLD, SETTLED_BUMP_AMOUNT);
+    }
+    present
 }
 
-/// Mark a settlement consumed. TTL is bound to the recency window: once the
-/// window lapses the entry auto-purges (CAP-0053), which is safe because the
-/// settlement is weightless past the window anyway.
+/// Mark a settlement consumed. The entry is written to PERSISTENT storage and
+/// bumped to `MAX_PERSISTENT_TTL`, then re-bumped on every `is_settled` read, so a
+/// consumed settlement_id stays rejected for the life of the entry (durable up to
+/// `max_entry_ttl`, kept hot by the read-path re-bump). This is durable, not
+/// literally permanent: an entry that runs fully out of TTL without a re-bump is
+/// archived, with CAP-0053 restore and the off-chain indexer's dedup index as the
+/// backstops beyond on-ledger TTL. `expires_at` is retained in the stored value
+/// purely for `get_settlement_status` back-compat (the original recency-window
+/// expiry hint); it is NOT the replay guard. The guard is the entry's presence in
+/// durable storage.
+///
+/// Storage-rent trade-off (deliberate): this set grows with settlement volume and
+/// carries rent. Accepted for correctness — a weightless id is not a
+/// safely-droppable id (re-submitting with `ledger_seq = now` would un-decay it to
+/// full weight).
 pub fn mark_settled(env: &Env, settlement_id: &BytesN<32>, consumed_at: u32, expires_at: u32) {
     let key = SettledKey {
         settlement_id: settlement_id.clone(),
     };
     // Store (consumed_at, expires_at) so `get_settlement_status` can report it.
-    env.storage().temporary().set(&key, &(consumed_at, expires_at));
-    let window = get_recency_window(env);
-    // Extend to the full window; threshold = half-life keeps writes cheap.
+    env.storage().persistent().set(&key, &(consumed_at, expires_at));
+    // Bump to the pinned pubnet max persistent TTL (valid: threshold <= extend_to
+    // <= max_entry_ttl). The read-path re-bump in `is_settled` keeps it alive.
     env.storage()
-        .temporary()
-        .extend_ttl(&key, DECAY_HALF_LIFE.min(window), window);
+        .persistent()
+        .extend_ttl(&key, SETTLED_BUMP_THRESHOLD, SETTLED_BUMP_AMOUNT);
 }
 
-/// Returns `(consumed_at, expires_at)` if the settlement is still on record.
+/// Returns `(consumed_at, expires_at)` if the settlement is on record. With the
+/// durable store this is effectively "has this id ever been consumed" plus the
+/// retained recency-window hint.
 pub fn settlement_status(env: &Env, settlement_id: &BytesN<32>) -> Option<(u32, u32)> {
-    env.storage().temporary().get(&SettledKey {
+    env.storage().persistent().get(&SettledKey {
         settlement_id: settlement_id.clone(),
     })
 }
