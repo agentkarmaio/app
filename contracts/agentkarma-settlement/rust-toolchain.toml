@@ -1,0 +1,12 @@
+# Pin the toolchain channel for reproducibility. Native tests (this U7 scope)
+# run on host stable 1.95 — `cargo test` / `cargo build` need no wasm target.
+#
+# The deferred `stellar contract build` step (out of scope here, needs
+# stellar-cli) targets wasm32v1-none; add it then with:
+#   rustup target add wasm32v1-none
+# It is intentionally NOT listed here so a plain `cargo test` never triggers a
+# target download.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

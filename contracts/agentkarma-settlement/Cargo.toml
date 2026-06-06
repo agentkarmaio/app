@@ -1,0 +1,44 @@
+# AgentKarma settlement-gated score contract (U7).
+#
+# Self-contained cargo workspace, intentionally OUTSIDE the Next.js/bun project
+# (lives under contracts/, never src/). bun/tsc/eslint never see this crate.
+#
+# Tests run NATIVELY on the host via soroban-sdk's `testutils` feature — no
+# wasm32 target and no stellar-cli required. A wasm build / testnet deploy is
+# deferred-operational (needs stellar-cli, out of scope here).
+
+[workspace]
+resolver = "2"
+members = ["."]
+
+[package]
+name = "agentkarma-settlement"
+version = "0.1.0"
+edition = "2021"
+description = "Settlement-gated, no-replay, amount-weighted on-chain reputation gate for AgentKarma on Stellar/Soroban (trust-ak-oracle, non-routing witness)."
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = "26.0.1"
+
+[dev-dependencies]
+# testutils enables Env::register, generated *Client, Address::generate, Ledger
+# mocking, and mock_all_auths — the whole native test harness.
+soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+
+# Reproducible release profile — mirrors stellar-8004 for deterministic WASM.
+# (Applied to a real `stellar contract build` later; harmless for native tests.)
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
