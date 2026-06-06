@@ -42,3 +42,9 @@ next-env.d.ts
 
 # Solana keypairs for demo-seeded wallets — never commit
 .keys/
+
+# Rust / Soroban contracts (U7) — separate cargo workspace under contracts/
+/contracts/target/
+/contracts/agentkarma-settlement/target/
+# soroban-sdk regenerates these debug snapshots on every `cargo test` run
+/contracts/agentkarma-settlement/test_snapshots/
