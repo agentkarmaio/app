@@ -28,6 +28,8 @@ import { MetricBar } from '@/components/karma/metric-bar';
 import { TransactionList } from '@/components/karma/transaction-list';
 import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { ClaimBanner } from '@/components/karma/claim-banner';
+import { StellarClaimBanner } from '@/components/wallet/stellar-claim-banner';
+import { isStellarAddress } from '@/lib/stellar-verify';
 import { FeedbackSection } from '@/components/karma/feedback-section';
 import { ScoreChart } from '@/components/karma/score-chart';
 import { ManifestCard } from '@/components/karma/manifest-card';
@@ -64,6 +66,16 @@ function shortAddr(addr: string): string {
  * Solscan, and surfaces the claim path so the operator can pull the agent
  * into the index manually.
  */
+/**
+ * Chain-aware block explorer link for an account. Stellar (G…) addresses point
+ * at stellar.expert; everything else stays on Solscan.
+ */
+function explorerAccountUrl(addr: string): string {
+  return isStellarAddress(addr)
+    ? `https://stellar.expert/explorer/public/account/${addr}`
+    : `https://solscan.io/account/${addr}`;
+}
+
 function UnindexedAgentStub({ wallet }: { wallet: string }) {
   return (
     <div className="space-y-6">
@@ -85,7 +97,7 @@ function UnindexedAgentStub({ wallet }: { wallet: string }) {
         <div className="flex items-center gap-3">
           <WalletAddress address={wallet} truncate={false} className="text-muted-foreground" />
           <a
-            href={`https://solscan.io/account/${wallet}`}
+            href={explorerAccountUrl(wallet)}
             target="_blank"
             rel="noopener noreferrer"
             className="text-muted-foreground transition-colors hover:text-foreground"
@@ -128,7 +140,9 @@ function UnindexedAgentStub({ wallet }: { wallet: string }) {
         </CardContent>
       </Card>
 
-      <ClaimBanner walletAddress={wallet} />
+      {isStellarAddress(wallet)
+        ? <StellarClaimBanner walletAddress={wallet} />
+        : <ClaimBanner walletAddress={wallet} />}
     </div>
   );
 }
@@ -186,7 +200,7 @@ function ScanningAgentStub({
             {shortAddr(wallet)}
           </span>
           <a
-            href={`https://solscan.io/account/${wallet}`}
+            href={explorerAccountUrl(wallet)}
             target="_blank"
             rel="noopener noreferrer"
             className="text-muted-foreground transition-colors hover:text-foreground"
@@ -611,7 +625,7 @@ export default async function AgentProfilePage({
       agentDescription
       ?? `Autonomous on-chain agent on Solana. Provider Karma ${providerScore.toFixed(1)}/100, trust tier ${tier}, confidence ${confidenceBadge}.`,
     sameAs: [
-      `https://solscan.io/account/${wallet}`,
+      explorerAccountUrl(wallet),
       ...(agentWebsite ? [agentWebsite] : []),
     ],
     additionalProperty: [
@@ -683,7 +697,7 @@ export default async function AgentProfilePage({
           <div className="flex items-center gap-3">
             <WalletAddress address={wallet} truncate={false} className="text-muted-foreground" />
             <a
-              href={`https://solscan.io/account/${wallet}`}
+              href={explorerAccountUrl(wallet)}
               target="_blank"
               rel="noopener noreferrer"
               className="text-muted-foreground hover:text-foreground"
@@ -723,7 +737,9 @@ export default async function AgentProfilePage({
 
       <Separator />
 
-      {!isClaimed && <ClaimBanner walletAddress={wallet} />}
+      {!isClaimed && (isStellarAddress(wallet)
+        ? <StellarClaimBanner walletAddress={wallet} />
+        : <ClaimBanner walletAddress={wallet} />)}
 
       <div className="grid gap-6 md:grid-cols-2">
         <ScoreBreakdownCard live={live} manifestValue={manifestValue} txCount={txCount} />
