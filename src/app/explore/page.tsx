@@ -82,15 +82,12 @@ export default async function ExplorePage({ searchParams }: Props) {
           <AgentsExplorer />
         </div>
       ) : (
-        <div className="pl-3 md:pl-4 pr-4 md:pr-8 xl:pr-10 grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
-          <Suspense fallback={<SidebarSkeleton />}>
-            <FacilitatorSidebarAsync
-              selected={selectedFacilitator}
-              timeWindow={timeWindow}
-            />
-          </Suspense>
-          <Suspense fallback={<ActivitySkeleton />} key={`${selectedFacilitator ?? ''}-${timeWindow}`}>
-            <RecentActivityAsync
+        <div className="pl-3 md:pl-4 pr-4 md:pr-8 xl:pr-10">
+          <Suspense
+            fallback={<ActivityTabSkeleton />}
+            key={`${selectedFacilitator ?? ''}-${timeWindow}`}
+          >
+            <ActivityTabAsync
               selectedFacilitator={selectedFacilitator}
               timeWindow={timeWindow}
               sinceIso={sinceIso}
@@ -127,30 +124,7 @@ function TabNav({ active }: { active: ExploreTab }) {
   );
 }
 
-async function FacilitatorSidebarAsync({
-  selected,
-  timeWindow,
-}: {
-  selected?: string;
-  timeWindow: TimeWindow;
-}) {
-  const allFacilitators = Object.entries(SOLANA_FACILITATORS);
-  let stats: Awaited<ReturnType<typeof getFacilitatorStats>> = [];
-  try {
-    stats = await cachedFacilitatorStats();
-  } catch { /* show empty sidebar */ }
-  const statsMap = new Map(stats.map((s) => [s.facilitator, s]));
-  return (
-    <FacilitatorSidebar
-      facilitators={allFacilitators}
-      statsMap={statsMap}
-      selected={selected}
-      timeWindow={timeWindow}
-    />
-  );
-}
-
-async function RecentActivityAsync({
+async function ActivityTabAsync({
   selectedFacilitator,
   timeWindow,
   sinceIso,
@@ -159,26 +133,48 @@ async function RecentActivityAsync({
   timeWindow: TimeWindow;
   sinceIso?: string;
 }) {
+  const allFacilitators = Object.entries(SOLANA_FACILITATORS);
+  let stats: Awaited<ReturnType<typeof getFacilitatorStats>> = [];
   let recentTxs: Awaited<ReturnType<typeof getRecentTransactions>> = [];
   let tierMap: Map<string, TrustTier> = new Map();
   let dbError = false;
+
   try {
-    recentTxs = await cachedRecentTransactions(selectedFacilitator, sinceIso);
+    // Facilitator stats and recent txs are independent — fetch concurrently
+    // so the streamed boundary stays open for max(stats, txs) rather than
+    // their sum. Wallet tiers depend on the senders the tx query returns, so
+    // that one trails. One try/catch → one coherent fallback for the tab.
+    [stats, recentTxs] = await Promise.all([
+      cachedFacilitatorStats(),
+      cachedRecentTransactions(selectedFacilitator, sinceIso),
+    ]);
     const uniqueSenders = [...new Set(recentTxs.map((t) => t.wallet_address))];
     tierMap = await getCachedWalletTierMap(uniqueSenders);
   } catch {
     dbError = true;
   }
 
-  if (dbError) return <KarmaCatchingUp />;
+  const statsMap = new Map(stats.map((s) => [s.facilitator, s]));
 
   return (
-    <RecentActivity
-      transactions={recentTxs}
-      tierMap={tierMap}
-      selectedFacilitator={selectedFacilitator}
-      timeWindow={timeWindow}
-    />
+    <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+      <FacilitatorSidebar
+        facilitators={allFacilitators}
+        statsMap={statsMap}
+        selected={selectedFacilitator}
+        timeWindow={timeWindow}
+      />
+      {dbError ? (
+        <KarmaCatchingUp />
+      ) : (
+        <RecentActivity
+          transactions={recentTxs}
+          tierMap={tierMap}
+          selectedFacilitator={selectedFacilitator}
+          timeWindow={timeWindow}
+        />
+      )}
+    </div>
   );
 }
 
@@ -206,6 +202,15 @@ function ActivitySkeleton() {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function ActivityTabSkeleton() {
+  return (
+    <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+      <SidebarSkeleton />
+      <ActivitySkeleton />
     </div>
   );
 }
