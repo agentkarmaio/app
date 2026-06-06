@@ -92,6 +92,10 @@ export const walletsTable = pgTable('wallets', {
   self_nullifier:      text('self_nullifier').unique(),
   self_verified_at:    timestamp('self_verified_at', { withTimezone: true }),
   self_scope:          text('self_scope'),
+  // ERC-8004 Soroban agentId (u32) bound to this wallet on Stellar's
+  // IdentityRegistry. NULL until the agent claims/registers (U4). U3's publish
+  // path skips on-chain feedback when this is NULL (identity-gated, mirrors Celo).
+  stellar_agent_id:    integer('stellar_agent_id'),
 }, (table) => [
   primaryKey({ columns: [table.chain, table.address], name: 'wallets_pkey' }),
   index('idx_wallets_chain').on(table.chain),
@@ -351,6 +355,8 @@ export interface Wallet {
   self_nullifier?: string | null;
   self_verified_at?: string | null;
   self_scope?: string | null;
+  // ERC-8004 Soroban agentId (u32) — null until registered/claimed on Stellar.
+  stellar_agent_id?: number | null;
 }
 
 export type WalletScanState = 'pending' | 'scanning' | 'done' | 'failed';
