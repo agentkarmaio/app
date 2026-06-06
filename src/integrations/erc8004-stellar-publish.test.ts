@@ -69,7 +69,7 @@ describe('buildGiveFeedbackArgs', () => {
     const args = buildGiveFeedbackArgs({
       caller: CALLER,
       agentId: 7,
-      value: 85n,
+      value: BigInt(85),
       valueDecimals: 0,
       tag1: 'provider',
       tag2: 'agentkarma',
@@ -80,7 +80,7 @@ describe('buildGiveFeedbackArgs', () => {
     expect(args).toHaveLength(9);
     expect(scValToNative(args[0])).toBe(CALLER); // caller Address
     expect(scValToNative(args[1])).toBe(7); // agent_id u32
-    expect(scValToNative(args[2])).toBe(85n); // value i128
+    expect(scValToNative(args[2])).toBe(BigInt(85)); // value i128
     expect(scValToNative(args[3])).toBe(0); // value_decimals u32
     expect(scValToNative(args[4])).toBe('provider');
     expect(scValToNative(args[5])).toBe('agentkarma');
@@ -94,7 +94,7 @@ describe('buildGiveFeedbackArgs', () => {
       buildGiveFeedbackArgs({
         caller: CALLER,
         agentId: 7,
-        value: 85n,
+        value: BigInt(85),
         valueDecimals: 0,
         tag1: 'provider',
         tag2: 'agentkarma',
@@ -110,7 +110,7 @@ describe('buildGiveFeedbackArgs', () => {
       buildGiveFeedbackArgs({
         caller: CALLER,
         agentId: 7,
-        value: 85n,
+        value: BigInt(85),
         valueDecimals: 19,
         tag1: 'provider',
         tag2: 'agentkarma',
@@ -174,7 +174,7 @@ describe('publishStellarFeedback', () => {
   const kp = Keypair.random();
   const baseInput = {
     agentId: 7,
-    value: 85n,
+    value: BigInt(85),
     valueDecimals: 0,
     tag1: 'provider' as const,
     tag2: 'agentkarma',
@@ -186,7 +186,7 @@ describe('publishStellarFeedback', () => {
   test('simulate mode never sends; returns dryRun', async () => {
     let sent = false;
     const fakeRpc = makeFakeRpc();
-    (fakeRpc as { sendTransaction: () => unknown }).sendTransaction = async () => {
+    (fakeRpc as unknown as { sendTransaction: () => unknown }).sendTransaction = async () => {
       sent = true;
       return { status: 'PENDING', hash: 'X' };
     };
@@ -220,8 +220,8 @@ describe('publishStellarFeedback', () => {
 function rpcWithSummary(score: number | null) {
   const struct = nativeToScVal(
     score == null
-      ? { count: 0n, summary_value: 0n, summary_value_decimals: 0 }
-      : { count: 2n, summary_value: BigInt(score), summary_value_decimals: 0 },
+      ? { count: BigInt(0), summary_value: BigInt(0), summary_value_decimals: 0 }
+      : { count: BigInt(2), summary_value: BigInt(score), summary_value_decimals: 0 },
     {
       type: {
         count: ['symbol', 'u64'],
@@ -309,7 +309,7 @@ describe('publishStellarScore (idempotency)', () => {
     const args = buildGiveFeedbackArgs({
       caller: kp.publicKey(),
       agentId: 7,
-      value: 85n,
+      value: BigInt(85),
       valueDecimals: 0,
       tag1: 'provider',
       tag2: 'agentkarma',

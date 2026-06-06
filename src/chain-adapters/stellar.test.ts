@@ -1,8 +1,11 @@
 /// <reference types="bun-types" />
 /**
- * StellarAdapter scaffold — address validation, explorer URLs real; index/read/
- * publish throw notImplemented until later units. readAttestations fans out over
- * readAttestation.
+ * StellarAdapter — address validation, explorer URLs, no-op indexReceipts.
+ * The 8004 read/write delegation (readAttestation/publishAttestation) is wired
+ * in U3; its pure resolver logic is covered in stellar.attestation.test.ts.
+ * Here we only assert the adapter methods are NO LONGER the U1 notImplemented
+ * stubs — they reach the real DB getter (getStellarAgentId), which surfaces a
+ * missing-Supabase-env error in unit context rather than the stub sentinel.
  */
 import { describe, expect, test } from 'bun:test';
 import { makeStellarAdapter } from './stellar';
@@ -41,14 +44,23 @@ describe('makeStellarAdapter', () => {
     expect(res.inserted).toBe(0);
     expect(res.cursors.size).toBe(0);
   });
-  test('readAttestation throws notImplemented', () => {
-    expect(a.readAttestation(GOOD)).rejects.toThrow('StellarAdapter.readAttestation not yet implemented');
+  test('readAttestation is wired (delegates past the U1 stub)', () => {
+    // No longer the notImplemented sentinel: it reaches getStellarAgentId, which
+    // needs Supabase env. The success path (with injected rpc) lives in
+    // stellar.attestation.test.ts::resolveAttestationScore.
+    const p = a.readAttestation(GOOD);
+    expect(p).rejects.not.toThrow('not yet implemented');
+    expect(p).rejects.toThrow();
   });
-  test('publishAttestation throws notImplemented', () => {
+  test('publishAttestation is wired (delegates past the U1 stub)', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(a.publishAttestation(GOOD, {} as any)).rejects.toThrow('StellarAdapter.publishAttestation not yet implemented');
+    const p = a.publishAttestation(GOOD, {} as any);
+    expect(p).rejects.not.toThrow('not yet implemented');
+    expect(p).rejects.toThrow();
   });
-  test('readAttestations fans out and surfaces the same notImplemented', () => {
-    expect(a.readAttestations([GOOD])).rejects.toThrow('not yet implemented');
+  test('readAttestations fans out over the wired readAttestation', () => {
+    const p = a.readAttestations([GOOD]);
+    expect(p).rejects.not.toThrow('not yet implemented');
+    expect(p).rejects.toThrow();
   });
 });
