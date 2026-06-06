@@ -32,8 +32,14 @@ describe('makeStellarAdapter', () => {
     expect(a.explorerAddressUrl(GOOD)).toBe(`https://stellar.expert/explorer/public/account/${GOOD}`);
   });
 
-  test('indexReceipts throws notImplemented', () => {
-    expect(a.indexReceipts()).rejects.toThrow('StellarAdapter.indexReceipts not yet implemented');
+  test('indexReceipts is a safe no-op while facilitators are unseeded (U2)', async () => {
+    // STELLAR_FACILITATOR_SET + STELLAR_MPP_RECIPIENTS are empty until discovery,
+    // so runStellarIndexer short-circuits before any RPC call — no STELLAR_RPC_URL
+    // needed, returns the empty IndexRunResult contract.
+    const res = await a.indexReceipts();
+    expect(res.fetched).toBe(0);
+    expect(res.inserted).toBe(0);
+    expect(res.cursors.size).toBe(0);
   });
   test('readAttestation throws notImplemented', () => {
     expect(a.readAttestation(GOOD)).rejects.toThrow('StellarAdapter.readAttestation not yet implemented');

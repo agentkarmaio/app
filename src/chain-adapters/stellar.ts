@@ -5,6 +5,7 @@
  */
 import type { ChainAdapter, IndexRunResult, PublishResult } from './types';
 import type { WalletScore } from '@/scoring/index';
+import { runStellarIndexer } from '@/indexer/stellar-x402';
 
 // Stellar StrKey: G… Ed25519 public accounts are 56 chars, base32 (A–Z, 2–7).
 // U3/U4 replaces this with StrKey.isValidEd25519PublicKey from @stellar/stellar-sdk.
@@ -21,8 +22,11 @@ export function makeStellarAdapter(): ChainAdapter {
     validateAddress: (address) => STELLAR_ADDRESS_RE.test(address),
     normalizeAddress: (address) => address,
 
-    async indexReceipts(_opts?: { backfill?: boolean; limit?: number }): Promise<IndexRunResult> {
-      notImplemented('indexReceipts');
+    // U2: Stellar USDC SAC transfer indexer. Reads the pubnet SAC via Soroban
+    // RPC, attributes x402/MPP receipts, persists Tier-1 signals. Safe no-op
+    // (0 fetched, no RPC call) until STELLAR_FACILITATORS/MPP recipients seed.
+    async indexReceipts(opts?: { backfill?: boolean; limit?: number }): Promise<IndexRunResult> {
+      return runStellarIndexer({ limit: opts?.limit });
     },
 
     async readAttestation(_address: string): Promise<number> {
