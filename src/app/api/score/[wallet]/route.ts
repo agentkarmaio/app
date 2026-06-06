@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PublicKey } from '@solana/web3.js';
+import { resolveChainParam } from '@/lib/chain-detect';
 import { getWallet, getTransactions, getLatestSignalValues, enqueueWalletScan } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
@@ -17,16 +17,18 @@ export async function GET(
   const { wallet } = await params;
 
   // Validate wallet format BEFORE rate limiting — invalid input shouldn't
-  // consume rate budget. PublicKey constructor throws on bad base58 / wrong
-  // byte length, covering the previous `length < 32` heuristic.
+  // consume rate budget. Chain-dispatched: each ChainAdapter.validateAddress
+  // owns its own address format (Solana base58, Stellar StrKey G…). An optional
+  // `?chain=` pins the chain and is rejected if it mismatches the address.
   if (!wallet) {
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
   }
-  try {
-    new PublicKey(wallet);
-  } catch {
+  const chainParam = new URL(request.url).searchParams.get('chain');
+  const chain = resolveChainParam(chainParam, wallet);
+  if (!chain) {
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
   }
+  void chain; // available for downstream DB filters (U6 threads it through)
 
   const gate = await enforceRateLimit('score', request);
   if (!gate.ok) return gate.response;
