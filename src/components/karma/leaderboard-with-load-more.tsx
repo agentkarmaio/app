@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { LeaderboardTable, type LeaderboardEntry } from './leaderboard-table';
+import { ChainFilterPill, type ChainFilter } from './chain-filter-pill';
 import type { LivenessStatus, TrustTier, ConfidenceBadge, AutonomyLabel } from '@/db/schema';
 
 const PAGE_SIZE = 25;
@@ -55,6 +56,7 @@ export function LeaderboardWithLoadMore({
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusFilter>('All');
   const [tier, setTier] = useState<TierFilter>('All');
+  const [chain, setChain] = useState<ChainFilter>('All');
   const [pulsing, setPulsing] = useState<Set<string>>(() => new Set());
   const seenSigsRef = useRef<Set<string>>(new Set());
   const seededRef = useRef(false);
@@ -122,6 +124,7 @@ export function LeaderboardWithLoadMore({
       const p = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
       if (status !== 'All') p.set('status', status);
       if (tier !== 'All') p.set('tier', tier);
+      if (chain !== 'All') p.set('chain', chain);
       try {
         const res = await fetch(`/api/leaderboard?${p}`);
         if (!res.ok) {
@@ -152,7 +155,7 @@ export function LeaderboardWithLoadMore({
         if (reset) setIsFiltering(false);
       }
     },
-    [entries.length, status, tier],
+    [entries.length, status, tier, chain],
   );
 
   const loadMore = useCallback(() => fetchPage(false), [fetchPage]);
@@ -165,7 +168,7 @@ export function LeaderboardWithLoadMore({
     }
     fetchPage(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, tier]);
+  }, [status, tier, chain]);
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -183,7 +186,7 @@ export function LeaderboardWithLoadMore({
   }, [hasMore, isPending, loadMore, isPreview]);
 
   const headerCount =
-    total !== null && (status !== 'All' || tier !== 'All')
+    total !== null && (status !== 'All' || tier !== 'All' || chain !== 'All')
       ? `${entries.length} / ${total} agents`
       : `${entries.length} agents`;
 
@@ -206,6 +209,7 @@ export function LeaderboardWithLoadMore({
           options={TIER_OPTIONS}
           onChange={setTier}
         />
+        <ChainFilterPill value={chain} onChange={setChain} />
         <span className="ml-auto flex items-center gap-1.5 text-[10px] font-[510] uppercase tracking-[0.08em] text-[#62666d] tabular-nums">
           {isFiltering && (
             <span
@@ -219,16 +223,17 @@ export function LeaderboardWithLoadMore({
       {entries.length === 0 && !isFiltering ? (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <p className="text-sm">
-            {status === 'All' && tier === 'All'
+            {status === 'All' && tier === 'All' && chain === 'All'
               ? 'No agents yet.'
               : 'No agents match these filters.'}
           </p>
-          {(status !== 'All' || tier !== 'All') && (
+          {(status !== 'All' || tier !== 'All' || chain !== 'All') && (
             <button
               type="button"
               onClick={() => {
                 setStatus('All');
                 setTier('All');
+                setChain('All');
               }}
               className="mt-2 text-xs text-[#8a8f98] underline underline-offset-4 hover:text-[#f7f8f8]"
             >
