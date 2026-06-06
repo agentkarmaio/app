@@ -47,7 +47,11 @@ const SERVER_INSTRUCTIONS = [
   'AgentKarma does not proxy paid calls. For payment, use pay.sh.',
 ].join(' ');
 
-const walletSchema = z.string().min(32).max(64).describe('Solana wallet address (base58, 32–44 chars).');
+export const walletSchema = z
+  .string()
+  .min(32)
+  .max(56)
+  .describe('On-chain agent wallet address: Solana base58 (32–44 chars) or Stellar StrKey G-address (56 chars).');
 const walletShape: { wallet: typeof walletSchema } = { wallet: walletSchema };
 
 /**
