@@ -35,7 +35,7 @@ import type { TrustTier } from './schema';
 type Primitive = string | number | boolean | null | undefined;
 type JsonSafe<T> = T extends Primitive
   ? T
-  : T extends Date | Map<unknown, unknown> | Set<unknown> | Function
+  : T extends Date | Map<unknown, unknown> | Set<unknown> | ((...args: never[]) => unknown)
     ? never
     : T extends Array<infer U>
       ? Array<JsonSafe<U>>
