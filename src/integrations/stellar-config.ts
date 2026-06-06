@@ -44,9 +44,13 @@ export const USDC_DECIMALS = 7;
 // above on a machine with stellar-cli installed, paste the hashes here, and the
 // guard activates automatically (mismatch → throw).
 export const STELLAR_WASM_SHA256: Record<'identity' | 'reputation' | 'validation', string> = {
-  identity: '',
-  reputation: '',
-  validation: '',
+  // Verified 2026-06-06 against Stellar mainnet via `stellar contract fetch` +
+  // sha256 — all three match trionlabs/stellar-8004's published reproducible-build
+  // hashes byte-for-byte (deployed contracts == audited source). Re-verify on any
+  // upstream upgrade (3-day timelock gives warning); a mismatch is a review gate.
+  identity: 'f25af88f3e26f603a6569b2554b3f85ccc8af9a88f3b904fba873637c64eb2ab',
+  reputation: '74af1a031934346260f7265dacb633209dba507c1416f1e37d52405b53478f71',
+  validation: '9e5d7dc78ca00fc7c7afc914a0b3ecbcec61b4e7b1893a84bf47c3b811c68aa1',
 };
 
 const DEFAULT_MAINNET_RPC = 'https://mainnet.sorobanrpc.com';
