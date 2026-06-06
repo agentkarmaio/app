@@ -279,11 +279,15 @@ export const deckViewsTable = pgTable('deck_views', {
 // --- Indexer Cursor State ----------------------------------------------------
 
 export const indexerCursorsTable = pgTable('indexer_cursors', {
-  facilitator:    text('facilitator').primaryKey(),
+  chain:          text('chain').notNull().default('solana').$type<Chain>(),
+  facilitator:    text('facilitator').notNull(),
   last_signature: text('last_signature').notNull(),
   last_slot:      integer('last_slot'),
   updated_at:     timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => [
+  primaryKey({ columns: [table.chain, table.facilitator], name: 'indexer_cursors_pkey' }),
+  index('idx_indexer_cursors_chain').on(table.chain),
+]);
 
 // --- TypeScript Types (for runtime Supabase queries) -------------------------
 
@@ -472,6 +476,7 @@ export interface Feedback {
 }
 
 export interface IndexerCursor {
+  chain: Chain;
   facilitator: string;
   last_signature: string;
   last_slot: number | null;
