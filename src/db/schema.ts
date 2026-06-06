@@ -18,7 +18,7 @@ import {
 // addresses are format-disjoint today (Solana base58 vs EVM 0x40hex) but the
 // composite PK is the durable correctness guarantee.
 
-export const CHAINS = ['solana', 'celo'] as const;
+export const CHAINS = ['solana', 'celo', 'stellar'] as const;
 export type Chain = (typeof CHAINS)[number];
 export const DEFAULT_CHAIN: Chain = 'solana';
 
