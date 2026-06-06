@@ -12,6 +12,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { POST } from './route';
 
 function req(body: unknown): Request {
@@ -22,12 +23,27 @@ function req(body: unknown): Request {
   });
 }
 
+/**
+ * Sign the way real Freighter (`@stellar/freighter-api` signMessage) does:
+ * raw Ed25519 over the SEP-53 payload sha256("Stellar Signed Message:\n" || msg).
+ * The fixtures MUST match the live wallet's primitive or the route's signature
+ * gate is exercised against bytes no real client ever produces.
+ */
+function freighterSignHex(signer: Keypair, message: string): string {
+  const prefix = new TextEncoder().encode('Stellar Signed Message:\n');
+  const msg = new TextEncoder().encode(message);
+  const payload = new Uint8Array(prefix.length + msg.length);
+  payload.set(prefix, 0);
+  payload.set(msg, prefix.length);
+  return Buffer.from(signer.sign(Buffer.from(sha256(payload)))).toString('hex');
+}
+
 const kp = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 7));
 const address = kp.publicKey(); // G…
 const C = StrKey.encodeContract(Buffer.alloc(32, 9)); // C… contract
 const ts = Date.now();
 const message = `AgentKarma: Claim wallet ${address} at ${ts}`;
-const signature = Buffer.from(kp.sign(Buffer.from(message))).toString('hex');
+const signature = freighterSignHex(kp, message);
 
 describe('POST /api/agent/claim/stellar — guards', () => {
   test('missing required fields → 400', async () => {
@@ -61,7 +77,7 @@ describe('POST /api/agent/claim/stellar — guards', () => {
   test('expired timestamp (outside 5-min window) → 400', async () => {
     const oldTs = ts - 10 * 60 * 1000;
     const oldMsg = `AgentKarma: Claim wallet ${address} at ${oldTs}`;
-    const oldSig = Buffer.from(kp.sign(Buffer.from(oldMsg))).toString('hex');
+    const oldSig = freighterSignHex(kp, oldMsg);
     const res = await POST(
       req({ address, displayName: 'x', signature: oldSig, message: oldMsg }) as never,
     );
@@ -79,7 +95,7 @@ describe('POST /api/agent/claim/stellar — guards', () => {
 
   test('bad signature (signed by a different key) → 401', async () => {
     const other = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 8));
-    const badSig = Buffer.from(other.sign(Buffer.from(message))).toString('hex');
+    const badSig = freighterSignHex(other, message);
     const res = await POST(
       req({ address, displayName: 'x', signature: badSig, message }) as never,
     );

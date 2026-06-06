@@ -126,8 +126,16 @@ export function useStellarClaimWallet() {
 
   /**
    * Sign the canonical claim challenge for `walletAddress` via Freighter.
+   *
+   * Freighter `signMessage` implements SEP-53: it signs raw Ed25519 over
+   * sha256("Stellar Signed Message:\n" || message), NOT the raw message bytes.
+   * We pass the plain challenge string and let Freighter apply the SEP-53
+   * envelope; the returned 64-byte signature is over that payload. The server
+   * (verifyStellarClaimSignature) reconstructs the same SEP-53 digest, so a real
+   * Freighter signature validates end-to-end.
+   *
    * Returns the signature as lowercase hex so the server verify path
-   * (nacl.sign.detached.verify) can decode it uniformly.
+   * (nacl.sign.detached.verify over the SEP-53 digest) can decode it uniformly.
    */
   const signChallenge = useCallback(
     async (walletAddress: string): Promise<StellarSignedClaim> => {
