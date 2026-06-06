@@ -125,6 +125,7 @@ export async function upsertWallet(
 export interface LeaderboardFilters {
   status?: LivenessStatus;
   tier?: TrustTier;
+  chain?: Chain;
 }
 
 export interface LeaderboardPage {
@@ -145,6 +146,8 @@ export async function getLeaderboard(
     .from('wallets')
     .select('*', withCount ? { count: 'exact' } : {})
     .gt('score', 0);
+
+  if (filters.chain) q = q.eq('chain', filters.chain);
 
   if (filters.tier) q = q.eq('trust_tier', filters.tier);
 
