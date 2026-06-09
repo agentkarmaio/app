@@ -10,12 +10,11 @@ export const metadata: Metadata = {
     'Arc is Circle\'s USDC-native EVM L1. AgentKarma indexes Arc\'s ERC-8183 agentic-commerce job settlements as Tier-1 receipt-grade signals and reads ERC-8004 reputation, publishing portable karma any 8004-aware client can read.',
 };
 
-// Static explainer page. Arc is testnet-only and AK has not yet registered an
-// on-chain identity here, so there is nothing live to read per-request — the
-// page documents the integration surface (verified contract addresses, signal
-// model, status) rather than rendering on-chain state. The Arc ChainAdapter
-// (getAdapter('arc')) is being wired in parallel; this page intentionally does
-// NOT depend on it so it renders standalone. Default static render.
+// Static explainer page for AgentKarma on Arc. AK is registered on Arc's
+// ERC-8004 IdentityRegistry (agentId 72077, verified via ownerOf); the page
+// surfaces that identity plus the verified contract surface + signal model.
+// Static render — the on-chain values are immutable constants, so no per-request
+// RPC. Arc is testnet-only; signal volume builds as agents transact.
 
 // ─── Verified Arc Testnet contract surface ──────────────────────────────────
 // Ground truth from docs.arc.io + live RPC probe. The 0x8004… vanity prefix
@@ -27,6 +26,13 @@ const ARC_AGENTIC_COMMERCE = '0x0747EEf0706327138c69792bF28Cd525089e4583';
 // USDC ERC-20 token — 6-decimal token units. DECIMALS TRAP: native gas is
 // 18-dec (publish-tx cost), USDC token + ERC-8183 job amounts are 6-dec.
 const ARC_USDC_TOKEN = '0x3600000000000000000000000000000000000000';
+
+// AgentKarma's registered ERC-8004 identity on Arc Testnet. Real on-chain values
+// — agentId read from the mint's Transfer log + verified via ownerOf
+// (tx 0x2ac3a26e…). Minted by scripts/arc-register-identity.ts.
+const AK_ARC_AGENT_ID = 72077;
+const AK_ARC_VALIDATOR = '0xeE2a20AEF0f5F9B52FC334806256014F4DDcB8fc';
+const AK_AGENT_URI = 'https://agentkarma.io/.well-known/agent.json';
 
 // A sample Arc address to thread through the "Try it" block. Honestly degrades
 // (🟡 / em-dash, never a fake number) when the address has no Arc signal yet.
@@ -55,23 +61,57 @@ export default function ArcPage() {
         </p>
       </div>
 
-      {/* Honest status: no fabricated AK agentId or rated-wallet list here —
-          Arc is testnet-only and AK has not registered an identity yet. */}
+      {/* AK's registered ERC-8004 identity on Arc Testnet. Real on-chain values
+          (agentId from the mint's Transfer log, verified via ownerOf) — no
+          fabrication. */}
       <Card className="mb-8 border-slate-400/20 bg-slate-400/[0.03]">
         <CardContent className="p-6">
-          <div className="mb-2 inline-flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-slate-300">
-            <span className="size-1.5 rounded-full bg-slate-400" />
-            Arc Testnet — indexing live, mainnet signal volume pending
+          <div className="mb-3 inline-flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-slate-300">
+            <span className="size-1.5 rounded-full bg-emerald-400" />
+            AgentKarma is live on Arc — ERC-8004 identity registered
           </div>
-          <p className="text-sm text-muted-foreground">
-            AK indexes Arc&apos;s ERC-8183 settlements today, but Arc is
-            testnet-only and AgentKarma has not yet minted an on-chain identity
-            here (unlike Celo, where AK is{' '}
-            <span className="font-mono text-foreground">agentId 9058</span>). So
-            there is no AK identity card or rated-wallet roster to show yet — the
-            score API returns honest, badge-gated reads from whatever signal the
-            address already carries. Identity registration + mainnet volume land
-            when Arc opens its mainnet.
+          <dl className="grid gap-3 text-sm sm:grid-cols-[14rem_1fr]">
+            <dt className="text-muted-foreground">AK agentId</dt>
+            <dd className="font-mono">
+              <a
+                href={`${arcTestnet.blockExplorers.default.url}/token/${ARC_IDENTITY_REGISTRY}?a=${AK_ARC_AGENT_ID}`}
+                target="_blank"
+                rel="noreferrer"
+                className="underline-offset-2 hover:underline"
+              >
+                {AK_ARC_AGENT_ID}
+              </a>
+            </dd>
+            <dt className="text-muted-foreground">Validator wallet</dt>
+            <dd className="font-mono break-all">
+              <a
+                href={explorerAddressUrl(AK_ARC_VALIDATOR)}
+                target="_blank"
+                rel="noreferrer"
+                className="underline-offset-2 hover:underline"
+              >
+                {AK_ARC_VALIDATOR}
+              </a>
+            </dd>
+            <dt className="text-muted-foreground">agentURI</dt>
+            <dd className="break-all">
+              <a
+                href={AK_AGENT_URI}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono underline-offset-2 hover:underline"
+              >
+                /.well-known/agent.json
+              </a>
+            </dd>
+          </dl>
+          <p className="mt-4 text-sm text-muted-foreground">
+            AK is <span className="font-mono text-foreground">agentId {AK_ARC_AGENT_ID}</span> on
+            Arc&apos;s IdentityRegistry (mirroring{' '}
+            <span className="font-mono text-foreground">agentId 9058</span> on Celo). Arc is
+            testnet-only today, so signal volume builds as agents transact — AK reads ERC-8183
+            settlements + ERC-8004 reputation and writes karma back as a validator. Unregistered
+            wallets stay badge-gated (🟡 / ⚪) until they claim — never a fabricated score.
           </p>
         </CardContent>
       </Card>
@@ -251,8 +291,8 @@ export default function ArcPage() {
           </div>
           <p className="mt-4 text-xs text-muted-foreground">
             Public read API. No auth. Same two-faced karma payload as the Solana
-            score route — chain auto-detected from the 0x address, or pinned with{' '}
-            <span className="font-mono">?chain=arc</span>. Returns honest,
+            score route. Celo and Arc share the EVM <span className="font-mono">0x</span> format,
+            so pin the chain with <span className="font-mono">?chain=arc</span>. Returns honest,
             badge-gated reads while Arc testnet signal volume builds.
           </p>
         </CardContent>
