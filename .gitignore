@@ -39,6 +39,8 @@ next-env.d.ts
 .repoignore
 
 .servel/*.local.json
+# Local servel CLI state — contains join_key_seed + server host/IP. Never commit.
+.servel/state.json
 
 # Solana keypairs for demo-seeded wallets — never commit
 .keys/

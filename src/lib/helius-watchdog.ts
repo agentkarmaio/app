@@ -17,8 +17,28 @@
  *   HELIUS_WATCHDOG_DISABLED     "1" to skip
  *   HELIUS_WATCHDOG_URL_HINT     URL substring to match (default agentkarma.io/api/webhook/helius)
  */
+import { ALL_FACILITATOR_ADDRESSES } from '../config/facilitators';
+import { SPECIMEN_ADDRESSES } from '../config/specimen';
+
 const DEFAULT_URL_HINT = 'agentkarma.io/api/webhook/helius';
 const HELIUS_WEBHOOK_API = 'https://api-mainnet.helius-rpc.com/v0/webhooks';
+
+// Canonical set of addresses the webhook must watch — same source of truth as
+// setup-webhook.ts. We re-assert this on every repair rather than echoing the
+// list response, because Helius's list endpoint can return webhooks WITHOUT
+// their accountAddresses; echoing that back would silently wipe the watch set.
+const WATCHED_ADDRESSES = [...new Set([...ALL_FACILITATOR_ADDRESSES, ...SPECIMEN_ADDRESSES])];
+
+// The `Authorization` header value Helius must send so our webhook route's
+// verifyHeliusWebhook() accepts the delivery. MUST track the server's own
+// secret — if the stored authHeader drifts from this, every delivery 401s and
+// Helius auto-disables the webhook (the 2026-05-21 outage). Resyncing this on
+// re-enable is what makes the recovery actually hold.
+function desiredAuthHeader(): string | undefined {
+  const secret =
+    process.env.HELIUS_WEBHOOK_AUTH_HEADER ?? process.env.HELIUS_WEBHOOK_SECRET;
+  return secret && secret.length > 0 ? `Bearer ${secret}` : undefined;
+}
 
 interface HeliusWebhook {
   webhookID: string;
@@ -49,13 +69,18 @@ async function listWebhooks(apiKey: string): Promise<HeliusWebhook[]> {
   return (await r.json()) as HeliusWebhook[];
 }
 
-async function reEnable(apiKey: string, hook: HeliusWebhook): Promise<void> {
+async function repairWebhook(apiKey: string, hook: HeliusWebhook): Promise<void> {
+  const authHeader = desiredAuthHeader();
   const body = {
     webhookURL: hook.webhookURL,
-    webhookType: hook.webhookType,
-    accountAddresses: hook.accountAddresses,
-    transactionTypes: hook.transactionTypes,
-    authHeader: hook.authHeader,
+    webhookType: hook.webhookType || 'enhanced',
+    // Re-assert from config, never echo the (possibly empty) list response.
+    accountAddresses: WATCHED_ADDRESSES,
+    transactionTypes: hook.transactionTypes?.length ? hook.transactionTypes : ['TRANSFER'],
+    // Resync auth from server env so a drifted authHeader can't keep the
+    // re-enabled webhook 401ing. Fall back to the stored value only when the
+    // server runs in open mode (no secret configured).
+    authHeader: authHeader ?? hook.authHeader,
     active: true,
   };
   const r = await fetch(`${HELIUS_WEBHOOK_API}/${hook.webhookID}?api-key=${apiKey}`, {
@@ -89,7 +114,7 @@ export async function checkOnce(urlHint = DEFAULT_URL_HINT): Promise<WatchdogTic
   for (const h of matched) {
     if (h.active) continue;
     try {
-      await reEnable(apiKey, h);
+      await repairWebhook(apiKey, h);
       tick.reEnabled.push({ id: h.webhookID, reason: h.disabledReason });
     } catch (err) {
       tick.errors.push(`${h.webhookID}: ${err instanceof Error ? err.message : err}`);
