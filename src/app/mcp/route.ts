@@ -52,7 +52,7 @@ export const walletSchema = z
   .string()
   .min(32)
   .max(56)
-  .describe('On-chain agent wallet address: Solana base58 (32–44 chars) or Stellar StrKey G-address (56 chars).');
+  .describe('On-chain agent wallet address: Solana base58 (32–44 chars), Stellar StrKey G-address (56 chars), or EVM 0x-address (42 chars, Arc).');
 const walletShape: { wallet: typeof walletSchema } = { wallet: walletSchema };
 
 /**
@@ -321,6 +321,54 @@ function registerTools(server: McpServer): void {
         onChainAttestation,
         explorerUrls: {
           stellarExpert: stellar.explorerAddressUrl(addr),
+          agentkarma: profileUrl(addr),
+        },
+        profileUrl: profileUrl(addr),
+      });
+    },
+  );
+
+  // --- get_arc_karma ----------------------------------------------------
+  server.registerTool(
+    'get_arc_karma',
+    {
+      title: 'Get Arc agent Karma (both faces)',
+      description:
+        'Look up the full Karma snapshot for an Arc agent wallet (EVM 0x… address): provider score, consumer score, confidence badge, and autonomy. Arc is Circle\'s USDC-native L1; AgentKarma indexes its ERC-8183 agentic-commerce job settlements as Tier-1 receipt-grade signals. Same primitive as get_karma (Solana) / get_stellar_karma — Arc rails. Use BEFORE paying an Arc agent.',
+      inputSchema: walletShape,
+      annotations: readOnly(),
+    },
+    async ({ wallet: addr }) => {
+      const arc = getAdapter('arc');
+      if (!arc.validateAddress(addr)) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: 'invalid_arc_address',
+              wallet: addr,
+              message: 'Expected an EVM 0x… address (42 chars) on Arc.',
+            }),
+          }],
+        };
+      }
+      const onChainAttestation = await arc.readAttestation(addr).catch(() => 0);
+      const snap = await resolveKarma(addr);
+      if (!snap) return notFound(addr);
+      return jsonResult({
+        chain: 'arc',
+        address: snap.address,
+        provider: faceJson(snap.provider),
+        consumer: faceJson(snap.consumer),
+        confidenceBadge: snap.confidenceBadge,
+        autonomy: snap.autonomy,
+        identity: snap.identity,
+        txCount: snap.txCount,
+        lastActive: snap.lastActive,
+        onChainAttestation,
+        explorerUrls: {
+          arcscan: arc.explorerAddressUrl(addr),
           agentkarma: profileUrl(addr),
         },
         profileUrl: profileUrl(addr),

@@ -8,8 +8,8 @@ import { CHAINS, DEFAULT_CHAIN, isChain, indexerCursorsTable, walletsTable } fro
 import type { IndexerCursor, Wallet } from './schema';
 
 describe('CHAINS dimension', () => {
-  test('includes stellar alongside solana and celo', () => {
-    expect([...CHAINS]).toEqual(['solana', 'celo', 'stellar']);
+  test('includes arc alongside solana, celo and stellar', () => {
+    expect([...CHAINS]).toEqual(['solana', 'celo', 'stellar', 'arc']);
   });
 
   test('isChain accepts stellar, rejects unknown', () => {

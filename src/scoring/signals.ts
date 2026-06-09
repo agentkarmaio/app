@@ -107,6 +107,59 @@ export function buildPayshRoutedSignal(
 }
 
 /**
+ * Build the Tier 1 `erc8183_job_settled` signal for one settled Arc job.
+ *
+ * An ERC-8183 `PaymentReleased` is a max-strength receipt-gated attestation:
+ * the escrow contract released funds to the provider only after the job
+ * settled, so the settlement itself is a non-repudiable delivery proof. Both
+ * faces are emitted: the provider (got paid) and the client (settled clean).
+ * `value = 1.0` — like `paysh_routed`, we do not down-weight a settled job by
+ * amount the way Tier 2 x402 does.
+ *
+ * `signed_by` = counterparty (the other face of the settlement). Idempotent:
+ * the unique index on (agent_wallet, kind, tx_ref) makes re-emission a no-op so
+ * the indexer + backfill can both run. tx_ref = `${jobId}:${txHash}`.
+ */
+export interface JobSettledSignalInput {
+  /** Wallet the signal is attributed to. For `face='provider'` this is the
+   *  payee (got paid). For `face='consumer'` this is the client (settled). */
+  walletAddress: string;
+  /** Which face this signal credits. */
+  face: KarmaFace;
+  /** ERC-8183 jobId (decimal string). */
+  jobId: string;
+  /** Settlement (PaymentReleased) tx hash. */
+  txHash: string;
+  /** Settled amount in human USDC units (6-dec decoded). */
+  amount: number;
+  /** The other face's wallet (provider for a consumer signal, vice versa). */
+  counterparty: string;
+  observedAt?: string | Date;
+}
+
+export function buildJobSettledSignal(
+  input: JobSettledSignalInput,
+): InsertSignalEventInput {
+  const out: InsertSignalEventInput = {
+    agentWallet: input.walletAddress,
+    tier: 1,
+    kind: 'erc8183_job_settled',
+    face: input.face,
+    weight: 1.0,
+    value: 1.0,
+    signedBy: input.counterparty,
+    txRef: `${input.jobId}:${input.txHash}`,
+    payload: {
+      jobId: input.jobId,
+      amount: input.amount,
+      counterparty: input.counterparty,
+    },
+  };
+  if (input.observedAt !== undefined) out.observedAt = input.observedAt;
+  return out;
+}
+
+/**
  * Build the Tier 2 cadence signal for a wallet. `value` = automationScore, so
  * downstream scoring can aggregate without re-parsing the payload.
  */

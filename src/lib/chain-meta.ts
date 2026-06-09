@@ -19,6 +19,7 @@ export const CHAIN_META: Record<Chain, ChainMeta> = {
   solana: { label: 'Solana', logo: '/logos/solana-mark.svg', href: '/' },
   celo: { label: 'Celo', logo: '/logos/celo.svg', href: '/celo' },
   stellar: { label: 'Stellar', logo: '/logos/stellar.svg', href: '/stellar' },
+  arc: { label: 'Arc', logo: '/logos/arc.svg', href: '/arc' },
 };
 
 /** Solana first, then remaining chains in CHAINS declaration order. */

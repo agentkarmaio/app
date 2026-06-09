@@ -8,6 +8,7 @@ describe('chain-adapter registry', () => {
     expect(getAdapter('solana').chain).toBe('solana');
     expect(getAdapter('celo').chain).toBe('celo');
     expect(getAdapter('stellar').chain).toBe('stellar');
+    expect(getAdapter('arc').chain).toBe('arc');
   });
 
   test('getAllAdapters covers every chain in CHAINS exactly once', () => {
