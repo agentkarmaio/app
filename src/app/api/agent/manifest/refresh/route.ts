@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { resolveChainParam } from '@/lib/chain-detect';
+import { isRecognizedAddress } from '@/lib/chain-detect';
 import {
   getWallet,
   upsertAgentManifest,
@@ -33,9 +33,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Missing wallet' }, { status: 400 });
   }
   // Chain-dispatched address guard: accept any chain's valid address format
-  // (Solana base58, Stellar StrKey G…). No `?chain` pin here — detection by
-  // format is unambiguous since adapters validate disjoint formats.
-  if (!resolveChainParam(null, wallet)) {
+  // (Solana base58, Stellar StrKey G…, EVM 0x… for Celo/Arc). Validity only —
+  // EVM chains share a format so the address isn't auto-routable here; this
+  // endpoint reads by address, not by chain.
+  if (!isRecognizedAddress(wallet)) {
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
   }
 

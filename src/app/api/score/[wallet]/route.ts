@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { resolveChainParam } from '@/lib/chain-detect';
+import { resolveChainParam, isRecognizedAddress } from '@/lib/chain-detect';
 import { getWallet, getTransactions, getLatestSignalValues, enqueueWalletScan } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
@@ -24,11 +24,18 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
   }
   const chainParam = new URL(request.url).searchParams.get('chain');
-  const chain = resolveChainParam(chainParam, wallet);
-  if (!chain) {
+  // Pinned: the chain must be valid for this address. Unpinned: accept any
+  // recognized address — Celo and Arc share the EVM 0x format, so an unpinned
+  // 0x address is chain-ambiguous (detectChain → null) yet still valid; the
+  // reads below are address-keyed. A future per-chain DB scope MUST pass an
+  // explicit ?chain for EVM addresses (see lib/chain-detect.ts).
+  if (chainParam) {
+    if (!resolveChainParam(chainParam, wallet)) {
+      return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
+    }
+  } else if (!isRecognizedAddress(wallet)) {
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
   }
-  void chain; // available for downstream DB filters (U6 threads it through)
 
   const gate = await enforceRateLimit('score', request);
   if (!gate.ok) return gate.response;

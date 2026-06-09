@@ -27,6 +27,10 @@ describe('walletSchema', () => {
   test('rejects too-long strings (>56)', () => {
     expect(walletSchema.safeParse('G'.repeat(57)).success).toBe(false);
   });
+
+  test('accepts an EVM 0x address (42 chars, Arc)', () => {
+    expect(walletSchema.safeParse('0x8004A818BFB912233c491871b3d84c89A494BD9e').success).toBe(true);
+  });
 });
 
 describe('get_stellar_karma registration', () => {
@@ -35,5 +39,6 @@ describe('get_stellar_karma registration', () => {
     expect(names).toContain('get_karma');
     expect(names).toContain('get_celo_agent');
     expect(names).toContain('get_stellar_karma');
+    expect(names).toContain('get_arc_karma');
   });
 });

@@ -1,0 +1,432 @@
+/**
+ * Arc ERC-8183 job-settlement indexer (Arc Testnet).
+ *
+ * Reads ERC-8183 AgenticCommerce escrow events from Arc's EVM RPC via viem
+ * getLogs, pairs each `PaymentReleased` (the SETTLEMENT) with its `JobCreated`
+ * (to recover the consumer/client face), and persists Tier-1 receipts:
+ *   - a `transactions` row (amount in USDC 6-dec, tx_signature = settlement
+ *     txHash, chain 'arc'),
+ *   - a Tier-1 PROVIDER signal for the provider (got paid),
+ *   - a Tier-1 CONSUMER signal for the client (paid clean, job settled).
+ *
+ * A settled job = a `PaymentReleased` log. Join on jobId to the `JobCreated`
+ * log (same contract) to recover the client. dedup tx_ref is `<jobId>:<txHash>`.
+ *
+ * Cursor = block number: last_signature = String(maxBlock), last_slot =
+ * maxBlock. startBlock = cursor.last_slot + 1, else ARC_JOBS_START_BLOCK (env)
+ * else GENESIS_FALLBACK_BLOCK. Cursor key is namespaced by the jobs contract
+ * ("arc:<jobsContract>").
+ *
+ * eth_getLogs on Arc is capped at a 10,000-block range per call, so the core
+ * paginates in <=10k windows from the cursor up to the current head.
+ *
+ * DECIMALS TRAP: native gas = 18-dec; the ERC-8183 job `amount` (and the USDC
+ * ERC-20 token) are 6-dec. We decode `amount` with ARC_USDC_DECIMALS (6) — the
+ * 18-dec native gas accounting is never crossed in here.
+ *
+ * New env vars:
+ *   ARC_RPC_URL          — Arc EVM RPC endpoint (required, raises if absent).
+ *   ARC_JOBS_START_BLOCK — genesis block for the first scan (optional).
+ */
+
+import { createPublicClient, http, parseAbiItem, type Log } from 'viem';
+import type { Transaction, Chain } from '@/db/schema';
+import type { IndexRunResult } from '@/chain-adapters/types';
+import { arcTestnet } from '@/config/arc-chain';
+import {
+  insertTransactions as dbInsertTransactions,
+  insertSignalEvents as dbInsertSignalEvents,
+  upsertWallet as dbUpsertWallet,
+  getCursor as dbGetCursor,
+  upsertCursor as dbUpsertCursor,
+  type InsertSignalEventInput,
+} from '@/db/client';
+import { buildJobSettledSignal } from '@/scoring/signals';
+
+// ── ERC-8183 AgenticCommerce escrow address + decimals (Arc Testnet) ──────────
+
+/** ERC-8183 AgenticCommerce (job escrow). Canonical Arc Testnet deployment. */
+export const ARC_JOBS_CONTRACT = '0x0747EEf0706327138c69792bF28Cd525089e4583' as const;
+
+/** ERC-8183 job amounts are USDC token units — 6 decimals, NOT 18-dec gas. */
+export const ARC_USDC_DECIMALS = 6;
+
+const USDC_SCALE = 10 ** ARC_USDC_DECIMALS;
+
+// 'arc' is not yet in the schema Chain union (added by the schema CHANGES pass
+// that wires Arc in after this indexer). Cast keeps this file type-safe and
+// independent of that edit landing first.
+const ARC_CHAIN = 'arc' as Chain;
+
+// ── Canonical EIP-8183 event ABIs (decoded via viem getLogs) ──────────────────
+
+export const JOB_CREATED_EVENT = parseAbiItem(
+  'event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt)',
+);
+
+export const PAYMENT_RELEASED_EVENT = parseAbiItem(
+  'event PaymentReleased(uint256 indexed jobId, address indexed provider, uint256 amount)',
+);
+
+// ── Decoded event records ─────────────────────────────────────────────────────
+
+export interface ArcJobCreated {
+  jobId: bigint;
+  client: `0x${string}`;
+  provider: `0x${string}`;
+  evaluator: `0x${string}`;
+  expiredAt: bigint;
+  blockNumber: bigint;
+  txHash: `0x${string}`;
+}
+
+export interface ArcPaymentReleased {
+  jobId: bigint;
+  provider: `0x${string}`;
+  /** Raw uint256 token value. Divide by 10^6 for human USDC units. */
+  rawAmount: bigint;
+  /** Human-units float, derived from rawAmount / 10^6 (USDC 6-dec). */
+  amount: number;
+  blockNumber: bigint;
+  txHash: `0x${string}`;
+}
+
+/**
+ * Pure: decode a raw JobCreated log. Returns null when args are incomplete
+ * (a malformed/partial log never crashes the scan).
+ */
+export function parseJobCreated(
+  log: Log<bigint, number, false, typeof JOB_CREATED_EVENT>,
+): ArcJobCreated | null {
+  const { jobId, client, provider, evaluator, expiredAt } = log.args;
+  if (jobId === undefined || !client || !provider) return null;
+  return {
+    jobId,
+    client,
+    provider,
+    evaluator: (evaluator ?? '0x0000000000000000000000000000000000000000') as `0x${string}`,
+    expiredAt: expiredAt ?? BigInt(0),
+    blockNumber: log.blockNumber,
+    txHash: log.transactionHash,
+  };
+}
+
+/**
+ * Pure: decode a raw PaymentReleased log into a settlement record. Amount is
+ * scaled by 10^6 (USDC token units). Returns null on incomplete args.
+ */
+export function parsePaymentReleased(
+  log: Log<bigint, number, false, typeof PAYMENT_RELEASED_EVENT>,
+): ArcPaymentReleased | null {
+  const { jobId, provider, amount } = log.args;
+  if (jobId === undefined || !provider || amount === undefined) return null;
+  return {
+    jobId,
+    provider,
+    rawAmount: amount,
+    amount: Number(amount) / USDC_SCALE,
+    blockNumber: log.blockNumber,
+    txHash: log.transactionHash,
+  };
+}
+
+// ─── Row mapping ──────────────────────────────────────────────────────────────
+
+/**
+ * Pure: map a settled job to an AK `transactions` row. wallet_address is the
+ * CLIENT (consumer face / payer); facilitator is the ERC-8183 escrow contract.
+ *
+ * tx_signature = `${jobId}:${txHash}` (NOT the bare txHash). transactions.
+ * tx_signature is UNIQUE; a keeper MAY batch several PaymentReleased events into
+ * one tx, and a bare-txHash key would collapse N batched settlements to a single
+ * row (Postgres ON CONFLICT DO NOTHING) while their per-job signals all survive
+ * — desyncing receipts from signals. jobId disambiguates one row per settled
+ * job and mirrors buildJobSettledSignal's tx_ref. (One job settles once, so
+ * jobId:txHash is itself unique.)
+ */
+export function toTransactionRow(
+  settled: ArcPaymentReleased,
+  client: string,
+  observedAt: string,
+): Omit<Transaction, 'id'> {
+  return {
+    chain: ARC_CHAIN,
+    wallet_address: client,
+    facilitator: ARC_JOBS_CONTRACT,
+    amount: settled.amount,
+    timestamp: observedAt,
+    success: true,
+    tx_signature: `${settled.jobId}:${settled.txHash}`,
+  };
+}
+
+// ─── DI core ──────────────────────────────────────────────────────────────────
+
+export interface GetLogsWindow {
+  created: ArcJobCreated[];
+  released: ArcPaymentReleased[];
+}
+
+export interface ArcJobsIndexerDeps {
+  /** ERC-8183 AgenticCommerce escrow address whose events we read. */
+  jobsContract: string;
+  /** Current chain head block number. Bounds the pagination loop. */
+  getHead: () => Promise<bigint>;
+  /**
+   * Injected getLogs for a single <=10k-block window. Returns both JobCreated
+   * and PaymentReleased logs in [fromBlock, toBlock] (inclusive).
+   */
+  getLogs: (fromBlock: bigint, toBlock: bigint) => Promise<GetLogsWindow>;
+  /**
+   * Optional: resolve a jobId's client when its JobCreated is not in the
+   * scanned window (it landed in a prior, already-indexed window). Production
+   * wiring reads the contract; the unit core leaves it undefined → such a
+   * PaymentReleased is SKIPPED (see unmatched-release policy below).
+   */
+  resolveJobClient?: (jobId: bigint) => Promise<string | null>;
+  /** ISO timestamp source for a block (settlement time). */
+  blockTimestamp: (blockNumber: bigint) => Promise<string>;
+  insertTransactions: (rows: Omit<Transaction, 'id'>[]) => Promise<number>;
+  insertSignalEvents: (inputs: InsertSignalEventInput[]) => Promise<number>;
+  ensureWallet: (address: string) => Promise<void>;
+  getCursor: (key: string) => Promise<{ last_signature: string; last_slot: number | null } | null>;
+  upsertCursor: (key: string, lastSignature: string, lastSlot?: number) => Promise<void>;
+  /** Max blocks per getLogs call. Arc caps eth_getLogs at 10k. */
+  windowSize?: number;
+  /**
+   * Max windows processed per invocation (bounded backfill). When the range
+   * from the cursor to head spans more than this many windows, the run stops
+   * early and advances the cursor to the last processed window; the next run
+   * resumes from there. Defaults to unbounded (scan the whole range to head).
+   */
+  maxWindows?: number;
+}
+
+/** Arc eth_getLogs range cap. Windows must be <= this many blocks. */
+export const ARC_MAX_LOG_WINDOW = 10_000;
+
+/**
+ * Default max windows per production run (bounded backfill). 50 × 10k = 500k
+ * blocks/run, so a deep backfill catches up over several cron ticks without any
+ * single invocation hammering the RPC. Override via opts.maxWindows.
+ */
+export const ARC_DEFAULT_MAX_WINDOWS = 50;
+
+/**
+ * Genesis fallback block when no cursor + no ARC_JOBS_START_BLOCK env. Arc
+ * Testnet's ERC-8183 escrow was deployed recently; 0 is a safe, correct (if
+ * slow) floor that a single backfill pass walks forward from. Production sets
+ * ARC_JOBS_START_BLOCK to the escrow deploy block to avoid the empty-history
+ * scan. See ARC_JOBS_START_BLOCK note in runArcJobsIndexer.
+ */
+export const GENESIS_FALLBACK_BLOCK = 0;
+
+/** Cursor key is namespaced by the jobs contract so it never collides. */
+export function arcJobsCursorKey(jobsContract: string): string {
+  return `arc:${jobsContract}`;
+}
+
+/**
+ * Index settled ERC-8183 jobs from the cursor up to the chain head, in <=10k
+ * block windows. Pure orchestration over injected IO.
+ *
+ * Pairing: within each window we build a jobId → JobCreated map, then for each
+ * PaymentReleased resolve its client. UNMATCHED-RELEASE POLICY: if a settlement
+ * has no JobCreated in the window AND `resolveJobClient` returns null/undefined,
+ * the settlement is SKIPPED (not carried forward) — without a client we cannot
+ * emit the consumer face, and the dual-face settlement model forbids a
+ * provider-only receipt. Skipped settlements still advance the cursor (the
+ * block was scanned), so they are never re-examined.
+ */
+export async function arcJobsIndexer(deps: ArcJobsIndexerDeps): Promise<IndexRunResult> {
+  const cursors = new Map<string, string>();
+  const windowSize = deps.windowSize ?? ARC_MAX_LOG_WINDOW;
+  const maxWindows = deps.maxWindows ?? Number.POSITIVE_INFINITY;
+  const cursorKey = arcJobsCursorKey(deps.jobsContract);
+
+  // Resolve start block from cursor (last_slot + 1), else genesis fallback.
+  let startBlock = BigInt(GENESIS_FALLBACK_BLOCK);
+  const cursor = await deps.getCursor(cursorKey);
+  if (cursor?.last_slot != null) startBlock = BigInt(cursor.last_slot) + BigInt(1);
+
+  const head = await deps.getHead();
+
+  // Nothing new to scan → no-op (cursor already at/after head).
+  if (startBlock > head) {
+    cursors.set(cursorKey, String(head));
+    return { fetched: 0, inserted: 0, cursors };
+  }
+
+  const rows: Omit<Transaction, 'id'>[] = [];
+  const signals: InsertSignalEventInput[] = [];
+  const wallets = new Set<string>();
+  // Cache block timestamps so a window's many settlements at the same block
+  // resolve the ISO time once.
+  const tsCache = new Map<string, string>();
+  const tsFor = async (block: bigint): Promise<string> => {
+    const key = block.toString();
+    const cached = tsCache.get(key);
+    if (cached !== undefined) return cached;
+    const ts = await deps.blockTimestamp(block);
+    tsCache.set(key, ts);
+    return ts;
+  };
+
+  let maxBlock = startBlock - BigInt(1);
+  let windowsProcessed = 0;
+
+  // Paginate in <=windowSize windows. `from`/`to` are inclusive; step is
+  // windowSize blocks so [from, from+windowSize-1] never exceeds the cap.
+  for (let from = startBlock; from <= head; from += BigInt(windowSize)) {
+    let to = from + BigInt(windowSize) - BigInt(1);
+    if (to > head) to = head;
+    if (to > maxBlock) maxBlock = to;
+
+    const { created, released } = await deps.getLogs(from, to);
+
+    // jobId → client (consumer face) recovered from JobCreated in this window.
+    const clientByJob = new Map<string, string>();
+    for (const c of created) clientByJob.set(c.jobId.toString(), c.client);
+
+    for (const settled of released) {
+      const jobKey = settled.jobId.toString();
+      let client = clientByJob.get(jobKey) ?? null;
+      // JobCreated landed in an earlier window → resolve the client lazily.
+      if (client === null && deps.resolveJobClient) {
+        client = await deps.resolveJobClient(settled.jobId);
+      }
+      // Unmatched settlement → skip (cannot attribute the consumer face).
+      if (client === null) continue;
+
+      const observedAt = await tsFor(settled.blockNumber);
+      const provider = settled.provider;
+
+      rows.push(toTransactionRow(settled, client, observedAt));
+      wallets.add(client);
+      wallets.add(provider);
+
+      // Tier-1 receipt pair — provider got paid, client settled clean.
+      signals.push(
+        buildJobSettledSignal({
+          walletAddress: provider, face: 'provider', jobId: jobKey, txHash: settled.txHash,
+          amount: settled.amount, counterparty: client, observedAt,
+        }),
+        buildJobSettledSignal({
+          walletAddress: client, face: 'consumer', jobId: jobKey, txHash: settled.txHash,
+          amount: settled.amount, counterparty: provider, observedAt,
+        }),
+      );
+    }
+
+    // Bounded backfill: stop after maxWindows windows. maxBlock is the last
+    // processed `to`, so the cursor advances exactly there and the next run
+    // resumes seamlessly. Unbounded (Infinity) runs scan straight to head.
+    if (++windowsProcessed >= maxWindows) break;
+  }
+
+  // Cursor advances to the last scanned block even with zero settlements, so a
+  // dry window is never re-scanned.
+  const advanceCursor = async (): Promise<void> => {
+    await deps.upsertCursor(cursorKey, String(maxBlock), Number(maxBlock));
+    cursors.set(cursorKey, String(maxBlock));
+  };
+
+  const fetched = rows.length;
+  if (fetched === 0) {
+    await advanceCursor();
+    return { fetched: 0, inserted: 0, cursors };
+  }
+
+  // FK pre-create both faces before inserting transactions / signal_events.
+  for (const w of wallets) await deps.ensureWallet(w);
+
+  const inserted = await deps.insertTransactions(rows);
+  await deps.insertSignalEvents(signals);
+
+  await advanceCursor();
+  return { fetched, inserted, cursors };
+}
+
+// ─── Production wiring ──────────────────────────────────────────────────────
+
+function getRpcUrl(): string {
+  const url = process.env.ARC_RPC_URL;
+  if (!url) throw new Error('ARC_RPC_URL env var is not set'); // raise, no fallback
+  return url;
+}
+
+function makeClient() {
+  return createPublicClient({ chain: arcTestnet, transport: http(getRpcUrl()) });
+}
+
+/**
+ * Resolve ARC_JOBS_START_BLOCK from env, else the genesis fallback. Parsed as
+ * a base-10 integer; a non-numeric value raises rather than silently scanning
+ * from 0.
+ */
+export function resolveStartBlockEnv(): number {
+  const raw = process.env.ARC_JOBS_START_BLOCK;
+  if (raw === undefined || raw === '') return GENESIS_FALLBACK_BLOCK;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`ARC_JOBS_START_BLOCK is not a non-negative integer: ${raw}`);
+  }
+  return n;
+}
+
+/**
+ * Production indexer run. Reads the canonical Arc Testnet ERC-8183 escrow.
+ * Raises on missing ARC_RPC_URL (no silent fallback).
+ */
+export async function runArcJobsIndexer(
+  opts: { jobsContract?: string; windowSize?: number; maxWindows?: number } = {},
+): Promise<IndexRunResult> {
+  const jobsContract = opts.jobsContract ?? ARC_JOBS_CONTRACT;
+  const client = makeClient();
+  const envStartBlock = resolveStartBlockEnv();
+
+  return arcJobsIndexer({
+    jobsContract,
+    windowSize: opts.windowSize,
+    maxWindows: opts.maxWindows ?? ARC_DEFAULT_MAX_WINDOWS,
+    getHead: async () => client.getBlockNumber(),
+    getLogs: async (fromBlock, toBlock) => {
+      const [createdLogs, releasedLogs] = await Promise.all([
+        client.getLogs({ address: jobsContract as `0x${string}`, event: JOB_CREATED_EVENT, fromBlock, toBlock }),
+        client.getLogs({ address: jobsContract as `0x${string}`, event: PAYMENT_RELEASED_EVENT, fromBlock, toBlock }),
+      ]);
+      const created: ArcJobCreated[] = [];
+      for (const log of createdLogs) {
+        const rec = parseJobCreated(log);
+        if (rec) created.push(rec);
+      }
+      const released: ArcPaymentReleased[] = [];
+      for (const log of releasedLogs) {
+        const rec = parsePaymentReleased(log);
+        if (rec) released.push(rec);
+      }
+      return { created, released };
+    },
+    // A settlement whose JobCreated predates the scanned window: the client is
+    // already recorded on the prior transactions row, but for a fresh run we
+    // skip rather than read storage (the escrow exposes no public client
+    // getter by jobId in the canonical ABI). Left undefined → core SKIPs.
+    blockTimestamp: async (blockNumber) => {
+      const block = await client.getBlock({ blockNumber });
+      return new Date(Number(block.timestamp) * 1000).toISOString();
+    },
+    insertTransactions: dbInsertTransactions,
+    insertSignalEvents: dbInsertSignalEvents,
+    ensureWallet: async (a) => { await dbUpsertWallet(a, 0, 'Unrated', 0, {}, ARC_CHAIN); },
+    getCursor: async (key) => {
+      const c = await dbGetCursor(key, ARC_CHAIN);
+      if (c) return { last_signature: c.last_signature, last_slot: c.last_slot };
+      // No persisted cursor → seed the start from ARC_JOBS_START_BLOCK (env)
+      // via a synthetic last_slot of (start - 1), so the core's `last_slot + 1`
+      // lands the first window exactly on the configured genesis block. Never
+      // silently scans from block 0 when the env is set.
+      return { last_signature: String(envStartBlock - 1), last_slot: envStartBlock - 1 };
+    },
+    upsertCursor: async (key, last, slot) => { await dbUpsertCursor(key, last, slot, ARC_CHAIN); },
+  });
+}

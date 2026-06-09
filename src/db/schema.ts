@@ -14,11 +14,13 @@ import {
 //
 // Every agent identity is keyed by (chain, address). Adding a chain extends
 // this union and feeds the composite primary key on `wallets` plus every
-// foreign key that references it. NEVER reuse a value across chains —
-// addresses are format-disjoint today (Solana base58 vs EVM 0x40hex) but the
-// composite PK is the durable correctness guarantee.
+// foreign key that references it. NEVER reuse a value across chains — Solana/
+// Stellar are format-disjoint, but Celo and Arc are BOTH EVM (0x40hex) and
+// indistinguishable by address alone, so the composite (chain, address) PK is
+// the durable correctness guarantee — never auto-detect an EVM chain from the
+// address (see lib/chain-detect.ts).
 
-export const CHAINS = ['solana', 'celo', 'stellar'] as const;
+export const CHAINS = ['solana', 'celo', 'stellar', 'arc'] as const;
 export type Chain = (typeof CHAINS)[number];
 export const DEFAULT_CHAIN: Chain = 'solana';
 

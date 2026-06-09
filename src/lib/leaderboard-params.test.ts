@@ -10,6 +10,7 @@ describe('parseChain', () => {
   test('valid chains pass through', () => {
     expect(parseChain('solana')).toBe('solana');
     expect(parseChain('celo')).toBe('celo');
+    expect(parseChain('arc')).toBe('arc');
   });
 
   test('null / empty / unknown → undefined (no filter)', () => {
