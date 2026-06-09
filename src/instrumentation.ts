@@ -19,6 +19,9 @@
  *   WALLET_SCAN_WORKER_BATCH         default 1     (wallets per tick — bounds Helius load)
  *   WALLET_SCAN_WORKER_DISABLED      set to "1" to skip registering the loop
  *   WALLET_SCAN_STALE_MS             default 600_000  (10 min — recover stuck 'scanning' rows)
+ *   INDEXER_WORKER_INTERVAL_MS       default 3_600_000 (1h)
+ *   INDEXER_WORKER_LIMIT             default 200   (signatures per facilitator per tick)
+ *   INDEXER_WORKER_DISABLED          set to "1" to skip registering the loop
  */
 
 export async function register() {
@@ -30,6 +33,7 @@ export async function register() {
 
   await registerScoringWorker();
   await registerWalletScanWorker();
+  await registerIndexerWorker();
 }
 
 async function registerScoringWorker() {
@@ -115,5 +119,47 @@ async function registerWalletScanWorker() {
     `[wallet-scan-worker] registered · interval=${intervalMs}ms batch=${batch} ` +
     `stale=${staleMs}ms`,
   );
+  void tick();
+}
+
+async function registerIndexerWorker() {
+  if (process.env.INDEXER_WORKER_DISABLED === '1') {
+    console.log('[indexer-worker] disabled via env');
+    return;
+  }
+
+  const intervalMs = Number(process.env.INDEXER_WORKER_INTERVAL_MS) || 3_600_000;
+  const limit      = Number(process.env.INDEXER_WORKER_LIMIT)       || 200;
+
+  // The Helius push webhook is the real-time ingest path; this incremental
+  // poll is the webhook-independent FLOOR. Without it, a disabled webhook =
+  // total ingest stop with no fallback (the 17-day 2026-05/06 stall). Mirrors
+  // the external /api/cron/indexer + keep-fresh for the app-healthy fast path.
+  const { runIndexer } = await import('./indexer/index');
+
+  let running = false;
+
+  const tick = async () => {
+    if (running) return; // skip if previous run still going
+    running = true;
+    try {
+      const result = await runIndexer(limit, {});
+      if (result.inserted > 0 || result.scored > 0) {
+        console.log(
+          `[indexer-worker] fetched=${result.fetched} inserted=${result.inserted} ` +
+          `scored=${result.scored} operatorsScored=${result.operatorsScored}`,
+        );
+      }
+    } catch (err) {
+      console.error('[indexer-worker] run failed:', err instanceof Error ? err.message : err);
+    } finally {
+      running = false;
+    }
+  };
+
+  const timer = setInterval(() => { void tick(); }, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+
+  console.log(`[indexer-worker] registered · interval=${intervalMs}ms limit=${limit}`);
   void tick();
 }

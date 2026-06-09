@@ -15,6 +15,8 @@
     "indexer:full": "bun run src/indexer/run.ts 200",
     "indexer:backfill": "bun run src/indexer/run.ts 200 --backfill",
     "indexer:stellar": "bun run src/indexer/stellar-run.ts",
+    "keep-fresh": "bun run src/scripts/keep-fresh.ts",
+    "keep-fresh:backfill": "bun run src/scripts/keep-fresh.ts --backfill",
     "enrich": "bun run src/scripts/enrich-wallets.ts",
     "publish": "bun run src/scripts/publish-scores.ts",
     "webhook:setup": "bun run src/scripts/setup-webhook.ts",
