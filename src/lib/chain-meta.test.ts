@@ -31,4 +31,10 @@ describe('chain-meta', () => {
       expect(CHAIN_META[c].href).toMatch(/^\//);
     }
   });
+
+  test('each option carries a brand-mark logo path', () => {
+    for (const c of chainOptions()) {
+      expect(CHAIN_META[c].logo).toMatch(/^\/logos\/.+\.svg$/);
+    }
+  });
 });

@@ -4,8 +4,8 @@ export const DEFAULT_CHAIN: Chain = 'solana';
 
 export interface ChainMeta {
   label: string;
-  /** Tailwind text color for the accent dot/label. */
-  accent: string;
+  /** Public path to the chain's brand mark (SVG, brand color baked in). */
+  logo: string;
   /** Where the switcher links for this chain's context page. */
   href: string;
 }
@@ -16,9 +16,9 @@ export interface ChainMeta {
  * dedicated context page → links home ('/'); Celo → /celo; Stellar → /stellar.
  */
 export const CHAIN_META: Record<Chain, ChainMeta> = {
-  solana: { label: 'Solana', accent: 'text-[#14f195]', href: '/' },
-  celo: { label: 'Celo', accent: 'text-[#fcff52]', href: '/celo' },
-  stellar: { label: 'Stellar', accent: 'text-[#7d00ff]', href: '/stellar' },
+  solana: { label: 'Solana', logo: '/logos/solana-mark.svg', href: '/' },
+  celo: { label: 'Celo', logo: '/logos/celo.svg', href: '/celo' },
+  stellar: { label: 'Stellar', logo: '/logos/stellar.svg', href: '/stellar' },
 };
 
 /** Solana first, then remaining chains in CHAINS declaration order. */

@@ -55,7 +55,8 @@ export function ChainSwitcher() {
         aria-label="Switch chain"
         className="inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-[510] text-[#8a8f98] transition-colors hover:bg-[rgb(255_255_255/0.06)] hover:text-[#f7f8f8]"
       >
-        <span aria-hidden className={`size-1.5 rounded-full bg-current ${CHAIN_META[active].accent}`} />
+        {/* eslint-disable-next-line @next/next/no-img-element -- tiny static brand mark; Image optimizer needs dangerouslyAllowSVG for SVGs */}
+        <img aria-hidden alt="" src={CHAIN_META[active].logo} className="size-3.5 shrink-0 object-contain" />
         <span className="text-[#f7f8f8]">{CHAIN_META[active].label}</span>
         <ChevronDown className="size-3 opacity-70" />
       </button>
@@ -80,7 +81,8 @@ export function ChainSwitcher() {
                     : 'flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] font-[510] text-[#8a8f98] transition-colors hover:bg-[rgb(255_255_255/0.04)] hover:text-[#f7f8f8]'
                 }
               >
-                <span aria-hidden className={`size-1.5 rounded-full bg-current ${m.accent}`} />
+                {/* eslint-disable-next-line @next/next/no-img-element -- tiny static brand mark; Image optimizer needs dangerouslyAllowSVG for SVGs */}
+                <img aria-hidden alt="" src={m.logo} className="size-4 shrink-0 object-contain" />
                 {m.label}
               </Link>
             );
