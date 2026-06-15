@@ -3,7 +3,8 @@ import {
   getAgents,
   type AgentsExploreFilters, type AgentsExploreSort, type AgentSortField,
 } from '@/db/client';
-import type { TrustTier, LivenessStatus, ConfidenceBadge, AutonomyLabel } from '@/db/schema';
+import type { TrustTier, LivenessStatus, ConfidenceBadge, AutonomyLabel, Chain } from '@/db/schema';
+import { isChain } from '@/db/schema';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
 export async function OPTIONS() {
@@ -43,12 +44,14 @@ export async function GET(request: NextRequest) {
   const offset = Math.max(parseInt(sp.get('offset') ?? '0', 10), 0);
 
   const statusList = csv(sp.get('status'), STATUS);
+  const chainParam = sp.get('chain');
   const filters: AgentsExploreFilters = {
     tiers: csv(sp.get('tier'), TIERS),
     confidenceBadges: csv(sp.get('confidence'), BADGES),
     autonomyLabels: csv(sp.get('autonomy'), AUTONOMY),
     status: statusList?.[0], // single-value for now; add multi later
     claimed: sp.get('claimed') === 'true' ? true : sp.get('claimed') === 'false' ? false : undefined,
+    chain: isChain(chainParam) ? (chainParam as Chain) : undefined,
     minProviderScore: num(sp.get('minScore'), 0, 100),
     minCadence: num(sp.get('minCadence')),
     minDiversity: num(sp.get('minDiversity')),
@@ -76,6 +79,7 @@ export async function GET(request: NextRequest) {
     wallets: wallets.map((w, i) => ({
       rank: offset + i + 1,
       address: w.address,
+      chain: w.chain,
       displayName: w.display_name ?? null,
       claimed: w.claimed ?? false,
       providerScore: Number(w.provider_score ?? 0),

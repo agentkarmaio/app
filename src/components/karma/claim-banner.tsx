@@ -7,6 +7,10 @@ import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import {
+  SuccessionDeclaration,
+  buildSuccessionPlan,
+} from '@/components/karma/succession-declaration';
 
 const CATEGORIES = [
   { value: 'ai', label: 'AI / ML' },
@@ -27,6 +31,10 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
   const [website, setWebsite] = useState('');
   const [category, setCategory] = useState('');
   const [tempoAddress, setTempoAddress] = useState('');
+  // Optional succession plan (Dead Man's Switch). Default interval = 7 days; an
+  // empty heir address means "no plan declared" (the field is omitted on POST).
+  const [successionInterval, setSuccessionInterval] = useState(7 * 24 * 3_600);
+  const [successionHeir, setSuccessionHeir] = useState('');
   const [status, setStatus] = useState<'idle' | 'signing' | 'submitting' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -70,6 +78,8 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
 
       setStatus('submitting');
 
+      const successionPlan = buildSuccessionPlan(successionInterval, successionHeir);
+
       const res = await fetch('/api/agent/claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -80,6 +90,9 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
           website: website.trim() || null,
           category: category || null,
           tempoAddress: trimmedTempo || null,
+          // Omit the field entirely when no heir was declared — a bad plan
+          // returns a clean 400 from the route before any DB write.
+          ...(successionPlan ? { succession: successionPlan } : {}),
           signature: signatureB58,
           message,
         }),
@@ -185,6 +198,14 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
               Optional Tier 3 declared signal. If you also operate on the Tempo / MPP rail,
               link your address — displayed alongside Karma but not blended into your score.
             </p>
+            <SuccessionDeclaration
+              intervalSeconds={successionInterval}
+              heirAddress={successionHeir}
+              onChange={({ intervalSeconds, heirAddress }) => {
+                setSuccessionInterval(intervalSeconds);
+                setSuccessionHeir(heirAddress);
+              }}
+            />
             {errorMsg && (
               <p className="text-[12px] text-[#e5484d]">{errorMsg}</p>
             )}

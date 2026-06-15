@@ -7,6 +7,7 @@ import { FacilitatorList } from '@/components/karma/facilitator-list';
 import { BuiltWith } from '@/components/karma/built-with';
 import { Tour } from '@/components/karma/tour';
 import { KarmaCatchingUp } from '@/components/karma/karma-catching-up';
+import { SignalsBand } from '@/components/karma/signals-band';
 import { FAQ } from '@/components/karma/faq';
 import type { LeaderboardEntry } from '@/components/karma/leaderboard-table';
 
@@ -23,6 +24,7 @@ export default function HomePage() {
       <Suspense fallback={<LeaderboardSkeleton />}>
         <LeaderboardSection />
       </Suspense>
+      <SignalsBand />
       <FAQ variant="compact" />
     </div>
   );

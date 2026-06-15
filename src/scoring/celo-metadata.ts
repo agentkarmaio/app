@@ -1,11 +1,16 @@
 /**
- * Metadata-quality score for an ERC-8004 Celo agent.
+ * Metadata-quality score for an ERC-8004 agent (chain-agnostic).
  *
  * AK is uniquely positioned to assess whether an on-chain registered agent
  * has high-quality declared metadata. This sits in AK's Tier 3 framework
  * (declared identity) — orthogonal to receipt-gated Tier 1 and behavioral
  * Tier 2. Score is 0-100, deterministic, derived solely from the
- * registration JSON fetched at the agent's tokenURI.
+ * registration JSON fetched at the agent's tokenURI / agentURI.
+ *
+ * Scheme: `agentkarma_metadata v0.1` — chain-agnostic. The same registration
+ * JSON shape (ERC-8004 spec §registration-v1) is published on Celo (via the
+ * NFT tokenURI), Stellar (via the IdentityRegistry agentURI), and Arc; this
+ * scorer reads any of them through a structural `MetadataAgent` input type.
  *
  * Scoring breakdown (max 100):
  *   20  registration JSON resolves and parses as JSON
@@ -28,7 +33,17 @@ export interface MetadataQualityResult {
   notes: string[];
 }
 
-export function scoreMetadataQuality(agent: CeloAgent): MetadataQualityResult {
+/**
+ * Structural input for the metadata-quality scorer. Any chain adapter that
+ * produces an ERC-8004 registration JSON (Celo `CeloAgent`, Stellar
+ * `StellarAgent`, etc.) conforms — the scorer reads only these two fields.
+ */
+export interface MetadataAgent {
+  registration?: AgentRegistrationFile | null;
+  registrationError?: string;
+}
+
+export function scoreMetadataQuality(agent: MetadataAgent | CeloAgent): MetadataQualityResult {
   const breakdown: Record<string, number> = {
     resolves: 0,
     typeCorrect: 0,

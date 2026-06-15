@@ -5,9 +5,10 @@
  * Run: bun test src/app/api/agent/manifest/refresh/route.test.ts
  */
 
-import { describe, expect, test } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import { NextRequest } from 'next/server';
 import { POST } from './route';
+import { __resetRateLimitForTests } from '@/lib/rate-limit';
 
 const STELLAR = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 
@@ -24,6 +25,10 @@ function makeReq(body: unknown): NextRequest {
 }
 
 describe('POST /api/agent/manifest/refresh guard', () => {
+  // Clear the shared in-memory rate-limit budget before each case so prior
+  // tests (here or in other files) can't push this endpoint's IP over the cap.
+  beforeEach(() => __resetRateLimitForTests());
+
   test('missing wallet → 400 Missing wallet', async () => {
     const res = await POST(makeReq({}));
     expect(res.status).toBe(400);
