@@ -4,21 +4,29 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
-import { Menu } from 'lucide-react';
+import { ChevronDown, Menu } from 'lucide-react';
 import { WalletConnectButton } from '@/components/wallet/wallet-connect-button';
 import { ChainSwitcher } from '@/components/layout/chain-switcher';
 
-const NAV_ITEMS = [
+const PRIMARY_ITEMS = [
   { href: '/', label: 'Leaderboard' },
   { href: '/explore', label: 'Explore' },
   { href: '/succession', label: 'Succession' },
   { href: '/protocol', label: 'Protocol' },
+];
+
+const MORE_ITEMS = [
+  { href: '/bonding', label: 'Bonding' },
+  { href: '/estates', label: 'Estates' },
+  { href: '/sureties', label: 'Sureties' },
   { href: '/celo', label: 'Celo' },
   { href: '/widget', label: 'Widget' },
   { href: '/paysh', label: 'pay.sh' },
   { href: '/docs/mcp', label: 'MCP' },
   { href: '/enterprise', label: 'Enterprise' },
 ];
+
+const ALL_ITEMS = [...PRIMARY_ITEMS, ...MORE_ITEMS];
 
 function isActive(pathname: string, href: string) {
   return href === '/' ? pathname === '/' : pathname.startsWith(href);
@@ -40,17 +48,27 @@ function XIcon({ className }: { className?: string }) {
 export function Navbar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const moreRef = useRef<HTMLDivElement>(null);
+
+  const moreActive = MORE_ITEMS.some((item) => isActive(pathname, item.href));
 
   useEffect(() => {
-    if (!open) return;
+    if (!open && !moreOpen) return;
     function handleClickOutside(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setOpen(false);
       }
+      if (moreRef.current && !moreRef.current.contains(e.target as Node)) {
+        setMoreOpen(false);
+      }
     }
     function handleEscape(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') {
+        setOpen(false);
+        setMoreOpen(false);
+      }
     }
     document.addEventListener('mousedown', handleClickOutside);
     document.addEventListener('keydown', handleEscape);
@@ -58,7 +76,7 @@ export function Navbar() {
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('keydown', handleEscape);
     };
-  }, [open]);
+  }, [open, moreOpen]);
 
   return (
     <header className="sticky top-0 z-50 px-4 pt-4">
@@ -81,7 +99,7 @@ export function Navbar() {
 
         <div className="flex items-center gap-2">
           <nav className="hidden items-center gap-0.5 text-[12.5px] font-[510] md:flex">
-            {NAV_ITEMS.map((item) => {
+            {PRIMARY_ITEMS.map((item) => {
               const active = isActive(pathname, item.href);
               return (
                 <Link
@@ -97,6 +115,57 @@ export function Navbar() {
                 </Link>
               );
             })}
+
+            <div ref={moreRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setMoreOpen((o) => !o)}
+                aria-expanded={moreOpen}
+                aria-haspopup="menu"
+                className={
+                  moreActive || moreOpen
+                    ? 'inline-flex items-center gap-0.5 rounded-full bg-[rgb(255_255_255/0.06)] px-3 py-1.5 text-[#f7f8f8]'
+                    : 'inline-flex items-center gap-0.5 rounded-full px-3 py-1.5 text-[#8a8f98] transition-colors hover:text-[#f7f8f8]'
+                }
+              >
+                More
+                <ChevronDown
+                  className={
+                    moreOpen
+                      ? 'size-3 rotate-180 transition-transform'
+                      : 'size-3 transition-transform'
+                  }
+                />
+              </button>
+
+              {moreOpen && (
+                <div
+                  role="menu"
+                  className="karma-menu-pop absolute right-0 top-[calc(100%+10px)] z-50 w-[176px] rounded-2xl border border-[rgb(255_255_255/0.06)] bg-[#0f1011]/85 p-1 shadow-[0_8px_24px_-12px_rgb(0_0_0/0.6),0_1px_0_0_rgb(255_255_255/0.04)_inset] backdrop-blur-xl backdrop-saturate-150"
+                >
+                  <nav className="flex flex-col gap-[1px]">
+                    {MORE_ITEMS.map((item) => {
+                      const active = isActive(pathname, item.href);
+                      return (
+                        <Link
+                          key={item.href}
+                          href={item.href}
+                          role="menuitem"
+                          onClick={() => setMoreOpen(false)}
+                          className={
+                            active
+                              ? 'rounded-lg bg-[rgb(255_255_255/0.06)] px-2.5 py-1.5 text-[13px] font-[510] text-[#f7f8f8]'
+                              : 'rounded-lg px-2.5 py-1.5 text-[13px] font-[510] text-[#8a8f98] transition-colors hover:bg-[rgb(255_255_255/0.04)] hover:text-[#f7f8f8]'
+                          }
+                        >
+                          {item.label}
+                        </Link>
+                      );
+                    })}
+                  </nav>
+                </div>
+              )}
+            </div>
           </nav>
 
           <div className="hidden md:block">
@@ -140,7 +209,7 @@ export function Navbar() {
                 className="karma-menu-pop absolute right-0 top-[calc(100%+10px)] z-50 w-[176px] rounded-2xl border border-[rgb(255_255_255/0.06)] bg-[#0f1011]/85 p-1 shadow-[0_8px_24px_-12px_rgb(0_0_0/0.6),0_1px_0_0_rgb(255_255_255/0.04)_inset] backdrop-blur-xl backdrop-saturate-150"
               >
                 <nav className="flex flex-col gap-[1px]">
-                  {NAV_ITEMS.map((item) => {
+                  {ALL_ITEMS.map((item) => {
                     const active = isActive(pathname, item.href);
                     return (
                       <Link
