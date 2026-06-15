@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { resolveChainParam, isRecognizedAddress } from '@/lib/chain-detect';
+import { DEFAULT_CHAIN } from '@/db/schema';
 import { getWallet, getTransactions, getLatestSignalValues, enqueueWalletScan } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
@@ -54,7 +55,7 @@ export async function GET(
     const scanGate = await enforceRateLimit('wallet-scan-enqueue', request);
     if (!scanGate.ok) return scanGate.response;
 
-    const result = await enqueueWalletScan(wallet);
+    const result = await enqueueWalletScan(wallet, resolveChainParam(chainParam, wallet) ?? DEFAULT_CHAIN);
 
     return NextResponse.json(
       {

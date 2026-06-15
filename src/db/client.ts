@@ -603,7 +603,10 @@ const SCAN_COOLDOWN_MS = 24 * 60 * 60 * 1000;
  * - wallet has tx_count > 0 (already indexed via facilitator-side scan) → no-op (reason: 'already_indexed')
  * Otherwise upsert wallet stub with scan_state='pending', scan_requested_at=now().
  */
-export async function enqueueWalletScan(address: string): Promise<EnqueueWalletScanResult> {
+export async function enqueueWalletScan(
+  address: string,
+  chain: Chain = DEFAULT_CHAIN,
+): Promise<EnqueueWalletScanResult> {
   if (!address || typeof address !== 'string') {
     return { enqueued: false, reason: 'invalid' };
   }
@@ -611,6 +614,7 @@ export async function enqueueWalletScan(address: string): Promise<EnqueueWalletS
   const { data, error } = await supabase
     .from('wallets')
     .select('tx_count, scan_state, scan_completed_at')
+    .eq('chain', chain)
     .eq('address', address)
     .maybeSingle();
 
@@ -637,6 +641,7 @@ export async function enqueueWalletScan(address: string): Promise<EnqueueWalletS
 
   const now = new Date().toISOString();
   const row: Record<string, unknown> = {
+    chain,
     address,
     scan_state: 'pending',
     scan_requested_at: now,
@@ -651,7 +656,7 @@ export async function enqueueWalletScan(address: string): Promise<EnqueueWalletS
 
   const { error: upsertError } = await supabase
     .from('wallets')
-    .upsert(row, { onConflict: 'address' });
+    .upsert(row, { onConflict: 'chain,address' });
   if (upsertError) throw upsertError;
 
   return { enqueued: true };
@@ -1128,7 +1133,7 @@ export async function insertSignalEvent(
   const { error } = await supabase
     .from('signal_events')
     .upsert(toSignalRow(input), {
-      onConflict: 'agent_wallet,kind,tx_ref',
+      onConflict: 'chain,agent_wallet,kind,tx_ref',
       ignoreDuplicates: !opts.overwrite,
     });
 
@@ -1147,7 +1152,7 @@ export async function insertSignalEvents(
     const { data, error } = await supabase
       .from('signal_events')
       .upsert(rows, {
-        onConflict: 'agent_wallet,kind,tx_ref',
+        onConflict: 'chain,agent_wallet,kind,tx_ref',
         ignoreDuplicates: !opts.overwrite,
       })
       .select('id');
