@@ -61,11 +61,16 @@ export async function declareSuccession(
 
   await insertSignalEvents(
     [
-      buildWillDeclaredSignal(input.agentWallet, {
-        sourceType: input.sourceType,
-        intervalSeconds,
-        willHash: input.willHash ?? null,
-      }),
+      {
+        ...buildWillDeclaredSignal(input.agentWallet, {
+          sourceType: input.sourceType,
+          intervalSeconds,
+          willHash: input.willHash ?? null,
+        }),
+        // Key the signal to the agent's real chain so the (chain, agent_wallet)
+        // FK + dedup index resolve — never default to solana for EVM/Stellar.
+        chain: input.chain,
+      },
     ],
     { overwrite: true },
   );
