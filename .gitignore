@@ -50,3 +50,5 @@ next-env.d.ts
 /contracts/agentkarma-settlement/target/
 # soroban-sdk regenerates these debug snapshots on every `cargo test` run
 /contracts/agentkarma-settlement/test_snapshots/
+/contracts/agentkarma-bond-escrow/target/
+/contracts/agentkarma-bond-escrow/test_snapshots/

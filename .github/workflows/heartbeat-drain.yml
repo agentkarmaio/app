@@ -1,0 +1,51 @@
+name: Heartbeat drain
+
+# Dead Man's Switch liveness floor (all chains). Derives succession liveness from
+# each declared agent's last meaningful tx and emits Tier-2 heartbeat signals.
+# Runs entirely on GitHub's runner so it works even when the web app or its
+# in-process heartbeat worker is wedged — the defense-in-depth twin of the
+# in-process worker (see the 2026-05/06 ingest-freshness incident; servel cron
+# is non-functional on this cluster). AK never executes a will — observe only.
+#
+# Required repo secrets:
+#   NEXT_PUBLIC_SUPABASE_URL   DB endpoint
+#   SUPABASE_SERVICE_ROLE_KEY  DB writes
+
+on:
+  schedule:
+    - cron: '*/30 * * * *' # every 30 min
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: 'Restrict to one chain (blank = all chains)'
+        type: string
+        default: ''
+
+concurrency:
+  group: heartbeat-drain
+  cancel-in-progress: false
+
+jobs:
+  heartbeat-drain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run heartbeat drain
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Pass the input via env (never interpolate ${{ }} into the shell).
+          CHAIN: ${{ inputs.chain }}
+        run: |
+          if [ -n "$CHAIN" ]; then
+            bun run heartbeat:drain --chain "$CHAIN"
+          else
+            bun run heartbeat:drain
+          fi

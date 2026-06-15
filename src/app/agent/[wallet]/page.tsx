@@ -13,6 +13,10 @@ import {
   getAgentManifestsForWallet,
   getLatestSignalValues,
   getWalletScanState,
+  getSuccession,
+  getBondsForAgent,
+  getUnderwriterPositions,
+  getLastMeaningfulTxAt,
   type WalletScanInfo,
 } from '@/db/client';
 import { calculateScore, type WalletScore } from '@/scoring/index';
@@ -23,6 +27,21 @@ import { ScoreRing } from '@/components/karma/score-ring';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge } from '@/components/karma/confidence-badge';
 import { AutonomyChip } from '@/components/karma/autonomy-chip';
+import { SuccessionChip } from '@/components/karma/succession-chip';
+import { SuretyChip } from '@/components/karma/surety-chip';
+import { DeadMansSwitchBlock } from '@/components/karma/dead-mans-switch-block';
+import {
+  buildSuccessionView,
+  buildBondView,
+  buildSuretyView,
+  isBondSettled,
+  toSuretyPosition,
+  type SuccessionView,
+  type SuretyView,
+} from '@/lib/succession-view';
+import type { BondBlock } from '@/components/karma/bond-card';
+import { deriveSuccessionLiveness } from '@/scoring/succession';
+import { computeSurety } from '@/scoring/surety';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { MetricBar } from '@/components/karma/metric-bar';
 import { TransactionList } from '@/components/karma/transaction-list';
@@ -30,15 +49,22 @@ import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { ClaimBanner } from '@/components/karma/claim-banner';
 import { StellarClaimBanner } from '@/components/wallet/stellar-claim-banner';
 import { isStellarAddress } from '@/lib/stellar-verify';
+import { safeHref } from '@/lib/safe-url';
 import { FeedbackSection } from '@/components/karma/feedback-section';
 import { ScoreChart } from '@/components/karma/score-chart';
 import { ManifestCard } from '@/components/karma/manifest-card';
 import { TempoCard } from '@/components/karma/tempo-card';
 import { ScanPoller } from '@/components/scan-poller';
+import { NotIndexedBlock, type NotIndexedChain } from '@/components/karma/not-indexed-block';
+import { CeloAgentProfile } from '@/components/karma/celo-agent-profile';
+import { ArcAgentProfile } from '@/components/karma/arc-agent-profile';
+import { StellarAgentProfile } from '@/components/karma/stellar-agent-profile';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import type { TrustTier, ConfidenceBadge as ConfidenceBadgeValue, AutonomyLabel } from '@/db/schema';
+import type { Chain, TrustTier, ConfidenceBadge as ConfidenceBadgeValue, AutonomyLabel } from '@/db/schema';
+import { resolveAgentChain } from './resolve-chain';
+import { getAdapter } from '@/chain-adapters/registry';
 
 const CATEGORY_LABELS: Record<string, string> = {
   ai: 'AI / ML',
@@ -67,16 +93,40 @@ function shortAddr(addr: string): string {
  * into the index manually.
  */
 /**
- * Chain-aware block explorer link for an account. Stellar (G…) addresses point
- * at stellar.expert; everything else stays on Solscan.
+ * Chain-aware block explorer link for an account. When the chain is known we
+ * dispatch through the ChainAdapter so each chain owns its explorer URL shape.
+ * The legacy fallback keeps Solana/Stellar handling stable for any caller that
+ * still doesn't know the chain (e.g. opengraph-image path).
  */
-function explorerAccountUrl(addr: string): string {
-  return isStellarAddress(addr)
-    ? `https://stellar.expert/explorer/public/account/${addr}`
-    : `https://solscan.io/account/${addr}`;
+function explorerAccountUrl(addr: string, chain?: Chain | null): string {
+  if (chain) {
+    try { return getAdapter(chain).explorerAddressUrl(addr); } catch { /* fall through */ }
+  }
+  if (isStellarAddress(addr)) {
+    return `https://stellar.expert/explorer/public/account/${addr}`;
+  }
+  // EVM 0x address with no chain pin → default to celoscan (richer AK presence).
+  if (/^0x[a-fA-F0-9]{40}$/.test(addr)) {
+    return `https://celoscan.io/address/${addr}`;
+  }
+  return `https://solscan.io/account/${addr}`;
 }
 
-function UnindexedAgentStub({ wallet }: { wallet: string }) {
+function UnindexedAgentStub({
+  wallet,
+  chain,
+}: {
+  wallet: string;
+  chain: NotIndexedChain;
+}) {
+  // Claim flow is wired to Solana and Stellar wallet signing only. Hide the
+  // banner on EVM chains (Celo/Arc) for now — a Celo-appropriate claim path is
+  // a separate piece of work.
+  const showClaimBanner = chain === 'solana' || chain === 'stellar';
+
+  const explorerChain: Chain | null =
+    chain === 'evm-ambiguous' || chain === 'unknown' ? null : chain;
+
   return (
     <div className="space-y-6">
       <Link
@@ -97,7 +147,7 @@ function UnindexedAgentStub({ wallet }: { wallet: string }) {
         <div className="flex items-center gap-3">
           <WalletAddress address={wallet} truncate={false} className="text-muted-foreground" />
           <a
-            href={explorerAccountUrl(wallet)}
+            href={explorerAccountUrl(wallet, explorerChain)}
             target="_blank"
             rel="noopener noreferrer"
             className="text-muted-foreground transition-colors hover:text-foreground"
@@ -109,40 +159,11 @@ function UnindexedAgentStub({ wallet }: { wallet: string }) {
 
       <Separator />
 
-      <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
-            Not indexed yet
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4 text-[13.5px] leading-relaxed text-[#b4bcd0]">
-          <p>
-            AgentKarma hasn&apos;t indexed any on-chain activity for this wallet.
-            The indexer currently ingests x402 payments + pay.sh routed
-            settlement; arbitrary wallet activity is rolled in via seeded-graph
-            expansion as the wallet shows up as a counterparty of a known agent.
-          </p>
-          <p>
-            Two ways to surface this wallet in AgentKarma:
-          </p>
-          <ul className="ml-4 list-disc space-y-1.5 text-[13px]">
-            <li>
-              Have the wallet send or receive an x402 payment (or a pay.sh
-              routed settlement) — the indexer picks it up automatically on the
-              next webhook tick.
-            </li>
-            <li>
-              Claim it: prove ownership with a wallet signature, declare a
-              public manifest, and the agent enters the directory immediately
-              with a ⚪ <span className="font-[510] text-[#d0d6e0]">Declared</span> confidence badge.
-            </li>
-          </ul>
-        </CardContent>
-      </Card>
+      <NotIndexedBlock chain={chain} />
 
-      {isStellarAddress(wallet)
+      {showClaimBanner && (chain === 'stellar'
         ? <StellarClaimBanner walletAddress={wallet} />
-        : <ClaimBanner walletAddress={wallet} />}
+        : <ClaimBanner walletAddress={wallet} />)}
     </div>
   );
 }
@@ -343,6 +364,59 @@ async function computeLiveAgentScore(
     manifestValue,
   );
   return { live, manifestValue, txCount: txs.length, autonomy };
+}
+
+/**
+ * Best-effort assembly of the observe-only Succession + Bond + Surety blocks for
+ * an agent profile, reusing the same shared serializers + pure scoring functions
+ * the v2 API uses (so the page and the API can never disagree). Any DB failure
+ * omits the block rather than sinking the page — these are additive surfaces.
+ *
+ * AK is OBSERVE-ONLY: every value here is derived from indexed lifecycle, never
+ * from funds AK holds. Demo bonds stay flagged via BondView.isDemo + hasDemo.
+ */
+async function loadDeadMansSwitchBlocks(
+  wallet: string,
+  chain: Chain,
+): Promise<{
+  succession: SuccessionView | null;
+  bond: BondBlock | null;
+  surety: SuretyView | null;
+}> {
+  const [successionRow, bonds, positions] = await Promise.all([
+    getSuccession(wallet, chain).catch(() => null),
+    getBondsForAgent(wallet, chain).catch(() => []),
+    getUnderwriterPositions(wallet, chain).catch(() => []),
+  ]);
+
+  let succession: SuccessionView | null = null;
+  if (successionRow) {
+    const lastTx = await getLastMeaningfulTxAt(wallet, chain).catch(() => null);
+    const liveness = deriveSuccessionLiveness({
+      succession: successionRow,
+      lastMeaningfulTxAt: lastTx,
+    });
+    succession = buildSuccessionView(successionRow, liveness);
+  }
+
+  let bond: BondBlock | null = null;
+  if (bonds.length > 0) {
+    const views = bonds.map(buildBondView);
+    const open = views.filter((b) => !isBondSettled(b.status) && b.status !== 'expired');
+    const resolved = views.filter((b) => isBondSettled(b.status) || b.status === 'expired');
+    const totalBondedUsdc = views
+      .filter((b) => b.currency === 'USDC')
+      .reduce((sum, b) => sum + b.amount, 0);
+    bond = { open, resolved, totalBondedUsdc, hasDemo: views.some((b) => b.isDemo) };
+  }
+
+  let surety: SuretyView | null = null;
+  if (positions.length > 0) {
+    const result = computeSurety(positions.map(toSuretyPosition));
+    if (result) surety = buildSuretyView(result);
+  }
+
+  return { succession, bond, surety };
 }
 
 function ScoreBreakdownCard({
@@ -553,19 +627,104 @@ async function TransactionsCard({ wallet }: { wallet: string }) {
 
 export default async function AgentProfilePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ wallet: string }>;
+  searchParams: Promise<{ chain?: string }>;
 }) {
   const { wallet } = await params;
+  const { chain: chainHint } = await searchParams;
+  // Solana base58 is the shortest accepted format at 32 chars. EVM is exactly
+  // 42 (0x + 40 hex); Stellar is 56. Anything below 32 is junk.
   if (!wallet || wallet.length < 32) notFound();
 
-  let walletRow;
+  // Resolve which chain this address belongs to before any chain-scoped reads.
+  // Solana/Stellar narrow from format; EVM (Celo + Arc) requires the DB lookup
+  // to disambiguate. A `?chain=` hint (from agentHref) pins which EVM row to
+  // pick when an address is registered on both Celo and Arc. The returned
+  // `chain` is null for unmatched EVM addresses (the "EVM-flavored stub" case).
+  const resolved = await resolveAgentChain(wallet, chainHint);
+
+  if (resolved.addressClass === 'unknown') notFound();
+
+  // Observe-only Dead Man's Switch + Bonding blocks. Loaded ABOVE the per-chain
+  // render branch so Succession (real, liveness-derived) + Bonds (demo this
+  // round) render on Celo/Arc/Stellar profiles too, not just Solana. Loaded
+  // chain-aware off the resolved chain; null chain (unmatched EVM stub) skips.
+  const dmsBlocks = resolved.chain
+    ? await loadDeadMansSwitchBlocks(wallet, resolved.chain).catch(() => null)
+    : null;
+  const deadMansSwitch =
+    dmsBlocks && (dmsBlocks.succession || dmsBlocks.bond) ? (
+      <DeadMansSwitchBlock succession={dmsBlocks.succession} bond={dmsBlocks.bond} />
+    ) : null;
+
+  // ── EVM branch ─────────────────────────────────────────────────────────────
+  // Celo (and Arc, once richer integration lands) take a separate render path
+  // because the data shape is different: no x402 receipt history, no consumer
+  // feedback form, no score trend — the profile is built from on-chain
+  // ERC-8004 registration + reputation reads keyed by agentId.
+  if (resolved.addressClass === 'evm') {
+    if (resolved.chain === 'celo' && resolved.wallet?.celo_agent_id != null) {
+      return (
+        <CeloAgentProfile
+          wallet={wallet}
+          walletRow={resolved.wallet}
+          agentId={resolved.wallet.celo_agent_id}
+          deadMansSwitch={deadMansSwitch}
+        />
+      );
+    }
+    if (resolved.chain === 'arc' && resolved.wallet?.arc_agent_id != null) {
+      return (
+        <ArcAgentProfile
+          wallet={wallet}
+          walletRow={resolved.wallet}
+          agentId={resolved.wallet.arc_agent_id}
+          deadMansSwitch={deadMansSwitch}
+        />
+      );
+    }
+    // No DB row or no agentId for the resolved chain. Render an EVM-flavored
+    // stub. If we have an unambiguous chain, use it; otherwise fall back to
+    // 'evm-ambiguous' (both Celo and Arc unmatched).
+    const stubChain: NotIndexedChain = resolved.chain ?? 'evm-ambiguous';
+    return <UnindexedAgentStub wallet={wallet} chain={stubChain} />;
+  }
+
+  // ── Stellar branch ─────────────────────────────────────────────────────────
+  // Indexed Stellar (trionlabs/stellar-8004 mainnet) agents render an
+  // ERC-8004-identity view keyed by agentId, same as Celo/Arc — NOT the
+  // Solana receipt/scoring flow below (those reads assume Solana data shapes).
+  // Solana falls through untouched.
+  if (resolved.chain === 'stellar') {
+    if (resolved.wallet?.stellar_agent_id != null) {
+      return (
+        <StellarAgentProfile
+          wallet={wallet}
+          walletRow={resolved.wallet}
+          agentId={resolved.wallet.stellar_agent_id}
+          deadMansSwitch={deadMansSwitch}
+        />
+      );
+    }
+    // Stellar row without an agentId (or no row at all). The Solana scoring
+    // flow below assumes Solana data shapes and must NOT run for a Stellar
+    // address — the `!walletRow` tx-count gate doesn't catch a present-but-
+    // unindexed Stellar row, so guard explicitly here.
+    return <UnindexedAgentStub wallet={wallet} chain="stellar" />;
+  }
+
+  // ── Solana branch ──────────────────────────────────────────────────────────
+  // Existing Solana receipt/scoring flow.
+  const chain: Chain = resolved.chain ?? 'solana';
+
+  let walletRow = resolved.wallet ?? undefined;
   let feedbackSummary = { total: 0, delivered: 0, failed: 0, deliveryRate: 0 };
 
   let manifests: Awaited<ReturnType<typeof getAgentManifestsForWallet>> = [];
   try {
-    [walletRow, feedbackSummary, manifests] = await Promise.all([
-      getWallet(wallet),
+    [feedbackSummary, manifests] = await Promise.all([
       getFeedbackSummary(wallet).catch(() => feedbackSummary),
       getAgentManifestsForWallet(wallet).catch(() => []),
     ]);
@@ -583,7 +742,7 @@ export default async function AgentProfilePage({
     if (scanState && (scanState.state === 'pending' || scanState.state === 'scanning')) {
       return <ScanningAgentStub wallet={wallet} scanState={scanState} />;
     }
-    if (!walletRow) return <UnindexedAgentStub wallet={wallet} />;
+    if (!walletRow) return <UnindexedAgentStub wallet={wallet} chain={chain} />;
   }
 
   // Single source of truth for this page: recompute the score from current
@@ -591,6 +750,15 @@ export default async function AgentProfilePage({
   // identity + timestamps; never for tier labels (they drift when DB isn't
   // backfilled after a scoring change).
   const { live, manifestValue, txCount: liveTxCount, autonomy } = await computeLiveAgentScore(wallet, feedbackSummary);
+
+  // Observe-only Dead Man's Switch + Bonding blocks (additive — never gate the
+  // core profile). Loaded once above (chain-aware) and reused here; the
+  // succession + bond grid renders via `deadMansSwitch`, while the header chips
+  // and summary rows read these directly. Surety is the wallet's underwriter
+  // axis (orthogonal).
+  const succession = dmsBlocks?.succession ?? null;
+  const bond = dmsBlocks?.bond ?? null;
+  const surety = dmsBlocks?.surety ?? null;
 
   const score = live?.score ?? Number(walletRow?.score ?? 0);
   const tier: TrustTier = live?.trustTier ?? (walletRow?.trust_tier ?? 'Unrated') as TrustTier;
@@ -611,7 +779,11 @@ export default async function AgentProfilePage({
   const isClaimed = walletRow?.claimed ?? false;
   const displayName = walletRow?.display_name;
   const agentDescription = walletRow?.description;
-  const agentWebsite = walletRow?.website;
+  // Sanitize: walletRow.website is attacker-controlled (set via the wallet-
+  // signed claim flow, whose `new URL()` check accepts javascript:/data: URIs).
+  // safeHref rejects anything that isn't http(s) — same guard the EVM profiles
+  // and manifest-card use. Returns null for unsafe/unparseable values.
+  const agentWebsite = safeHref(walletRow?.website);
   const agentCategory = walletRow?.category;
   const agentTempoAddress = walletRow?.tempo_address;
 
@@ -623,9 +795,9 @@ export default async function AgentProfilePage({
     url: `${SITE_URL}/agent/${wallet}`,
     description:
       agentDescription
-      ?? `Autonomous on-chain agent on Solana. Provider Karma ${providerScore.toFixed(1)}/100, trust tier ${tier}, confidence ${confidenceBadge}.`,
+      ?? `Autonomous on-chain agent on ${chain === 'celo' ? 'Celo' : chain === 'arc' ? 'Arc' : 'Solana'}. Provider Karma ${providerScore.toFixed(1)}/100, trust tier ${tier}, confidence ${confidenceBadge}.`,
     sameAs: [
-      explorerAccountUrl(wallet),
+      explorerAccountUrl(wallet, chain),
       ...(agentWebsite ? [agentWebsite] : []),
     ],
     additionalProperty: [
@@ -687,6 +859,8 @@ export default async function AgentProfilePage({
             <TierBadge tier={tier} />
             <ConfidenceBadge badge={confidenceBadge} size="sm" />
             <AutonomyChip score={autonomyScore} label={autonomyLabel} size="sm" />
+            <SuccessionChip status={succession?.status ?? null} size="sm" />
+            <SuretyChip score={surety?.score ?? null} label={surety?.label ?? null} size="sm" />
             {isClaimed && (
               <Badge variant="outline" className="bg-[rgb(94_106_210/0.08)] text-[#828fff] border-[rgb(94_106_210/0.15)] text-[10px] px-1.5 py-0 font-[510]">
                 <Verified className="size-3 mr-0.5" />
@@ -697,7 +871,7 @@ export default async function AgentProfilePage({
           <div className="flex items-center gap-3">
             <WalletAddress address={wallet} truncate={false} className="text-muted-foreground" />
             <a
-              href={explorerAccountUrl(wallet)}
+              href={explorerAccountUrl(wallet, chain)}
               target="_blank"
               rel="noopener noreferrer"
               className="text-muted-foreground hover:text-foreground"
@@ -777,6 +951,27 @@ export default async function AgentProfilePage({
                   )}
                 </dd>
               </div>
+              {succession && (
+                <>
+                  <Separator />
+                  <div className="flex justify-between">
+                    <dt className="text-muted-foreground" title="Dead Man's Switch — derived from on-chain liveness. Lifts confidence + Tier-presence, never the tier ceiling.">Succession</dt>
+                    <dd><SuccessionChip status={succession.status} size="sm" /></dd>
+                  </div>
+                </>
+              )}
+              {bond && (bond.open.length > 0 || bond.resolved.length > 0) && (
+                <>
+                  <Separator />
+                  <div className="flex justify-between">
+                    <dt className="text-muted-foreground" title="Vouched-capacity bonds (planned · contingent). Lifts confidence, never the tier ceiling.">Bond</dt>
+                    <dd className="tabular-nums text-[#d0d6e0]">
+                      {bond.open.length + bond.resolved.length} bond{bond.open.length + bond.resolved.length === 1 ? '' : 's'}
+                      {bond.hasDemo && <span className="ml-1 text-[10px] text-[#f5a623]">demo</span>}
+                    </dd>
+                  </div>
+                </>
+              )}
               <Separator />
               <div className="flex justify-between">
                 <dt className="text-muted-foreground">Trust Tier</dt>
@@ -823,6 +1018,8 @@ export default async function AgentProfilePage({
       {manifests.length > 0 && <ManifestCard manifest={manifests[0]} />}
 
       {agentTempoAddress && <TempoCard tempoAddress={agentTempoAddress} />}
+
+      {deadMansSwitch}
 
       <Suspense fallback={<CardSkeleton title="Score Trend" rows={3} />}>
         <ScoreTrendCard wallet={wallet} tier={tier} />

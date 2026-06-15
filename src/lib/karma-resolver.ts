@@ -79,9 +79,10 @@ export const SNAPSHOT_NOT_FOUND = Symbol('karma_not_found');
  * transactions. Callers should treat that as 404.
  */
 export async function resolveKarma(wallet: string): Promise<KarmaSnapshot | null> {
-  const [walletRow, transactions] = await Promise.all([
+  const [walletRow, transactions, signalEvents] = await Promise.all([
     getWallet(wallet),
     getTransactions(wallet, 1000),
+    getSignalEventsForWallet(wallet, 200).catch(() => [] as SignalEvent[]),
   ]);
 
   if (!walletRow && transactions.length === 0) return null;
@@ -112,6 +113,8 @@ export async function resolveKarma(wallet: string): Promise<KarmaSnapshot | null
         feedback.total,
         cadence?.automationScore ?? null,
         manifestMap.get(wallet) ?? null,
+        null,
+        signalEvents,
       )
     : null;
 

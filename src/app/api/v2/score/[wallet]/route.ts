@@ -1,12 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  getWallet, getTransactions, getFeedbackSummary, getLatestSignalValues,
+  getWallet, getWalletsByAddressAnyChain, getTransactions, getFeedbackSummary,
+  getLatestSignalValues, getSignalEventsForWallet,
+  getSuccession, getBondsForAgent, getUnderwriterPositions,
 } from '@/db/client';
+import { detectChain } from '@/lib/chain-detect';
+import type { SignalEvent } from '@/db/schema';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy } from '@/scoring/autonomy';
+import { computeSurety } from '@/scoring/surety';
+import { deriveSuccessionLiveness } from '@/scoring/succession';
 import { readAttestation } from '@/integrations/attestation';
 import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
+import type { Chain } from '@/db/schema';
+import {
+  buildSuccessionView, buildBondView, buildSuretyView, isBondSettled, toSuretyPosition,
+} from '@/lib/succession-view';
 
 export async function OPTIONS() {
   return corsPreflight();
@@ -42,10 +52,24 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
   }
 
-  const [walletRow, transactions] = await Promise.all([
-    getWallet(wallet),
-    getTransactions(wallet, 1000),
-  ]);
+  // Chain-aware resolution. getWallet defaults to solana, so a celo/arc/stellar
+  // wallet would miss. When the solana lookup misses, fall back to ANY-chain
+  // resolution: detectChain narrows solana/stellar by format; EVM addresses are
+  // ambiguous (celo vs arc) and detectChain returns null, so we pick the real
+  // row from getWalletsByAddressAnyChain. We NEVER auto-pick an EVM chain — we
+  // read whichever row(s) the DB holds and prefer the format-detected chain.
+  let walletRow = await getWallet(wallet);
+  if (!walletRow) {
+    const rows = await getWalletsByAddressAnyChain(wallet);
+    if (rows.length === 1) {
+      walletRow = rows[0];
+    } else if (rows.length > 1) {
+      const detected = detectChain(wallet);
+      walletRow = (detected && rows.find((r) => r.chain === detected)) ?? rows[0];
+    }
+  }
+
+  const transactions = await getTransactions(wallet, 1000);
 
   if (!walletRow && transactions.length === 0) {
     return NextResponse.json({ error: 'Wallet not found' }, { status: 404 });
@@ -54,9 +78,10 @@ export async function GET(
   let feedback = { deliveryRate: 0, total: 0 };
   try { feedback = await getFeedbackSummary(wallet); } catch { /* ok */ }
 
-  const [attestation, manifestMap] = await Promise.all([
+  const [attestation, manifestMap, signalEvents] = await Promise.all([
     readAttestation(wallet).catch(() => 0),
     getLatestSignalValues([wallet], 'manifest').catch(() => new Map<string, number>()),
+    getSignalEventsForWallet(wallet, 200).catch(() => [] as SignalEvent[]),
   ]);
 
   const cadence = transactions.length > 0
@@ -77,6 +102,8 @@ export async function GET(
         feedback.total,
         cadence?.automationScore ?? null,
         manifestMap.get(wallet) ?? null,
+        null,
+        signalEvents,
       )
     : null;
 
@@ -150,12 +177,81 @@ export async function GET(
     };
   }
 
+  // --- Additive blocks: succession / bond / surety (Bonding + Dead Man's
+  // Switch). PURELY ADDITIVE — existing consumers ignore unknown keys, so these
+  // never break the stable score shape. AK is OBSERVE-ONLY: these read public
+  // lifecycle projections + pure derivations, never custody or execution.
+  //
+  // CEILING DISCIPLINE: these blocks are descriptive only. A bond/will lifts the
+  // confidence badge + Tier-presence in the SCORING layer, never the trust
+  // ceiling here — this route surfaces state, it does not re-grade.
+  const blockChain: Chain = walletRow?.chain ?? 'solana';
+  await Promise.all([
+    attachSuccessionBlock(response, wallet, blockChain, transactions[0]?.timestamp ?? null),
+    attachBondBlocks(response, wallet, blockChain),
+  ]);
+
   return NextResponse.json(response, {
     headers: {
       ...corsHeaders(),
       'Cache-Control': 'public, max-age=60',
     },
   });
+}
+
+/**
+ * Attach the `succession` block when the agent has a declared will. Best-effort:
+ * a DB hiccup here must never sink the core score response.
+ */
+async function attachSuccessionBlock(
+  response: Record<string, unknown>,
+  wallet: string,
+  chain: Chain,
+  lastTxAt: string | null,
+): Promise<void> {
+  try {
+    const succession = await getSuccession(wallet, chain);
+    if (!succession) return;
+    const liveness = deriveSuccessionLiveness({
+      succession: { status: succession.status, interval_seconds: succession.interval_seconds },
+      lastMeaningfulTxAt: lastTxAt ?? succession.last_heartbeat_at,
+    });
+    response.succession = buildSuccessionView(succession, liveness);
+  } catch { /* additive — omit on failure */ }
+}
+
+/**
+ * Attach the `bond` block (bonds on this agent; demo rows flagged) and the
+ * orthogonal `surety` block (this wallet's underwriting quality). Best-effort.
+ */
+async function attachBondBlocks(
+  response: Record<string, unknown>,
+  wallet: string,
+  chain: Chain,
+): Promise<void> {
+  try {
+    const [bonds, positions] = await Promise.all([
+      getBondsForAgent(wallet, chain),
+      getUnderwriterPositions(wallet, chain),
+    ]);
+
+    if (bonds.length > 0) {
+      const views = bonds.map(buildBondView);
+      response.bond = {
+        open: views.filter((b) => !isBondSettled(b.status) && b.status !== 'expired'),
+        resolved: views.filter((b) => isBondSettled(b.status) || b.status === 'expired'),
+        totalBondedUsdc: Math.round(
+          views.reduce((s, b) => s + (b.currency === 'USDC' ? b.amount : 0), 0) * 1e6,
+        ) / 1e6,
+        hasDemo: views.some((b) => b.isDemo),
+      };
+    }
+
+    // Surety is ORTHOGONAL — its own top-level block, never merged into provider/
+    // consumer karma. Omitted when the wallet underwrites nothing.
+    const surety = computeSurety(positions.map(toSuretyPosition));
+    if (surety) response.surety = buildSuretyView(surety);
+  } catch { /* additive — omit on failure */ }
 }
 
 /**

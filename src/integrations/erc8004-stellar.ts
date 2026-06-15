@@ -195,6 +195,177 @@ export async function readStellarAgentWallet(
   return wallet ?? null;
 }
 
+/**
+ * Total registered agents on the Identity Registry (u64). Doubles as the upper
+ * bound the backfill probes against — the contract assigns sequential agentIds
+ * starting at 0, so `total_agents` is one past the highest valid id.
+ *
+ * Verified 2026-06-11 against the live trionlabs/stellar-8004 mainnet contract.
+ */
+export async function getStellarTotalAgents(server: rpc.Server): Promise<number> {
+  const total = (await simulateView(server, {
+    contractId: STELLAR_IDENTITY_REGISTRY,
+    method: 'total_agents',
+    args: [],
+  })) as bigint | number;
+  return Number(total);
+}
+
+/**
+ * Check whether an agentId is registered. Cheap pre-check before agent_uri,
+ * which reverts (HostError Contract#2) on a non-existent agent.
+ */
+export async function stellarAgentExists(server: rpc.Server, agentId: number): Promise<boolean> {
+  const exists = (await simulateView(server, {
+    contractId: STELLAR_IDENTITY_REGISTRY,
+    method: 'agent_exists',
+    args: [nativeToScVal(agentId, { type: 'u32' })],
+  })) as boolean;
+  return exists === true;
+}
+
+/**
+ * Resolve the owner (StrKey G...) of an agentId via `find_owner` → Option<Address>.
+ * Returns null when the agentId is unregistered. Spec § (trionlabs Identity
+ * Registry) treats owner ≠ agentWallet in general (setAgentWallet can rebind);
+ * AK reads both and persists `owner` as the wallet row's address.
+ */
+export async function readStellarAgentOwner(
+  server: rpc.Server,
+  agentId: number,
+): Promise<string | null> {
+  const owner = (await simulateView(server, {
+    contractId: STELLAR_IDENTITY_REGISTRY,
+    method: 'find_owner',
+    args: [nativeToScVal(agentId, { type: 'u32' })],
+  })) as string | null | undefined;
+  return owner ?? null;
+}
+
+/**
+ * Fetch the agentURI string for an agentId. Throws on a non-existent agent
+ * (Soroban contract revert) — callers should pre-check with `stellarAgentExists`
+ * to distinguish "missing" from a real RPC failure.
+ */
+export async function readStellarAgentUri(
+  server: rpc.Server,
+  agentId: number,
+): Promise<string> {
+  const uri = (await simulateView(server, {
+    contractId: STELLAR_IDENTITY_REGISTRY,
+    method: 'agent_uri',
+    args: [nativeToScVal(agentId, { type: 'u32' })],
+  })) as string;
+  return uri;
+}
+
+// ─── Full agent read (mirrors erc8004-celo.ts readAgent) ────────────────────
+
+import { gunzipSync } from 'zlib';
+import type { AgentRegistrationFile } from './erc8004-celo';
+
+/** Re-export for downstream consumers — the same registration JSON spec. */
+export type { AgentRegistrationFile } from './erc8004-celo';
+
+export interface StellarAgent {
+  agentId: number;
+  /** find_owner result — the registrant's StrKey G... address. */
+  owner: string;
+  /** get_agent_wallet result — equals owner unless set_agent_wallet was used. */
+  agentWallet: string;
+  /** agent_uri raw return — typically `data:application/json;base64,…` or http(s). */
+  agentURI: string;
+  /** Parsed registration JSON (best-effort; null when unresolvable). */
+  registration?: AgentRegistrationFile | null;
+  /** Error message when the URI was reachable but parse/fetch failed. */
+  registrationError?: string;
+}
+
+/**
+ * Parse an agentURI string into the structured ERC-8004 registration JSON.
+ * Supports the same URI schemes as Celo's `fetchRegistration`:
+ *   - data:application/json[;enc=gzip[;level=N]];base64,XXXX
+ *   - http(s):// (8s timeout)
+ *
+ * ipfs:// / ar:// are explicitly unsupported — fall back to attaching the
+ * error string on the StellarAgent rather than throwing.
+ */
+async function fetchStellarRegistration(uri: string): Promise<AgentRegistrationFile | null> {
+  if (uri.startsWith('data:application/json')) {
+    const commaIdx = uri.indexOf(',');
+    if (commaIdx < 0) throw new Error('data URI missing comma separator');
+    const header = uri.slice(5, commaIdx); // strip 'data:'
+    const body = uri.slice(commaIdx + 1);
+    const params = header.split(';');
+    const isBase64 = params.includes('base64');
+    const isGzip = params.some((p) => p.startsWith('enc=gzip'));
+
+    let buf: Buffer;
+    if (isBase64) {
+      buf = Buffer.from(body, 'base64');
+    } else {
+      buf = Buffer.from(decodeURIComponent(body), 'utf-8');
+    }
+    if (isGzip) buf = gunzipSync(buf);
+    return JSON.parse(buf.toString('utf-8')) as AgentRegistrationFile;
+  }
+
+  if (!uri.startsWith('http://') && !uri.startsWith('https://')) {
+    throw new Error(`unsupported URI scheme: ${uri.slice(0, 32)}…`);
+  }
+  const res = await fetch(uri, {
+    signal: AbortSignal.timeout(8000),
+    headers: { 'User-Agent': 'AgentKarma/1.0' },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()) as AgentRegistrationFile;
+}
+
+/**
+ * Read a full Stellar agent — owner, agentWallet, agentURI, and the parsed
+ * registration JSON — for one agentId. Returns null when the agentId is not
+ * registered. Network errors against the off-chain registration host attach
+ * to `registrationError` rather than failing the whole read (mirrors Celo).
+ *
+ * Used by `scripts/stellar-backfill-agents.ts` to materialize every registered
+ * Stellar agent into AK's wallets table.
+ */
+export async function readStellarAgent(
+  server: rpc.Server,
+  agentId: number,
+): Promise<StellarAgent | null> {
+  // Pre-gate: agent_uri reverts (HostError Contract#2) on a non-existent
+  // agentId — wrap the whole sequence after confirming existence so a revert
+  // can be distinguished from a real RPC failure.
+  const exists = await stellarAgentExists(server, agentId);
+  if (!exists) return null;
+
+  const [owner, agentWallet, agentURI] = await Promise.all([
+    readStellarAgentOwner(server, agentId),
+    readStellarAgentWallet(server, agentId),
+    readStellarAgentUri(server, agentId),
+  ]);
+
+  // owner / agentWallet should be set for an existing agent, but the contract
+  // allows agentWallet to be unset → fall back to owner per spec §3.
+  if (!owner) return null;
+
+  const agent: StellarAgent = {
+    agentId,
+    owner,
+    agentWallet: agentWallet ?? owner,
+    agentURI,
+  };
+
+  try {
+    agent.registration = await fetchStellarRegistration(agentURI);
+  } catch (err) {
+    agent.registrationError = err instanceof Error ? err.message : String(err);
+  }
+
+  return agent;
+}
+
 // ─── Score mapping ──────────────────────────────────────────────────────────
 
 // AK rates each agent under provider/consumer tags scoped to AK's own

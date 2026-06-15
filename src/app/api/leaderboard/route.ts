@@ -52,6 +52,7 @@ export async function GET(request: NextRequest) {
       return {
         rank: offset + i + 1,
         address: w.address,
+        chain: w.chain,
         displayName: w.display_name ?? null,
         score: Number(w.score),
         providerScore: w.provider_score != null ? Number(w.provider_score) : Number(w.score),
