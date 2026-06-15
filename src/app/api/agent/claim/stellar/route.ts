@@ -138,7 +138,7 @@ export async function POST(request: NextRequest) {
 
   // Trigger a regressive scan for the claimer's wallet — fire-and-forget,
   // idempotent (enqueueWalletScan dedups in_progress/cooldown/already_indexed).
-  enqueueWalletScan(address).catch((err) => {
+  enqueueWalletScan(address, 'stellar').catch((err) => {
     console.error('[claim:stellar] enqueueWalletScan failed:', err);
   });
 

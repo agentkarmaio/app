@@ -182,8 +182,8 @@ export async function bondProjector(deps: BondProjectorDeps): Promise<IndexRunRe
         });
       }
 
-      signals.push(
-        buildBondOpenedSignal(ev.bondedAgent, {
+      signals.push({
+        ...buildBondOpenedSignal(ev.bondedAgent, {
           bondId,
           txHash: ev.openTxHash,
           underwriterCount,
@@ -191,7 +191,9 @@ export async function bondProjector(deps: BondProjectorDeps): Promise<IndexRunRe
           observedAt: ev.observedAt,
           isDemo: deps.source.isDemo,
         }),
-      );
+        // Key to the bond's chain so the (chain, agent_wallet) FK + dedup resolve.
+        chain: ev.chain,
+      });
     } else {
       // resolved
       await deps.ensureWallet(ev.bondedAgent, ev.chain);
@@ -215,8 +217,8 @@ export async function bondProjector(deps: BondProjectorDeps): Promise<IndexRunRe
       });
       upserted++;
 
-      signals.push(
-        buildBondResolvedSignal(ev.bondedAgent, {
+      signals.push({
+        ...buildBondResolvedSignal(ev.bondedAgent, {
           bondId,
           txHash: ev.resolveTxHash,
           outcome: ev.success ? 'success' : 'failure',
@@ -224,7 +226,8 @@ export async function bondProjector(deps: BondProjectorDeps): Promise<IndexRunRe
           observedAt: ev.observedAt,
           isDemo: deps.source.isDemo,
         }),
-      );
+        chain: ev.chain,
+      });
     }
   }
 
