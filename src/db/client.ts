@@ -12,7 +12,8 @@ import type {
   ConfidenceBadge, SignalEvent, SignalTier, KarmaFace, AutonomyLabel,
   AgentManifest, ManifestSourceType, ParsedManifest,
   Organization, OrganizationMember, WalletScanState,
-  Chain,
+  Chain, Succession, SuccessionStatus, SuccessionSourceType, SuccessionHeir,
+  Bond, BondUnderwriter, BondStatus,
 } from './schema';
 
 // Every DB helper that takes a wallet address optionally takes a chain. The
@@ -66,6 +67,25 @@ export async function getWallet(address: string, chain: Chain = DEFAULT_CHAIN): 
   if (error && error.code === 'PGRST116') return null;
   if (error) throw error;
   return data as Wallet;
+}
+
+/**
+ * Look up every wallet row matching `address` across ANY chain. Used by the
+ * agent detail page when the URL doesn't pin a chain — Solana/Stellar can be
+ * narrowed from address format but Celo and Arc share the EVM 0x…40hex format,
+ * so a single EVM address can map to up to two rows (one per chain) which the
+ * caller must disambiguate (UI selector, default rules). Returns rows ordered
+ * by `chain` for deterministic UI rendering. Indexed by `idx_wallets_address`.
+ */
+export async function getWalletsByAddressAnyChain(address: string): Promise<Wallet[]> {
+  const { data, error } = await supabase
+    .from('wallets')
+    .select('*')
+    .eq('address', address)
+    .order('chain', { ascending: true });
+
+  if (error) throw error;
+  return (data ?? []) as Wallet[];
 }
 
 export interface UpsertWalletOpts {
@@ -195,6 +215,7 @@ export interface AgentsExploreFilters {
   autonomyLabels?: AutonomyLabel[];
   status?: LivenessStatus;
   claimed?: boolean;
+  chain?: Chain;            // restrict to a single chain; omitted = all chains
   minProviderScore?: number;
   minCadence?: number;
   minDiversity?: number;
@@ -213,11 +234,16 @@ export async function getAgents(
   filters: AgentsExploreFilters = {},
   sort: AgentsExploreSort = { field: 'provider_score', direction: 'desc' },
 ): Promise<LeaderboardPage> {
+  // Score > 0 gate matches getLeaderboard semantics. Previously this was
+  // tx_count > 0 which excluded Celo/Stellar/Arc rows whose only signal is
+  // Tier-3 metadata_quality (no indexed transactions). Solana rows with
+  // tx_count > 0 always carry score > 0, so this doesn't regress them.
   let q = supabase
     .from('wallets')
     .select('*', { count: 'exact' })
-    .gt('tx_count', 0);
+    .gt('score', 0);
 
+  if (filters.chain) q = q.eq('chain', filters.chain);
   if (filters.tiers?.length) q = q.in('trust_tier', filters.tiers);
   if (filters.confidenceBadges?.length) q = q.in('confidence_badge', filters.confidenceBadges);
   if (filters.autonomyLabels?.length) q = q.in('autonomy_label', filters.autonomyLabels);
@@ -1047,6 +1073,13 @@ export async function upsertCursor(
 
 export interface InsertSignalEventInput {
   agentWallet: string;
+  /**
+   * Owning chain for the (chain, agent_wallet) FK + dedup index. Optional for
+   * back-compat: omitted = DB default 'solana' (every pre-existing caller). NEW
+   * multi-chain callers (heartbeat worker, future chain indexers) MUST set it so
+   * the signal row keys to the right wallet — never auto-detect from address.
+   */
+  chain?: Chain;
   tier: SignalTier;
   kind: string;
   face?: KarmaFace;
@@ -1066,6 +1099,7 @@ function toSignalRow(input: InsertSignalEventInput): Record<string, unknown> {
     face: input.face ?? 'provider',
     weight: input.weight ?? 1.0,
   };
+  if (input.chain !== undefined) row.chain = input.chain;
   if (input.value !== undefined) row.value = input.value;
   if (input.payload !== undefined) row.payload = input.payload;
   if (input.signedBy !== undefined) row.signed_by = input.signedBy;
@@ -1596,4 +1630,419 @@ export async function getTransactionBySig(txSignature: string): Promise<Transact
   if (error && error.code === 'PGRST116') return null;
   if (error) throw error;
   return data as Transaction;
+}
+
+// --- Successions / Dead Man's Switch (Agent Wills) ---------------------------
+//
+// AK is read-only over the succession lifecycle (RFC §12 Non-Custody). These
+// helpers project the `successions` table for the public Agent Estates feed and
+// the per-agent succession endpoint. NEVER write/execute a will here.
+
+/**
+ * Read the declared succession plan for one agent. Chain-scoped — (chain,
+ * agent_wallet) is the composite PK. Returns null when no will is declared.
+ */
+export async function getSuccession(
+  agentWallet: string,
+  chain: Chain = DEFAULT_CHAIN,
+): Promise<Succession | null> {
+  const { data, error } = await supabase
+    .from('successions')
+    .select('*')
+    .eq('chain', chain)
+    .eq('agent_wallet', agentWallet)
+    .maybeSingle();
+
+  if (error && error.code !== 'PGRST116') throw error;
+  if (!data) return null;
+  return data as Succession;
+}
+
+export interface ReapableFilters {
+  chain?: Chain;
+  /** Statuses to include; defaults to the "reapable" set below. */
+  statuses?: SuccessionStatus[];
+}
+
+export interface ReapablePage {
+  successions: Succession[];
+  total: number;
+}
+
+/** Statuses surfaced in the public Agent Estates feed (estate is claimable). */
+export const REAPABLE_STATUSES: SuccessionStatus[] = ['lapsing', 'lapsed', 'executed'];
+
+/**
+ * Page the public Agent Estates feed: declared wills whose status is in the
+ * reapable set (lapsing/lapsed/executed by default). Ordered by last_heartbeat
+ * ascending (most-stale first) so the freshest reapable estates surface up top.
+ * Optionally chain-filtered.
+ */
+export async function getReapableSuccessions(
+  limit = 25,
+  offset = 0,
+  filters: ReapableFilters = {},
+): Promise<ReapablePage> {
+  const statuses = filters.statuses?.length ? filters.statuses : REAPABLE_STATUSES;
+
+  let q = supabase
+    .from('successions')
+    .select('*', { count: 'exact' })
+    .in('status', statuses);
+
+  if (filters.chain) q = q.eq('chain', filters.chain);
+
+  const { data, error, count } = await q
+    // NULLs (never any heartbeat) first — those are the stalest of all.
+    .order('last_heartbeat_at', { ascending: true, nullsFirst: true })
+    .order('agent_wallet', { ascending: true })
+    .range(offset, offset + limit - 1);
+
+  if (error) throw error;
+  return { successions: (data ?? []) as Succession[], total: count ?? 0 };
+}
+
+/**
+ * Upsert a declared succession plan. (chain, agent_wallet) is the composite PK,
+ * so re-declaring OVERWRITES the prior will (matches the manifest resolver's
+ * overwrite-on-refresh convention). On first declaration the status seeds to
+ * 'declared'; on re-declaration a non-terminal status is reset to 'declared'
+ * (a fresh plan restarts liveness derivation), while terminal states
+ * (executed/revoked) are NOT silently re-opened — the caller must clear them.
+ *
+ * FK pre-create: the wallet row MUST exist (the claim/declare write-path ensures
+ * it). This helper does not create the wallet — callers that might race ahead of
+ * a wallet row should claim/upsert it first.
+ */
+export interface UpsertSuccessionInput {
+  agentWallet: string;
+  chain?: Chain;
+  sourceType: SuccessionSourceType;
+  intervalSeconds: number;
+  heirs: SuccessionHeir[];
+  willHash?: string | null;
+}
+
+export async function upsertSuccession(input: UpsertSuccessionInput): Promise<void> {
+  const chain = input.chain ?? DEFAULT_CHAIN;
+  const now = new Date().toISOString();
+
+  // Read prior row to preserve declared_at + first-heartbeat history and to
+  // refuse re-opening a terminal will via a plain re-declare.
+  const existing = await getSuccession(input.agentWallet, chain);
+
+  const row: Record<string, unknown> = {
+    chain,
+    agent_wallet: input.agentWallet,
+    source_type: input.sourceType,
+    interval_seconds: input.intervalSeconds,
+    heirs: input.heirs,
+    will_hash: input.willHash ?? null,
+    status: 'declared' as SuccessionStatus,
+    updated_at: now,
+  };
+
+  if (!existing) {
+    row.declared_at = now;
+  } else if (existing.status === 'executed' || existing.status === 'revoked') {
+    // Don't resurrect a terminal will through a re-declare; keep the terminal
+    // status + its timestamp. The plan fields still update (new heirs/interval).
+    row.status = existing.status;
+  }
+
+  const { error } = await supabase
+    .from('successions')
+    .upsert(row, { onConflict: 'chain,agent_wallet' });
+
+  if (error) throw error;
+
+  // Denormalize interval onto the wallet so the Explore filter can read cadence
+  // without joining. status/heartbeat_last_at are written by the heartbeat
+  // worker; on first declaration seed status='declared' so the badge/feed react
+  // immediately.
+  const walletPatch: Record<string, unknown> = {
+    heartbeat_interval_seconds: input.intervalSeconds,
+    updated_at: now,
+  };
+  if (!existing) walletPatch.succession_status = 'declared';
+
+  const { error: wErr } = await supabase
+    .from('wallets')
+    .update(walletPatch)
+    .eq('chain', chain)
+    .eq('address', input.agentWallet);
+  if (wErr) throw wErr;
+}
+
+/**
+ * List declared successions the heartbeat worker should re-evaluate. Excludes
+ * terminal states (executed/revoked) — their status is a settled fact and never
+ * changes from liveness derivation. Ordered by last_heartbeat ascending (NULLs
+ * first) so the stalest agents are processed first under a bounded batch.
+ */
+export async function listSuccessionsForHeartbeat(
+  limit = 500,
+  chain?: Chain,
+): Promise<Succession[]> {
+  let q = supabase
+    .from('successions')
+    .select('*')
+    .not('status', 'in', '("executed","revoked")');
+
+  if (chain) q = q.eq('chain', chain);
+
+  const { data, error } = await q
+    .order('last_heartbeat_at', { ascending: true, nullsFirst: true })
+    .order('agent_wallet', { ascending: true })
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []) as Succession[];
+}
+
+/**
+ * Persist a derived liveness read: writes successions.status +
+ * last_heartbeat_at (+ lapsed_at when first entering 'lapsed') AND denormalizes
+ * succession_status + heartbeat_last_at onto the wallet row in lockstep. Pure
+ * status write — never executes or modifies a will. Idempotent.
+ */
+export interface ApplySuccessionLivenessInput {
+  agentWallet: string;
+  chain?: Chain;
+  status: SuccessionStatus;
+  heartbeatLastAt: string | null;
+}
+
+export async function applySuccessionLiveness(
+  input: ApplySuccessionLivenessInput,
+): Promise<void> {
+  const chain = input.chain ?? DEFAULT_CHAIN;
+  const now = new Date().toISOString();
+
+  const succPatch: Record<string, unknown> = {
+    status: input.status,
+    last_heartbeat_at: input.heartbeatLastAt,
+    updated_at: now,
+  };
+  // Stamp lapsed_at the moment we first derive 'lapsed' (observation time of the
+  // succession condition being met — not a will execution).
+  if (input.status === 'lapsed') succPatch.lapsed_at = now;
+
+  const { error } = await supabase
+    .from('successions')
+    .update(succPatch)
+    .eq('chain', chain)
+    .eq('agent_wallet', input.agentWallet);
+  if (error) throw error;
+
+  const { error: wErr } = await supabase
+    .from('wallets')
+    .update({
+      succession_status: input.status,
+      heartbeat_last_at: input.heartbeatLastAt,
+      updated_at: now,
+    })
+    .eq('chain', chain)
+    .eq('address', input.agentWallet);
+  if (wErr) throw wErr;
+}
+
+/**
+ * Chain-scoped "last meaningful tx" timestamp for the heartbeat read. Unlike
+ * getRecentTransactionsForWallet (address-only), this pins (chain, wallet) so a
+ * Celo address never reads an Arc tx under the same 0x string. Returns the
+ * newest tx timestamp (ISO) or null when the agent has no indexed activity.
+ */
+export async function getLastMeaningfulTxAt(
+  agentWallet: string,
+  chain: Chain = DEFAULT_CHAIN,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('timestamp')
+    .eq('chain', chain)
+    .eq('wallet_address', agentWallet)
+    .order('timestamp', { ascending: false })
+    .limit(1);
+
+  if (error) throw error;
+  const row = (data ?? [])[0] as { timestamp: string } | undefined;
+  return row ? new Date(row.timestamp).toISOString() : null;
+}
+
+// --- Bonds / Agent Bonding (read-only projection) ---------------------------
+//
+// AK never holds the bond and is NEVER the resolution oracle (RFC §12). These
+// helpers project the escrow's public lifecycle. Demo/seeded rows carry
+// is_demo=true and MUST stay visibly flagged in any payload.
+
+/**
+ * All bonds taken out on an agent (the agent is the bonded party), newest
+ * first. Chain-scoped via (chain, bonded_agent_wallet) FK.
+ */
+export async function getBondsForAgent(
+  agentWallet: string,
+  chain: Chain = DEFAULT_CHAIN,
+): Promise<Bond[]> {
+  const { data, error } = await supabase
+    .from('bonds')
+    .select('*')
+    .eq('chain', chain)
+    .eq('bonded_agent_wallet', agentWallet)
+    .order('opened_at', { ascending: false });
+
+  if (error) throw error;
+  return (data ?? []) as Bond[];
+}
+
+/**
+ * Underwriting positions a wallet holds (it backs OTHER agents' bonds), joined
+ * to each bond's status/amount so callers can map them into SuretyPosition and
+ * render surety activity. Chain-scoped via (chain, underwriter_wallet) FK.
+ */
+export async function getUnderwriterPositions(
+  underwriterWallet: string,
+  chain: Chain = DEFAULT_CHAIN,
+): Promise<Array<BondUnderwriter & { bond: Bond | null }>> {
+  const { data, error } = await supabase
+    .from('bond_underwriters')
+    .select('*, bonds(*)')
+    .eq('chain', chain)
+    .eq('underwriter_wallet', underwriterWallet)
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return ((data ?? []) as Array<BondUnderwriter & { bonds: Bond | null }>).map((row) => {
+    const { bonds, ...rest } = row;
+    return { ...rest, bond: bonds ?? null };
+  });
+}
+
+/**
+ * Lloyd's leaderboard read: wallets ranked by Surety Karma (the orthogonal
+ * underwriter-quality axis), highest first. Only wallets that have underwritten
+ * at least one bond carry a non-null surety_score, so this naturally excludes
+ * everyone else. Optionally chain-filtered. Read-only projection of the
+ * denormalized surety columns the bond projector maintains.
+ */
+export interface SuretyLeaderboardFilters {
+  chain?: Chain;
+}
+
+export interface SuretyLeaderboardPage {
+  wallets: Wallet[];
+  total: number;
+}
+
+export async function getSuretyLeaderboard(
+  limit = 25,
+  offset = 0,
+  filters: SuretyLeaderboardFilters = {},
+): Promise<SuretyLeaderboardPage> {
+  let q = supabase
+    .from('wallets')
+    .select('*', { count: 'exact' })
+    .not('surety_score', 'is', null);
+
+  if (filters.chain) q = q.eq('chain', filters.chain);
+
+  const { data, error, count } = await q
+    .order('surety_score', { ascending: false })
+    .order('address', { ascending: true })
+    .range(offset, offset + limit - 1);
+
+  if (error) throw error;
+  return { wallets: (data ?? []) as Wallet[], total: count ?? 0 };
+}
+
+/**
+ * Upsert one projected bond row, keyed on (chain, escrow_ref) — the escrow
+ * contract/account id is the durable identity of a bond, so re-indexing the same
+ * escrow's events is idempotent (open then later resolve updates one row). Never
+ * writes funds or triggers resolution — this is a read-only projection of the
+ * escrow's public lifecycle. Returns the row's id (needed to attach
+ * underwriters).
+ *
+ * `isDemo` MUST be true for seeded rows so the UI never implies a real on-chain
+ * bond before an escrow is deployed.
+ */
+export interface UpsertBondInput {
+  chain?: Chain;
+  bondedAgentWallet: string;
+  beneficiary: string;
+  escrowRef: string;
+  taskRef?: string | null;
+  amount: number;
+  currency?: string;
+  status: BondStatus;
+  resolutionProofTx?: string | null;
+  isDemo?: boolean;
+  openedAt?: string | Date;
+  resolvedAt?: string | Date | null;
+}
+
+export async function upsertBond(input: UpsertBondInput): Promise<string> {
+  const chain = input.chain ?? DEFAULT_CHAIN;
+  const row: Record<string, unknown> = {
+    chain,
+    bonded_agent_wallet: input.bondedAgentWallet,
+    beneficiary: input.beneficiary,
+    escrow_ref: input.escrowRef,
+    task_ref: input.taskRef ?? null,
+    amount: input.amount,
+    currency: input.currency ?? 'USDC',
+    status: input.status,
+    resolution_proof_tx: input.resolutionProofTx ?? null,
+    is_demo: input.isDemo ?? false,
+  };
+  if (input.openedAt !== undefined) {
+    row.opened_at = typeof input.openedAt === 'string' ? input.openedAt : input.openedAt.toISOString();
+  }
+  if (input.resolvedAt !== undefined && input.resolvedAt !== null) {
+    row.resolved_at = typeof input.resolvedAt === 'string' ? input.resolvedAt : input.resolvedAt.toISOString();
+  }
+
+  const { data, error } = await supabase
+    .from('bonds')
+    .upsert(row, { onConflict: 'chain,escrow_ref' })
+    .select('id')
+    .single();
+
+  if (error) throw error;
+  return (data as { id: string }).id;
+}
+
+/**
+ * Upsert one underwriter position on a bond, keyed on
+ * (bond_id, chain, underwriter_wallet). Idempotent re-index: a later resolve
+ * stamps `settled` + `premium_earned` on the same row. Surety Karma derivation
+ * reads these outcomes — never the underwriter's own Provider/Consumer face.
+ */
+export interface UpsertBondUnderwriterInput {
+  bondId: string;
+  chain?: Chain;
+  underwriterWallet: string;
+  stakeAmount: number;
+  premiumEarned?: number | null;
+  settled?: boolean;
+}
+
+export async function upsertBondUnderwriter(
+  input: UpsertBondUnderwriterInput,
+): Promise<void> {
+  const chain = input.chain ?? DEFAULT_CHAIN;
+  const row: Record<string, unknown> = {
+    bond_id: input.bondId,
+    chain,
+    underwriter_wallet: input.underwriterWallet,
+    stake_amount: input.stakeAmount,
+    settled: input.settled ?? false,
+  };
+  if (input.premiumEarned !== undefined) row.premium_earned = input.premiumEarned;
+
+  const { error } = await supabase
+    .from('bond_underwriters')
+    .upsert(row, { onConflict: 'bond_id,chain,underwriter_wallet' });
+
+  if (error) throw error;
 }

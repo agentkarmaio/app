@@ -5,14 +5,19 @@ import {
 import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge } from '@/components/karma/confidence-badge';
 import { AutonomyChip } from '@/components/karma/autonomy-chip';
+import { ChainBadge } from '@/components/karma/chain-badge';
+import { agentHref } from '@/lib/agent-href';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { Sparkline } from '@/components/karma/sparkline';
-import type { TrustTier, ConfidenceBadge as ConfidenceBadgeValue, AutonomyLabel } from '@/db/schema';
+import type {
+  TrustTier, ConfidenceBadge as ConfidenceBadgeValue, AutonomyLabel, Chain,
+} from '@/db/schema';
 
 export interface LeaderboardEntry {
   rank: number;
   address: string;
+  chain: Chain;
   displayName?: string | null;
   score: number;
   trustTier: TrustTier;
@@ -60,23 +65,29 @@ export function LeaderboardTable({
       <TableBody>
         {entries.map((entry) => (
           <TableRow
-            key={entry.address}
+            // Composite key: EVM addresses (Celo + Arc) share the 0x40hex
+            // format, so the same address can appear once per chain. Keying
+            // on address alone collides and React merges the rows.
+            key={`${entry.chain}:${entry.address}`}
             className={pulsingAddresses?.has(entry.address) ? 'karma-row-pulse' : undefined}
           >
             <TableCell className="text-center font-medium text-muted-foreground tabular-nums">
               {entry.rank}
             </TableCell>
             <TableCell>
-              <Link
-                href={`/agent/${entry.address}`}
-                className="hover:underline underline-offset-4"
-              >
-                {entry.displayName ? (
-                  <span className="text-[13px] font-[510] text-[#f7f8f8]">{entry.displayName}</span>
-                ) : (
-                  <WalletAddress address={entry.address} copyable={false} />
-                )}
-              </Link>
+              <div className="flex items-center gap-2 min-w-0">
+                <ChainBadge chain={entry.chain} />
+                <Link
+                  href={agentHref(entry)}
+                  className="hover:underline underline-offset-4 min-w-0 truncate"
+                >
+                  {entry.displayName ? (
+                    <span className="text-[13px] font-[510] text-[#f7f8f8]">{entry.displayName}</span>
+                  ) : (
+                    <WalletAddress address={entry.address} copyable={false} />
+                  )}
+                </Link>
+              </div>
             </TableCell>
             <TableCell className="text-center font-bold tabular-nums">
               {Number(entry.score).toFixed(1)}

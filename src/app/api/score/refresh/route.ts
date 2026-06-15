@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAllTransactions, getTransactions, upsertWallet, insertScoreSnapshot, getFeedbackSummary, getLatestSignalValues, insertSignalEvents } from '@/db/client';
+import { getAllTransactions, getTransactions, upsertWallet, insertScoreSnapshot, getFeedbackSummary, getLatestSignalValues, getSignalEventsForWallet, insertSignalEvents } from '@/db/client';
 import { calculateScore, calculateScores } from '@/scoring/index';
 import { readAttestation, readAttestations } from '@/integrations/attestation';
 import { computeCadence } from '@/scoring/cadence';
@@ -24,10 +24,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No transactions found for wallet' }, { status: 404 });
     }
 
-    const [attestation, feedback, manifestMap] = await Promise.all([
+    const [attestation, feedback, manifestMap, signalEvents] = await Promise.all([
       readAttestation(wallet),
       getFeedbackSummary(wallet),
       getLatestSignalValues([wallet], 'manifest'),
+      getSignalEventsForWallet(wallet, 200).catch(() => []),
     ]);
 
     // Recompute + re-emit cadence + autonomy for this wallet.
@@ -49,6 +50,8 @@ export async function POST(request: NextRequest) {
       feedback.total,
       cadence?.automationScore ?? null,
       manifestMap.get(wallet) ?? null,
+      null,
+      signalEvents,
     );
     await upsertWallet(wallet, score.score, score.trustTier, score.txCount, {
       providerScore: score.providerScore,

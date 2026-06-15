@@ -26,6 +26,47 @@ import type { AutonomyResult } from './autonomy';
  */
 export const AGGREGATE_TX_REF = 'aggregate';
 
+// ─── Succession + Bonding signal-event kinds (Dead Man's Switch + bonds) ───────
+//
+// See docs/BONDING-AND-SUCCESSION-DESIGN.md §4. Typed constants colocated with
+// the other signal definitions so callers (indexer, cron, demo seeders) import
+// one canonical string and never hand-type a kind.
+//
+// CARDINAL DISCIPLINE (enforced in scoring/index.ts evidenceGatedTier): these
+// signals raise the confidence badge + Tier-presence ONLY. They MUST NOT lift
+// the evidence-gated trust-tier ceiling, which stays governed by behavioral
+// thickness — a thin-file agent cannot reach "Excellent" on a bond or a will.
+//
+// `will_declared` is Tier 3 (declared) — it NEVER lifts the badge off ⚪ alone
+// without Tier-1/2 corroboration (the badge logic keys off the highest present
+// tier, so a wallet whose only signal is `will_declared` stays declared/⚪).
+export const SIGNAL_KINDS = {
+  // Dead Man's Switch (Agent Wills)
+  WILL_DECLARED:        'will_declared',        // T3 provider — declared intent
+  HEARTBEAT_OBSERVED:   'heartbeat_observed',   // T2 provider — positive durability
+  HEARTBEAT_LAPSED:     'heartbeat_lapsed',     // T2 provider — bounded negative
+  INHERITANCE_EXECUTED: 'inheritance_executed', // T1 provider — settled handoff
+  WILL_REVOKED:         'will_revoked',         // T1 provider — owner reclaimed
+  // Agent Bonding (surety-bond-as-signal)
+  BOND_OPENED:          'bond_opened',          // T1 provider — vouch in progress
+  BOND_RESOLVED:        'bond_resolved',        // T1 provider — +/- by outcome
+} as const;
+
+export type SignalKind = (typeof SIGNAL_KINDS)[keyof typeof SIGNAL_KINDS];
+
+/**
+ * Set of signal kinds that lift confidence badge + Tier-presence ONLY and MUST
+ * NOT raise the evidence-gated trust-tier ceiling. Read by the scoring layer to
+ * enforce the cardinal discipline (a bond/will is "borrowed capital").
+ */
+export const PRESENCE_ONLY_KINDS: ReadonlySet<string> = new Set<string>([
+  SIGNAL_KINDS.WILL_DECLARED,
+  SIGNAL_KINDS.INHERITANCE_EXECUTED,
+  SIGNAL_KINDS.WILL_REVOKED,
+  SIGNAL_KINDS.BOND_OPENED,
+  SIGNAL_KINDS.BOND_RESOLVED,
+]);
+
 /**
  * Build the Tier 2 signal for a single x402 payment.
  * `signed_by` = facilitator address (the entity that routed/coordinated the tx).
@@ -236,4 +277,236 @@ export function buildManifestSignal(
       url: opts.url ?? null,
     },
   };
+}
+
+// ─── Dead Man's Switch signal builders ────────────────────────────────────────
+
+/**
+ * Build the Tier 3 `will_declared` signal — an agent declared a succession plan.
+ *
+ * Declared intent only: durability INTENT, not durability evidence. Tier 3 so
+ * the confidence-badge logic NEVER lifts off ⚪ on this alone — heartbeat (T2)
+ * or inheritance (T1) corroboration is required for 🟡/🟢. Aggregate tx_ref
+ * (one row per wallet, overwrite-idempotent on re-declaration).
+ */
+export function buildWillDeclaredSignal(
+  walletAddress: string,
+  opts: { sourceType: string; intervalSeconds: number; willHash?: string | null },
+): InsertSignalEventInput {
+  return {
+    agentWallet: walletAddress,
+    tier: 3,
+    kind: SIGNAL_KINDS.WILL_DECLARED,
+    face: 'provider',
+    weight: 1.0,
+    value: 0.5, // declared-unverified, mirrors manifest's unverified floor
+    txRef: AGGREGATE_TX_REF,
+    payload: {
+      sourceType: opts.sourceType,
+      intervalSeconds: opts.intervalSeconds,
+      willHash: opts.willHash ?? null,
+    },
+  };
+}
+
+/**
+ * Build the Tier 2 `heartbeat_observed` signal — the agent is alive within its
+ * declared succession interval. Positive provider durability. `value` is the
+ * recency-decayed liveness strength in [0,1]. Aggregate tx_ref (current state).
+ *
+ * Succession liveness feeds Provider durability ONLY — never Autonomy. The same
+ * raw heartbeat tx is read separately by computeAutonomy for cadence; do not
+ * double-count one observation into both orthogonal axes.
+ */
+export function buildHeartbeatObservedSignal(
+  walletAddress: string,
+  opts: { strength: number; lastHeartbeatAt: string | Date; intervalSeconds: number },
+): InsertSignalEventInput {
+  return {
+    agentWallet: walletAddress,
+    tier: 2,
+    kind: SIGNAL_KINDS.HEARTBEAT_OBSERVED,
+    face: 'provider',
+    weight: 1.0,
+    value: clampUnit(opts.strength),
+    txRef: AGGREGATE_TX_REF,
+    payload: {
+      lastHeartbeatAt: toIso(opts.lastHeartbeatAt),
+      intervalSeconds: opts.intervalSeconds,
+    },
+  };
+}
+
+/**
+ * Build the Tier 2 `heartbeat_lapsed` signal — the declared interval elapsed
+ * with no meaningful tx. A BOUNDED negative durability haircut: emitted at
+ * Tier 2, so the four-tier weight cap (0.25) structurally prevents zeroing the
+ * provider score. `value` carries the (positive) haircut magnitude in [0,1] for
+ * display; the scoring layer applies it as a bounded decay, never a Tier-1 hit.
+ */
+export function buildHeartbeatLapsedSignal(
+  walletAddress: string,
+  opts: { haircut: number; lapsedAt: string | Date; intervalSeconds: number },
+): InsertSignalEventInput {
+  return {
+    agentWallet: walletAddress,
+    tier: 2,
+    kind: SIGNAL_KINDS.HEARTBEAT_LAPSED,
+    face: 'provider',
+    weight: 1.0,
+    value: clampUnit(opts.haircut),
+    txRef: AGGREGATE_TX_REF,
+    payload: {
+      lapsedAt: toIso(opts.lapsedAt),
+      intervalSeconds: opts.intervalSeconds,
+    },
+  };
+}
+
+/**
+ * Build the Tier 1 `inheritance_executed` signal — an on-chain succession
+ * transfer settled (graceful handoff). Provider face = the deceased agent's
+ * clean handoff. The heir's clean-receipt Consumer-face credit is emitted
+ * separately by the caller (two-faced, never collapsed). Per-event tx_ref.
+ */
+export function buildInheritanceExecutedSignal(
+  walletAddress: string,
+  opts: { txHash: string; heirCount?: number; observedAt?: string | Date },
+): InsertSignalEventInput {
+  const out: InsertSignalEventInput = {
+    agentWallet: walletAddress,
+    tier: 1,
+    kind: SIGNAL_KINDS.INHERITANCE_EXECUTED,
+    face: 'provider',
+    weight: 1.0,
+    value: 1.0,
+    txRef: opts.txHash,
+    payload: { txHash: opts.txHash, heirCount: opts.heirCount ?? null },
+  };
+  if (opts.observedAt !== undefined) out.observedAt = opts.observedAt;
+  return out;
+}
+
+/**
+ * Build the Tier 1 `will_revoked` signal — the owner reclaimed control before
+ * timeout. Neutral/positive: proves liveness + control. Per-event tx_ref.
+ */
+export function buildWillRevokedSignal(
+  walletAddress: string,
+  opts: { txHash: string; observedAt?: string | Date },
+): InsertSignalEventInput {
+  const out: InsertSignalEventInput = {
+    agentWallet: walletAddress,
+    tier: 1,
+    kind: SIGNAL_KINDS.WILL_REVOKED,
+    face: 'provider',
+    weight: 1.0,
+    value: 1.0,
+    txRef: opts.txHash,
+    payload: { txHash: opts.txHash },
+  };
+  if (opts.observedAt !== undefined) out.observedAt = opts.observedAt;
+  return out;
+}
+
+// ─── Agent Bonding signal builders ────────────────────────────────────────────
+
+/**
+ * Build the Tier 1 `bond_opened` signal — third parties locked USDC vouching
+ * the agent will deliver. Provider face. Strength ramps by underwriter count
+ * (1=0.85, 2=0.95, 3+=1.0) × log-scaled bonded amount. tx_ref = `bondId:txHash`
+ * for per-event dedup.
+ *
+ * CARDINAL: this is real money (badge → 🟢) but it raises confidence + presence
+ * ONLY. PRESENCE_ONLY_KINDS membership tells the scorer to NOT lift the ceiling.
+ */
+export function buildBondOpenedSignal(
+  walletAddress: string,
+  opts: {
+    bondId: string;
+    txHash: string;
+    underwriterCount: number;
+    bondedUsdc: number;
+    observedAt?: string | Date;
+    /**
+     * Marks the signal as DEMO-only. Bonds ship demo-only this round (no on-chain
+     * escrow deployed). The scoring aggregator EXCLUDES is_demo signals from real
+     * scores — signal_events has no is_demo column, so the flag rides in the
+     * payload and the aggregator reads it back.
+     */
+    isDemo?: boolean;
+  },
+): InsertSignalEventInput {
+  const ramp = opts.underwriterCount >= 3 ? 1.0 : opts.underwriterCount === 2 ? 0.95 : 0.85;
+  // log10(1+usdc)/log10(1+10_000) saturates a $10k bond to ~1.0; small bonds
+  // contribute proportionally less without ever zeroing.
+  const amountFactor = clampUnit(Math.log10(1 + Math.max(0, opts.bondedUsdc)) / Math.log10(10_001));
+  const out: InsertSignalEventInput = {
+    agentWallet: walletAddress,
+    tier: 1,
+    kind: SIGNAL_KINDS.BOND_OPENED,
+    face: 'provider',
+    weight: 1.0,
+    value: clampUnit(ramp * amountFactor),
+    txRef: `${opts.bondId}:${opts.txHash}`,
+    payload: {
+      bondId: opts.bondId,
+      underwriterCount: opts.underwriterCount,
+      bondedUsdc: opts.bondedUsdc,
+      is_demo: opts.isDemo ?? false,
+    },
+  };
+  if (opts.observedAt !== undefined) out.observedAt = opts.observedAt;
+  return out;
+}
+
+/**
+ * Build the Tier 1 `bond_resolved` signal — the edge escrow resolved at the edge
+ * (success authorized by the beneficiary; failure permissionless post-deadline),
+ * AK is never the resolution oracle and only records the terminal state.
+ * Success = strong positive (value=1.0); failure = cost-gated negative
+ * (value=0.0, flagged in payload). Provider face only. tx_ref=`bondId:txHash`.
+ */
+export function buildBondResolvedSignal(
+  walletAddress: string,
+  opts: {
+    bondId: string;
+    txHash: string;
+    outcome: 'success' | 'failure';
+    bondedUsdc: number;
+    observedAt?: string | Date;
+    /** See buildBondOpenedSignal — demo-only marker carried in the payload. */
+    isDemo?: boolean;
+  },
+): InsertSignalEventInput {
+  const out: InsertSignalEventInput = {
+    agentWallet: walletAddress,
+    tier: 1,
+    kind: SIGNAL_KINDS.BOND_RESOLVED,
+    face: 'provider',
+    weight: 1.0,
+    value: opts.outcome === 'success' ? 1.0 : 0.0,
+    txRef: `${opts.bondId}:${opts.txHash}`,
+    payload: {
+      bondId: opts.bondId,
+      outcome: opts.outcome,
+      bondedUsdc: opts.bondedUsdc,
+      is_demo: opts.isDemo ?? false,
+    },
+  };
+  if (opts.observedAt !== undefined) out.observedAt = opts.observedAt;
+  return out;
+}
+
+// ─── local helpers ────────────────────────────────────────────────────────────
+
+function clampUnit(x: number): number {
+  if (!Number.isFinite(x)) return 0;
+  if (x < 0) return 0;
+  if (x > 1) return 1;
+  return x;
+}
+
+function toIso(v: string | Date): string {
+  return typeof v === 'string' ? v : v.toISOString();
 }

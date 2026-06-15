@@ -1,0 +1,51 @@
+# AgentKarma ownerless bond-escrow contract (Agent Bonding).
+#
+# Self-contained cargo workspace, intentionally OUTSIDE the Next.js/bun project
+# (lives under contracts/, never src/). bun/tsc/eslint never see this crate.
+#
+# OWNERLESS BY CONSTRUCTION: there is NO admin entrypoint, NO stored admin
+# address, NO upgrade path. AgentKarma holds no key here and can neither resolve
+# nor sweep a bond. The escrow SELF-RESOLVES from an objective on-chain
+# settlement proof (a completed USDC SAC transfer to the beneficiary OR back to
+# the underwriters) that ANYONE can submit and the contract independently
+# verifies against its own immutable terms. AK only OBSERVES the public events.
+#
+# Tests run NATIVELY on the host via soroban-sdk's `testutils` feature — no
+# wasm32 target and no stellar-cli required. A wasm build / testnet deploy is
+# deferred-operational (needs stellar-cli, out of scope here). DO NOT DEPLOY.
+
+[workspace]
+resolver = "2"
+members = ["."]
+
+[package]
+name = "agentkarma-bond-escrow"
+version = "0.1.0"
+edition = "2021"
+description = "Ownerless, self-resolving surety-bond escrow for AgentKarma agent bonding on Soroban. No admin, no oracle — resolves from objective on-chain settlement proof. AK observes only (non-custody)."
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = "26.0.1"
+
+[dev-dependencies]
+# testutils enables Env::register, generated *Client, Address::generate, Ledger
+# mocking, token test SAC, and mock_all_auths — the whole native test harness.
+soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+
+# Reproducible release profile — mirrors agentkarma-settlement for deterministic
+# WASM. (Applied to a real `stellar contract build` later; harmless natively.)
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true

@@ -100,24 +100,34 @@ export default async function ExplorePage({ searchParams }: Props) {
 }
 
 function TabNav({ active }: { active: ExploreTab }) {
-  const tabs: { key: ExploreTab; label: string }[] = [
-    { key: 'agents',   label: 'Agents' },
-    { key: 'activity', label: 'Activity' },
+  // Agents + Activity are tabs of this page; Estates + Sureties are full
+  // dashboards (the Dead Man's Switch + Lloyd's surfaces) that live at their own
+  // routes — link out so the nav stays one coherent directory entry point.
+  const tabs: { href: string; label: string; active: boolean; pill?: string }[] = [
+    { href: '/explore?tab=agents', label: 'Agents', active: active === 'agents' },
+    { href: '/explore?tab=activity', label: 'Activity', active: active === 'activity' },
+    { href: '/estates', label: 'Estates', active: false },
+    { href: '/sureties', label: 'Sureties', active: false, pill: 'planned' },
   ];
   return (
     <div className="border-b border-[rgb(255_255_255/0.06)] flex gap-5">
       {tabs.map((t) => (
         <Link
-          key={t.key}
-          href={t.key === 'agents' ? '/explore?tab=agents' : '/explore?tab=activity'}
+          key={t.label}
+          href={t.href}
           className={cn(
-            "pb-2.5 -mb-px border-b-2 text-[13px] font-[510] tracking-[-0.165px] transition-colors",
-            active === t.key
+            "pb-2.5 -mb-px border-b-2 text-[13px] font-[510] tracking-[-0.165px] transition-colors inline-flex items-center gap-1.5",
+            t.active
               ? "border-[#5e6ad2] text-[#f7f8f8]"
               : "border-transparent text-[#8a8f98] hover:text-[#f7f8f8]",
           )}
         >
           {t.label}
+          {t.pill && (
+            <span className="rounded-full border border-[rgb(245_166_35/0.22)] bg-[rgb(245_166_35/0.10)] px-1.5 py-0 text-[9px] font-[510] uppercase tracking-[0.08em] text-[#f5a623]">
+              {t.pill}
+            </span>
+          )}
         </Link>
       ))}
     </div>

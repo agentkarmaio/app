@@ -2,15 +2,23 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { TrustTier } from '@/db/schema';
+import type { Chain, TrustTier } from '@/db/schema';
+import { agentHref } from '@/lib/agent-href';
 
 interface Agent {
+  // chain is included so addresses that collide across EVM chains (Celo/Arc)
+  // stay distinct in React keys and lookup maps.
+  chain: Chain;
   address: string;
   displayName: string | null;
   score: number;
   trustTier: TrustTier;
   txCount: number;
   primaryFacilitator: string | null;
+}
+
+function agentKey(a: Pick<Agent, 'chain' | 'address'>) {
+  return `${a.chain}:${a.address}`;
 }
 
 interface GraphResponse {
@@ -100,8 +108,11 @@ function layout(agents: Agent[]): Positioned[] {
 export function TrustGraphMini() {
   const router = useRouter();
   const [data, setData] = useState<GraphResponse | null>(null);
+  // Pulses carry a raw Solana address (x402 stream is Solana-only). Ambient
+  // carries a composite agentKey because it picks from data.agents (all chains)
+  // where bare EVM addresses collide across Celo/Arc.
   const [pulses, setPulses] = useState<{ address: string; id: number }[]>([]);
-  const [ambient, setAmbient] = useState<{ address: string; id: number } | null>(null);
+  const [ambient, setAmbient] = useState<{ key: string; id: number } | null>(null);
   const seenSigs = useRef<Set<string>>(new Set());
   const pulseIdRef = useRef(0);
   const seededRef = useRef(false);
@@ -168,11 +179,11 @@ export function TrustGraphMini() {
 
   useEffect(() => {
     if (!data || data.agents.length === 0) return;
-    const addresses = data.agents.slice(0, MAX_NODES).map((a) => a.address);
+    const keys = data.agents.slice(0, MAX_NODES).map((a) => agentKey(a));
     const interval = setInterval(() => {
-      const pick = addresses[Math.floor(Math.random() * addresses.length)];
+      const pick = keys[Math.floor(Math.random() * keys.length)];
       const id = ++pulseIdRef.current;
-      setAmbient({ address: pick, id });
+      setAmbient({ key: pick, id });
       setTimeout(() => {
         setAmbient((cur) => (cur?.id === id ? null : cur));
       }, 1700);
@@ -185,15 +196,29 @@ export function TrustGraphMini() {
     [data],
   );
 
+  // Position lookup keyed by composite agentKey (chain:address). Bare EVM
+  // addresses collide across Celo/Arc, so keying on address alone drops a node.
+  // Pulse lookups build a `solana:` key (x402 stream is Solana-only); ambient
+  // already carries a composite key.
   const positionMap = useMemo(() => {
     const m = new Map<string, Positioned>();
-    for (const p of positioned) m.set(p.agent.address, p);
+    for (const p of positioned) m.set(agentKey(p.agent), p);
     return m;
   }, [positioned]);
 
   const hoveredAgent = hovered
-    ? data?.agents.find((a) => a.address === hovered) ?? null
+    ? data?.agents.find((a) => agentKey(a) === hovered) ?? null
     : null;
+
+  // Distinct chains actually present in the rendered set — drives the
+  // honest "{N} agents · {C} chains" caption. Stellar may contribute zero
+  // rows today, so this can read 3 chains instead of 4 without lying.
+  const chainCount = useMemo(() => {
+    if (!data) return 0;
+    const chains = new Set<Chain>();
+    for (const a of data.agents.slice(0, MAX_NODES)) chains.add(a.chain);
+    return chains.size;
+  }, [data]);
 
   if (!data || data.agents.length === 0) {
     return <div className="h-[360px] w-full" aria-hidden />;
@@ -223,24 +248,27 @@ export function TrustGraphMini() {
               <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
-          {positioned.map((p) => (
-            <linearGradient
-              key={`g-${p.agent.address}`}
-              id={`edge-${p.agent.address}`}
-              x1={CX}
-              y1={CY}
-              x2={p.x}
-              y2={p.y}
-              gradientUnits="userSpaceOnUse"
-            >
-              <stop offset="0%" stopColor="#5e6ad2" stopOpacity="0.35" />
-              <stop
-                offset="100%"
-                stopColor={TIER_FILL[p.agent.trustTier]}
-                stopOpacity="0.5"
-              />
-            </linearGradient>
-          ))}
+          {positioned.map((p) => {
+            const k = agentKey(p.agent);
+            return (
+              <linearGradient
+                key={`g-${k}`}
+                id={`edge-${k}`}
+                x1={CX}
+                y1={CY}
+                x2={p.x}
+                y2={p.y}
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop offset="0%" stopColor="#5e6ad2" stopOpacity="0.35" />
+                <stop
+                  offset="100%"
+                  stopColor={TIER_FILL[p.agent.trustTier]}
+                  stopOpacity="0.5"
+                />
+              </linearGradient>
+            );
+          })}
         </defs>
 
         {/* Ambient hub glow */}
@@ -268,20 +296,21 @@ export function TrustGraphMini() {
 
         {/* Edges with gradient + pulse highlighting */}
         {positioned.map((p) => {
-          const isPulsing = pulses.some((x) => x.address === p.agent.address);
-          const isAmbient = ambient?.address === p.agent.address;
-          const isHovered = hovered === p.agent.address;
+          const k = agentKey(p.agent);
+          const isPulsing = p.agent.chain === 'solana' && pulses.some((x) => x.address === p.agent.address);
+          const isAmbient = ambient?.key === k;
+          const isHovered = hovered === k;
           const active = isPulsing || isHovered || isAmbient;
           return (
             <line
-              key={`edge-${p.agent.address}`}
+              key={`edge-${k}`}
               x1={CX}
               y1={CY}
               x2={p.x}
               y2={p.y}
               stroke={
                 active
-                  ? `url(#edge-${p.agent.address})`
+                  ? `url(#edge-${k})`
                   : 'rgb(255 255 255 / 0.055)'
               }
               strokeWidth={isPulsing ? 1.1 : active ? 0.8 : 0.5}
@@ -338,10 +367,10 @@ export function TrustGraphMini() {
 
         {/* Ambient / recent pulse dots traveling node → hub */}
         {pulses.map((pulse) => {
-          const pos = positionMap.get(pulse.address);
+          const pos = positionMap.get(`solana:${pulse.address}`);
           if (!pos) return null;
           const tier =
-            data.agents.find((a) => a.address === pulse.address)?.trustTier ??
+            data.agents.find((a) => a.chain === 'solana' && a.address === pulse.address)?.trustTier ??
             'Unrated';
           return (
             <circle
@@ -376,10 +405,10 @@ export function TrustGraphMini() {
         })}
 
         {ambient && (() => {
-          const pos = positionMap.get(ambient.address);
+          const pos = positionMap.get(ambient.key);
           if (!pos) return null;
           const tier =
-            data.agents.find((a) => a.address === ambient.address)?.trustTier ??
+            data.agents.find((a) => agentKey(a) === ambient.key)?.trustTier ??
             'Unrated';
           return (
             <circle
@@ -444,15 +473,16 @@ export function TrustGraphMini() {
 
         {/* Agent nodes */}
         {positioned.map((p) => {
-          const isPulsing = pulses.some((x) => x.address === p.agent.address);
-          const isHovered = hovered === p.agent.address;
+          const k = agentKey(p.agent);
+          const isPulsing = p.agent.chain === 'solana' && pulses.some((x) => x.address === p.agent.address);
+          const isHovered = hovered === k;
           const isTop = TOP_TIERS.includes(p.agent.trustTier);
           return (
             <g
-              key={p.agent.address}
-              onMouseEnter={() => setHovered(p.agent.address)}
+              key={k}
+              onMouseEnter={() => setHovered(k)}
               onMouseLeave={() => setHovered(null)}
-              onClick={() => router.push(`/agent/${p.agent.address}`)}
+              onClick={() => router.push(agentHref(p.agent))}
               className="karma-node-float"
               style={{
                 cursor: 'pointer',
@@ -547,7 +577,7 @@ export function TrustGraphMini() {
       )}
 
       <div className="pointer-events-none absolute bottom-1 right-1 font-mono text-[9px] tabular-nums text-[#4f5258]">
-        top {Math.min(data.agents.length, MAX_NODES)} by karma
+        {Math.min(data.agents.length, MAX_NODES)} agents · {chainCount} chain{chainCount === 1 ? '' : 's'}
       </div>
     </div>
   );

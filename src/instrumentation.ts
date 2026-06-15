@@ -22,6 +22,9 @@
  *   INDEXER_WORKER_INTERVAL_MS       default 3_600_000 (1h)
  *   INDEXER_WORKER_LIMIT             default 200   (signatures per facilitator per tick)
  *   INDEXER_WORKER_DISABLED          set to "1" to skip registering the loop
+ *   HEARTBEAT_WORKER_INTERVAL_MS     default 300_000 (5m)
+ *   HEARTBEAT_WORKER_BATCH           default 500   (successions per tick, all chains)
+ *   HEARTBEAT_WORKER_DISABLED        set to "1" to skip registering the loop
  */
 
 export async function register() {
@@ -34,6 +37,7 @@ export async function register() {
   await registerScoringWorker();
   await registerWalletScanWorker();
   await registerIndexerWorker();
+  await registerHeartbeatWorker();
 }
 
 async function registerScoringWorker() {
@@ -161,5 +165,47 @@ async function registerIndexerWorker() {
   if (typeof timer.unref === 'function') timer.unref();
 
   console.log(`[indexer-worker] registered · interval=${intervalMs}ms limit=${limit}`);
+  void tick();
+}
+
+async function registerHeartbeatWorker() {
+  if (process.env.HEARTBEAT_WORKER_DISABLED === '1') {
+    console.log('[heartbeat-worker] disabled via env');
+    return;
+  }
+
+  const intervalMs = Number(process.env.HEARTBEAT_WORKER_INTERVAL_MS) || 300_000;
+  const batch      = Number(process.env.HEARTBEAT_WORKER_BATCH)       || 500;
+
+  // The Dead Man's Switch liveness drain (all chains). In-process fast path; the
+  // external /api/cron/heartbeat (GitHub Actions) is the webhook-independent
+  // floor so a wedged app never silently stalls succession liveness.
+  const { drainHeartbeatsOnce } = await import('./successions/heartbeat-worker');
+
+  let running = false;
+
+  const tick = async () => {
+    if (running) return; // skip if previous drain still going
+    running = true;
+    try {
+      const result = await drainHeartbeatsOnce(batch);
+      if (result.transitioned > 0 || result.lapsed > 0 || result.errors.length > 0) {
+        console.log(
+          `[heartbeat-worker] claimed=${result.claimed} observed=${result.observed} ` +
+          `lapsed=${result.lapsed} transitioned=${result.transitioned} ` +
+          `skipped=${result.skipped} errors=${result.errors.length} elapsed=${result.elapsedMs}ms`,
+        );
+      }
+    } catch (err) {
+      console.error('[heartbeat-worker] drain failed:', err instanceof Error ? err.message : err);
+    } finally {
+      running = false;
+    }
+  };
+
+  const timer = setInterval(() => { void tick(); }, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+
+  console.log(`[heartbeat-worker] registered · interval=${intervalMs}ms batch=${batch}`);
   void tick();
 }

@@ -3,13 +3,16 @@
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { LeaderboardTable, type LeaderboardEntry } from './leaderboard-table';
 import { ChainFilterPill, type ChainFilter } from './chain-filter-pill';
-import type { LivenessStatus, TrustTier, ConfidenceBadge, AutonomyLabel } from '@/db/schema';
+import type {
+  LivenessStatus, TrustTier, ConfidenceBadge, AutonomyLabel, Chain,
+} from '@/db/schema';
 
 const PAGE_SIZE = 25;
 
 interface ApiEntry {
   rank: number;
   address: string;
+  chain: Chain;
   displayName: string | null;
   score: number;
   trustTier: TrustTier;
@@ -135,6 +138,7 @@ export function LeaderboardWithLoadMore({
         const next: LeaderboardEntry[] = data.wallets.map((w) => ({
           rank: w.rank,
           address: w.address,
+          chain: w.chain,
           displayName: w.displayName,
           score: w.score,
           trustTier: w.trustTier,

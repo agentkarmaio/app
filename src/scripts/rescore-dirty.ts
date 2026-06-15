@@ -30,6 +30,7 @@ import {
   insertScoreSnapshot,
   insertSignalEvents,
   getLatestSignalValues,
+  getSignalEventsForWallet,
   upsertWallet,
   markWalletsDirty,
 } from '@/db/client';
@@ -75,8 +76,9 @@ async function rescoreOne(
   if (autonomy) signalRows.push(buildAutonomySignal(address, autonomy));
   if (signalRows.length > 0) await insertSignalEvents(signalRows, { overwrite: true });
 
-  const [manifestScores] = await Promise.all([
+  const [manifestScores, signalEvents] = await Promise.all([
     getLatestSignalValues([address], 'manifest'),
+    getSignalEventsForWallet(address, 200).catch(() => []),
   ]);
 
   const walletScore = calculateScore(
@@ -86,6 +88,8 @@ async function rescoreOne(
     undefined,
     cadence?.automationScore ?? null,
     manifestScores.get(address) ?? null,
+    null,
+    signalEvents,
   );
 
   await upsertWallet(address, walletScore.score, walletScore.trustTier, walletScore.txCount, {

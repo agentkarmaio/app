@@ -15,7 +15,8 @@
  * aggregates from raw x402 transactions.
  */
 
-import type { ConfidenceBadge, SignalTier } from '@/db/schema';
+import type { ConfidenceBadge, SignalTier, SignalEvent } from '@/db/schema';
+import { SIGNAL_KINDS, PRESENCE_ONLY_KINDS } from './signals';
 
 export type TrustTier = 'Unrated' | 'Poor' | 'Fair' | 'Good' | 'Very Good' | 'Excellent';
 
@@ -92,6 +93,18 @@ export interface TierEvidence {
   daysActive: number;
   hasTier1Receipts: boolean;
   tier1Strong: boolean;
+  /**
+   * CEILING DISCIPLINE (docs/BONDING-AND-SUCCESSION-DESIGN.md §4.3): when the
+   * ONLY Tier-1 (or Tier-presence) evidence is "borrowed" — a bond posted by
+   * third parties or a declared/executed will — the receipt axis MUST NOT lift
+   * the trust-tier ceiling. A bond/will raises the confidence BADGE + tier
+   * PRESENCE only; the ceiling stays governed by behavioral thickness. A
+   * thin-file agent must never reach "Excellent" on borrowed capital alone.
+   *
+   * When true, the receipt-strength axis is collapsed to "none" UNLESS the
+   * wallet also has earned (non-borrowed) Tier-1 receipts.
+   */
+  borrowedTier1Only?: boolean;
 }
 
 const TIER_RANK: Record<TrustTier, number> = {
@@ -124,7 +137,13 @@ export function evidenceGatedTier(score: number, evidence: TierEvidence): TrustT
     evidence.daysActive >= 30;
 
   const behaviorLevel = thick ? 2 : moderate ? 1 : 0;
-  const receiptLevel = evidence.tier1Strong ? 2 : evidence.hasTier1Receipts ? 1 : 0;
+  // Cardinal discipline: borrowed Tier-1 (bond / will presence) does NOT count
+  // toward the receipt axis that lifts the ceiling. It only raised the badge +
+  // tier presence elsewhere; here it collapses to "none" so a thin-file agent
+  // with a flashy bond/will cannot climb the ceiling on borrowed capital.
+  const receiptLevel = evidence.borrowedTier1Only
+    ? 0
+    : evidence.tier1Strong ? 2 : evidence.hasTier1Receipts ? 1 : 0;
   const ceiling = EVIDENCE_CEILING[behaviorLevel][receiptLevel];
 
   return tierMin(numeric, ceiling);
@@ -132,10 +151,23 @@ export function evidenceGatedTier(score: number, evidence: TierEvidence): TrustT
 
 // ─── Tier blend + confidence badge ────────────────────────────────────────────
 
+/**
+ * Confidence badge from tier presence (CLAUDE.md invariant #4).
+ *
+ *   🟢 receipt-backed     — REQUIRES Tier-1 presence (receipt-gated evidence)
+ *   🟡 behavior-inferred  — REQUIRES Tier-2 presence (behavioral evidence)
+ *   ⚪ declared           — everything else, incl. a Tier-3-ONLY wallet
+ *
+ * CARDINAL: a Tier-3-only wallet (e.g. its only signal is a `will_declared`
+ * declared-intent row, or a declared manifest) MUST stay ⚪ 'declared'. Tier-3 is
+ * declared identity — it is NOT behavioral evidence, so it can never lift the
+ * badge to 🟡 on its own. Likewise 🟡 needs real Tier-2 behavior, and 🟢 needs a
+ * Tier-1 receipt. This is the per-step guarantee behind the end-to-end badge tests.
+ */
 export function getConfidenceBadge(aggregates: TierAggregates): ConfidenceBadge {
   const has = (v: number | null | undefined) => typeof v === 'number' && v >= 0;
   if (has(aggregates.tier1)) return 'receipt-backed';
-  if (has(aggregates.tier2) || has(aggregates.tier3)) return 'behavior-inferred';
+  if (has(aggregates.tier2)) return 'behavior-inferred';
   return 'declared';
 }
 
@@ -284,6 +316,119 @@ function payshTier1Strength(receiptCount: number): number {
   return 0.95;
 }
 
+// ─── Signal-event aggregation (bonds / heartbeat / will) ────────────────────────
+//
+// Folds the new `signal_events` rows (bond_opened/bond_resolved, heartbeat_*,
+// will_declared) into the four-tier score. This is the wiring that was missing:
+// calculateScore never read signalEventsTable, so bonds/heartbeats/wills had no
+// effect on any score.
+//
+// CEILING DISCIPLINE (end-to-end): bond/will signals are in PRESENCE_ONLY_KINDS.
+// They contribute a Tier-1 PRESENCE value (so the badge can go 🟢 and the tier
+// is "present") but set `borrowedTier1Only` UNLESS the wallet ALSO has an earned
+// Tier-1 receipt (8004 / feedback / pay.sh / settlement). evidenceGatedTier then
+// collapses the borrowed receipt axis to "none", so a thin-file agent cannot
+// climb the trust-tier ceiling on a bond or a will.
+//
+// is_demo signals are EXCLUDED entirely — they never touch a real score.
+
+export interface SignalAggregate {
+  /** Tier-1 presence value from bonds (max of bond_opened/bond_resolved values),
+   *  or null when the wallet has no bond signal. Presence-only by discipline. */
+  bondTier1: number | null;
+  /** Tier-2 durability delta from heartbeats, in [-1, +1] terms already folded
+   *  into a bounded value, or null when no heartbeat signal is present. */
+  heartbeatTier2: number | null;
+  /** Tier-3 presence value from will_declared, or null. Declared intent only —
+   *  never lifts the confidence badge (Tier-3 stays ⚪ alone). */
+  willTier3: number | null;
+  /** True when the ONLY presence-only Tier-1 evidence is borrowed (bond/will/etc)
+   *  AND there is no earned Tier-1 receipt. Drives evidenceGatedTier's ceiling
+   *  collapse. Meaningless when bondTier1 is null. */
+  borrowedTier1Only: boolean;
+  /** True when at least one heartbeat_lapsed signal is present (for display). */
+  heartbeatLapsed: boolean;
+}
+
+/** Heartbeat folds into a SMALL bounded band so it can never dominate Tier 2 or
+ *  zero it. Observed adds up to +HEARTBEAT_BAND; a lapse subtracts up to the same.
+ *  The existing 0.25 four-tier weight cap on Tier 2 bounds the score impact further. */
+const HEARTBEAT_BAND = 0.25;
+
+/**
+ * Aggregate raw signal_events into bond/heartbeat/will contributions. Pure.
+ *
+ * @param events       raw rows for ONE wallet (provider face is what we fold)
+ * @param hasEarnedTier1 true when the wallet has a non-borrowed Tier-1 receipt
+ *                       (8004 attestation, local feedback, pay.sh, settlement) —
+ *                       computed by the caller from the legacy tier1 path. When
+ *                       true, a bond/will is NOT the only Tier-1 evidence, so the
+ *                       borrowed flag stays false.
+ */
+export function aggregateSignalEvents(
+  events: Pick<SignalEvent, 'kind' | 'tier' | 'face' | 'value' | 'payload'>[],
+  hasEarnedTier1: boolean,
+): SignalAggregate {
+  const isDemo = (p: SignalEvent['payload']): boolean =>
+    !!p && typeof p === 'object' && (p as { is_demo?: unknown }).is_demo === true;
+
+  // Real (non-demo) provider-face rows only. is_demo is EXCLUDED from real scores.
+  const real = events.filter((e) => e.face === 'provider' && !isDemo(e.payload));
+
+  let bondTier1: number | null = null;
+  let willTier3: number | null = null;
+  let heartbeatObserved: number | null = null;
+  let heartbeatHaircut: number | null = null;
+  let heartbeatLapsed = false;
+  let sawBorrowedTier1 = false;
+
+  for (const e of real) {
+    const v = e.value != null ? clamp01(Number(e.value)) : 0;
+    switch (e.kind) {
+      case SIGNAL_KINDS.BOND_OPENED:
+      case SIGNAL_KINDS.BOND_RESOLVED:
+        // Presence-only Tier-1: take the strongest bond value seen.
+        bondTier1 = bondTier1 == null ? v : Math.max(bondTier1, v);
+        if (PRESENCE_ONLY_KINDS.has(e.kind)) sawBorrowedTier1 = true;
+        break;
+      case SIGNAL_KINDS.WILL_DECLARED:
+        willTier3 = willTier3 == null ? v : Math.max(willTier3, v);
+        break;
+      case SIGNAL_KINDS.HEARTBEAT_OBSERVED:
+        heartbeatObserved = heartbeatObserved == null ? v : Math.max(heartbeatObserved, v);
+        break;
+      case SIGNAL_KINDS.HEARTBEAT_LAPSED:
+        // value carries the (positive) haircut magnitude.
+        heartbeatHaircut = heartbeatHaircut == null ? v : Math.max(heartbeatHaircut, v);
+        heartbeatLapsed = true;
+        break;
+      default:
+        break;
+    }
+  }
+
+  // Heartbeat → bounded Tier-2 contribution centered at 0. Observed lifts toward
+  // +BAND; a lapse subtracts toward -BAND but is bounded (never zeroes Tier 2,
+  // which is enforced again downstream by blending, not replacing).
+  let heartbeatTier2: number | null = null;
+  if (heartbeatObserved != null || heartbeatHaircut != null) {
+    const up = (heartbeatObserved ?? 0) * HEARTBEAT_BAND;
+    const down = (heartbeatHaircut ?? 0) * HEARTBEAT_BAND;
+    heartbeatTier2 = up - down; // in [-BAND, +BAND]
+  }
+
+  return {
+    bondTier1,
+    heartbeatTier2,
+    willTier3,
+    // Borrowed ONLY when the bond/will is the sole Tier-1 evidence — i.e. there
+    // is no earned Tier-1 receipt. If the wallet earned Tier-1 elsewhere, the
+    // bond didn't BECOME the ceiling-lifting evidence, so borrowed stays false.
+    borrowedTier1Only: sawBorrowedTier1 && !hasEarnedTier1,
+    heartbeatLapsed,
+  };
+}
+
 export function calculateScore(
   transactions: ScoringTransaction[],
   attestation = 0,
@@ -292,6 +437,7 @@ export function calculateScore(
   cadenceScore?: number | null,
   manifestScore?: number | null,
   payshRoutedCount?: number | null,
+  signalEvents?: Pick<SignalEvent, 'kind' | 'tier' | 'face' | 'value' | 'payload'>[] | null,
 ): WalletScore {
   if (transactions.length === 0) {
     throw new Error('calculateScore requires at least one transaction');
@@ -363,9 +509,35 @@ export function calculateScore(
     }
   }
 
-  // Tier 3 from manifest signal (Phase H1). Tier 4 deferred.
-  const tier3 = typeof manifestScore === 'number' ? clamp01(manifestScore) : null;
-  const aggregates: TierAggregates = { tier1, tier2, tier3, tier4: null };
+  // Earned Tier-1 = the receipt-gated path above (8004 / feedback / pay.sh).
+  // Bonds/wills are "borrowed" and must NOT count as earned for ceiling purposes.
+  const hasEarnedTier1 = tier1 != null && tier1 > 0;
+
+  // Fold the new signal_events (bonds / heartbeat / will). is_demo excluded.
+  const sig = aggregateSignalEvents(signalEvents ?? [], hasEarnedTier1);
+
+  // Bond presence lifts Tier-1 PRESENCE (so the badge can go 🟢) — combine via
+  // max against earned Tier-1, never sum (one Tier-1 aggregate per wallet).
+  if (sig.bondTier1 != null) {
+    tier1 = tier1 == null ? sig.bondTier1 : Math.max(tier1, sig.bondTier1);
+  }
+
+  // Heartbeat → bounded Tier-2 blend. Added to behavioral Tier 2, then clamped
+  // to [0,1]; the band (±0.25) plus the four-tier 0.25 weight cap means a lapse
+  // can dent but never zero the score, and an observed heartbeat can only nudge.
+  let tier2WithHeartbeat = tier2;
+  if (sig.heartbeatTier2 != null) {
+    tier2WithHeartbeat = clamp01(tier2 + sig.heartbeatTier2);
+  }
+
+  // will_declared → Tier-3 presence. Combine with manifest Tier-3 via max. It is
+  // declared intent only — the badge logic keeps a Tier-3-only wallet ⚪.
+  const manifestTier3 = typeof manifestScore === 'number' ? clamp01(manifestScore) : null;
+  const tier3 = sig.willTier3 != null
+    ? (manifestTier3 == null ? sig.willTier3 : Math.max(manifestTier3, sig.willTier3))
+    : manifestTier3;
+
+  const aggregates: TierAggregates = { tier1, tier2: tier2WithHeartbeat, tier3, tier4: null };
 
   const daysSinceLastTx = (Date.now() - lastTs) / MS_PER_DAY;
   const decay = recencyDecay(daysSinceLastTx);
@@ -375,12 +547,17 @@ export function calculateScore(
   // Evidence-gated tier progression. See evidenceGatedTier() for rationale —
   // numeric score is the floor, behavioral thickness + receipt strength set
   // the ceiling. Thin-file wallets can't reach Very Good on Tier 2 alone.
+  //
+  // CEILING DISCIPLINE: borrowedTier1Only comes from the signal aggregator — a
+  // bond/will-only Tier-1 collapses the receipt axis to "none", so a thin-file
+  // agent cannot reach a high tier on borrowed capital. End-to-end enforcement.
   const providerEvidence: TierEvidence = {
     txCount,
     counterparties: uniqueFacilitators,
     daysActive,
     hasTier1Receipts: tier1 != null && tier1 > 0,
     tier1Strong: tier1 != null && tier1 >= 0.7,
+    borrowedTier1Only: sig.borrowedTier1Only,
   };
   const providerTier = evidenceGatedTier(tiered.score, providerEvidence);
 

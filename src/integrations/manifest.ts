@@ -35,10 +35,11 @@
  * the claimed wallet, the manifest is counted as "verified" (owner-published).
  */
 
-import type { ParsedManifest, ManifestSourceType } from '@/db/schema';
-import { isTempoAddress } from '@/db/schema';
+import type { ParsedManifest, ManifestSourceType, ManifestSuccessionPlan, SuccessionHeir } from '@/db/schema';
+import { isTempoAddress, isChain } from '@/db/schema';
 import { PublicKey } from '@solana/web3.js';
 import nacl from 'tweetnacl';
+import { safeFetchText, SsrfBlockedError } from '@/lib/ssrf';
 
 const FETCH_TIMEOUT_MS = 5_000;
 const MAX_BODY_BYTES = 100_000;
@@ -176,18 +177,20 @@ function verifyProofBody(wallet: string, body: string): boolean {
 }
 
 async function fetchText(url: string): Promise<string | null> {
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
+  // SSRF-guarded: validates the host (and every redirect hop) against private /
+  // loopback / link-local / metadata ranges before connecting. https-only in
+  // production. Returns null on block to preserve "no proof found" semantics.
   try {
-    const res = await fetch(url, { signal: ctl.signal, redirect: 'follow' });
-    if (!res.ok) return null;
-    const text = await res.text();
-    if (text.length > MAX_BODY_BYTES) return null;
-    return text;
-  } catch {
+    return await safeFetchText(url, {
+      timeoutMs: FETCH_TIMEOUT_MS,
+      maxBodyBytes: MAX_BODY_BYTES,
+    });
+  } catch (err) {
+    if (err instanceof SsrfBlockedError) {
+      console.warn('[manifest] SSRF-blocked fetch:', err.message);
+      return null;
+    }
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -245,6 +248,9 @@ export function parseAgentKarmaManifest(raw: unknown): ParsedManifest | null {
       .slice(0, 32);
   }
 
+  const succession = parseManifestSuccession(obj.succession);
+  if (succession) parsed.succession = succession;
+
   if (Array.isArray(obj.endpoints)) {
     parsed.endpoints = obj.endpoints
       .filter((e) => e && typeof e === 'object')
@@ -265,26 +271,59 @@ export function parseAgentKarmaManifest(raw: unknown): ParsedManifest | null {
 }
 
 async function fetchJson(url: string): Promise<Record<string, unknown> | null> {
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
+  // SSRF-guarded fetch (see fetchText). The manifest URL derives from a wallet-
+  // declared website reachable via the PUBLIC unauthenticated refresh endpoint,
+  // so the host must be re-validated on every redirect hop before connecting.
+  let text: string | null;
   try {
-    const res = await fetch(url, {
-      signal: ctl.signal,
-      redirect: 'follow',
+    text = await safeFetchText(url, {
+      timeoutMs: FETCH_TIMEOUT_MS,
+      maxBodyBytes: MAX_BODY_BYTES,
       headers: { Accept: 'application/json' },
     });
-    if (!res.ok) return null;
+  } catch (err) {
+    if (err instanceof SsrfBlockedError) {
+      console.warn('[manifest] SSRF-blocked fetch:', err.message);
+    }
+    return null;
+  }
+  if (text === null) return null;
 
-    // Guard against unbounded bodies.
-    const text = await res.text();
-    if (text.length > MAX_BODY_BYTES) return null;
-
+  try {
     return JSON.parse(text) as Record<string, unknown>;
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
+}
+
+/**
+ * Loosely shape-check a manifest `succession` block. Carry-through only — the
+ * full bounds/heir/self-heir validation runs in the succession write-path
+ * (successions/validate.ts) at declare time. Returns null when the block is
+ * absent or structurally unusable so a malformed will never blocks the rest of
+ * the manifest from resolving.
+ */
+function parseManifestSuccession(raw: unknown): ManifestSuccessionPlan | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+
+  const intervalSeconds = Number(obj.intervalSeconds ?? obj.interval_seconds);
+  if (!Number.isFinite(intervalSeconds)) return null;
+
+  if (!Array.isArray(obj.heirs) || obj.heirs.length === 0) return null;
+  const heirs: SuccessionHeir[] = [];
+  for (const h of obj.heirs) {
+    if (!h || typeof h !== 'object') continue;
+    const he = h as Record<string, unknown>;
+    if (typeof he.address !== 'string' || !isChain(he.chain)) continue;
+    const heir: SuccessionHeir = { address: he.address, chain: he.chain };
+    if (he.share != null && Number.isFinite(Number(he.share))) heir.share = Number(he.share);
+    if (typeof he.label === 'string') heir.label = he.label;
+    heirs.push(heir);
+  }
+  if (heirs.length === 0) return null;
+
+  return { intervalSeconds, heirs };
 }
 
 function strOrNull(v: unknown): string | null {

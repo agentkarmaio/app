@@ -25,7 +25,9 @@ export type RateLimitName =
   | 'agent-history'
   | 'score-refresh'
   | 'wallet-scan-enqueue'
-  | 'deck-identify';
+  | 'deck-identify'
+  | 'manifest-refresh'
+  | 'succession-get';
 
 type LimitSpec = { limit: number; window: `${number} s` | `${number} m` };
 
@@ -42,6 +44,10 @@ const LIMITS: Record<RateLimitName, LimitSpec> = {
   'score-refresh': { limit: 5, window: '1 m' },
   'wallet-scan-enqueue': { limit: 3, window: '1 m' },
   'deck-identify': { limit: 10, window: '1 m' },
+  // Triggers an outbound server-side fetch (SSRF-guarded). Keep tight.
+  'manifest-refresh': { limit: 5, window: '1 m' },
+  // Read-only public projection, but per-IP cap to blunt scrapers.
+  'succession-get': { limit: 60, window: '1 m' },
 };
 
 type LimitResult = {
@@ -117,6 +123,18 @@ function memLimit(name: RateLimitName, identifier: string): LimitResult {
     remaining: Math.max(0, spec.limit - bucket.timestamps.length),
     reset: oldest + windowSize,
   };
+}
+
+/**
+ * Test-only: clear the in-memory limiter buckets so each test starts from a
+ * clean budget. The mem store is module-global and shared across every route in
+ * a single `bun test` process, so without this a route test's calls can be
+ * counted against budget already spent by an earlier test file. No-op against
+ * the Upstash backend (prod), which is keyed in Redis, not this Map.
+ */
+export function __resetRateLimitForTests(): void {
+  memStore.clear();
+  lastGc = 0;
 }
 
 // Periodic GC to keep the mem map bounded. Cheap — runs at most once per req.

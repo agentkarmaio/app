@@ -98,6 +98,36 @@ export const walletsTable = pgTable('wallets', {
   // IdentityRegistry. NULL until the agent claims/registers (U4). U3's publish
   // path skips on-chain feedback when this is NULL (identity-gated, mirrors Celo).
   stellar_agent_id:    integer('stellar_agent_id'),
+  // ERC-8004 EVM agentId (uint256, but always small enough for int32 in
+  // practice — current Celo tip <10k) bound to this wallet on Celo's
+  // IdentityRegistry. NULL until the agent is materialized via the celo
+  // backfill (see scripts/celo-backfill-agents.ts) or claim. One owner can
+  // technically own multiple agentIds; we store the most-recent observed.
+  celo_agent_id:       integer('celo_agent_id'),
+  // ERC-8004 Arc Testnet agentId (uint256, fits int32 — AK itself is 72077).
+  // Bound to this wallet on Arc's IdentityRegistry. NULL until the agent is
+  // materialized via the arc backfill (see scripts/arc-backfill-agents.ts).
+  // Arc has no mainnet today (launches summer 2026); presence of this column
+  // value is the durable testnet marker — chain='arc' + arc_agent_id != NULL
+  // is always testnet. When Arc mainnet ships, a distinct chain value will
+  // fork and these rows stay visibly testnet.
+  arc_agent_id:        integer('arc_agent_id'),
+  // --- Succession / Dead Man's Switch (denormalized for Agent Estates) -------
+  // Declared agent-succession state. The full will (heirs, hash) lives in
+  // `successions`; these denormalized columns drive the public Agent Estates
+  // dashboard filter/sort without a join (mirrors metric_*/autonomy_*).
+  // status: NULL=none | 'declared' | 'live' | 'lapsing' | 'lapsed' | 'executed' | 'revoked'
+  succession_status:           text('succession_status').$type<SuccessionStatus>(),
+  // Last heartbeat AK observed (derived from last meaningful tx / liveness).
+  heartbeat_last_at:           timestamp('heartbeat_last_at', { withTimezone: true }),
+  // Declared cadence: a gap beyond this marks the agent lapsing/lapsed.
+  heartbeat_interval_seconds:  integer('heartbeat_interval_seconds'),
+  // --- Surety Karma (orthogonal axis — underwriter quality) ------------------
+  // How good is this wallet at judging which agents deliver? Derived from
+  // bond_underwriters outcomes. ORTHOGONAL — never blended into Provider/
+  // Consumer Karma (mirrors autonomy_score/autonomy_label, RFC §5.5).
+  surety_score:                numeric('surety_score', { precision: 6, scale: 2 }),
+  surety_label:                text('surety_label').$type<SuretyLabel>(),
 }, (table) => [
   primaryKey({ columns: [table.chain, table.address], name: 'wallets_pkey' }),
   index('idx_wallets_chain').on(table.chain),
@@ -111,6 +141,10 @@ export const walletsTable = pgTable('wallets', {
   index('idx_wallets_metric_diversity').on(table.metric_diversity),
   index('idx_wallets_scoring_dirty_at').on(table.scoring_dirty_at),
   index('idx_wallets_scan_state').on(table.scan_state),
+  index('idx_wallets_celo_agent_id').on(table.celo_agent_id),
+  index('idx_wallets_arc_agent_id').on(table.arc_agent_id),
+  index('idx_wallets_succession_status').on(table.succession_status),
+  index('idx_wallets_surety_score').on(table.surety_score),
 ]);
 
 export const transactionsTable = pgTable('transactions', {
@@ -263,6 +297,104 @@ export const agentManifestsTable = pgTable('agent_manifests', {
   uniqueIndex('uniq_agent_manifests_source').on(table.chain, table.agent_wallet, table.source_type),
 ]);
 
+// --- Successions / Dead Man's Switch (Agent Wills) --------------------------
+//
+// An agent declares a succession plan (heartbeat interval + heirs). AK OBSERVES
+// the public lifecycle and scores it — AK never holds a key, never holds funds,
+// never executes a will (RFC §12 Non-Routing AND Non-Custody Mandate). One will
+// per (chain, agent_wallet); the resolver overwrites on re-declaration.
+// will_hash + on-chain witness fields stay NULL in the no-contract MVP.
+
+export const successionsTable = pgTable('successions', {
+  chain:                text('chain').notNull().default('solana').$type<Chain>(),
+  agent_wallet:         text('agent_wallet').notNull(),
+  source_type:          text('source_type').notNull(), // 'claim_form' | 'self_hosted'
+  // Declared cadence; a gap beyond this flips status to lapsing → lapsed.
+  interval_seconds:     integer('interval_seconds').notNull(),
+  // Ordered heirs with optional split weights: [{ address, chain, share, label }].
+  heirs:                jsonb('heirs').notNull(),
+  status:               text('status').notNull().default('declared').$type<SuccessionStatus>(),
+  // Witness anchor for a future on-chain will (NULL in no-contract MVP).
+  will_hash:            text('will_hash'),
+  declared_at:          timestamp('declared_at', { withTimezone: true }).notNull().defaultNow(),
+  last_heartbeat_at:    timestamp('last_heartbeat_at', { withTimezone: true }),
+  lapsed_at:            timestamp('lapsed_at', { withTimezone: true }),
+  executed_at:          timestamp('executed_at', { withTimezone: true }),
+  revoked_at:           timestamp('revoked_at', { withTimezone: true }),
+  updated_at:           timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.chain, table.agent_wallet], name: 'successions_pkey' }),
+  foreignKey({
+    columns: [table.chain, table.agent_wallet],
+    foreignColumns: [walletsTable.chain, walletsTable.address],
+    name: 'successions_chain_agent_wallet_fkey',
+  }).onDelete('cascade'),
+  index('idx_successions_status').on(table.status),
+  index('idx_successions_last_heartbeat_at').on(table.last_heartbeat_at),
+]);
+
+// --- Bonds / Agent Bonding (surety-bond-as-signal) -------------------------
+//
+// Third parties stake USDC in an EDGE escrow that a young agent will deliver a
+// task. AK never holds the bond and is NEVER the resolution oracle — the escrow
+// resolves at the edge (success authorized by the beneficiary; failure
+// permissionless after the deadline). `bonds` is AK's read-only projection of
+// that escrow's public lifecycle. Bonds are DEMO-fed this round (is_demo rows,
+// excluded from real scores); real-escrow ingestion is phase 2.
+// CARDINAL RULE (enforced in scoring): a bond lifts the bonded agent's
+// confidence badge + Tier-1 presence ONLY, never the evidence-gated trust
+// ceiling — no buying your way to "Excellent" on borrowed capital.
+
+export const bondsTable = pgTable('bonds', {
+  id:                  uuid('id').primaryKey().defaultRandom(),
+  chain:               text('chain').notNull().default('solana').$type<Chain>(),
+  bonded_agent_wallet: text('bonded_agent_wallet').notNull(),
+  beneficiary:         text('beneficiary').notNull(),
+  task_ref:            text('task_ref'),
+  amount:              numeric('amount', { precision: 20, scale: 6 }).notNull().default('0'),
+  currency:            text('currency').notNull().default('USDC'),
+  status:              text('status').notNull().default('open').$type<BondStatus>(),
+  escrow_ref:          text('escrow_ref').notNull(), // edge-escrow contract / account id
+  // Objective settlement proof AK re-derived to resolve (x402 receipt / ERC-8183).
+  resolution_proof_tx: text('resolution_proof_tx'),
+  // Demo/seeded rows are clearly flagged so the UI never implies real on-chain
+  // bonds before an escrow is deployed.
+  is_demo:             boolean('is_demo').notNull().default(false),
+  opened_at:           timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
+  resolved_at:         timestamp('resolved_at', { withTimezone: true }),
+}, (table) => [
+  foreignKey({
+    columns: [table.chain, table.bonded_agent_wallet],
+    foreignColumns: [walletsTable.chain, walletsTable.address],
+    name: 'bonds_chain_bonded_agent_wallet_fkey',
+  }).onDelete('cascade'),
+  index('idx_bonds_chain_bonded_agent_wallet').on(table.chain, table.bonded_agent_wallet),
+  index('idx_bonds_status').on(table.status),
+  index('idx_bonds_escrow_ref').on(table.escrow_ref),
+  // One projected row per (chain, escrow_ref) — dedup escrow events on re-index.
+  uniqueIndex('uniq_bonds_escrow_ref').on(table.chain, table.escrow_ref),
+]);
+
+export const bondUnderwritersTable = pgTable('bond_underwriters', {
+  id:                  uuid('id').primaryKey().defaultRandom(),
+  bond_id:             uuid('bond_id').notNull().references(() => bondsTable.id, { onDelete: 'cascade' }),
+  chain:               text('chain').notNull().default('solana').$type<Chain>(),
+  underwriter_wallet:  text('underwriter_wallet').notNull(),
+  stake_amount:        numeric('stake_amount', { precision: 20, scale: 6 }).notNull().default('0'),
+  premium_earned:      numeric('premium_earned', { precision: 20, scale: 6 }),
+  settled:             boolean('settled').notNull().default(false),
+  created_at:          timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  foreignKey({
+    columns: [table.chain, table.underwriter_wallet],
+    foreignColumns: [walletsTable.chain, walletsTable.address],
+    name: 'bond_underwriters_chain_underwriter_wallet_fkey',
+  }).onDelete('cascade'),
+  index('idx_bond_underwriters_bond_id').on(table.bond_id),
+  index('idx_bond_underwriters_chain_underwriter_wallet').on(table.chain, table.underwriter_wallet),
+  uniqueIndex('uniq_bond_underwriters').on(table.bond_id, table.chain, table.underwriter_wallet),
+]);
+
 // --- Deck Views (pitch-deck visitor identification) -------------------------
 //
 // Captured when a visitor submits the email gate at /deck (and on every
@@ -359,6 +491,17 @@ export interface Wallet {
   self_scope?: string | null;
   // ERC-8004 Soroban agentId (u32) — null until registered/claimed on Stellar.
   stellar_agent_id?: number | null;
+  // ERC-8004 Celo agentId (uint256, stored as int32) — null until materialized.
+  celo_agent_id?: number | null;
+  // ERC-8004 Arc Testnet agentId (uint256, stored as int32) — null until materialized.
+  arc_agent_id?: number | null;
+  // Succession / Dead Man's Switch (denormalized from `successions`).
+  succession_status?: SuccessionStatus | null;
+  heartbeat_last_at?: string | null;
+  heartbeat_interval_seconds?: number | null;
+  // Surety Karma — orthogonal underwriter-quality axis (never blended).
+  surety_score?: number | null;
+  surety_label?: SuretyLabel | null;
 }
 
 export type WalletScanState = 'pending' | 'scanning' | 'done' | 'failed';
@@ -410,7 +553,21 @@ export interface ParsedManifest {
   endpoints?: Array<{ kind: string; url: string; description?: string }>;
   /** Optional Tempo (EVM 0x…) address — declares MPP rail participation. */
   tempoAddress?: string | null;
+  /**
+   * Optional Dead Man's Switch plan declared in a self-hosted agentkarma.json.
+   * Carried through as a raw blob; the manifest refresh path validates it via
+   * the succession write-path (interval bounds, heir address/chain validity,
+   * self-as-sole-heir rejection) before persisting. Declared intent only — a
+   * declared will NEVER lifts the confidence badge off ⚪ on its own.
+   */
+  succession?: ManifestSuccessionPlan | null;
   [key: string]: unknown;
+}
+
+/** Raw succession plan shape as declared in an agentkarma.json manifest. */
+export interface ManifestSuccessionPlan {
+  intervalSeconds: number;
+  heirs: SuccessionHeir[];
 }
 
 /**
@@ -435,6 +592,79 @@ export interface SignalEvent {
   signed_by: string | null;
   tx_ref: string | null;
   observed_at: string;
+  created_at: string;
+}
+
+// --- Succession / Dead Man's Switch types -----------------------------------
+
+export type SuccessionStatus =
+  | 'declared'  // will registered, heartbeat not yet evaluated
+  | 'live'      // heartbeat within interval — agent healthy
+  | 'lapsing'   // approaching the interval deadline (warning band)
+  | 'lapsed'    // interval exceeded — succession conditions met
+  | 'executed'  // inheritance transfer observed on-chain
+  | 'revoked';  // owner cancelled the will
+
+export type SuretyLabel = 'reliable' | 'mixed' | 'unproven';
+
+/** A single heir in a declared will. `share` is an optional split weight. */
+export interface SuccessionHeir {
+  address: string;
+  chain: Chain;
+  share?: number | null;
+  label?: string | null;
+}
+
+export type SuccessionSourceType = 'claim_form' | 'self_hosted';
+
+export interface Succession {
+  chain: Chain;
+  agent_wallet: string;
+  source_type: SuccessionSourceType;
+  interval_seconds: number;
+  heirs: SuccessionHeir[];
+  status: SuccessionStatus;
+  will_hash: string | null;
+  declared_at: string;
+  last_heartbeat_at: string | null;
+  lapsed_at: string | null;
+  executed_at: string | null;
+  revoked_at: string | null;
+  updated_at: string;
+}
+
+// --- Agent Bonding types ----------------------------------------------------
+
+export type BondStatus =
+  | 'open'              // escrow funded, task in flight
+  | 'resolved_success' // agent delivered — underwriters earn premium
+  | 'resolved_failure' // agent failed — stake pays the beneficiary
+  | 'expired';         // task window elapsed without resolution
+
+export interface Bond {
+  id: string;
+  chain: Chain;
+  bonded_agent_wallet: string;
+  beneficiary: string;
+  task_ref: string | null;
+  amount: number;
+  currency: string;
+  status: BondStatus;
+  escrow_ref: string;
+  resolution_proof_tx: string | null;
+  is_demo: boolean;
+  opened_at: string;
+  resolved_at: string | null;
+}
+
+export interface BondUnderwriter {
+  id: string;
+  bond_id: string;
+  chain: Chain;
+  underwriter_wallet: string;
+  stake_amount: number;
+  premium_earned: number | null;
+  settled: boolean;
   created_at: string;
 }
 

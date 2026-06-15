@@ -3,6 +3,7 @@ import { PublicKey } from '@solana/web3.js';
 import nacl from 'tweetnacl';
 import { claimWallet, enqueueWalletScan } from '@/db/client';
 import { TEMPO_ADDRESS_REGEX } from '@/db/schema';
+import { declareSuccession } from '@/successions/declare';
 
 const VALID_CATEGORIES = ['ai', 'data', 'defi', 'infra', 'social', 'utility', 'other'];
 
@@ -30,13 +31,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { address, displayName, description, website, category, tempoAddress, signature, message } = body as {
+  const { address, displayName, description, website, category, tempoAddress, succession, signature, message } = body as {
     address?: string;
     displayName?: string;
     description?: string;
     website?: string;
     category?: string;
     tempoAddress?: string | null;
+    /** Optional Dead Man's Switch plan: { intervalSeconds, heirs[] }. Solana-keyed. */
+    succession?: unknown;
     signature?: string;
     message?: string;
   };
@@ -119,6 +122,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 });
   }
 
+  // Pre-validate the optional succession plan BEFORE any DB write, so a bad plan
+  // is a clean 400 rather than a claim-then-fail half-state. Solana-keyed (this
+  // route authenticates a Solana signature).
+  if (succession !== undefined && succession !== null) {
+    const { validateSuccessionPlan } = await import('@/successions/validate');
+    const v = validateSuccessionPlan(succession, 'solana', address);
+    if (!v.ok) {
+      return NextResponse.json({ error: `Invalid succession plan: ${v.error}` }, { status: 400 });
+    }
+  }
+
   // Write to DB
   try {
     await claimWallet(
@@ -134,6 +148,29 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to save claim' }, { status: 500 });
   }
 
+  // Persist the optional succession plan now the wallet row exists (FK target).
+  // Already validated above; declareSuccession upserts the will + emits the
+  // Tier-3 will_declared signal (which NEVER lifts the badge off ⚪ alone).
+  let successionDeclared = false;
+  if (succession !== undefined && succession !== null) {
+    try {
+      const result = await declareSuccession({
+        agentWallet: address,
+        chain: 'solana',
+        sourceType: 'claim_form',
+        plan: succession,
+      });
+      successionDeclared = result.ok;
+      if (!result.ok) {
+        console.error('[claim] declareSuccession rejected post-claim:', result.error);
+      }
+    } catch (err) {
+      // Non-fatal: the claim itself succeeded. Surface in logs; the heartbeat
+      // worker / a re-declare can reconcile later.
+      console.error('[claim] declareSuccession failed:', err);
+    }
+  }
+
   // Trigger regressive scan for the claimer's wallet — historical activity
   // not yet indexed because no facilitator-side scan has touched it.
   // Idempotent: enqueueWalletScan handles dedup (in_progress, cooldown, already_indexed).
@@ -147,6 +184,7 @@ export async function POST(request: NextRequest) {
     address,
     displayName,
     claimed: true,
+    successionDeclared,
   });
 }
 

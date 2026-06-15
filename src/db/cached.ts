@@ -79,6 +79,7 @@ export const cachedLeaderboardEntries = defineCache(
       return {
         rank: i + 1,
         address: w.address,
+        chain: w.chain,
         displayName: w.display_name,
         score: Number(w.score),
         trustTier: w.trust_tier as TrustTier,
@@ -94,7 +95,7 @@ export const cachedLeaderboardEntries = defineCache(
       };
     });
   },
-  { key: 'leaderboard-entries', tag: CacheTags.Leaderboard, revalidate: 30 },
+  { key: 'leaderboard-entries-v2', tag: CacheTags.Leaderboard, revalidate: 30 },
 );
 
 export const cachedFacilitatorStats = defineCache(() => getFacilitatorStats(), {

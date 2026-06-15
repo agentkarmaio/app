@@ -10,10 +10,14 @@ import { WalletAddress } from '@/components/karma/wallet-address';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge as ConfidenceBadgeChip } from '@/components/karma/confidence-badge';
 import { AutonomyChip } from '@/components/karma/autonomy-chip';
+import { ChainBadge } from '@/components/karma/chain-badge';
+import { ChainFilterPill, type ChainFilter } from '@/components/karma/chain-filter-pill';
 import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
-import type { TrustTier, ConfidenceBadge, AutonomyLabel } from '@/db/schema';
+import { agentHref } from '@/lib/agent-href';
+import type { TrustTier, ConfidenceBadge, AutonomyLabel, Chain } from '@/db/schema';
+import { isChain } from '@/db/schema';
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 const DEFAULT_PAGE_SIZE = 25;
@@ -58,6 +62,7 @@ const BADGE_LABEL: Record<ConfidenceBadge, string> = {
 interface ApiEntry {
   rank: number;
   address: string;
+  chain: Chain;
   displayName: string | null;
   claimed: boolean;
   providerScore: number;
@@ -98,21 +103,26 @@ export function AgentsExplorer() {
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
 
-  const filters = useMemo(() => ({
-    tiers:            parseArr(searchParams, 'tier', TIER_OPTIONS),
-    confidenceBadges: parseArr(searchParams, 'confidence', BADGE_OPTIONS),
-    autonomyLabels:   parseArr(searchParams, 'autonomy', AUTONOMY_OPTIONS),
-    claimed:  searchParams.get('claimed') === 'true' ? true
-            : searchParams.get('claimed') === 'false' ? false : null,
-    minScore:       parseNum(searchParams, 'minScore'),
-    minCadence:     parseNum(searchParams, 'minCadence'),
-    minDiversity:   parseNum(searchParams, 'minDiversity'),
-    minSuccessRate: parseNum(searchParams, 'minSuccess'),
-    search: searchParams.get('q') ?? '',
-    sortBy:  (searchParams.get('sortBy')  ?? 'provider_score') as AgentSortField,
-    sortDir: (searchParams.get('sortDir') ?? 'desc') as 'asc' | 'desc',
-    pageSize: clampPageSize(searchParams.get('per')),
-  }), [searchParams]);
+  const filters = useMemo(() => {
+    const chainRaw = searchParams.get('chain');
+    const chain: ChainFilter = isChain(chainRaw) ? (chainRaw as Chain) : 'All';
+    return {
+      tiers:            parseArr(searchParams, 'tier', TIER_OPTIONS),
+      confidenceBadges: parseArr(searchParams, 'confidence', BADGE_OPTIONS),
+      autonomyLabels:   parseArr(searchParams, 'autonomy', AUTONOMY_OPTIONS),
+      claimed:  searchParams.get('claimed') === 'true' ? true
+              : searchParams.get('claimed') === 'false' ? false : null,
+      chain,
+      minScore:       parseNum(searchParams, 'minScore'),
+      minCadence:     parseNum(searchParams, 'minCadence'),
+      minDiversity:   parseNum(searchParams, 'minDiversity'),
+      minSuccessRate: parseNum(searchParams, 'minSuccess'),
+      search: searchParams.get('q') ?? '',
+      sortBy:  (searchParams.get('sortBy')  ?? 'provider_score') as AgentSortField,
+      sortDir: (searchParams.get('sortDir') ?? 'desc') as 'asc' | 'desc',
+      pageSize: clampPageSize(searchParams.get('per')),
+    };
+  }, [searchParams]);
 
   const filterKey = searchParams.toString();
 
@@ -132,6 +142,7 @@ export function AgentsExplorer() {
     if (filters.confidenceBadges.length) p.set('confidence', filters.confidenceBadges.join(','));
     if (filters.autonomyLabels.length)   p.set('autonomy',   filters.autonomyLabels.join(','));
     if (filters.claimed != null)         p.set('claimed',    String(filters.claimed));
+    if (filters.chain !== 'All')         p.set('chain',      filters.chain);
     if (filters.minScore != null)        p.set('minScore',       String(filters.minScore));
     if (filters.minCadence != null)      p.set('minCadence',     String(filters.minCadence));
     if (filters.minDiversity != null)    p.set('minDiversity',   String(filters.minDiversity));
@@ -209,6 +220,13 @@ export function AgentsExplorer() {
     });
   }, [updateParams]);
 
+  const setChain = useCallback((v: ChainFilter) => {
+    updateParams((p) => {
+      if (v === 'All') p.delete('chain');
+      else p.set('chain', v);
+    });
+  }, [updateParams]);
+
   const commitSearch = useCallback(() => {
     updateParams((p) => {
       const q = searchInput.trim();
@@ -280,6 +298,9 @@ export function AgentsExplorer() {
       </aside>
 
       <div className="space-y-3 min-w-0">
+        {/* Chain filter pill */}
+        <ChainFilterPill value={filters.chain} onChange={setChain} />
+
         {/* Toolbar */}
         <div className="flex items-center gap-2">
           <div className="relative flex-1 min-w-0">
@@ -375,7 +396,7 @@ export function AgentsExplorer() {
                       )}
                     </td>
                   </tr>
-                ) : entries.map((e) => <AgentRow key={e.address} entry={e} />)}
+                ) : entries.map((e) => <AgentRow key={`${e.chain}:${e.address}`} entry={e} />)}
                 {loading && entries.length === 0 && (
                   Array.from({ length: 8 }).map((_, i) => (
                     <tr key={`sk-${i}`} className="border-b border-[rgb(255_255_255/0.03)] last:border-0">
@@ -781,7 +802,7 @@ function ThSort({
 }
 
 function AgentRow({ entry }: { entry: ApiEntry }) {
-  const href = `/agent/${entry.address}`;
+  const href = agentHref(entry);
   return (
     <tr
       className="group border-b border-[rgb(255_255_255/0.04)] last:border-0 hover:bg-[rgb(255_255_255/0.025)] transition-colors cursor-pointer"
@@ -790,6 +811,7 @@ function AgentRow({ entry }: { entry: ApiEntry }) {
       <td className="px-3 py-3 tabular-nums text-[#62666d] text-[11px]">{entry.rank}</td>
       <td className="px-3 py-3">
         <div className="flex items-center gap-2 min-w-0">
+          <ChainBadge chain={entry.chain} />
           {entry.displayName ? (
             <Link
               href={href}

@@ -11,6 +11,7 @@ import { ChainSwitcher } from '@/components/layout/chain-switcher';
 const NAV_ITEMS = [
   { href: '/', label: 'Leaderboard' },
   { href: '/explore', label: 'Explore' },
+  { href: '/succession', label: 'Succession' },
   { href: '/protocol', label: 'Protocol' },
   { href: '/celo', label: 'Celo' },
   { href: '/widget', label: 'Widget' },
