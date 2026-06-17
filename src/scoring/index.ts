@@ -229,6 +229,9 @@ interface ScoringTransaction {
   timestamp: string | Date;
   success: boolean;
   tx_signature: string;
+  /** Payee / resource-server address. Falls back to `facilitator` when absent
+   *  (legacy rows / chains pending payee extraction). */
+  counterparty?: string | null;
 }
 
 export interface WalletScore {
@@ -243,6 +246,8 @@ export interface WalletScore {
   confidenceBadge: ConfidenceBadge;
   metrics: {
     successRate: number;
+    /** Repeat-counterparty depth (Sybil-capped), [0,1]. */
+    loyalty: number;
     diversity: number;
     /** Transaction-count contribution (the legacy `volume`, now its own signal). */
     activity: number;
@@ -274,6 +279,7 @@ export interface ConsumerFaceScore {
   /** Weighted contributions inside Tier 2 for display. */
   metrics: {
     successRate: number;
+    loyalty: number;
     diversity: number;
     activity: number;
     avgDealSize: number;
@@ -287,12 +293,13 @@ export interface ConsumerFaceScore {
 // volume (does this wallet pay cleanly and often?) and less on age/diversity
 // than the provider face, which weights stability + breadth more heavily.
 const CONSUMER_TIER2_METRIC_WEIGHTS = {
-  successRate: 0.30,
+  successRate: 0.25,
+  loyalty:     0.15,
   diversity:   0.15,
-  activity:    0.15, // split from the old volume 0.30
-  avgDealSize: 0.15, // split from the old volume 0.30
-  age:         0.15,
-  // +10% cadence blend (same behavior as provider face)
+  activity:    0.15,
+  avgDealSize: 0.10,
+  age:         0.10,
+  // +10% cadence blend (same behavior as provider face) → sums to 0.90
 } as const;
 
 const NORMALIZE = {
@@ -305,11 +312,12 @@ const NORMALIZE = {
 } as const;
 
 const TIER2_METRIC_WEIGHTS = {
-  successRate: 0.35,
-  diversity: 0.25,
+  successRate: 0.30,
+  loyalty: 0.20,     // repeat-counterparty depth (co-lead with diversity)
+  diversity: 0.20,   // counterparty breadth
   activity: 0.10,    // split from the old volume 0.20
   avgDealSize: 0.10, // split from the old volume 0.20
-  age: 0.20,
+  age: 0.10,
 } as const;
 
 /** Feedback shrinkage: the local delivery rate is blended toward a neutral prior
@@ -317,6 +325,14 @@ const TIER2_METRIC_WEIGHTS = {
  *  Tier-1 term. confidence = min(1, feedbackCount / N). */
 const FEEDBACK_NEUTRAL_PRIOR = 0.5;
 const FEEDBACK_FULL_CONFIDENCE_N = 10;
+
+/** Sybil concentration cap on loyalty: a wallet funneling many transactions
+ *  through very few counterparties is gaming repeat-business, not earning it.
+ *  When avg-tx-per-counterparty ≥ FUNNEL_AVG_TX AND fewer than MIN_COUNTERPARTIES
+ *  distinct partners, loyalty is capped at LOYALTY_CAP. */
+const SYBIL_FUNNEL_AVG_TX = 20;
+const SYBIL_FUNNEL_MIN_COUNTERPARTIES = 3;
+const SYBIL_LOYALTY_CAP = 0.40;
 
 /**
  * Optional pay.sh-routed Tier 1 contribution.
@@ -476,8 +492,33 @@ export function calculateScore(
   const successCount = transactions.filter((tx) => tx.success).length;
   const successRate = txCount > 0 ? successCount / txCount : 0;
 
-  const uniqueFacilitators = new Set(transactions.map((tx) => tx.facilitator)).size;
-  const diversity = cap(uniqueFacilitators, NORMALIZE.diversityMax);
+  // Counterparty-aware breadth. Fall back to `facilitator` for the payee when it
+  // is not yet extracted (legacy rows / chains pending indexer support). Keys are
+  // NAMESPACED ('c:'/'f:') so a payee address can never collide with a facilitator
+  // address in the partial-backfill state. Diversity degrades gracefully to the
+  // legacy facilitator-breadth when no counterparty data is present.
+  const uniqueCounterparties = new Set(
+    transactions.map((tx) => (tx.counterparty != null ? `c:${tx.counterparty}` : `f:${tx.facilitator}`)),
+  ).size;
+  const diversity = cap(uniqueCounterparties, NORMALIZE.diversityMax);
+
+  // Loyalty — repeat business with the same counterparty (depth, not breadth).
+  // GATED on real counterparty data: "repeat use of a facilitator" is not loyalty
+  // (facilitators are shared infrastructure, and x402 wallets naturally use <3 of
+  // them — which would mis-fire the Sybil cap on legitimate wallets). When no tx
+  // has a real counterparty, loyalty is absent and its weight redistributes across
+  // the other Tier-2 metrics (see the blend below). It auto-activates per-wallet
+  // once the indexer backfills counterparties. Sybil-capped: a wallet funneling
+  // many txs through <3 counterparties is gaming repeat business, not earning it.
+  const loyaltyPresent = transactions.some((tx) => tx.counterparty != null);
+  const avgTxPerCounterparty = txCount / uniqueCounterparties;
+  let loyalty = clamp01((avgTxPerCounterparty - 1) / 4);
+  if (
+    avgTxPerCounterparty >= SYBIL_FUNNEL_AVG_TX &&
+    uniqueCounterparties < SYBIL_FUNNEL_MIN_COUNTERPARTIES
+  ) {
+    loyalty = Math.min(loyalty, SYBIL_LOYALTY_CAP);
+  }
 
   // Tier-2 volume is split into two distinct signals: activity (how OFTEN) and
   // avgDealSize (how LARGE). `activity` is the legacy `volume` value (txCount/500).
@@ -496,12 +537,20 @@ export function calculateScore(
   const daysActive = (Date.now() - firstTs) / MS_PER_DAY;
   const age = cap(daysActive, NORMALIZE.ageMax);
 
-  const legacyTier2 =
-    successRate * TIER2_METRIC_WEIGHTS.successRate +
-    diversity * TIER2_METRIC_WEIGHTS.diversity +
-    activity * TIER2_METRIC_WEIGHTS.activity +
-    avgDealSize * TIER2_METRIC_WEIGHTS.avgDealSize +
-    age * TIER2_METRIC_WEIGHTS.age;
+  // Loyalty redistributes its weight when absent (no counterparty data) so the
+  // wallet isn't dragged by a missing signal — same principle as the four-tier
+  // redistribution, applied within Tier 2. Provider weights total 1.0 with loyalty.
+  const W = TIER2_METRIC_WEIGHTS;
+  const provBase =
+    successRate * W.successRate +
+    diversity * W.diversity +
+    activity * W.activity +
+    avgDealSize * W.avgDealSize +
+    age * W.age;
+  const provBaseWeight = W.successRate + W.diversity + W.activity + W.avgDealSize + W.age;
+  const legacyTier2 = loyaltyPresent
+    ? provBase + loyalty * W.loyalty
+    : provBase * ((provBaseWeight + W.loyalty) / provBaseWeight);
 
   // Blend in cadence when available (G2). Cadence is a behavioral shape
   // signal — contributes 10% of Tier 2 so legacy metrics still dominate.
@@ -595,7 +644,7 @@ export function calculateScore(
   // agent cannot reach a high tier on borrowed capital. End-to-end enforcement.
   const providerEvidence: TierEvidence = {
     txCount,
-    counterparties: uniqueFacilitators,
+    counterparties: uniqueCounterparties,
     daysActive,
     hasTier1Receipts: tier1 != null && tier1 > 0,
     tier1Strong: tier1 != null && tier1 >= 0.7,
@@ -609,12 +658,19 @@ export function calculateScore(
   // often?" Tier 2 only; confidence badge is always 🟡 behavior-inferred at
   // this stage because the consumer face doesn't yet consume Tier 1 dispute
   // signals (Phase I2+).
-  const consumerLegacyTier2 =
-    successRate * CONSUMER_TIER2_METRIC_WEIGHTS.successRate +
-    diversity   * CONSUMER_TIER2_METRIC_WEIGHTS.diversity +
-    activity    * CONSUMER_TIER2_METRIC_WEIGHTS.activity +
-    avgDealSize * CONSUMER_TIER2_METRIC_WEIGHTS.avgDealSize +
-    age         * CONSUMER_TIER2_METRIC_WEIGHTS.age;
+  // Same loyalty redistribution as the provider face; consumer weights total 0.90
+  // (the +0.10 cadence blend convention is applied separately below).
+  const CW = CONSUMER_TIER2_METRIC_WEIGHTS;
+  const consBase =
+    successRate * CW.successRate +
+    diversity   * CW.diversity +
+    activity    * CW.activity +
+    avgDealSize * CW.avgDealSize +
+    age         * CW.age;
+  const consBaseWeight = CW.successRate + CW.diversity + CW.activity + CW.avgDealSize + CW.age;
+  const consumerLegacyTier2 = loyaltyPresent
+    ? consBase + loyalty * CW.loyalty
+    : consBase * ((consBaseWeight + CW.loyalty) / consBaseWeight);
   const consumerTier2 = cadenceClamped != null
     ? consumerLegacyTier2 * 0.9 + cadenceClamped * 0.1
     : consumerLegacyTier2;
@@ -625,7 +681,7 @@ export function calculateScore(
   // the receipt axis is always zero here; thickness alone gates the tier.
   const consumerTier = evidenceGatedTier(consumerTiered.score, {
     txCount,
-    counterparties: uniqueFacilitators,
+    counterparties: uniqueCounterparties,
     daysActive,
     hasTier1Receipts: false,
     tier1Strong: false,
@@ -635,7 +691,7 @@ export function calculateScore(
     trustTier: consumerTier,
     confidenceBadge: consumerTiered.confidenceBadge,
     tierAggregates: consumerAggregates,
-    metrics: { successRate, diversity, activity, avgDealSize, volume, age, cadence: cadenceClamped },
+    metrics: { successRate, loyalty: loyaltyPresent ? loyalty : 0, diversity, activity, avgDealSize, volume, age, cadence: cadenceClamped },
   };
 
   return {
@@ -647,6 +703,7 @@ export function calculateScore(
     confidenceBadge: tiered.confidenceBadge,
     metrics: {
       successRate,
+      loyalty: loyaltyPresent ? loyalty : 0,
       diversity,
       activity,
       avgDealSize,

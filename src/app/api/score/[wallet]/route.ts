@@ -138,7 +138,7 @@ export async function GET(
       confidenceBadge,
       autonomy: storedAutonomy,
       trustTier: walletRow?.trust_tier ?? 'Unrated',
-      metrics: { successRate: 0, diversity: 0, activity: 0, avgDealSize: 0, volume: 0, age: 0 },
+      metrics: { successRate: 0, loyalty: 0, diversity: 0, activity: 0, avgDealSize: 0, volume: 0, age: 0 },
       txCount: 0,
       lastActive: walletRow?.last_seen ?? null,
       identity,
