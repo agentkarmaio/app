@@ -41,7 +41,7 @@ const SORT_LABELS: Record<AgentSortField, string> = {
   metric_cadence:       'Cadence',
   metric_success_rate:  'Success',
   metric_diversity:     'Diversity',
-  metric_volume:        'Volume',
+  metric_volume:        'Activity & size',
   metric_age:           'Account age',
   tx_count:             'Transactions',
   last_seen:            'Last active',
