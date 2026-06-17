@@ -156,6 +156,11 @@ export const transactionsTable = pgTable('transactions', {
   timestamp:      timestamp('timestamp', { withTimezone: true }).notNull(),
   success:        boolean('success').notNull().default(true),
   tx_signature:   text('tx_signature').unique().notNull(),
+  // Payee / resource-server address (the actual counterparty), distinct from the
+  // facilitator that routed the payment. Nullable: legacy rows + chains where the
+  // payee is not yet extracted fall back to `facilitator` in scoring. Populated
+  // per-chain by the indexer (see docs/counterparty-signal-followup.md).
+  counterparty:   text('counterparty'),
 }, (table) => [
   foreignKey({
     columns: [table.chain, table.wallet_address],
@@ -164,6 +169,7 @@ export const transactionsTable = pgTable('transactions', {
   }).onDelete('cascade'),
   index('idx_transactions_chain_wallet_address').on(table.chain, table.wallet_address),
   index('idx_transactions_facilitator').on(table.facilitator),
+  index('idx_transactions_counterparty').on(table.counterparty),
   index('idx_transactions_timestamp').on(table.timestamp),
 ]);
 
@@ -687,6 +693,7 @@ export interface Transaction {
   timestamp: string;
   success: boolean;
   tx_signature: string;
+  counterparty?: string | null;
 }
 
 export interface Score {
