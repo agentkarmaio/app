@@ -58,6 +58,13 @@ function cap(value: number, max: number): number {
   return Math.min(value / max, 1.0);
 }
 
+/** Log-scaled normalization to [0,1]: log10(1+value)/log10(1+max), clamped.
+ *  Diminishing-returns curve — rewards larger values without letting whales
+ *  dominate. Mirrors the bonding amountFactor scaling in signals.ts. */
+function logCap(value: number, max: number): number {
+  return clamp01(Math.log10(1 + Math.max(0, value)) / Math.log10(1 + max));
+}
+
 function recencyDecay(daysSinceLastTx: number): number {
   if (daysSinceLastTx <= 7) return 1.0;
   if (daysSinceLastTx <= 30) return 1.0 - 0.05 * ((daysSinceLastTx - 7) / 23);
@@ -237,6 +244,13 @@ export interface WalletScore {
   metrics: {
     successRate: number;
     diversity: number;
+    /** Transaction-count contribution (the legacy `volume`, now its own signal). */
+    activity: number;
+    /** Avg USDC deal size, log-scaled to [0,1] — the dollar dimension. */
+    avgDealSize: number;
+    /** Back-compat composite: mean of activity + avgDealSize. Not used in the
+     *  score (activity + avgDealSize are scored separately); retained so existing
+     *  metrics readers + the `scores.volume` column keep working unchanged. */
     volume: number;
     age: number;
     attestation: number;
@@ -261,6 +275,8 @@ export interface ConsumerFaceScore {
   metrics: {
     successRate: number;
     diversity: number;
+    activity: number;
+    avgDealSize: number;
     volume: number;
     age: number;
     cadence: number | null;
@@ -273,23 +289,34 @@ export interface ConsumerFaceScore {
 const CONSUMER_TIER2_METRIC_WEIGHTS = {
   successRate: 0.30,
   diversity:   0.15,
-  volume:      0.30,
+  activity:    0.15, // split from the old volume 0.30
+  avgDealSize: 0.15, // split from the old volume 0.30
   age:         0.15,
   // +10% cadence blend (same behavior as provider face)
 } as const;
 
 const NORMALIZE = {
   diversityMax: 10,
-  volumeMax: 500,
+  activityMax: 500,
+  /** USDC saturation point for avg-deal-size log scaling. Matches the existing
+   *  per-tx amount/1000 normalization convention; tunable here in one place. */
+  dealSizeUsdcCap: 1000,
   ageMax: 180,
 } as const;
 
 const TIER2_METRIC_WEIGHTS = {
   successRate: 0.35,
   diversity: 0.25,
-  volume: 0.20,
+  activity: 0.10,    // split from the old volume 0.20
+  avgDealSize: 0.10, // split from the old volume 0.20
   age: 0.20,
 } as const;
+
+/** Feedback shrinkage: the local delivery rate is blended toward a neutral prior
+ *  until enough samples accrue, so a single rating cannot swing the 0.60-weighted
+ *  Tier-1 term. confidence = min(1, feedbackCount / N). */
+const FEEDBACK_NEUTRAL_PRIOR = 0.5;
+const FEEDBACK_FULL_CONFIDENCE_N = 10;
 
 /**
  * Optional pay.sh-routed Tier 1 contribution.
@@ -452,7 +479,16 @@ export function calculateScore(
   const uniqueFacilitators = new Set(transactions.map((tx) => tx.facilitator)).size;
   const diversity = cap(uniqueFacilitators, NORMALIZE.diversityMax);
 
-  const volume = cap(txCount, NORMALIZE.volumeMax);
+  // Tier-2 volume is split into two distinct signals: activity (how OFTEN) and
+  // avgDealSize (how LARGE). `activity` is the legacy `volume` value (txCount/500).
+  // `avgDealSize` log-scales the mean USDC per transaction — the dollar dimension
+  // the score previously ignored entirely. `volume` is retained as a blended
+  // composite purely for back-compat display + the `scores.volume` column.
+  const activity = cap(txCount, NORMALIZE.activityMax);
+  const totalUsdc = transactions.reduce((sum, tx) => sum + Number(tx.amount), 0);
+  const avgDealSizeUsdc = totalUsdc / txCount; // txCount > 0 guaranteed above
+  const avgDealSize = logCap(avgDealSizeUsdc, NORMALIZE.dealSizeUsdcCap);
+  const volume = 0.5 * activity + 0.5 * avgDealSize;
 
   const timestamps = transactions.map((tx) => new Date(tx.timestamp).getTime());
   const firstTs = Math.min(...timestamps);
@@ -463,7 +499,8 @@ export function calculateScore(
   const legacyTier2 =
     successRate * TIER2_METRIC_WEIGHTS.successRate +
     diversity * TIER2_METRIC_WEIGHTS.diversity +
-    volume * TIER2_METRIC_WEIGHTS.volume +
+    activity * TIER2_METRIC_WEIGHTS.activity +
+    avgDealSize * TIER2_METRIC_WEIGHTS.avgDealSize +
     age * TIER2_METRIC_WEIGHTS.age;
 
   // Blend in cadence when available (G2). Cadence is a behavioral shape
@@ -483,7 +520,12 @@ export function calculateScore(
   let tier1: number | null = null;
   let blendedAttestation = 0;
   if (hasLocal) {
-    const local = clamp01(feedbackDeliveryRate as number);
+    // Sample-size shrinkage: blend the raw delivery rate toward a neutral prior
+    // until feedbackCount reaches N, so one rating can't swing the Tier-1 term
+    // as hard as fifty. confidence = min(1, feedbackCount / N).
+    const rawLocal = clamp01(feedbackDeliveryRate as number);
+    const confidence = Math.min(1, (feedbackCount as number) / FEEDBACK_FULL_CONFIDENCE_N);
+    const local = confidence * rawLocal + (1 - confidence) * FEEDBACK_NEUTRAL_PRIOR;
     blendedAttestation = onChain * 0.4 + local * 0.6;
     tier1 = blendedAttestation;
   } else if (onChain > 0) {
@@ -570,7 +612,8 @@ export function calculateScore(
   const consumerLegacyTier2 =
     successRate * CONSUMER_TIER2_METRIC_WEIGHTS.successRate +
     diversity   * CONSUMER_TIER2_METRIC_WEIGHTS.diversity +
-    volume      * CONSUMER_TIER2_METRIC_WEIGHTS.volume +
+    activity    * CONSUMER_TIER2_METRIC_WEIGHTS.activity +
+    avgDealSize * CONSUMER_TIER2_METRIC_WEIGHTS.avgDealSize +
     age         * CONSUMER_TIER2_METRIC_WEIGHTS.age;
   const consumerTier2 = cadenceClamped != null
     ? consumerLegacyTier2 * 0.9 + cadenceClamped * 0.1
@@ -592,7 +635,7 @@ export function calculateScore(
     trustTier: consumerTier,
     confidenceBadge: consumerTiered.confidenceBadge,
     tierAggregates: consumerAggregates,
-    metrics: { successRate, diversity, volume, age, cadence: cadenceClamped },
+    metrics: { successRate, diversity, activity, avgDealSize, volume, age, cadence: cadenceClamped },
   };
 
   return {
@@ -605,6 +648,8 @@ export function calculateScore(
     metrics: {
       successRate,
       diversity,
+      activity,
+      avgDealSize,
       volume,
       age,
       attestation: blendedAttestation,

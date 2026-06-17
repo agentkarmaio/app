@@ -484,7 +484,8 @@ function ScoreBreakdownCard({
         >
           <MetricBar label="Success Rate" value={m.successRate} weight="35%" />
           <MetricBar label="Counterparty Diversity" value={m.diversity} weight="25%" maxLabel="Unique facilitators / 10" />
-          <MetricBar label="Volume" value={m.volume} weight="20%" maxLabel="Transactions / 500" />
+          <MetricBar label="Activity" value={m.activity} weight="10%" maxLabel="Transactions / 500" />
+          <MetricBar label="Avg Deal Size" value={m.avgDealSize} weight="10%" maxLabel="Avg USDC / deal (log, cap $1k)" />
           <MetricBar label="Account Age" value={m.age} weight="20%" maxLabel="Days active / 180" />
           <MetricBar
             label="Cadence (automation)"
