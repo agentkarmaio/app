@@ -8,7 +8,8 @@
 import { describe, expect, test, beforeEach } from 'bun:test';
 import {
   __setSupabaseForTest, insertTransactions, upsertCursor, getCursor, claimWallet,
-  getStellarAgentId, setStellarAgentId,
+  getStellarAgentId, setStellarAgentId, claimDirtyWallets, markWalletsDirty,
+  ADDRESS_IN_CHUNK, getStats,
 } from './client';
 import type { Transaction } from './schema';
 
@@ -151,5 +152,138 @@ describe('stellar_agent_id getter/setter (C2)', () => {
     expect(updateOp).toBeDefined();
     const row = updateOp!.rows as Record<string, unknown>;
     expect(row.stellar_agent_id).toBe(9058);
+  });
+});
+
+// Regression: the scoring drain stalled in prod with PostgREST 'URI too long'
+// because the dirty-queue cleared/marked wallets with a single oversized
+// `.in('address', [...])` filter (200 base58 addrs ≈ 9.2KB > Kong's ~8KB URI
+// cap). Every address-list `.in()` MUST be chunked to <=ADDRESS_IN_CHUNK so no
+// request URL overflows. These tests drive a fake that records each `.in()`
+// list and asserts no chunk exceeds the cap while every address is covered.
+describe('dirty-queue chunks address .in() lists to avoid URI-too-long', () => {
+  function fakeRecordingIn(selectRows: { address: string }[], inCalls: string[][]) {
+    return {
+      from() {
+        const b: Record<string, unknown> = {};
+        b.select = () => b;
+        b.not = () => b;
+        b.order = () => b;
+        b.limit = async () => ({ data: selectRows, error: null });
+        b.update = () => ({
+          in: (_col: string, list: string[]) => {
+            inCalls.push(list);
+            return Promise.resolve({ error: null });
+          },
+        });
+        return b;
+      },
+    };
+  }
+
+  test('ADDRESS_IN_CHUNK keeps a base58 .in() URL safely under the ~8KB cap', () => {
+    // ~46 chars/base58 addr + ',' separator; the encoded filter must stay < 8KB.
+    expect(ADDRESS_IN_CHUNK * 47).toBeLessThan(8000);
+  });
+
+  test('claimDirtyWallets clears 200 wallets in <=ADDRESS_IN_CHUNK-sized chunks', async () => {
+    const addresses = Array.from({ length: 200 }, (_, i) => `Wa11et${String(i).padStart(38, '0')}`);
+    const inCalls: string[][] = [];
+    __setSupabaseForTest(fakeRecordingIn(addresses.map((address) => ({ address })), inCalls));
+
+    const claimed = await claimDirtyWallets(200);
+
+    expect(claimed.length).toBe(200);
+    expect(inCalls.length).toBeGreaterThan(1); // chunked, not one giant .in()
+    expect(Math.max(...inCalls.map((c) => c.length))).toBeLessThanOrEqual(ADDRESS_IN_CHUNK);
+    expect(inCalls.flat().sort()).toEqual([...addresses].sort()); // every wallet cleared
+  });
+
+  test('markWalletsDirty marks 250 wallets in <=ADDRESS_IN_CHUNK-sized chunks', async () => {
+    const addresses = Array.from({ length: 250 }, (_, i) => `Wa11et${String(i).padStart(38, '0')}`);
+    const inCalls: string[][] = [];
+    __setSupabaseForTest(fakeRecordingIn([], inCalls));
+
+    await markWalletsDirty(addresses);
+
+    expect(Math.max(...inCalls.map((c) => c.length))).toBeLessThanOrEqual(ADDRESS_IN_CHUNK);
+    expect(inCalls.flat().sort()).toEqual([...addresses].sort());
+  });
+});
+
+// Regression: /api/stats 500'd in prod (2026-06-18) because get_transaction_stats
+// was missing from the DB (PGRST202) and getStats fell back to streaming the full
+// transactions table (~502k rows) for a JS SUM — which blew the 8s statement
+// timeout (57014) and THREW, with no try/catch in the route. getStats MUST treat
+// the aggregate RPCs as the only source of truth and degrade to best-effort
+// (never throw, never row-stream a full table) when an RPC is absent.
+//
+// The fake makes every aggregate RPC report PGRST202 and makes any non-HEAD
+// `select` (the old `select('amount')` / `select('trust_tier')` row-streams)
+// resolve with the prod statement-timeout error — so the pre-fix implementation,
+// which threw on that error, fails this test, while the best-effort version passes.
+describe('getStats degrades to best-effort when aggregate RPCs are missing', () => {
+  const PGRST202 = { code: 'PGRST202', message: 'function not found in schema cache' };
+  const TIMEOUT_57014 = { code: '57014', message: 'canceling statement due to statement timeout' };
+
+  function makeStatsFake(opts: {
+    txStats?: { total_count: number; total_volume: number } | null;
+    tierRows?: { trust_tier: string; count: number }[] | null;
+    walletHeadCount?: number;
+  }) {
+    return {
+      rpc(name: string) {
+        if (name === 'get_transaction_stats') {
+          const result = opts.txStats
+            ? { data: opts.txStats, error: null }
+            : { data: null, error: PGRST202 };
+          return { single: async () => result };
+        }
+        if (name === 'get_tier_distribution') {
+          return Promise.resolve(
+            opts.tierRows ? { data: opts.tierRows, error: null } : { data: null, error: PGRST202 },
+          );
+        }
+        return Promise.resolve({ data: null, error: PGRST202 });
+      },
+      from() {
+        const b: Record<string, unknown> = {};
+        b.select = (_cols: string, selOpts?: { head?: boolean; count?: string }) =>
+          selOpts?.head
+            ? Promise.resolve({ count: opts.walletHeadCount ?? 0, error: null })
+            // Any full-table row-stream is the exact prod failure — surface 57014.
+            : Promise.resolve({ data: null, error: TIMEOUT_57014 });
+        return b;
+      },
+    };
+  }
+
+  test('returns best-effort numbers without throwing when both RPCs are absent', async () => {
+    __setSupabaseForTest(makeStatsFake({ txStats: null, tierRows: null, walletHeadCount: 116672 }));
+
+    const stats = await getStats(); // must not throw — the prod 500 was an uncaught throw
+
+    expect(stats.totalTransactions).toBe(0);
+    expect(stats.totalVolumeUsdc).toBe(0);
+    expect(stats.tierDistribution).toEqual({});
+    // totalAgents survives via a cheap HEAD count (no row scan) even with the RPC down.
+    expect(stats.totalAgents).toBe(116672);
+  });
+
+  test('reads real figures from the aggregate RPCs when they are deployed', async () => {
+    __setSupabaseForTest(makeStatsFake({
+      txStats: { total_count: 502474, total_volume: 1234.56 },
+      tierRows: [
+        { trust_tier: 'Excellent', count: 10 },
+        { trust_tier: 'Good', count: 90 },
+      ],
+    }));
+
+    const stats = await getStats();
+
+    expect(stats.totalTransactions).toBe(502474);
+    expect(stats.totalVolumeUsdc).toBe(1234.56);
+    expect(stats.tierDistribution).toEqual({ Excellent: 10, Good: 90 });
+    expect(stats.totalAgents).toBe(100); // summed from the tier RPC, no HEAD count needed
   });
 });
