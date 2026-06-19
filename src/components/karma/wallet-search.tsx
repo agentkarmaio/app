@@ -4,13 +4,32 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, ArrowRight, Loader2 } from 'lucide-react';
 import { TierBadge } from '@/components/karma/tier-badge';
-import type { TrustTier } from '@/db/schema';
+import { ChainBadge } from '@/components/karma/chain-badge';
+import { agentHref } from '@/lib/agent-href';
+import type { Chain, TrustTier } from '@/db/schema';
 
 interface SearchResult {
   address: string;
+  chain: Chain;
+  displayName: string | null;
   score: number;
   trustTier: TrustTier;
   txCount: number;
+}
+
+function shortAddr(a: string): string {
+  return `${a.slice(0, 4)}…${a.slice(-4)}`;
+}
+
+// Direct-lookup affordance: a full address typed in. Solana base58 (32-44),
+// EVM 0x40hex (42), or Stellar G-strkey (56). For EVM the chain is ambiguous
+// (Celo vs Arc) so we don't pin one — the /agent route resolves it.
+function classifyTyped(q: string): { kind: 'solana' | 'evm' | 'stellar'; address: string } | null {
+  const t = q.trim();
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(t)) return { kind: 'solana', address: t };
+  if (/^0x[a-fA-F0-9]{40}$/.test(t)) return { kind: 'evm', address: t };
+  if (/^G[A-Z2-7]{55}$/.test(t)) return { kind: 'stellar', address: t };
+  return null;
 }
 
 export function WalletSearch() {
@@ -24,7 +43,7 @@ export function WalletSearch() {
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const isValidSolanaAddress = query.trim().length >= 32 && query.trim().length <= 44;
+  const typedAddress = classifyTyped(query);
 
   const search = useCallback(async (q: string) => {
     if (q.length < 3) {
@@ -51,7 +70,16 @@ export function WalletSearch() {
     debounceRef.current = setTimeout(() => search(value.trim()), 250);
   }, [search]);
 
-  const navigate = useCallback((address: string) => {
+  // Chain-aware navigation. A search result carries its chain, so EVM (Celo vs
+  // Arc) links go to the right profile via agentHref. A raw typed address has
+  // no chain (EVM ambiguous), so we link bare and let /agent resolve it.
+  const navigateResult = useCallback((r: SearchResult) => {
+    setOpen(false);
+    setQuery('');
+    router.push(agentHref(r));
+  }, [router]);
+
+  const navigateAddress = useCallback((address: string) => {
     setOpen(false);
     setQuery('');
     router.push(`/agent/${address}`);
@@ -59,14 +87,14 @@ export function WalletSearch() {
 
   const handleSubmit = useCallback(() => {
     if (selectedIdx >= 0 && results[selectedIdx]) {
-      navigate(results[selectedIdx].address);
-    } else if (isValidSolanaAddress) {
-      navigate(query.trim());
+      navigateResult(results[selectedIdx]);
+    } else if (typedAddress) {
+      navigateAddress(typedAddress.address);
     }
-  }, [selectedIdx, results, isValidSolanaAddress, query, navigate]);
+  }, [selectedIdx, results, typedAddress, navigateResult, navigateAddress]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    const totalItems = results.length + (isValidSolanaAddress ? 1 : 0);
+    const totalItems = results.length + (typedAddress ? 1 : 0);
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       setSelectedIdx((prev) => (prev + 1) % totalItems);
@@ -80,7 +108,7 @@ export function WalletSearch() {
       setOpen(false);
       inputRef.current?.blur();
     }
-  }, [results.length, isValidSolanaAddress, handleSubmit]);
+  }, [results.length, typedAddress, handleSubmit]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -92,7 +120,7 @@ export function WalletSearch() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const showDropdown = open && (query.length >= 3 || isValidSolanaAddress);
+  const showDropdown = open && (query.length >= 3 || !!typedAddress);
 
   return (
     <div ref={containerRef} className="relative w-full max-w-xl">
@@ -105,7 +133,7 @@ export function WalletSearch() {
           onChange={(e) => handleChange(e.target.value)}
           onFocus={() => query.length >= 3 && setOpen(true)}
           onKeyDown={handleKeyDown}
-          placeholder="Search by wallet address…"
+          placeholder="Search by name or address…"
           className="h-9 w-full rounded-full border border-[rgb(255_255_255/0.05)] bg-[rgb(255_255_255/0.02)] pl-9 pr-4 text-[13px] font-[510] text-[#f7f8f8] placeholder-[#62666d] outline-none transition-colors focus:border-[rgb(113_112_255/0.35)] focus:bg-[rgb(255_255_255/0.03)]"
           spellCheck={false}
           autoComplete="off"
@@ -117,7 +145,7 @@ export function WalletSearch() {
 
       {showDropdown && (
         <div className="absolute top-full z-50 mt-1.5 w-full overflow-hidden rounded-xl border border-[rgb(255_255_255/0.06)] bg-[rgb(20_21_22/0.95)] backdrop-blur-xl shadow-[0_8px_24px_-12px_rgb(0_0_0/0.6)]">
-          {isValidSolanaAddress && (
+          {typedAddress && (
             <button
               type="button"
               className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors ${
@@ -125,7 +153,7 @@ export function WalletSearch() {
                   ? 'bg-[rgb(255_255_255/0.05)]'
                   : 'hover:bg-[rgb(255_255_255/0.03)]'
               }`}
-              onClick={() => navigate(query.trim())}
+              onClick={() => navigateAddress(typedAddress.address)}
               onMouseEnter={() => setSelectedIdx(0)}
             >
               <div className="min-w-0">
@@ -133,7 +161,7 @@ export function WalletSearch() {
                   Look up wallet
                 </p>
                 <p className="mt-0.5 truncate font-mono text-[12px] text-[#62666d]">
-                  {query.trim()}
+                  {typedAddress.address}
                 </p>
               </div>
               <ArrowRight className="size-3.5 shrink-0 text-[#62666d]" />
@@ -142,7 +170,7 @@ export function WalletSearch() {
 
           {results.length > 0 && (
             <>
-              {isValidSolanaAddress && (
+              {typedAddress && (
                 <div className="border-t border-[rgb(255_255_255/0.05)]" />
               )}
               <div className="px-2 py-1.5">
@@ -151,22 +179,23 @@ export function WalletSearch() {
                 </p>
               </div>
               {results.map((r, i) => {
-                const idx = isValidSolanaAddress ? i + 1 : i;
+                const idx = typedAddress ? i + 1 : i;
                 return (
                   <button
-                    key={r.address}
+                    key={`${r.chain}:${r.address}`}
                     type="button"
                     className={`flex w-full items-center justify-between px-3 py-2 text-left transition-colors ${
                       selectedIdx === idx
                         ? 'bg-[rgb(255_255_255/0.05)]'
                         : 'hover:bg-[rgb(255_255_255/0.03)]'
                     }`}
-                    onClick={() => navigate(r.address)}
+                    onClick={() => navigateResult(r)}
                     onMouseEnter={() => setSelectedIdx(idx)}
                   >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <span className="truncate font-mono text-[13px] text-[#d0d6e0]">
-                        {r.address.slice(0, 4)}...{r.address.slice(-4)}
+                    <div className="flex items-center gap-2 min-w-0">
+                      <ChainBadge chain={r.chain} />
+                      <span className="truncate text-[13px] text-[#d0d6e0]">
+                        {r.displayName ?? shortAddr(r.address)}
                       </span>
                       <TierBadge tier={r.trustTier} size="sm" />
                     </div>
@@ -179,7 +208,7 @@ export function WalletSearch() {
             </>
           )}
 
-          {!loading && results.length === 0 && !isValidSolanaAddress && query.length >= 3 && (
+          {!loading && results.length === 0 && !typedAddress && query.length >= 3 && (
             <div className="px-3 py-4 text-center text-[13px] text-[#62666d]">
               No agents found matching &ldquo;{query}&rdquo;
             </div>

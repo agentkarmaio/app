@@ -23,6 +23,18 @@ import type {
 // so a missing chain doesn't corrupt data — it just resolves to Solana rows.
 const DEFAULT_CHAIN: Chain = 'solana';
 
+// Max addresses per `.in('address', [...])` filter. PostgREST encodes the list
+// into the request URL (`?address=in.(a,b,…)`); base58 Solana addresses are ~44
+// chars each, so a list beyond ~170 overflows Kong's ~8KB URI cap → a hard
+// "URI too long" error. 100 keeps every address-list query comfortably under it
+// (100 × ~47 ≈ 4.7KB). Chunk EVERY address-keyed `.in()` to this bound.
+export const ADDRESS_IN_CHUNK = 100;
+
+// Tighter bound for tx_signature `.in()` lists: base58 Solana signatures are
+// ~88 chars (≈2× an address), so the same 100-row chunk would approach the URI
+// cap. 60 × ~90 ≈ 5.4KB stays safe.
+export const SIGNATURE_IN_CHUNK = 60;
+
 // --- Supabase Client ---------------------------------------------------------
 // Lazy: only instantiated on first access. Keeps `next build` from crashing
 // when env vars aren't present during the Docker build step.
@@ -265,7 +277,9 @@ export async function getAgents(
   }
 
   if (filters.search) {
-    const term = filters.search.replace(/[%_]/g, '').trim();
+    // escapeSearchTerm also strips commas/parens that would otherwise break the
+    // PostgREST .or() grammar (the old `[%_]`-only strip left that gap open).
+    const term = escapeSearchTerm(filters.search);
     if (term) q = q.or(`address.ilike.%${term}%,display_name.ilike.%${term}%`);
   }
 
@@ -277,6 +291,61 @@ export async function getAgents(
 
   if (error) throw error;
   return { wallets: (data ?? []) as Wallet[], total: count ?? 0 };
+}
+
+// --- Wallet Search (address OR name) -----------------------------------------
+
+/**
+ * Escape a user-supplied search term for safe interpolation into a PostgREST
+ * `.or()` ilike filter. The or-filter grammar treats `,` as a condition
+ * separator and `(` `)` as grouping; `%` `_` are ilike wildcards. We replace
+ * all of them with spaces so the term is matched as a literal substring and a
+ * crafted query (e.g. `a,address.ilike.*`) cannot inject extra filter
+ * conditions. Returns a collapsed, trimmed string ('' when nothing usable).
+ */
+export function escapeSearchTerm(raw: string): string {
+  return raw.replace(/[%_(),*]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export interface WalletSearchRow {
+  address: string;
+  chain: Chain;
+  displayName: string | null;
+  score: number;
+  trustTier: TrustTier;
+  txCount: number;
+}
+
+/**
+ * Search wallets by address OR display_name substring (case-insensitive),
+ * ranked by score descending. Returns the chain so callers can render a chain
+ * badge and build a chain-aware /agent link. Powers the homepage search box
+ * and the MCP `search_agents` tool — one place for the escaping + name logic.
+ */
+export async function searchWallets(query: string, limit = 8): Promise<WalletSearchRow[]> {
+  const term = escapeSearchTerm(query);
+  if (term.length < 3) return [];
+
+  const { data, error } = await supabase
+    .from('wallets')
+    .select('address, chain, display_name, score, trust_tier, tx_count')
+    .or(`address.ilike.%${term}%,display_name.ilike.%${term}%`)
+    .order('score', { ascending: false })
+    .limit(Math.max(1, Math.min(50, limit)));
+
+  if (error) throw error;
+
+  return ((data ?? []) as Array<{
+    address: string; chain: Chain; display_name: string | null;
+    score: number; trust_tier: TrustTier; tx_count: number;
+  }>).map((w) => ({
+    address: w.address,
+    chain: w.chain,
+    displayName: w.display_name,
+    score: Number(w.score),
+    trustTier: w.trust_tier,
+    txCount: w.tx_count,
+  }));
 }
 
 // --- Agent Claiming ----------------------------------------------------------
@@ -467,9 +536,9 @@ export async function getTransactionsForWallets(
   if (walletAddresses.length === 0) return [];
 
   const all: Transaction[] = [];
-  // Supabase .in() has URL length limits; chunk into batches of 500
-  for (let i = 0; i < walletAddresses.length; i += 500) {
-    const chunk = walletAddresses.slice(i, i + 500);
+  // Supabase .in() encodes into the URL; chunk to stay under Kong's ~8KB URI cap.
+  for (let i = 0; i < walletAddresses.length; i += ADDRESS_IN_CHUNK) {
+    const chunk = walletAddresses.slice(i, i + ADDRESS_IN_CHUNK);
     const { data, error } = await supabase
       .from('transactions')
       .select('*')
@@ -521,9 +590,9 @@ export async function getRecentTransactionsForWallet(
 export async function markWalletsDirty(addresses: string[]): Promise<void> {
   if (addresses.length === 0) return;
   const now = new Date().toISOString();
-  // Chunk to respect Supabase URL limits on .in() filters.
-  for (let i = 0; i < addresses.length; i += 500) {
-    const chunk = addresses.slice(i, i + 500);
+  // Chunk to respect Kong's ~8KB URI cap on .in() filters (see ADDRESS_IN_CHUNK).
+  for (let i = 0; i < addresses.length; i += ADDRESS_IN_CHUNK) {
+    const chunk = addresses.slice(i, i + ADDRESS_IN_CHUNK);
     const { error } = await supabase
       .from('wallets')
       .update({ scoring_dirty_at: now })
@@ -551,11 +620,18 @@ export async function claimDirtyWallets(limit = 100): Promise<string[]> {
   const addresses = (data ?? []).map((row: { address: string }) => row.address);
   if (addresses.length === 0) return [];
 
-  const { error: clearError } = await supabase
-    .from('wallets')
-    .update({ scoring_dirty_at: null })
-    .in('address', addresses);
-  if (clearError) throw clearError;
+  // Clear the dirty flag in URI-safe chunks. A single unchunked `.in()` over the
+  // full claimed batch (up to 200) overflowed Kong's ~8KB URI cap → "URI too
+  // long" → the whole drain threw before scoring anything, and since the rows
+  // stayed dirty the next tick re-claimed them: a self-perpetuating stall.
+  for (let i = 0; i < addresses.length; i += ADDRESS_IN_CHUNK) {
+    const chunk = addresses.slice(i, i + ADDRESS_IN_CHUNK);
+    const { error: clearError } = await supabase
+      .from('wallets')
+      .update({ scoring_dirty_at: null })
+      .in('address', chunk);
+    if (clearError) throw clearError;
+  }
 
   return addresses;
 }
@@ -852,48 +928,40 @@ export async function cleanupOldScoreSnapshots(days = 90): Promise<number> {
 // --- Stats Queries -----------------------------------------------------------
 
 export async function getStats() {
-  // Try SQL function first, fall back to JS aggregation if not deployed
-  const txStatsRes = await supabase.rpc('get_transaction_stats').single();
-  const useRpc = !txStatsRes.error;
-
-  const [walletsRes, tierRes] = await Promise.all([
-    supabase.from('wallets').select('*', { count: 'exact', head: true }),
-    supabase.from('wallets').select('trust_tier'),
-  ]);
-
-  if (walletsRes.error) throw walletsRes.error;
-  if (tierRes.error) throw tierRes.error;
-
+  // Every figure comes from a SQL aggregate RPC — NEVER from streaming the full
+  // transactions (~502k) or wallets (~116k) tables. The old row-streaming
+  // fallbacks (`select amount` / `select trust_tier`) blew the 8s statement
+  // timeout as the tables grew and 500'd /api/stats (the public homepage
+  // counter). Each block degrades independently so one slow query can't take the
+  // whole endpoint down — getStats returns best-effort, never throws.
   let totalTransactions = 0;
   let totalVolumeUsdc = 0;
-
-  if (useRpc) {
+  const txStatsRes = await supabase.rpc('get_transaction_stats').single();
+  if (!txStatsRes.error && txStatsRes.data) {
     const stats = txStatsRes.data as Record<string, unknown>;
-    totalTransactions = Number(stats?.total_count ?? 0);
-    totalVolumeUsdc = Number(stats?.total_volume ?? 0);
-  } else {
-    // Fallback: JS aggregation
-    const { data: txData, error: txError } = await supabase
-      .from('transactions')
-      .select('amount');
-    if (txError) throw txError;
-    totalTransactions = txData?.length ?? 0;
-    totalVolumeUsdc = (txData ?? []).reduce(
-      (sum: number, row: { amount: number }) => sum + Number(row.amount), 0,
-    );
+    totalTransactions = Number(stats.total_count ?? 0);
+    totalVolumeUsdc = Number(stats.total_volume ?? 0);
+  } else if (txStatsRes.error) {
+    console.warn('[db] get_transaction_stats unavailable:', txStatsRes.error.message);
   }
 
+  let totalAgents = 0;
   const tierDistribution: Record<string, number> = {};
-  for (const row of (tierRes.data ?? []) as { trust_tier: string }[]) {
-    tierDistribution[row.trust_tier] = (tierDistribution[row.trust_tier] ?? 0) + 1;
+  const tierRes = await supabase.rpc('get_tier_distribution');
+  if (!tierRes.error && Array.isArray(tierRes.data)) {
+    for (const row of tierRes.data as { trust_tier: string; count: number }[]) {
+      const n = Number(row.count);
+      tierDistribution[row.trust_tier] = n;
+      totalAgents += n;
+    }
+  } else {
+    if (tierRes.error) console.warn('[db] get_tier_distribution unavailable:', tierRes.error.message);
+    // Cheap degradation: a HEAD count (no row scan) so totalAgents survives.
+    const headRes = await supabase.from('wallets').select('*', { count: 'exact', head: true });
+    totalAgents = headRes.count ?? 0;
   }
 
-  return {
-    totalAgents: walletsRes.count ?? 0,
-    totalTransactions,
-    totalVolumeUsdc,
-    tierDistribution,
-  };
+  return { totalAgents, totalTransactions, totalVolumeUsdc, tierDistribution };
 }
 
 // --- Explore Queries ---------------------------------------------------------
@@ -988,8 +1056,8 @@ export async function getWalletTiers(
   const out = new Map<string, TrustTier>();
   if (addresses.length === 0) return out;
 
-  for (let i = 0; i < addresses.length; i += 500) {
-    const chunk = addresses.slice(i, i + 500);
+  for (let i = 0; i < addresses.length; i += ADDRESS_IN_CHUNK) {
+    const chunk = addresses.slice(i, i + ADDRESS_IN_CHUNK);
     const { data, error } = await supabase
       .from('wallets')
       .select('address, trust_tier')
@@ -1457,8 +1525,8 @@ export async function getAgentManifestsForWallets(
   const out = new Map<string, AgentManifest[]>();
   if (agentWallets.length === 0) return out;
 
-  for (let i = 0; i < agentWallets.length; i += 500) {
-    const chunk = agentWallets.slice(i, i + 500);
+  for (let i = 0; i < agentWallets.length; i += ADDRESS_IN_CHUNK) {
+    const chunk = agentWallets.slice(i, i + ADDRESS_IN_CHUNK);
     const { data, error } = await supabase
       .from('agent_manifests')
       .select('*')
@@ -1534,8 +1602,8 @@ export async function getFeedbackRatingsForSignatures(
   const out = new Map<string, 'delivered' | 'failed'>();
   if (txSignatures.length === 0) return out;
 
-  for (let i = 0; i < txSignatures.length; i += 500) {
-    const chunk = txSignatures.slice(i, i + 500);
+  for (let i = 0; i < txSignatures.length; i += SIGNATURE_IN_CHUNK) {
+    const chunk = txSignatures.slice(i, i + SIGNATURE_IN_CHUNK);
     const { data, error } = await supabase
       .from('feedback')
       .select('tx_signature, rating')
@@ -1557,8 +1625,8 @@ export async function getFeedbackSummariesForWallets(
   const out = new Map<string, { total: number; delivered: number; failed: number; deliveryRate: number }>();
   if (agentWallets.length === 0) return out;
 
-  for (let i = 0; i < agentWallets.length; i += 500) {
-    const chunk = agentWallets.slice(i, i + 500);
+  for (let i = 0; i < agentWallets.length; i += ADDRESS_IN_CHUNK) {
+    const chunk = agentWallets.slice(i, i + ADDRESS_IN_CHUNK);
     const { data, error } = await supabase
       .from('feedback')
       .select('agent_wallet, rating')
@@ -1587,8 +1655,8 @@ export async function getScoreHistoriesForWallets(
 
   const since = new Date(Date.now() - sincesDaysAgo * 24 * 60 * 60 * 1000).toISOString();
 
-  for (let i = 0; i < walletAddresses.length; i += 500) {
-    const chunk = walletAddresses.slice(i, i + 500);
+  for (let i = 0; i < walletAddresses.length; i += ADDRESS_IN_CHUNK) {
+    const chunk = walletAddresses.slice(i, i + ADDRESS_IN_CHUNK);
     const { data, error } = await supabase
       .from('scores')
       .select('wallet_address, score, calculated_at')

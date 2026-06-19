@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/db/client';
-import type { Wallet } from '@/db/schema';
+import { searchWallets } from '@/db/client';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
 export async function OPTIONS() {
@@ -18,20 +17,16 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const { data, error } = await supabase
-    .from('wallets')
-    .select('address, score, trust_tier, tx_count')
-    .ilike('address', `%${q}%`)
-    .order('score', { ascending: false })
-    .limit(8);
-
-  if (error) throw error;
-
-  const results = ((data ?? []) as Pick<Wallet, 'address' | 'score' | 'trust_tier' | 'tx_count'>[]).map((w) => ({
+  // Matches address OR display_name across all chains. `chain` + `displayName`
+  // let the client render the agent's name + chain badge and link chain-aware.
+  const rows = await searchWallets(q, 8);
+  const results = rows.map((w) => ({
     address: w.address,
-    score: Number(w.score),
-    trustTier: w.trust_tier,
-    txCount: w.tx_count,
+    chain: w.chain,
+    displayName: w.displayName,
+    score: w.score,
+    trustTier: w.trustTier,
+    txCount: w.txCount,
   }));
 
   return NextResponse.json({ results }, {
