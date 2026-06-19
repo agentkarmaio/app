@@ -1,3 +1,4 @@
+import { Connection, type ParsedTransactionWithMeta } from '@solana/web3.js';
 import { USDC_MINT } from '../config/facilitators';
 import { detectPayshRouted } from './paysh-fingerprint';
 import type { Transaction } from '../db/schema';
@@ -55,51 +56,161 @@ export function getHeliusApiKey(): string {
   return match[1];
 }
 
-// ─── Batch Parse ─────────────────────────────────────────────────────────────
+// ─── RPC resolver ────────────────────────────────────────────────────────────
 
-const HELIUS_PARSE_URL = 'https://api-mainnet.helius-rpc.com/v0/transactions';
-const MAX_BATCH_SIZE = 100;
+const DEFAULT_RPC = 'https://api.mainnet-beta.solana.com';
 
-function chunk<T>(items: T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
-  }
-  return chunks;
+/**
+ * RPC endpoint for indexer READS (getSignaturesForAddress + getParsedTransactions).
+ * Prefers SOLANA_RPC_URL — set it to a free standard RPC so indexing spends ZERO
+ * Helius credits (Helius stays reserved for the push webhook only). Falls back to
+ * HELIUS_RPC_URL, then public mainnet-beta. Setting SOLANA_RPC_URL is what makes
+ * Solana ingestion fully independent of the Helius quota.
+ */
+export function getIndexerRpcUrl(): string {
+  return process.env.SOLANA_RPC_URL ?? process.env.HELIUS_RPC_URL ?? DEFAULT_RPC;
 }
 
+let _rpcConn: Connection | null = null;
+function getRpcConnection(): Connection {
+  if (!_rpcConn) _rpcConn = new Connection(getIndexerRpcUrl(), 'confirmed');
+  return _rpcConn;
+}
+
+// ─── Parse (standard RPC — no Helius Enhanced API) ───────────────────────────
+
+/** Concurrent single-tx fetches. We do NOT use batched getParsedTransactions:
+ *  free RPCs cap JSON-RPC batch size (PublicNode allows 1 getTransaction/batch),
+ *  so we fan out singular getParsedTransaction calls under bounded concurrency. */
+const PARSE_CONCURRENCY = 5;
+
+/**
+ * Pure: map a standard `getParsedTransaction` result into the
+ * HeliusEnhancedTransaction shape the extractors consume. SPL movement (incl.
+ * USDC) is reconstructed from `meta.pre/postTokenBalances` deltas — the same
+ * decode proven in scripts/test-facilitator.ts. Returns null when the tx has no
+ * meta. Zero blast radius: extractX402Payment / extractPayshPayment keep working
+ * unchanged off the derived `tokenTransfers` + `accountData`.
+ */
+export function mapParsedTxToEnhanced(
+  tx: ParsedTransactionWithMeta,
+  signature: string,
+): HeliusEnhancedTransaction | null {
+  const meta = tx.meta;
+  if (!meta) return null;
+
+  const accountKeys = tx.transaction.message.accountKeys;
+  const keyAt = (i: number): string => accountKeys[i]?.pubkey?.toString() ?? '';
+
+  const pre = meta.preTokenBalances ?? [];
+  const post = meta.postTokenBalances ?? [];
+
+  // Per token-account (accountIndex) raw signed delta.
+  interface Delta { userAccount: string; tokenAccount: string; mint: string; raw: bigint; decimals: number; }
+  const deltas: Delta[] = [];
+  const indices = new Set<number>([...pre, ...post].map((b) => b.accountIndex));
+  for (const idx of indices) {
+    const p = pre.find((b) => b.accountIndex === idx);
+    const q = post.find((b) => b.accountIndex === idx);
+    const mint = q?.mint ?? p?.mint;
+    if (!mint) continue;
+    const raw = BigInt(q?.uiTokenAmount.amount ?? '0') - BigInt(p?.uiTokenAmount.amount ?? '0');
+    if (raw === BigInt(0)) continue;
+    deltas.push({
+      userAccount: q?.owner ?? p?.owner ?? '',
+      tokenAccount: keyAt(idx),
+      mint,
+      raw,
+      decimals: q?.uiTokenAmount.decimals ?? p?.uiTokenAmount.decimals ?? 0,
+    });
+  }
+
+  // accountData.tokenBalanceChanges — extractor Strategy 2 input.
+  const accountData = deltas.map((d) => ({
+    account: d.userAccount,
+    nativeBalanceChange: 0,
+    tokenBalanceChanges: [{
+      userAccount: d.userAccount,
+      tokenAccount: d.tokenAccount,
+      mint: d.mint,
+      rawTokenAmount: { tokenAmount: d.raw.toString(), decimals: d.decimals },
+    }],
+  }));
+
+  // tokenTransfers — extractor Strategy 1 input. Pair each receiver (raw>0) with
+  // the largest sender (most-negative raw) of the same mint: covers the simple
+  // payer→payee x402 transfer; multi-party splits still yield the dominant move.
+  const tokenTransfers: HeliusTokenTransfer[] = [];
+  const byMint = new Map<string, Delta[]>();
+  for (const d of deltas) {
+    const list = byMint.get(d.mint) ?? [];
+    list.push(d);
+    byMint.set(d.mint, list);
+  }
+  for (const [mint, list] of byMint) {
+    const sender = list.filter((d) => d.raw < BigInt(0)).sort((a, b) => (a.raw < b.raw ? -1 : 1))[0];
+    for (const r of list) {
+      if (r.raw <= BigInt(0)) continue;
+      tokenTransfers.push({
+        fromUserAccount: sender?.userAccount ?? '',
+        toUserAccount: r.userAccount,
+        fromTokenAccount: sender?.tokenAccount ?? '',
+        toTokenAccount: r.tokenAccount,
+        tokenAmount: Number(r.raw) / 10 ** r.decimals,
+        mint,
+        tokenStandard: 'Fungible',
+      });
+    }
+  }
+
+  return {
+    description: '',
+    type: 'UNKNOWN',
+    source: 'RPC',
+    fee: meta.fee ?? 0,
+    feePayer: keyAt(0),
+    signature,
+    slot: tx.slot,
+    timestamp: tx.blockTime ?? 0,
+    nativeTransfers: [],
+    tokenTransfers,
+    accountData,
+    transactionError: meta.err ? (typeof meta.err === 'string' ? meta.err : JSON.stringify(meta.err)) : null,
+    events: {},
+  };
+}
+
+/**
+ * Fetch + decode transactions via standard-RPC `getParsedTransaction` (singular,
+ * concurrent). Replaces the credit-heavy Helius Enhanced Transactions API — runs
+ * on whatever getIndexerRpcUrl() resolves to (set SOLANA_RPC_URL to a free RPC
+ * for $0/mo). Order is preserved so signatures[i] maps to results' i-th tx.
+ */
 export async function parseTransactionsBatch(
   signatures: string[],
 ): Promise<HeliusEnhancedTransaction[]> {
   if (signatures.length === 0) return [];
 
-  const apiKey = getHeliusApiKey();
-  const url = `${HELIUS_PARSE_URL}?api-key=${apiKey}`;
-  const chunks = chunk(signatures, MAX_BATCH_SIZE);
-  const results: HeliusEnhancedTransaction[] = [];
-
-  for (const batch of chunks) {
+  const connection = getRpcConnection();
+  const parsed = await withConcurrency(signatures, PARSE_CONCURRENCY, async (sig) => {
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transactions: batch }),
+      return await connection.getParsedTransaction(sig, {
+        maxSupportedTransactionVersion: 0,
+        commitment: 'confirmed',
       });
-
-      if (!res.ok) {
-        console.error(
-          `[helius] parseTransactions failed: ${res.status} ${res.statusText} (batch of ${batch.length})`,
-        );
-        continue;
-      }
-
-      const data = (await res.json()) as HeliusEnhancedTransaction[];
-      results.push(...data);
     } catch (err) {
-      console.error(`[helius] parseTransactions network error (batch of ${batch.length}):`, err);
+      console.error(`[rpc] getParsedTransaction failed ${sig.slice(0, 12)}…:`, err instanceof Error ? err.message.slice(0, 100) : err);
+      return null;
     }
-  }
+  });
 
+  const results: HeliusEnhancedTransaction[] = [];
+  for (let i = 0; i < parsed.length; i++) {
+    const tx = parsed[i];
+    if (!tx) continue;
+    const mapped = mapParsedTxToEnhanced(tx, signatures[i]);
+    if (mapped) results.push(mapped);
+  }
   return results;
 }
 

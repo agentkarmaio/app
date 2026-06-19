@@ -62,6 +62,27 @@ export function getCeloFacilitator(addr: string): CeloX402Facilitator | undefine
   return CELO_X402_FACILITATORS.find((f) => f.address.toLowerCase() === lc);
 }
 
+const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * Lowercased facilitator/payee address set the indexer matches on Transfer
+ * from/to. Merges the curated `CELO_X402_FACILITATORS` with an optional
+ * comma-separated `CELO_X402_FACILITATORS` env override, so a real address can
+ * be seeded operationally (env) without a code change + redeploy. Malformed
+ * entries are dropped (raise-free; the indexer is a no-op on an empty set).
+ */
+export function celoX402FacilitatorSet(): Set<string> {
+  const set = new Set<string>(CELO_X402_FACILITATORS.map((f) => f.address.toLowerCase()));
+  const env = process.env.CELO_X402_FACILITATORS;
+  if (env) {
+    for (const raw of env.split(',')) {
+      const addr = raw.trim();
+      if (EVM_ADDRESS.test(addr)) set.add(addr.toLowerCase());
+    }
+  }
+  return set;
+}
+
 /** Token lookup by lowercased hex. */
 export function getCeloX402Token(addr: string): CeloX402Token | undefined {
   const lc = addr.toLowerCase();
