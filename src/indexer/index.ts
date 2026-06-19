@@ -57,21 +57,39 @@ import {
   extractX402Payment,
   extractPayshPayment,
   withConcurrency,
+  getIndexerRpcUrl,
   type HeliusEnhancedTransaction,
   type PayshExtractedPayment,
 } from './helius';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const DEFAULT_RPC = 'https://api.mainnet-beta.solana.com';
 const DEFAULT_LIMIT = 100;
 const FACILITATOR_CONCURRENCY = 5;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function getConnection(): Connection {
-  const rpcUrl = process.env.HELIUS_RPC_URL ?? process.env.SOLANA_RPC_URL ?? DEFAULT_RPC;
-  return new Connection(rpcUrl, 'confirmed');
+  // Free-RPC-first (getIndexerRpcUrl): set SOLANA_RPC_URL to run Helius-free.
+  return new Connection(getIndexerRpcUrl(), 'confirmed');
+}
+
+/**
+ * True for RPC rate-limit / quota-exhaustion errors (Helius `429` /
+ * `-32429 "max usage reached"`). On these, continuing to poll the remaining
+ * ~75 facilitators just 429s every call — spamming logs and burning more quota.
+ * The run trips a circuit breaker and resumes cleanly next tick (cursors for
+ * skipped facilitators are never advanced).
+ */
+export function isRpcRateLimited(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes('429') ||
+    msg.includes('-32429') ||
+    msg.includes('max usage reached') ||
+    msg.includes('Too Many Requests') ||
+    msg.includes('rate limit')
+  );
 }
 
 // ─── Fetch Pipeline ─────────────────────────────────────────────────────────
@@ -92,6 +110,7 @@ export async function fetchTransactionsForFacilitator(
   transactions: Omit<Transaction, 'id'>[];
   paysh: PayshExtractedPayment[];
   latestSignature: string | null;
+  rateLimited: boolean;
 }> {
   const connection = getConnection();
   const pubkey = new PublicKey(address);
@@ -104,14 +123,15 @@ export async function fetchTransactionsForFacilitator(
   try {
     signatures = await connection.getSignaturesForAddress(pubkey, sigOpts);
   } catch (err) {
-    console.error(`[indexer] Failed to get signatures for ${address}:`, err);
-    return { transactions: [], paysh: [], latestSignature: null };
+    const rateLimited = isRpcRateLimited(err);
+    if (!rateLimited) console.error(`[indexer] Failed to get signatures for ${address}:`, err);
+    return { transactions: [], paysh: [], latestSignature: null, rateLimited };
   }
 
   if (signatures.length === 0) {
     const name = getFacilitatorName(address) ?? 'unknown';
     console.log(`[indexer] ${address} (${name}): 0 new signatures`);
-    return { transactions: [], paysh: [], latestSignature: null };
+    return { transactions: [], paysh: [], latestSignature: null, rateLimited: false };
   }
 
   const latestSignature = signatures[0].signature;
@@ -142,7 +162,7 @@ export async function fetchTransactionsForFacilitator(
     `[indexer] ${address} (${name}): ${results.length}/${signatures.length} USDC txs` +
     (payshHits.length > 0 ? ` (+${payshHits.length} pay.sh-routed)` : ''),
   );
-  return { transactions: results, paysh: payshHits, latestSignature };
+  return { transactions: results, paysh: payshHits, latestSignature, rateLimited: false };
 }
 
 /**
@@ -166,10 +186,18 @@ export async function fetchAllX402Transactions(
     ...SPECIMEN_ADDRESSES,
   ])];
 
+  // Run-scoped circuit breaker: once the RPC reports rate/quota exhaustion,
+  // stop polling the remaining facilitators this run (they would all 429 too).
+  const breaker = { tripped: false };
+
   const results = await withConcurrency(
     iterationAddresses,
     FACILITATOR_CONCURRENCY,
     async (address) => {
+      if (breaker.tripped) {
+        return { transactions: [], paysh: [], latestSignature: null, rateLimited: true };
+      }
+
       // Load cursor for incremental indexing (skip in backfill mode)
       let until: string | undefined;
       if (!backfill) {
@@ -178,6 +206,14 @@ export async function fetchAllX402Transactions(
       }
 
       const result = await fetchTransactionsForFacilitator(address, limit, { until });
+
+      if (result.rateLimited && !breaker.tripped) {
+        breaker.tripped = true;
+        console.warn(
+          '[indexer] RPC rate/quota limit reached — circuit breaker tripped, ' +
+          'skipping remaining facilitators this run (resumes next tick)',
+        );
+      }
 
       // Save cursor for next run (newest signature from this batch)
       if (result.latestSignature && !backfill) {

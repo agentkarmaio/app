@@ -8,6 +8,8 @@ import { isAddress } from 'viem';
 import type { ChainAdapter, IndexRunResult, PublishResult } from './types';
 import type { WalletScore } from '@/scoring/index';
 import { aggregateFeedback } from '@/integrations/erc8004-celo';
+import { runCeloX402Indexer } from '@/indexer/celo-x402';
+import { celoX402FacilitatorSet } from '@/config/celo-x402';
 
 const TAG2 = 'agentkarma';
 
@@ -18,9 +20,17 @@ export function makeCeloAdapter(): ChainAdapter {
     validateAddress: (address) => isAddress(address),
     normalizeAddress: (address) => address.toLowerCase(),
 
+    // Celo x402 settlement indexer (ERC-20 Transfer events on USDC/USDT/USDm).
+    // DORMANT until a facilitator/payee is seeded (curated list or the
+    // CELO_X402_FACILITATORS env) — guarded here so the keep-fresh cron never
+    // triggers an unbounded scan against an empty match set. Mirrors Arc's
+    // ARC_JOBS_START_BLOCK guard + Stellar's empty-set no-op.
     async indexReceipts(_opts?: { backfill?: boolean; limit?: number }): Promise<IndexRunResult> {
-      // Celo receipt indexing is not part of L3 parity work — no-op run.
-      return { fetched: 0, inserted: 0, cursors: new Map() };
+      if (celoX402FacilitatorSet().size === 0) {
+        return { fetched: 0, inserted: 0, cursors: new Map() };
+      }
+      const { fetched, inserted, cursors } = await runCeloX402Indexer();
+      return { fetched, inserted, cursors };
     },
 
     // Reading by EVM address requires an agentId; absent a resolver here we

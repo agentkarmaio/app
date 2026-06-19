@@ -13,6 +13,13 @@ name: Keep data fresh
 #                              webhook's authHeader is accepted by the route
 #   NEXT_PUBLIC_SUPABASE_URL   DB endpoint
 #   SUPABASE_SERVICE_ROLE_KEY  DB writes
+# Optional repo secret:
+#   SOLANA_RPC_URL             Free standard RPC (e.g. https://solana-rpc.publicnode.com).
+#                              When set, the indexer reads Solana via getParsedTransaction
+#                              instead of the Helius Enhanced API — $0, quota-independent
+#                              (getIndexerRpcUrl). Free RPCs lack deep signature history,
+#                              so runs auto-switch to --backfill (incremental `until:<old
+#                              sig>` errors "Transaction not found").
 
 on:
   schedule:
@@ -42,6 +49,9 @@ jobs:
 
       - name: Run keep-fresh
         env:
+          # Optional free RPC → Helius-free ingestion. When set, the indexer reads
+          # Solana through it (getParsedTransaction) instead of Helius credits.
+          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
           HELIUS_RPC_URL: ${{ secrets.HELIUS_RPC_URL }}
           HELIUS_WEBHOOK_SECRET: ${{ secrets.HELIUS_WEBHOOK_SECRET }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
@@ -49,7 +59,12 @@ jobs:
           # Pass the input via env (never interpolate ${{ }} into the shell).
           BACKFILL: ${{ inputs.backfill }}
         run: |
-          if [ "$BACKFILL" = "true" ]; then
+          # A free SOLANA_RPC_URL means Helius-free, which REQUIRES --backfill
+          # (free RPCs lack deep history for incremental `until` cursors) and a
+          # capped per-facilitator limit (singular getParsedTransaction calls).
+          if [ -n "$SOLANA_RPC_URL" ]; then
+            bun run src/scripts/keep-fresh.ts --backfill --limit 100
+          elif [ "$BACKFILL" = "true" ]; then
             bun run keep-fresh:backfill
           else
             bun run keep-fresh
