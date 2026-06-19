@@ -1,3 +1,8 @@
+-- Repeatable migration (see aggregate-functions.sql). Re-applied idempotently via
+-- `bun run db:functions`; the trailing NOTIFY reloads PostgREST so the RPC is
+-- reachable over REST. cleanup_score_snapshots is invoked from getStats' sibling
+-- cleanup path via supabase.rpc(), so it must be in the schema cache.
+
 CREATE OR REPLACE FUNCTION cleanup_score_snapshots(retention_days integer DEFAULT 90)
 RETURNS bigint AS $$
 DECLARE
@@ -18,3 +23,6 @@ BEGIN
   RETURN deleted_count;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Make the (re)created function visible to PostgREST without a service restart.
+NOTIFY pgrst, 'reload schema';

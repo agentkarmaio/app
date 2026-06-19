@@ -189,11 +189,11 @@ function registerTools(server: McpServer): void {
   server.registerTool(
     'search_agents',
     {
-      title: 'Search agents by wallet substring',
+      title: 'Search agents by name or wallet',
       description:
-        'Find agent wallets matching a substring of the address (case-insensitive). Returns up to `limit` results ranked by score.',
+        'Find agents by a substring of their display name OR wallet address (case-insensitive), across all chains. Returns up to `limit` results ranked by score, each with its chain.',
       inputSchema: {
-        query: z.string().min(3).describe('Substring of the wallet address (≥3 chars).'),
+        query: z.string().min(3).describe('Agent name or wallet-address substring (≥3 chars).'),
         limit: z.number().int().min(1).max(50).optional()
           .describe('Max results (1–50, default 8).'),
       },
@@ -206,6 +206,8 @@ function registerTools(server: McpServer): void {
         count: results.length,
         results: results.map((r) => ({
           address: r.address,
+          chain: r.chain,
+          displayName: r.displayName,
           score: r.score,
           trustTier: r.trustTier,
           txCount: r.txCount,

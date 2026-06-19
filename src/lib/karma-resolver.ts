@@ -274,29 +274,24 @@ export async function resolveAttestations(wallet: string, limit = 50): Promise<A
 
 export interface KarmaSearchResult {
   address: string;
+  chain: string;
+  displayName: string | null;
   score: number;
   trustTier: string;
   txCount: number;
 }
 
 export async function searchAgents(query: string, limit = 8): Promise<KarmaSearchResult[]> {
-  const trimmed = query.trim();
-  if (trimmed.length < 3) return [];
-
-  const { supabase } = await import('@/db/client');
-  const { data, error } = await supabase
-    .from('wallets')
-    .select('address, score, trust_tier, tx_count')
-    .ilike('address', `%${trimmed}%`)
-    .order('score', { ascending: false })
-    .limit(Math.max(1, Math.min(50, limit)));
-
-  if (error) throw error;
-
-  return ((data ?? []) as Array<{ address: string; score: number; trust_tier: string; tx_count: number }>).map((w) => ({
+  // Matches address OR display_name (case-insensitive), ranked by score.
+  // Shared with the homepage search box via db/client.searchWallets.
+  const { searchWallets } = await import('@/db/client');
+  const rows = await searchWallets(query, limit);
+  return rows.map((w) => ({
     address: w.address,
-    score: Number(w.score),
-    trustTier: w.trust_tier,
-    txCount: w.tx_count,
+    chain: w.chain,
+    displayName: w.displayName,
+    score: w.score,
+    trustTier: w.trustTier,
+    txCount: w.txCount,
   }));
 }
