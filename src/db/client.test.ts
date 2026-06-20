@@ -9,7 +9,7 @@ import { describe, expect, test, beforeEach, afterAll } from 'bun:test';
 import {
   __setSupabaseForTest, insertTransactions, upsertCursor, getCursor, claimWallet,
   getStellarAgentId, setStellarAgentId, claimDirtyWallets, markWalletsDirty,
-  ADDRESS_IN_CHUNK, getStats,
+  ADDRESS_IN_CHUNK, getStats, normalizeCounterparty,
 } from './client';
 import type { Transaction } from './schema';
 
@@ -81,6 +81,29 @@ describe('insertTransactions chain mapping', () => {
     const rows = captured[0].rows as Array<Record<string, unknown>>;
     expect(rows[0].chain).toBe('stellar');
     expect(rows[0].tx_signature).toBe('deadbeef');
+  });
+
+  test('counterparty: self-payment and empty collapse to null; distinct kept', async () => {
+    const base = { chain: 'celo' as const, facilitator: 'FAC', amount: 1, timestamp: '2026-06-06T00:00:00Z', success: true };
+    await insertTransactions([
+      { ...base, wallet_address: 'W1', counterparty: 'W1', tx_signature: 'self' },  // self-pay → null
+      { ...base, wallet_address: 'W2', counterparty: '', tx_signature: 'empty' },    // empty → null
+      { ...base, wallet_address: 'W3', counterparty: 'PAYEE', tx_signature: 'ok' },  // distinct → kept
+    ]);
+    const rows = captured[0].rows as Array<Record<string, unknown>>;
+    expect(rows[0].counterparty).toBeNull();
+    expect(rows[1].counterparty).toBeNull();
+    expect(rows[2].counterparty).toBe('PAYEE');
+  });
+});
+
+describe('normalizeCounterparty', () => {
+  test('drops empty + self-payment, keeps a distinct counterparty', () => {
+    expect(normalizeCounterparty(null, 'W')).toBeNull();
+    expect(normalizeCounterparty(undefined, 'W')).toBeNull();
+    expect(normalizeCounterparty('', 'W')).toBeNull();
+    expect(normalizeCounterparty('W', 'W')).toBeNull(); // self-payment is not a counterparty
+    expect(normalizeCounterparty('PAYEE', 'W')).toBe('PAYEE');
   });
 });
 
