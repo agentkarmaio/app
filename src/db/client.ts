@@ -462,6 +462,21 @@ export async function setStellarAgentId(address: string, agentId: number): Promi
 
 // --- Transaction Queries -----------------------------------------------------
 
+/**
+ * Normalize a counterparty before persistence: empty strings and self-payments
+ * (counterparty === the scored wallet) collapse to null, so they never create a
+ * phantom counterparty bucket that inflates loyalty / diversity. Applied once at
+ * the insert boundary, uniformly across ALL chains (Solana/Celo/Arc/Stellar).
+ */
+export function normalizeCounterparty(
+  counterparty: string | null | undefined,
+  walletAddress: string,
+): string | null {
+  if (!counterparty) return null;
+  if (counterparty === walletAddress) return null;
+  return counterparty;
+}
+
 export async function insertTransaction(
   tx: Omit<Transaction, 'id'>,
 ): Promise<void> {
@@ -471,7 +486,7 @@ export async function insertTransaction(
       chain: tx.chain,
       wallet_address: tx.wallet_address,
       facilitator: tx.facilitator,
-      counterparty: tx.counterparty ?? null,
+      counterparty: normalizeCounterparty(tx.counterparty, tx.wallet_address),
       amount: tx.amount,
       timestamp: typeof tx.timestamp === 'string' ? tx.timestamp : new Date(tx.timestamp).toISOString(),
       success: tx.success,
@@ -490,7 +505,7 @@ export async function insertTransactions(
     chain: tx.chain,
     wallet_address: tx.wallet_address,
     facilitator: tx.facilitator,
-    counterparty: tx.counterparty ?? null,
+    counterparty: normalizeCounterparty(tx.counterparty, tx.wallet_address),
     amount: tx.amount,
     timestamp: typeof tx.timestamp === 'string' ? tx.timestamp : new Date(tx.timestamp).toISOString(),
     success: tx.success,
