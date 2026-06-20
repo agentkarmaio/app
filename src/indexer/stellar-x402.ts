@@ -155,6 +155,10 @@ export function toTransactionRow(ev: StellarTransferEvent): Omit<Transaction, 'i
     chain: 'stellar',
     wallet_address: ev.from,
     facilitator: ev.txSourceAccount,
+    // Payee (`to`) = the scored payer's actual counterparty, recorded distinctly
+    // from `facilitator` (the fee-bump tx source / router). Powers the
+    // counterparty-aware loyalty + diversity signals once backfilled.
+    counterparty: ev.to,
     amount: ev.amount,
     timestamp: ev.ledgerClosedAt,
     success: ev.txSuccessful,
@@ -417,6 +421,9 @@ export async function backfillFromHorizon(opts: {
       chain: 'stellar',
       wallet_address: r.from,
       facilitator: opts.facilitator,
+      // Payee (`to`) = the scored payer's counterparty, distinct from the
+      // facilitator router (mirrors toTransactionRow).
+      counterparty: r.to ?? null,
       amount: Number(r.amount),
       timestamp: r.created_at,
       success: r.transaction_successful ?? true,

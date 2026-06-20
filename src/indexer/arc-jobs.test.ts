@@ -168,6 +168,21 @@ describe('toTransactionRow', () => {
     expect(row.success).toBe(true);
     expect(row.tx_signature).toBe('9:0xfeed'); // `${jobId}:${txHash}` — batch-safe unique key
   });
+
+  test('counterparty = the settlement provider (payee), distinct from the escrow facilitator', () => {
+    const PAYEE = '0x000000000000000000000000000000000000beef' as const;
+    const row = toTransactionRow(
+      released({ jobId: BigInt(9), rawAmount: BigInt(2_000_000), txHash: '0xfeed', provider: PAYEE }),
+      CLIENT,
+      TS,
+    );
+    // The scored wallet is the client (payer/consumer face). Its true counterparty
+    // is the provider who got paid — NOT the ERC-8183 escrow (the matched router).
+    // Mirrors buildJobSettledSignal's `counterparty: provider` for the consumer face.
+    expect(row.counterparty).toBe(PAYEE);
+    expect(row.facilitator).toBe(ARC_JOBS_CONTRACT);
+    expect(row.counterparty).not.toBe(row.facilitator);
+  });
 });
 
 describe('arcJobsIndexer — DI core', () => {

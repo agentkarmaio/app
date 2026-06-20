@@ -242,6 +242,13 @@ function extractX402PaymentCore(
       chain: 'solana',
       wallet_address: payerTransfer.fromUserAccount,
       facilitator: facilitatorAddress,
+      // Counterparty (payee) = the observed SPL transfer destination — the actual
+      // address the payer paid. Distinct in principle from `facilitator` (the
+      // address being scanned); in the canonical direct-to-facilitator settlement
+      // it equals the facilitator, which is the genuine payee, not a fabrication.
+      // Only set in Strategy 1, where a real destination is observable. See
+      // docs/counterparty-signal-followup.md §"Indexer".
+      counterparty: payerTransfer.toUserAccount,
       amount: payerTransfer.tokenAmount,
       timestamp,
       success,
@@ -264,6 +271,10 @@ function extractX402PaymentCore(
       const amount = Math.abs(raw) / 10 ** decimals;
       if (amount <= 0) continue;
 
+      // No `counterparty` here: the balance-change view exposes only the debited
+      // (payer) account, never the recipient. Leave it null rather than fabricate
+      // the facilitator as a fake payee (docs/counterparty-signal-followup.md:
+      // "Leave null when undeterminable rather than guessing").
       return {
         chain: 'solana',
         wallet_address: change.userAccount,
