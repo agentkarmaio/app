@@ -139,6 +139,10 @@ export function toTransactionRow(t: CeloX402Transfer, observedAt: string): Omit<
     chain: CELO_CHAIN,
     wallet_address: t.from,
     facilitator: t.facilitator,
+    // Payee (`to`) = the scored payer's actual counterparty, recorded distinctly
+    // from `facilitator` (the matched router). Powers the counterparty-aware
+    // loyalty + diversity signals once backfilled.
+    counterparty: t.to,
     amount: t.value,
     timestamp: observedAt,
     success: true,
