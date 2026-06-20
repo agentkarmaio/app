@@ -12,6 +12,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import type { HeliusEnhancedTransaction } from './helius';
 import { mapParsedTxToEnhanced, extractX402Payment, getIndexerRpcUrl } from './helius';
 import { USDC_MINT } from '../config/facilitators';
 import type { ParsedTransactionWithMeta } from '@solana/web3.js';
@@ -20,6 +21,7 @@ const PAYER = 'PayerWa11et1111111111111111111111111111111';
 const FACIL = 'Faci1itator22222222222222222222222222222222';
 const PAYER_ATA = 'PayerTokenAcct333333333333333333333333333333';
 const FACIL_ATA = 'Faci1TokenAcct44444444444444444444444444444';
+const PAYEE = 'Payee99999999999999999999999999999999999999';
 
 const mkKey = (s: string) => ({ pubkey: { toString: () => s }, signer: true, writable: true });
 
@@ -103,6 +105,93 @@ describe('round-trip: standard parsed tx → extractX402Payment', () => {
       'sigEmpty',
     )!;
     expect(extractX402Payment(empty, FACIL)).toBeNull();
+  });
+});
+
+describe('extractX402Payment — counterparty (payee) extraction', () => {
+  // Minimal enhanced-tx builder with explicit tokenTransfers (Strategy 1 input).
+  function txWithTransfer(opts: {
+    from: string;
+    to: string;
+    amount?: number;
+  }): HeliusEnhancedTransaction {
+    return {
+      description: '', type: 'UNKNOWN', source: 'RPC', fee: 0, feePayer: opts.from,
+      signature: 'sigCP', slot: 1, timestamp: 1_750_000_000,
+      nativeTransfers: [],
+      tokenTransfers: [{
+        fromUserAccount: opts.from,
+        toUserAccount: opts.to,
+        fromTokenAccount: 'fromAta',
+        toTokenAccount: 'toAta',
+        tokenAmount: opts.amount ?? 1.5,
+        mint: USDC_MINT,
+        tokenStandard: 'Fungible',
+      }],
+      accountData: [],
+      transactionError: null,
+      events: {},
+    };
+  }
+
+  test('Strategy 1: counterparty = SPL transfer destination, distinct from facilitator', () => {
+    // Payer pays a DISTINCT resource-server (PAYEE) on a tx that involves FACIL.
+    // The scored wallet is the payer; its true counterparty is the payee it paid,
+    // recorded distinctly from the facilitator address being scanned.
+    const tx = txWithTransfer({ from: PAYER, to: PAYEE });
+    const payment = extractX402Payment(tx, FACIL);
+    expect(payment).not.toBeNull();
+    expect(payment!.wallet_address).toBe(PAYER);
+    expect(payment!.facilitator).toBe(FACIL);
+    expect(payment!.counterparty).toBe(PAYEE);
+    expect(payment!.counterparty).not.toBe(payment!.facilitator);
+  });
+
+  test('Strategy 1: direct-to-facilitator payment → counterparty = facilitator (the genuine payee)', () => {
+    // Canonical x402: payer pays the facilitator/resource-server directly. The
+    // observed SPL destination IS the facilitator — that is the real payee, not a
+    // fabricated value, so counterparty is set to it (equal to facilitator here).
+    const tx = txWithTransfer({ from: PAYER, to: FACIL });
+    const payment = extractX402Payment(tx, FACIL);
+    expect(payment).not.toBeNull();
+    expect(payment!.wallet_address).toBe(PAYER);
+    expect(payment!.counterparty).toBe(FACIL);
+  });
+
+  test('Strategy 2 (balance-change only): no observable payee → counterparty null (not fabricated)', () => {
+    // When Helius drops the typed tokenTransfers view, only the debited (payer)
+    // account is observable via balance deltas — there is NO recipient field. We
+    // MUST NOT fabricate the facilitator as the payee; counterparty stays null.
+    const tx: HeliusEnhancedTransaction = {
+      description: '', type: 'UNKNOWN', source: 'RPC', fee: 0, feePayer: PAYER,
+      signature: 'sigS2', slot: 1, timestamp: 1_750_000_000,
+      nativeTransfers: [],
+      tokenTransfers: [], // typed view dropped → forces Strategy 2
+      accountData: [{
+        account: PAYER,
+        nativeBalanceChange: 0,
+        tokenBalanceChanges: [{
+          userAccount: PAYER,
+          tokenAccount: 'payerAta',
+          mint: USDC_MINT,
+          rawTokenAmount: { tokenAmount: '-1500000', decimals: 6 },
+        }],
+      }],
+      transactionError: null,
+      events: {},
+    };
+    const payment = extractX402Payment(tx, FACIL);
+    expect(payment).not.toBeNull();
+    expect(payment!.wallet_address).toBe(PAYER);
+    expect(payment!.facilitator).toBe(FACIL);
+    expect(payment!.counterparty ?? null).toBeNull();
+  });
+
+  test('round-trip fixture (payer→facilitator) carries counterparty = facilitator', () => {
+    const e = mapParsedTxToEnhanced(usdcPaymentTx(), 'sigABC')!;
+    const payment = extractX402Payment(e, FACIL);
+    // The mapped fixture pays the facilitator directly; counterparty is that payee.
+    expect(payment!.counterparty).toBe(FACIL);
   });
 });
 

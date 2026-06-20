@@ -174,6 +174,19 @@ describe('attributeTransfer + toTransactionRow', () => {
     ev.protocol = 'x402';
     expect(toTransactionRow(ev).success).toBe(false);
   });
+
+  test('row: counterparty = payee (to), distinct from the matched facilitator', () => {
+    const ev = parseTransferEvent(makeTransferEvent({
+      from: CONSUMER, to: PROVIDER, amount: BigInt(5_000_000), txSourceAccount: FACILITATOR,
+    }))!;
+    ev.protocol = 'x402';
+    const row = toTransactionRow(ev);
+    // The scored wallet is the payer (from); its counterparty is the payee (to),
+    // recorded distinctly from `facilitator` (the fee-bump tx source / router).
+    expect(row.counterparty).toBe(PROVIDER);
+    expect(row.facilitator).toBe(FACILITATOR);
+    expect(row.counterparty).not.toBe(row.facilitator);
+  });
 });
 
 describe('stellarReceiptIndexer — DI core', () => {

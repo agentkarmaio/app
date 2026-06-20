@@ -134,7 +134,9 @@ export function parsePaymentReleased(
 
 /**
  * Pure: map a settled job to an AK `transactions` row. wallet_address is the
- * CLIENT (consumer face / payer); facilitator is the ERC-8183 escrow contract.
+ * CLIENT (consumer face / payer); facilitator is the ERC-8183 escrow contract;
+ * counterparty is the PROVIDER (the payee — the client's actual counterparty,
+ * distinct from the escrow router).
  *
  * tx_signature = `${jobId}:${txHash}` (NOT the bare txHash). transactions.
  * tx_signature is UNIQUE; a keeper MAY batch several PaymentReleased events into
@@ -153,6 +155,11 @@ export function toTransactionRow(
     chain: ARC_CHAIN,
     wallet_address: client,
     facilitator: ARC_JOBS_CONTRACT,
+    // The scored payer's (client's) true counterparty is the PROVIDER who got
+    // paid — recorded distinctly from `facilitator` (the ERC-8183 escrow, the
+    // matched router). Mirrors buildJobSettledSignal's `counterparty: provider`
+    // on the consumer face. Powers counterparty-aware loyalty + diversity.
+    counterparty: settled.provider,
     amount: settled.amount,
     timestamp: observedAt,
     success: true,
