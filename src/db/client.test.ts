@@ -5,13 +5,19 @@
  * __setSupabaseForTest) and capture the upsert/insert/update payload, asserting
  * `chain` survives and conflict targets / existence lookups are chain-scoped.
  */
-import { describe, expect, test, beforeEach } from 'bun:test';
+import { describe, expect, test, beforeEach, afterAll } from 'bun:test';
 import {
   __setSupabaseForTest, insertTransactions, upsertCursor, getCursor, claimWallet,
   getStellarAgentId, setStellarAgentId, claimDirtyWallets, markWalletsDirty,
   ADDRESS_IN_CHUNK, getStats,
 } from './client';
 import type { Transaction } from './schema';
+
+// The injected fake lives in a module-level singleton shared across the whole
+// `bun test` process. Without this teardown the last fake set here leaks into
+// later test files (e.g. route tests calling getWallet().eq()), surfacing as
+// "`.eq` is not a function". Reset to the real lazy client when this file ends.
+afterAll(() => { __setSupabaseForTest(null); });
 
 type Captured = { table: string; op: string; rows: unknown; opts: unknown };
 
