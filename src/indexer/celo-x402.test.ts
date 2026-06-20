@@ -145,6 +145,17 @@ describe('toTransactionRow / toSignalPair', () => {
     expect(row.tx_signature).toBe('0xfeed:5'); // batch-safe per-event key
   });
 
+  test('row: counterparty = payee (to), distinct from the matched facilitator', () => {
+    const PAYEE = '0x00000000000000000000000000000000000beeef' as const;
+    const t = transfer({ to: PAYEE, facilitator: FACIL, txHash: '0xcp', logIndex: 1 });
+    const row = toTransactionRow(t, '2026-06-17T00:00:00.000Z');
+    // The scored wallet is the payer (from); its counterparty is the payee (to),
+    // recorded distinctly from `facilitator` (the matched router address).
+    expect(row.counterparty).toBe(PAYEE);
+    expect(row.facilitator).toBe(FACIL);
+    expect(row.counterparty).not.toBe(row.facilitator);
+  });
+
   test('signal pair: consumer(payer)+provider(payee), chain=celo, txRef=tx_signature', () => {
     const t = transfer({ txHash: '0xfeed', logIndex: 2 });
     const pair = toSignalPair(t, '2026-06-17T00:00:00.000Z');
