@@ -1,0 +1,25 @@
+# Build the production image from source only. Excludes paths a `next build`
+# and the runtime never need — keeping secrets, local CLI state, and scratch
+# tooling out of the image (smaller, and no keys/seeds baked in).
+#
+# NOTE: do NOT add `.env` or `node_modules` here — the build inlines
+# NEXT_PUBLIC_* from `.env` and reinstalls deps inside the container.
+
+.git
+.next
+node_modules/.cache
+
+# Secrets / local CLI state — must never enter the image.
+.keys
+.servel
+.env*.local
+private
+
+# Local scratch + probe scripts (not part of the app; also what broke the
+# build before the ES2020 target bump). Matches the top-level dir only.
+scripts
+
+# OS / editor / logs
+*.log
+.DS_Store
+**/.DS_Store
