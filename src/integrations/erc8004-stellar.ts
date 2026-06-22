@@ -263,6 +263,7 @@ export async function readStellarAgentUri(
 
 import { gunzipSync } from 'zlib';
 import type { AgentRegistrationFile } from './erc8004-celo';
+import { safeFetchJson } from '@/lib/ssrf-guard';
 
 /** Re-export for downstream consumers — the same registration JSON spec. */
 export type { AgentRegistrationFile } from './erc8004-celo';
@@ -313,12 +314,9 @@ async function fetchStellarRegistration(uri: string): Promise<AgentRegistrationF
   if (!uri.startsWith('http://') && !uri.startsWith('https://')) {
     throw new Error(`unsupported URI scheme: ${uri.slice(0, 32)}…`);
   }
-  const res = await fetch(uri, {
-    signal: AbortSignal.timeout(8000),
-    headers: { 'User-Agent': 'AgentKarma/1.0' },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as AgentRegistrationFile;
+  // SSRF guard: uri is an attacker-controlled on-chain registration URL —
+  // validate the host (and every redirect hop) is public before fetching.
+  return (await safeFetchJson(uri, { timeoutMs: 8000 })) as AgentRegistrationFile;
 }
 
 /**
