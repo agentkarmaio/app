@@ -16,6 +16,7 @@
 import { createPublicClient, http, parseAbi } from 'viem';
 import { celo } from 'viem/chains';
 import { gunzipSync } from 'zlib';
+import { safeFetchJson } from '@/lib/ssrf-guard';
 
 export const IDENTITY_REGISTRY_CELO = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432' as const;
 export const REPUTATION_REGISTRY_CELO = '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63' as const;
@@ -180,13 +181,9 @@ async function fetchRegistration(uri: string): Promise<AgentRegistrationFile | n
     // ipfs:// and ar:// can be added later when the demand shows up.
     throw new Error(`unsupported URI scheme: ${uri.slice(0, 32)}…`);
   }
-  const res = await fetch(uri, {
-    signal: AbortSignal.timeout(8000),
-    headers: { 'User-Agent': 'AgentKarma/1.0' },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const json = (await res.json()) as AgentRegistrationFile;
-  return json;
+  // SSRF guard: uri is an attacker-controlled on-chain registration URL —
+  // validate the host (and every redirect hop) is public before fetching.
+  return (await safeFetchJson(uri, { timeoutMs: 8000 })) as AgentRegistrationFile;
 }
 
 // ─── ReputationRegistry reads ─────────────────────────────────────────────────
