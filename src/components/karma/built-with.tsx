@@ -7,6 +7,11 @@ type TechWithLogo = {
   width: number;
   height: number;
   heightClass: string;
+  /**
+   * When set, `logo` is an icon-only mark and this name is rendered beside it
+   * as a wordmark, so chain marks read as a lockup next to the full wordmarks.
+   */
+  label?: string;
 };
 
 type TechWithWordmark = {
@@ -31,6 +36,33 @@ const STACK: Tech[] = [
     width: 262,
     height: 40,
     heightClass: 'h-[14px] sm:h-[15px]',
+  },
+  {
+    name: 'Celo',
+    href: 'https://celo.org',
+    logo: '/logos/celo.svg',
+    width: 24,
+    height: 24,
+    heightClass: 'h-[13px] sm:h-[14px]',
+    label: 'Celo',
+  },
+  {
+    name: 'Stellar',
+    href: 'https://stellar.org',
+    logo: '/logos/stellar.svg',
+    width: 24,
+    height: 24,
+    heightClass: 'h-[13px] sm:h-[14px]',
+    label: 'Stellar',
+  },
+  {
+    name: 'Arc',
+    href: 'https://arc.network',
+    logo: '/logos/arc.svg',
+    width: 31,
+    height: 32,
+    heightClass: 'h-[13px] sm:h-[14px]',
+    label: 'Arc',
   },
   {
     name: 'Helius',
@@ -83,14 +115,31 @@ export function BuiltWith() {
             className="group inline-flex h-5 items-center"
           >
             {hasLogo(tech) ? (
-              <Image
-                src={tech.logo}
-                alt={tech.name}
-                width={tech.width}
-                height={tech.height}
-                className={`${tech.heightClass} w-auto opacity-25 grayscale transition-[opacity,filter] duration-200 group-hover:opacity-70 group-hover:grayscale-0`}
-                unoptimized
-              />
+              tech.label ? (
+                <span className="inline-flex items-center gap-1.5 opacity-25 transition-opacity duration-200 group-hover:opacity-70">
+                  <Image
+                    src={tech.logo}
+                    alt=""
+                    aria-hidden
+                    width={tech.width}
+                    height={tech.height}
+                    className={`${tech.heightClass} w-auto grayscale transition-[filter] duration-200 group-hover:grayscale-0`}
+                    unoptimized
+                  />
+                  <span className="font-mono text-[12px] font-[510] uppercase tracking-[0.04em] text-[#f7f8f8] sm:text-[13px]">
+                    {tech.label}
+                  </span>
+                </span>
+              ) : (
+                <Image
+                  src={tech.logo}
+                  alt={tech.name}
+                  width={tech.width}
+                  height={tech.height}
+                  className={`${tech.heightClass} w-auto opacity-25 grayscale transition-[opacity,filter] duration-200 group-hover:opacity-70 group-hover:grayscale-0`}
+                  unoptimized
+                />
+              )
             ) : (
               <span
                 className={`${tech.heightClass} inline-flex items-center font-mono text-[13px] font-[510] tracking-[-0.01em] text-[#f7f8f8] opacity-25 transition-opacity duration-200 group-hover:opacity-70`}
