@@ -80,6 +80,9 @@ export async function GET(request: NextRequest) {
       rank: offset + i + 1,
       address: w.address,
       chain: w.chain,
+      // ERC-8004 agentId for EVM/Stellar registry agents — lets the row link
+      // resolve the per-agent profile (many agents share one owner address).
+      agentId: w.celo_agent_id ?? w.arc_agent_id ?? w.stellar_agent_id ?? null,
       displayName: w.display_name ?? null,
       claimed: w.claimed ?? false,
       providerScore: Number(w.provider_score ?? 0),

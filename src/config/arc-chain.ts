@@ -20,5 +20,11 @@ export const arcTestnet = defineChain({
   nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 18 },
   rpcUrls: { default: { http: ['https://rpc.testnet.arc.network'] } },
   blockExplorers: { default: { name: 'Arcscan', url: 'https://testnet.arcscan.app' } },
+  // Canonical Multicall3 is deployed on Arc Testnet (verified on-chain). Declaring
+  // it lets viem's client.multicall batch reads (the registry scanner relies on
+  // it). blockCreated omitted — viem only uses it to bound a multicall's fromBlock.
+  contracts: {
+    multicall3: { address: '0xcA11bde05977b3631167028862bE2a173976CA11' },
+  },
   testnet: true,
 });

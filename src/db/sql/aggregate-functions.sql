@@ -14,15 +14,10 @@ RETURNS TABLE(total_count bigint, total_volume numeric) AS $$
   FROM transactions;
 $$ LANGUAGE sql STABLE;
 
--- Wallet trust-tier distribution (grouped counts). Replaces fetching all ~116k
--- trust_tier rows in getStats — that row-stream blew the statement timeout and
--- 500'd /api/stats under load.
-CREATE OR REPLACE FUNCTION get_tier_distribution()
-RETURNS TABLE(trust_tier text, count bigint) AS $$
-  SELECT trust_tier, COUNT(*)::bigint
-  FROM wallets
-  GROUP BY trust_tier;
-$$ LANGUAGE sql STABLE;
+-- NOTE: get_tier_distribution() now lives in explore-agents-view.sql — it reads
+-- the `explore_agents` view (the canonical agent population) so its summed counts
+-- equal the Explore "All" total. It must be defined after that view, which the
+-- co-location guarantees independent of file apply order.
 
 -- Facilitator stats grouped by facilitator
 CREATE OR REPLACE FUNCTION get_facilitator_stats()
