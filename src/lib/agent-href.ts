@@ -6,7 +6,13 @@ import type { Chain } from '@/db/schema';
  * append `?chain=` so resolveAgentChain picks the right wallet row. Solana
  * (base58) and Stellar (G-strkey) are format-unique and need no hint.
  */
-export function agentHref(a: { chain: Chain; address: string }): string {
+export function agentHref(a: { chain: Chain; address: string; agentId?: number | null }): string {
   const base = `/agent/${a.address}`;
-  return a.chain === 'celo' || a.chain === 'arc' ? `${base}?chain=${a.chain}` : base;
+  if (a.chain === 'celo' || a.chain === 'arc') {
+    // agentId disambiguates the many agents sharing one owner address: the page
+    // resolves the registry profile by it even when the owner isn't in `wallets`.
+    const q = a.agentId != null ? `?chain=${a.chain}&agentId=${a.agentId}` : `?chain=${a.chain}`;
+    return `${base}${q}`;
+  }
+  return base;
 }

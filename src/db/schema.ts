@@ -7,7 +7,7 @@
 
 import {
   pgTable, text, timestamp, integer, numeric, boolean, uuid, index, uniqueIndex, jsonb,
-  primaryKey, foreignKey,
+  primaryKey, foreignKey, bigint,
 } from 'drizzle-orm/pg-core';
 
 // ─── Chain dimension ─────────────────────────────────────────────────────────
@@ -56,6 +56,14 @@ export const walletsTable = pgTable('wallets', {
   // on Tempo (EVM-style 0x… 42-char). Declared-only — no on-chain verification
   // until cross-chain wallet linkage lands. NEVER blended into Karma.
   tempo_address:   text('tempo_address'),
+  // Proof of ownership for the claim (Tier 3 declared). The off-chain signature
+  // + signed challenge the keyholder produced at claim time, persisted so the
+  // agent page can display a re-verifiable receipt. NOT an on-chain attestation;
+  // it proves key control over the claimed address, nothing more. NULL for rows
+  // claimed before this column existed (we can't fabricate a signature we never
+  // captured). claim_message embeds the address + timestamp, so it self-describes.
+  claim_signature: text('claim_signature'),
+  claim_message:   text('claim_message'),
   // Two-faced karma (Phase F — signal spectrum)
   provider_score:  numeric('provider_score', { precision: 6, scale: 2 }).notNull().default('0'),
   consumer_score:  numeric('consumer_score', { precision: 6, scale: 2 }),
@@ -433,9 +441,166 @@ export const indexerCursorsTable = pgTable('indexer_cursors', {
   index('idx_indexer_cursors_chain').on(table.chain),
 ]);
 
+// --- ERC-8004 Registry Mirror (per-agent, keyed by agent_id not address) -----
+//
+// Registry-faithful mirror of every ERC-8004 IdentityRegistry NFT and
+// ReputationRegistry feedback record. Keyed by (chain, agent_id) because a
+// single owner address routinely controls hundreds of agents — the
+// address-keyed `wallets` table structurally cannot count agents 1:1 (Celo ids
+// 1..1000 → 41 owners). This table lets AK match 8004scan's per-network agent +
+// feedback totals and scan every agent. Generic across EVM 8004 chains (Celo +
+// Arc); Stellar/Soroban can populate it via its own scanner. NO FK to wallets.
+// Populated by src/indexer/erc8004-registry.ts.
+
+export const erc8004AgentsTable = pgTable('erc8004_agents', {
+  chain:               text('chain').notNull().$type<Chain>(),
+  // ERC-8004 declares uint256/uint64; ids are tiny today but BIGINT removes the
+  // overflow foot-gun that wallets.celo_agent_id INTEGER carries.
+  agent_id:            bigint('agent_id', { mode: 'number' }).notNull(),
+  owner:               text('owner').notNull(),
+  agent_wallet:        text('agent_wallet'),
+  token_uri:           text('token_uri'),
+  registration:        jsonb('registration'),
+  // inline | fetched | empty | unreachable | invalid | pending
+  registration_status: text('registration_status').notNull().default('pending'),
+  metadata_score:      integer('metadata_score').notNull().default(0),
+  feedback_count:      integer('feedback_count').notNull().default(0),
+  // Unbounded NUMERIC: ERC-8004 feedback values are arbitrary int128 (see
+  // 0011_erc8004_value_widen.sql) — a bounded numeric overflows on outlier
+  // registry records. raw_value (TEXT) on erc8004_feedback is the exact source.
+  feedback_sum:        numeric('feedback_sum'),
+  feedback_avg:        numeric('feedback_avg'),
+  first_indexed_at:    timestamp('first_indexed_at', { withTimezone: true }).notNull().defaultNow(),
+  last_indexed_at:     timestamp('last_indexed_at',  { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.chain, table.agent_id], name: 'erc8004_agents_pkey' }),
+  index('idx_erc8004_agents_chain').on(table.chain),
+  index('idx_erc8004_agents_owner').on(table.owner),
+  index('idx_erc8004_agents_agent_wallet').on(table.agent_wallet),
+  index('idx_erc8004_agents_metadata').on(table.metadata_score),
+]);
+
+export const erc8004FeedbackTable = pgTable('erc8004_feedback', {
+  chain:          text('chain').notNull().$type<Chain>(),
+  agent_id:       bigint('agent_id', { mode: 'number' }).notNull(),
+  client:         text('client').notNull(),
+  // feedbackIndex is a per-(agent, client) sequential counter, so the unique
+  // record key is (chain, agent_id, client, feedback_index).
+  feedback_index: bigint('feedback_index', { mode: 'number' }).notNull(),
+  raw_value:      text('raw_value'),
+  // Unbounded NUMERIC — see 0011_erc8004_value_widen.sql. raw_value is exact.
+  value:          numeric('value'),
+  value_decimals: integer('value_decimals').notNull().default(0),
+  tag1:           text('tag1').notNull().default(''),
+  tag2:           text('tag2').notNull().default(''),
+  revoked:        boolean('revoked').notNull().default(false),
+  indexed_at:     timestamp('indexed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({
+    columns: [table.chain, table.agent_id, table.client, table.feedback_index],
+    name: 'erc8004_feedback_pkey',
+  }),
+  foreignKey({
+    columns: [table.chain, table.agent_id],
+    foreignColumns: [erc8004AgentsTable.chain, erc8004AgentsTable.agent_id],
+    name: 'erc8004_feedback_agent_fkey',
+  }).onDelete('cascade'),
+  index('idx_erc8004_feedback_chain_agent').on(table.chain, table.agent_id),
+  index('idx_erc8004_feedback_client').on(table.client),
+  index('idx_erc8004_feedback_revoked').on(table.revoked),
+]);
+
+// --- x402 Payee Discovery (endpoint-driven self-seeder) ----------------------
+//
+// Populated by scripts/celo-x402-discover-payees.ts: walks indexed Celo agents,
+// probes each declared service endpoint over HTTP (SSRF-guarded), and when an
+// endpoint answers HTTP 402 with an x402 `accepts` body, persists the declared
+// `payTo` for a known Celo stablecoin here. The Celo x402 settlement indexer
+// (src/indexer/celo-x402.ts) unions VERIFIED rows from this table into its
+// facilitator/payee match set — so the indexer self-populates instead of
+// requiring a hand-curated config entry.
+//
+// Keyed (chain, address) per the multi-chain convention. `chain` is always
+// 'celo' today but the column generalizes to any EVM x402 chain.
+//
+// Attribution-poisoning guard: a malicious agent could declare a victim's
+// address as `payTo`, causing AK to attribute the victim's stablecoin transfers
+// as the agent's x402 provider signal. `verified` is TRUE only when the
+// declared `payTo` is self-controlled by the source agent (== its owner /
+// agentWallet on the IdentityRegistry); cross-address declarations are stored
+// with `verified=false` and are NOT fed to the indexer. `source_agent_id` tags
+// provenance so a poisoned entry is always traceable.
+export const celoX402PayeesTable = pgTable('celo_x402_payees', {
+  chain:           text('chain').notNull().default('celo').$type<Chain>(),
+  /** Lowercased EVM payee address (the x402 `payTo`). */
+  address:         text('address').notNull(),
+  /** ERC-8004 agentId whose endpoint declared this payee (provenance). */
+  source_agent_id: bigint('source_agent_id', { mode: 'number' }),
+  /** The probed service endpoint that returned the 402. */
+  endpoint:        text('endpoint'),
+  /** Resolved Celo stablecoin contract address the price is denominated in. */
+  asset:           text('asset'),
+  /** Raw x402 `network` value (e.g. eip155:42220). */
+  network:         text('network'),
+  /** TRUE = self-payee (payTo controlled by the source agent) → indexer-eligible.
+   *  FALSE = cross-address declaration → stored for audit, NOT indexed. */
+  verified:        boolean('verified').notNull().default(false),
+  discovered_at:   timestamp('discovered_at', { withTimezone: true }).notNull().defaultNow(),
+  last_seen_at:    timestamp('last_seen_at',  { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.chain, table.address], name: 'celo_x402_payees_pkey' }),
+  index('idx_celo_x402_payees_verified').on(table.verified),
+  index('idx_celo_x402_payees_source_agent').on(table.source_agent_id),
+]);
+
 // --- TypeScript Types (for runtime Supabase queries) -------------------------
 
 export type TrustTier = 'Unrated' | 'Poor' | 'Fair' | 'Good' | 'Very Good' | 'Excellent';
+
+export type Erc8004RegistrationStatus =
+  | 'inline' | 'fetched' | 'empty' | 'unreachable' | 'invalid' | 'pending';
+
+export interface Erc8004Agent {
+  chain: Chain;
+  agent_id: number;
+  owner: string;
+  agent_wallet: string | null;
+  token_uri: string | null;
+  registration: unknown | null;
+  registration_status: Erc8004RegistrationStatus;
+  metadata_score: number;
+  feedback_count: number;
+  feedback_sum: string | null;
+  feedback_avg: string | null;
+  first_indexed_at: string;
+  last_indexed_at: string;
+}
+
+export interface Erc8004Feedback {
+  chain: Chain;
+  agent_id: number;
+  client: string;
+  feedback_index: number;
+  raw_value: string | null;
+  value: string | null;
+  value_decimals: number;
+  tag1: string;
+  tag2: string;
+  revoked: boolean;
+  indexed_at: string;
+}
+
+export interface CeloX402Payee {
+  chain: Chain;
+  address: string;
+  source_agent_id: number | null;
+  endpoint: string | null;
+  asset: string | null;
+  network: string | null;
+  verified: boolean;
+  discovered_at: string;
+  last_seen_at: string;
+}
 
 export type LivenessStatus = 'Active' | 'Recent' | 'Dormant' | 'Inactive';
 
@@ -469,6 +634,10 @@ export interface Wallet {
   claimed_at?: string | null;
   // Tier 3 declared identity (parallel agent-payment rails). Tempo / MPP.
   tempo_address?: string | null;
+  // Off-chain proof of ownership captured at claim time (re-verifiable receipt).
+  // NULL for pre-feature claims. See schema column comment.
+  claim_signature?: string | null;
+  claim_message?: string | null;
   // Two-faced karma (Phase F)
   provider_score: number;
   consumer_score: number | null;

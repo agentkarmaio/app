@@ -63,6 +63,7 @@ interface ApiEntry {
   rank: number;
   address: string;
   chain: Chain;
+  agentId?: number | null;
   displayName: string | null;
   claimed: boolean;
   providerScore: number;
@@ -396,7 +397,7 @@ export function AgentsExplorer() {
                       )}
                     </td>
                   </tr>
-                ) : entries.map((e) => <AgentRow key={`${e.chain}:${e.address}`} entry={e} />)}
+                ) : entries.map((e) => <AgentRow key={`${e.chain}:${e.address}:${e.agentId ?? ''}`} entry={e} />)}
                 {loading && entries.length === 0 && (
                   Array.from({ length: 8 }).map((_, i) => (
                     <tr key={`sk-${i}`} className="border-b border-[rgb(255_255_255/0.03)] last:border-0">

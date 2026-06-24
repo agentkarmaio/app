@@ -11,6 +11,7 @@
 
 import { NextResponse } from 'next/server';
 import { readAgent, aggregateFeedback } from '@/integrations/erc8004-celo';
+import { getErc8004Agent } from '@/db/client';
 
 interface RouteParams {
   params: Promise<{ agentId: string }>;
@@ -31,12 +32,35 @@ export async function GET(_req: Request, { params }: RouteParams) {
 
   try {
     const agentId = BigInt(parsed);
-    const [agent, agg] = await Promise.all([
+    // Prefer the cached registry-mirror row (scanned by erc8004-registry.ts) for
+    // the cheap fields; fall back to a live RPC read when the agent hasn't been
+    // scanned yet. Reputation is always read live so the records stay fresh.
+    const [cached, agent, agg] = await Promise.all([
+      getErc8004Agent('celo', parsed).catch(() => null),
       readAgent(agentId),
       aggregateFeedback(agentId).catch(() => null),
     ]);
+    void cached; // surfaced below only when the live read misses
 
     if (!agent) {
+      // No live identity (RPC miss / past tip) but we may still have a cached row.
+      if (cached) {
+        return NextResponse.json(
+          {
+            chain: 'celo',
+            agentId: parsed,
+            owner: cached.owner,
+            agentWallet: cached.agent_wallet,
+            tokenURI: cached.token_uri,
+            registration: cached.registration ?? null,
+            cached: true,
+            reputation: agg
+              ? { count: agg.count, average: agg.average, records: agg.records }
+              : { count: Number(cached.feedback_count ?? 0), average: cached.feedback_avg ?? null, records: [] },
+          },
+          { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=900', 'Access-Control-Allow-Origin': '*' } },
+        );
+      }
       return NextResponse.json(
         { error: `no agent registered with id ${parsed} on Celo` },
         { status: 404 },

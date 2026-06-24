@@ -15,6 +15,12 @@ import type {
   Chain, Succession, SuccessionStatus, SuccessionSourceType, SuccessionHeir,
   Bond, BondUnderwriter, BondStatus,
 } from './schema';
+// Type-only: erased at runtime, so this does NOT pull viem/the scanner into the
+// db-client bundle that API routes + the Docker build load.
+import type { ScannedAgent, ScannedFeedback } from '@/indexer/erc8004-registry';
+// Pure tier-from-score helper (scoring/index imports only types from schema, so
+// no runtime cycle). Used to derive trust_tier for registry-mirror rows.
+import { getTrustTier } from '@/scoring/index';
 
 // Every DB helper that takes a wallet address optionally takes a chain. The
 // default is 'solana' for back-compat with all pre-existing callers — Solana
@@ -240,20 +246,209 @@ export interface AgentsExploreSort {
   direction: 'asc' | 'desc';
 }
 
+// Trust-tier → metadata_score band (inverse of getTrustTier). Used to translate
+// the explore tier-chip filter into a PostgREST score-range query for registry
+// rows, which have no stored trust_tier column.
+const TIER_SCORE_BAND: Record<TrustTier, [number, number]> = {
+  Unrated:     [0, 20],
+  Poor:        [21, 40],
+  Fair:        [41, 60],
+  Good:        [61, 75],
+  'Very Good': [76, 90],
+  Excellent:   [91, 100],
+};
+
+/** Map an erc8004_agents row into the Wallet shape the leaderboard renders.
+ *  The agent's on-chain identity is the agent_id; address carries the agent
+ *  wallet (or owner) for display + the existing /agent link, and the
+ *  chain-specific agentId column lets the agent page resolve the profile. */
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+function registryRowToWallet(row: Record<string, unknown>, chain: Chain): Wallet {
+  const score = Number(row.metadata_score ?? 0);
+  const reg = (row.registration ?? null) as { name?: string; description?: string; image?: string } | null;
+  // getAgentWallet() returns the zero address when an agent never set a custom
+  // wallet — its effective operator IS the owner. Fall back so we never surface
+  // 0x000…000 as the agent's address.
+  const aw = row.agent_wallet as string | null;
+  const address = aw && aw.toLowerCase() !== ZERO_ADDRESS ? aw : (row.owner as string);
+  const indexedAt = (row.last_indexed_at as string) ?? new Date().toISOString();
+  const agentId = Number(row.agent_id);
+  return {
+    chain,
+    address,
+    first_seen: (row.first_indexed_at as string) ?? indexedAt,
+    last_seen: indexedAt,
+    tx_count: 0,
+    score,
+    trust_tier: getTrustTier(score),
+    updated_at: indexedAt,
+    claimed: false,
+    display_name: reg?.name ?? null,
+    description: reg?.description ?? null,
+    provider_score: score,
+    consumer_score: null,
+    confidence_badge: 'declared',
+    autonomy_score: null,
+    autonomy_label: null,
+    celo_agent_id: chain === 'celo' ? agentId : null,
+    arc_agent_id: chain === 'arc' ? agentId : null,
+  } as Wallet;
+}
+
+/**
+ * Leaderboard page sourced from the ERC-8004 registry mirror (erc8004_agents),
+ * not `wallets`. EVM 8004 chains (Celo/Arc) register agents as NFTs — a single
+ * owner controls many — so the address-keyed `wallets` table can't represent
+ * the true per-agent population. This reads one row per agent_id so the explore
+ * count + list match 8004scan. Filters that don't apply to declared-only
+ * registry rows (autonomy, Tier-2 metrics) short-circuit to empty when set.
+ */
+async function getRegistryAgentsPage(
+  chain: Chain,
+  limit: number,
+  offset: number,
+  filters: AgentsExploreFilters,
+  sort: AgentsExploreSort,
+): Promise<LeaderboardPage> {
+  // Registry rows are Tier-3 declared only. A confidence filter that excludes
+  // 'declared', any autonomy-label filter, or a Tier-2 metric threshold can
+  // never match → return empty rather than a misleading full list.
+  if (filters.confidenceBadges?.length && !filters.confidenceBadges.includes('declared')) {
+    return { wallets: [], total: 0 };
+  }
+  if (filters.autonomyLabels?.length) return { wallets: [], total: 0 };
+  if (filters.minCadence != null || filters.minDiversity != null || filters.minSuccessRate != null) {
+    return { wallets: [], total: 0 };
+  }
+
+  let q = supabase
+    .from('erc8004_agents')
+    .select('*', { count: 'exact' })
+    .eq('chain', chain);
+
+  if (filters.minProviderScore != null) q = q.gte('metadata_score', filters.minProviderScore);
+
+  if (filters.tiers?.length) {
+    // OR of per-tier score bands → e.g. or(and(metadata_score.gte.0,...lte.20),…).
+    const groups = filters.tiers.map((t) => {
+      const [lo, hi] = TIER_SCORE_BAND[t];
+      return `and(metadata_score.gte.${lo},metadata_score.lte.${hi})`;
+    });
+    q = q.or(groups.join(','));
+  }
+
+  if (filters.search) {
+    const term = escapeSearchTerm(filters.search);
+    if (term) q = q.or(`owner.ilike.%${term}%,agent_wallet.ilike.%${term}%`);
+  }
+
+  // Sort: map the wallet-oriented sort fields onto registry columns. Unmappable
+  // fields fall back to metadata_score (the registry's headline metric).
+  const col =
+    sort.field === 'last_seen' ? 'last_indexed_at'
+    : sort.field === 'tx_count' ? 'feedback_count'
+    : 'metadata_score';
+  const { data, error, count } = await q
+    .order(col, { ascending: sort.direction === 'asc', nullsFirst: false })
+    .order('agent_id', { ascending: true })
+    .range(offset, offset + limit - 1);
+
+  if (error) throw error;
+  const wallets = ((data ?? []) as Record<string, unknown>[]).map((r) => registryRowToWallet(r, chain));
+  return { wallets, total: count ?? 0 };
+}
+
+/**
+ * "All chains" leaderboard page — queries the `explore_agents` view, which
+ * unions Solana/Stellar `wallets` (score-gated) with the Celo/Arc registry
+ * mirror (per-agent). This is what makes the unfiltered explore count include
+ * the real 8004 agent population instead of the handful of owner rows. The view
+ * bakes in the wallets-side score>0 gate, so no extra gate is applied here.
+ */
+async function getUnifiedAgentsPage(
+  limit: number,
+  offset: number,
+  filters: AgentsExploreFilters,
+  sort: AgentsExploreSort,
+): Promise<LeaderboardPage> {
+  let q = supabase.from('explore_agents').select('*', { count: 'exact' });
+
+  if (filters.tiers?.length) q = q.in('trust_tier', filters.tiers);
+  if (filters.confidenceBadges?.length) q = q.in('confidence_badge', filters.confidenceBadges);
+  if (filters.autonomyLabels?.length) q = q.in('autonomy_label', filters.autonomyLabels);
+  if (filters.claimed != null) q = q.eq('claimed', filters.claimed);
+  if (filters.minProviderScore != null) q = q.gte('provider_score', filters.minProviderScore);
+  if (filters.minCadence != null) q = q.gte('metric_cadence', filters.minCadence);
+  if (filters.minDiversity != null) q = q.gte('metric_diversity', filters.minDiversity);
+  if (filters.minSuccessRate != null) q = q.gte('metric_success_rate', filters.minSuccessRate);
+
+  if (filters.status) {
+    const now = Date.now();
+    const iso = (hoursAgo: number) => new Date(now - hoursAgo * 3600_000).toISOString();
+    switch (filters.status) {
+      case 'Active':   q = q.gte('last_seen', iso(24)); break;
+      case 'Recent':   q = q.lt('last_seen', iso(24)).gte('last_seen', iso(7 * 24)); break;
+      case 'Dormant':  q = q.lt('last_seen', iso(7 * 24)).gte('last_seen', iso(90 * 24)); break;
+      case 'Inactive': q = q.lt('last_seen', iso(90 * 24)); break;
+    }
+  }
+
+  if (filters.search) {
+    const term = escapeSearchTerm(filters.search);
+    if (term) q = q.or(`address.ilike.%${term}%,display_name.ilike.%${term}%`);
+  }
+
+  const { data, error, count } = await q
+    .order(sort.field, { ascending: sort.direction === 'asc', nullsFirst: false })
+    .order('address', { ascending: true })
+    .range(offset, offset + limit - 1);
+
+  if (error) throw error;
+  return { wallets: (data ?? []) as Wallet[], total: count ?? 0 };
+}
+
 export async function getAgents(
   limit = 25,
   offset = 0,
   filters: AgentsExploreFilters = {},
   sort: AgentsExploreSort = { field: 'provider_score', direction: 'desc' },
 ): Promise<LeaderboardPage> {
+  // EVM 8004 chains read the registry mirror (per-agent), not the owner-keyed
+  // `wallets` table — see getRegistryAgentsPage. Solana/Stellar fall through.
+  //
+  // Exception: claimed=true. Claims land in `wallets` (claimWallet), never in
+  // the registry mirror — every registry row maps to claimed:false. Routing a
+  // claimed=true query to the registry would ignore the filter and return the
+  // entire declared-only population. So claimed=true always reads `wallets`,
+  // even for celo/arc. (claimed=false keeps reading the registry: it is the
+  // full unclaimed population; the handful of claimed rows that also live in
+  // wallets are an accepted, marginal overcount there.)
+  if ((filters.chain === 'celo' || filters.chain === 'arc') && filters.claimed !== true) {
+    return getRegistryAgentsPage(filters.chain, limit, offset, filters, sort);
+  }
+  // "All chains" (no chain filter) unions wallets + the registry mirror via the
+  // `explore_agents` view so the count + list reflect every agent, not just the
+  // owner rows. claimed=true is the same exception as above — claims live only
+  // in `wallets`, and the view drops celo/arc wallet rows — so it falls through
+  // to the wallets path below, which spans all chains.
+  if (filters.chain == null && filters.claimed !== true) {
+    return getUnifiedAgentsPage(limit, offset, filters, sort);
+  }
+
   // Score > 0 gate matches getLeaderboard semantics. Previously this was
   // tx_count > 0 which excluded Celo/Stellar/Arc rows whose only signal is
   // Tier-3 metadata_quality (no indexed transactions). Solana rows with
   // tx_count > 0 always carry score > 0, so this doesn't regress them.
   let q = supabase
     .from('wallets')
-    .select('*', { count: 'exact' })
-    .gt('score', 0);
+    .select('*', { count: 'exact' });
+
+  // The score>0 gate hides untracked/noise wallets from the default population.
+  // When the caller explicitly filters for claimed agents, drop it: a freshly
+  // claimed agent is inserted score:0 until the scorer runs, and its owner still
+  // expects it under the claimed filter.
+  if (filters.claimed !== true) q = q.gt('score', 0);
 
   if (filters.chain) q = q.eq('chain', filters.chain);
   if (filters.tiers?.length) q = q.in('trust_tier', filters.tiers);
@@ -348,6 +543,86 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
   }));
 }
 
+// --- ERC-8004 Rater Resolution -----------------------------------------------
+//
+// A ReputationRegistry feedback record's `client` is just an address. When AK
+// already knows that address — as a claimed wallet or an indexed registry agent
+// — the feedback list surfaces its name + a link to its AK profile instead of a
+// bare hex string. Resolution is best-effort and additive: an unresolved rater
+// stays a plain address.
+
+export interface RaterInfo {
+  /** Display name: claimed wallet name preferred, else registry registration name. */
+  name: string | null;
+  /**
+   * The rater's own agent_id on this chain, when it is itself a registered agent
+   * (matched by agent_wallet, which is 1:1 with an agent_id). Lets the caller
+   * build a precise /agent link. null when only a claimed-wallet match exists.
+   */
+  agentId: number | null;
+}
+
+/**
+ * Resolve ERC-8004 feedback rater addresses to a name + agent_id for one EVM
+ * chain. Two best-effort lookups, merged into one Map:
+ *   - `erc8004_agents`: a rater that is itself a registered agent, matched by
+ *     agent_wallet (1:1 → a precise agent_id + its registration name). Owner
+ *     matches are intentionally NOT resolved — one owner controls many agents,
+ *     so an owner address can't map to a single profile without misattribution.
+ *   - `wallets`: a claimed rater carries a curated display_name, which takes
+ *     precedence over the on-chain registration name.
+ * Only addresses we can attach a name OR an agent_id to enter the Map; a bare
+ * `wallets` row with no display_name adds no signal and is skipped. Addresses
+ * are lowercased to match the stored (lowercase) EVM convention, and the Map is
+ * keyed by the lowercased address. Absent key = unknown rater.
+ */
+export async function resolveRaters(
+  addresses: string[],
+  chain: 'celo' | 'arc',
+): Promise<Map<string, RaterInfo>> {
+  const out = new Map<string, RaterInfo>();
+  const unique = [...new Set(addresses.map((a) => a.toLowerCase()))];
+  if (unique.length === 0) return out;
+
+  // Chunk to stay under Kong's ~8KB URI cap on .in() filters (ADDRESS_IN_CHUNK).
+  for (let i = 0; i < unique.length; i += ADDRESS_IN_CHUNK) {
+    const chunk = unique.slice(i, i + ADDRESS_IN_CHUNK);
+
+    const [agentsRes, walletsRes] = await Promise.all([
+      supabase
+        .from('erc8004_agents')
+        .select('agent_id, agent_wallet, registration')
+        .eq('chain', chain)
+        .in('agent_wallet', chunk),
+      supabase
+        .from('wallets')
+        .select('address, display_name')
+        .eq('chain', chain)
+        .in('address', chunk),
+    ]);
+
+    if (agentsRes.error) throw agentsRes.error;
+    if (walletsRes.error) throw walletsRes.error;
+
+    // Registry first (always carries an agent_id); a curated wallet name layers
+    // on top below without dropping the agent_id.
+    for (const row of (agentsRes.data ?? []) as Array<{
+      agent_id: number; agent_wallet: string | null; registration: { name?: string } | null;
+    }>) {
+      const addr = row.agent_wallet?.toLowerCase();
+      if (!addr) continue;
+      out.set(addr, { name: row.registration?.name ?? null, agentId: Number(row.agent_id) });
+    }
+    for (const row of (walletsRes.data ?? []) as Array<{ address: string; display_name: string | null }>) {
+      if (!row.display_name) continue; // only a curated name adds signal
+      const addr = row.address.toLowerCase();
+      out.set(addr, { name: row.display_name, agentId: out.get(addr)?.agentId ?? null });
+    }
+  }
+
+  return out;
+}
+
 // --- Agent Claiming ----------------------------------------------------------
 
 export async function claimWallet(
@@ -358,7 +633,18 @@ export async function claimWallet(
   category: string | null,
   tempoAddress: string | null = null,
   chain: Chain = DEFAULT_CHAIN,
+  /**
+   * Off-chain proof of ownership (signature + signed challenge). Persisted so
+   * the agent page can render a re-verifiable receipt. Spread conditionally:
+   * a proof-less claim (seed scripts, legacy callers) must NEVER overwrite an
+   * existing stored proof with null.
+   */
+  proof: { signature: string; message: string } | null = null,
 ): Promise<void> {
+  const proofFields = proof
+    ? { claim_signature: proof.signature, claim_message: proof.message }
+    : {};
+
   // Ensure the wallet row exists (upsert with minimal data if not). Lookup is
   // chain-scoped so a Stellar claim never matches a Solana row under the same
   // string and vice-versa — (chain,address) is the composite PK.
@@ -378,6 +664,7 @@ export async function claimWallet(
         website,
         category,
         tempo_address: tempoAddress,
+        ...proofFields,
         claimed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
@@ -395,6 +682,7 @@ export async function claimWallet(
       website,
       category,
       tempo_address: tempoAddress,
+      ...proofFields,
       claimed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
@@ -402,6 +690,39 @@ export async function claimWallet(
     .eq('address', address);
 
   if (error) throw error;
+}
+
+/**
+ * Attach an off-chain ownership proof (signature + signed challenge) to an
+ * EXISTING wallet row WITHOUT touching identity metadata. Backs the
+ * prove-ownership upgrade for already-claimed agents whose original claim-time
+ * signature was never retained. Marks claimed=true defensively and stamps
+ * claimed_at only if it was never set. Chain-scoped on the composite PK.
+ *
+ * Returns false when no row matched (nothing to attach the proof to).
+ */
+export async function setClaimProof(
+  address: string,
+  chain: Chain,
+  proof: { signature: string; message: string },
+): Promise<boolean> {
+  const existing = await getWallet(address, chain);
+  if (!existing) return false;
+
+  const { error } = await supabase
+    .from('wallets')
+    .update({
+      claimed: true,
+      claim_signature: proof.signature,
+      claim_message: proof.message,
+      claimed_at: existing.claimed_at ?? new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('chain', chain)
+    .eq('address', address);
+
+  if (error) throw error;
+  return true;
 }
 
 /**
@@ -946,7 +1267,7 @@ export async function cleanupOldScoreSnapshots(days = 90): Promise<number> {
 
 export async function getStats() {
   // Every figure comes from a SQL aggregate RPC — NEVER from streaming the full
-  // transactions (~502k) or wallets (~116k) tables. The old row-streaming
+  // transactions (~502k) or agent (~103k) tables. The old row-streaming
   // fallbacks (`select amount` / `select trust_tier`) blew the 8s statement
   // timeout as the tables grew and 500'd /api/stats (the public homepage
   // counter). Each block degrades independently so one slow query can't take the
@@ -962,6 +1283,12 @@ export async function getStats() {
     console.warn('[db] get_transaction_stats unavailable:', txStatsRes.error.message);
   }
 
+  // totalAgents + tierDistribution count the canonical agent population — the
+  // `explore_agents` view (score-gated Solana/Stellar wallets UNIONed with the
+  // per-agent Celo/Arc registry mirror). This is the SAME set the Explore "All"
+  // count reads, so the homepage counter and Explore never disagree. Counting
+  // raw `wallets` instead double-faults: it keeps score=0 noise and represents
+  // Celo/Arc as a handful of owner rows rather than their per-agent population.
   let totalAgents = 0;
   const tierDistribution: Record<string, number> = {};
   const tierRes = await supabase.rpc('get_tier_distribution');
@@ -973,12 +1300,23 @@ export async function getStats() {
     }
   } else {
     if (tierRes.error) console.warn('[db] get_tier_distribution unavailable:', tierRes.error.message);
-    // Cheap degradation: a HEAD count (no row scan) so totalAgents survives.
-    const headRes = await supabase.from('wallets').select('*', { count: 'exact', head: true });
+    // Cheap degradation: a HEAD count (no row scan) so totalAgents survives —
+    // over the same view, so the degraded number stays consistent with Explore.
+    const headRes = await supabase.from('explore_agents').select('*', { count: 'exact', head: true });
     totalAgents = headRes.count ?? 0;
   }
 
-  return { totalAgents, totalTransactions, totalVolumeUsdc, tierDistribution };
+  // Per-chain ERC-8004 registry mirror totals (agents + feedback records) so
+  // the public stats match 8004scan's per-network cards. Best-effort + additive
+  // — a failure here never takes down the existing figures above.
+  let registries: { chain: string; agents: number; feedbacks: number }[] = [];
+  try {
+    registries = await getRegistryStats();
+  } catch (err) {
+    console.warn('[db] getRegistryStats unavailable:', err instanceof Error ? err.message : err);
+  }
+
+  return { totalAgents, totalTransactions, totalVolumeUsdc, tierDistribution, registries };
 }
 
 // --- Explore Queries ---------------------------------------------------------
@@ -2135,4 +2473,236 @@ export async function upsertBondUnderwriter(
     .upsert(row, { onConflict: 'bond_id,chain,underwriter_wallet' });
 
   if (error) throw error;
+}
+
+// --- ERC-8004 Registry Mirror (per-agent, keyed by agent_id) -----------------
+//
+// Backs the `erc8004_agents` / `erc8004_feedback` tables that let AK match
+// 8004scan's per-network agent + feedback totals. Populated by
+// src/indexer/erc8004-registry.ts via the injected persist callbacks. The
+// `ScannedAgent`/`ScannedFeedback` shapes are imported type-only above.
+
+const ERC8004_UPSERT_CHUNK = 500;
+
+/**
+ * Batch-upsert agent rows. Auto-detects whether to write the denormalized
+ * feedback columns: the identity pass passes rows with no `feedback` (so those
+ * columns keep their DB default / existing value), the feedback re-upsert
+ * passes rows that ALL carry `feedback`. Every row in a single call therefore
+ * has an identical column set — required for PostgREST's batch ON CONFLICT.
+ */
+export async function upsertErc8004Agents(chain: string, agents: ScannedAgent[]): Promise<number> {
+  if (agents.length === 0) return 0;
+  const nowIso = new Date().toISOString();
+  const withFeedback = agents.every((a) => a.feedback != null);
+  const rows = agents.map((a) => {
+    const row: Record<string, unknown> = {
+      chain,
+      agent_id: a.agentId,
+      owner: a.owner,
+      agent_wallet: a.agentWallet,
+      token_uri: a.tokenURI,
+      registration: a.registration ?? null,
+      registration_status: a.registrationStatus,
+      metadata_score: a.metadataScore,
+      last_indexed_at: nowIso,
+    };
+    if (withFeedback) {
+      row.feedback_count = a.feedback!.count;
+      row.feedback_sum = a.feedback!.sum;
+      row.feedback_avg = a.feedback!.avg;
+    }
+    return row;
+  });
+
+  let written = 0;
+  for (let i = 0; i < rows.length; i += ERC8004_UPSERT_CHUNK) {
+    const part = rows.slice(i, i + ERC8004_UPSERT_CHUNK);
+    const { error } = await supabase
+      .from('erc8004_agents')
+      .upsert(part, { onConflict: 'chain,agent_id' });
+    if (error) throw error;
+    written += part.length;
+  }
+  return written;
+}
+
+/** Batch-upsert feedback records (one row per ReputationRegistry record). */
+export async function upsertErc8004Feedback(chain: string, feedback: ScannedFeedback[]): Promise<number> {
+  if (feedback.length === 0) return 0;
+  const nowIso = new Date().toISOString();
+  const rows = feedback.map((f) => ({
+    chain,
+    agent_id: f.agentId,
+    client: f.client,
+    feedback_index: f.feedbackIndex,
+    raw_value: f.rawValue,
+    value: f.value,
+    value_decimals: f.valueDecimals,
+    tag1: f.tag1,
+    tag2: f.tag2,
+    revoked: f.revoked,
+    indexed_at: nowIso,
+  }));
+
+  let written = 0;
+  for (let i = 0; i < rows.length; i += ERC8004_UPSERT_CHUNK) {
+    const part = rows.slice(i, i + ERC8004_UPSERT_CHUNK);
+    const { error } = await supabase
+      .from('erc8004_feedback')
+      .upsert(part, { onConflict: 'chain,agent_id,client,feedback_index' });
+    if (error) throw error;
+    written += part.length;
+  }
+  return written;
+}
+
+/**
+ * Per-chain registry totals (agents + feedback records) via HEAD counts — no
+ * row scan, so it stays cheap as the mirror grows. Returns one entry per chain
+ * that has at least one agent row.
+ */
+export async function getRegistryStats(
+  chains: string[] = ['celo', 'arc'],
+): Promise<{ chain: string; agents: number; feedbacks: number }[]> {
+  const out: { chain: string; agents: number; feedbacks: number }[] = [];
+  for (const chain of chains) {
+    const [agentsRes, fbRes] = await Promise.all([
+      supabase.from('erc8004_agents').select('*', { count: 'exact', head: true }).eq('chain', chain),
+      supabase.from('erc8004_feedback').select('*', { count: 'exact', head: true }).eq('chain', chain),
+    ]);
+    const agents = agentsRes.count ?? 0;
+    const feedbacks = fbRes.count ?? 0;
+    if (agents > 0 || feedbacks > 0) out.push({ chain, agents, feedbacks });
+  }
+  return out;
+}
+
+/** Highest agent_id already mirrored for a chain (0 if none) — drives the
+ *  incremental scan that only reads ids past the last sweep. */
+export async function getMaxErc8004AgentId(chain: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('erc8004_agents')
+    .select('agent_id')
+    .eq('chain', chain)
+    .order('agent_id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? Number((data as { agent_id: number }).agent_id) : 0;
+}
+
+/** Read a single cached registry agent row (used by the agent-resolve route). */
+export async function getErc8004Agent(
+  chain: string, agentId: number,
+): Promise<Record<string, unknown> | null> {
+  const { data, error } = await supabase
+    .from('erc8004_agents')
+    .select('*')
+    .eq('chain', chain)
+    .eq('agent_id', agentId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as Record<string, unknown>) ?? null;
+}
+
+// --- x402 Payee Discovery (endpoint-driven self-seeder) ----------------------
+//
+// Backs scripts/celo-x402-discover-payees.ts + the indexer's facilitator-set
+// union. See `celo_x402_payees` in schema.ts for the attribution-poisoning
+// rationale behind `verified`.
+
+/** One registry agent row reduced to the fields the payee probe needs. */
+export interface Erc8004AgentLite {
+  agent_id: number;
+  owner: string;
+  agent_wallet: string | null;
+  registration: unknown | null;
+}
+
+/**
+ * Page through the registry mirror for a chain, agent_id ascending. Selects
+ * only the columns the endpoint probe needs (id, owner, agentWallet,
+ * registration JSON). `pageSize` rows from `offset`; an empty array ends the
+ * walk. ascending by agent_id so a bounded sample is deterministic + resumable.
+ */
+export async function listErc8004AgentsPage(
+  chain: Chain,
+  offset: number,
+  pageSize: number,
+): Promise<Erc8004AgentLite[]> {
+  const { data, error } = await supabase
+    .from('erc8004_agents')
+    .select('agent_id, owner, agent_wallet, registration')
+    .eq('chain', chain)
+    .order('agent_id', { ascending: true })
+    .range(offset, offset + pageSize - 1);
+  if (error) throw error;
+  return (data as Erc8004AgentLite[]) ?? [];
+}
+
+export interface UpsertCeloX402PayeeInput {
+  /** EVM payee address (lowercased on write). */
+  address: string;
+  sourceAgentId: number | null;
+  endpoint: string | null;
+  /** Resolved Celo stablecoin contract address. */
+  asset: string | null;
+  /** Raw x402 network value (e.g. eip155:42220). */
+  network: string | null;
+  /** Self-payee (controlled by the source agent) → indexer-eligible. */
+  verified: boolean;
+}
+
+/**
+ * Upsert one discovered x402 payee, keyed (chain, address). Re-discovery bumps
+ * `last_seen_at` and refreshes provenance. `verified` reflects the latest probe:
+ * a previously-unverified address that is later self-attested by its controlling
+ * agent flips to true (and vice-versa — a victim address re-declared by a
+ * different agent stays false). Always writes the lowercased address so the
+ * indexer's lowercased match set keys cleanly.
+ */
+export async function upsertCeloX402Payee(
+  input: UpsertCeloX402PayeeInput,
+  chain: Chain = 'celo',
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const { error } = await supabase
+    .from('celo_x402_payees')
+    .upsert(
+      {
+        chain,
+        address: input.address.toLowerCase(),
+        source_agent_id: input.sourceAgentId,
+        endpoint: input.endpoint,
+        asset: input.asset ? input.asset.toLowerCase() : null,
+        network: input.network,
+        verified: input.verified,
+        last_seen_at: nowIso,
+      },
+      { onConflict: 'chain,address' },
+    );
+  if (error) throw error;
+}
+
+/**
+ * Lowercased set of VERIFIED (self-payee) discovered payee addresses for a
+ * chain — the only rows safe to feed the settlement indexer. Cross-address
+ * (verified=false) declarations are excluded so a poisoned `payTo` can never
+ * silently make AK index a victim's transfers.
+ */
+export async function getDiscoveredCeloX402Payees(
+  chain: Chain = 'celo',
+): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from('celo_x402_payees')
+    .select('address')
+    .eq('chain', chain)
+    .eq('verified', true);
+  if (error) throw error;
+  const set = new Set<string>();
+  for (const row of (data as { address: string }[]) ?? []) {
+    set.add(row.address.toLowerCase());
+  }
+  return set;
 }
