@@ -17,16 +17,6 @@ const CELO_CHAIN_ID_HEX = '0xa4ec';
 
 type Status = 'idle' | 'success' | 'error';
 
-interface Eip1193Provider {
-  request<T = unknown>(args: { method: string; params?: unknown[] }): Promise<T>;
-}
-
-declare global {
-  interface Window {
-    ethereum?: Eip1193Provider;
-  }
-}
-
 function isHexAddress(value: unknown): value is `0x${string}` {
   return typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value);
 }

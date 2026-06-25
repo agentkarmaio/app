@@ -48,6 +48,10 @@ export const walletsTable = pgTable('wallets', {
   // Agent claiming (optional identity enrichment)
   claimed:         boolean('claimed').default(false),
   display_name:    text('display_name'),
+  // Agent logo, denormalized from registration JSON (registry mirror writes it,
+  // like display_name) so list queries reading `wallets` can render it without a
+  // per-row registration fetch. http(s) URL; rendered via the SSRF image proxy.
+  image_url:       text('image_url'),
   description:     text('description'),
   website:         text('website'),
   category:        text('category'),
@@ -628,6 +632,7 @@ export interface Wallet {
   // Agent claiming
   claimed?: boolean;
   display_name?: string | null;
+  image_url?: string | null;
   description?: string | null;
   website?: string | null;
   category?: string | null;

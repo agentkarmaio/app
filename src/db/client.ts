@@ -285,6 +285,7 @@ function registryRowToWallet(row: Record<string, unknown>, chain: Chain): Wallet
     updated_at: indexedAt,
     claimed: false,
     display_name: reg?.name ?? null,
+    image_url: reg?.image ?? null,
     description: reg?.description ?? null,
     provider_score: score,
     consumer_score: null,
@@ -502,6 +503,23 @@ export function escapeSearchTerm(raw: string): string {
   return raw.replace(/[%_(),*]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// The wallets-table column that carries a chain's ERC-8004 agentId. Single
+// source of truth so the search filter and the (chain, agentId) resolver can't
+// drift. Solana isn't ERC-8004 and has no agentId column → absent from the map.
+type AgentIdColumn = 'celo_agent_id' | 'arc_agent_id' | 'stellar_agent_id';
+const AGENT_ID_COLUMN: Partial<Record<Chain, AgentIdColumn>> = {
+  celo: 'celo_agent_id',
+  arc: 'arc_agent_id',
+  stellar: 'stellar_agent_id',
+};
+const ALL_AGENT_ID_COLUMNS = Object.values(AGENT_ID_COLUMN) as AgentIdColumn[];
+// wallets.*_agent_id are int32; a query outside that range can't match any row,
+// so we skip the eq clause rather than send a literal the DB would reject.
+const MAX_INT32 = 2147483647;
+function agentIdColumn(chain: Chain): AgentIdColumn | null {
+  return AGENT_ID_COLUMN[chain] ?? null;
+}
+
 export interface WalletSearchRow {
   address: string;
   chain: Chain;
@@ -509,22 +527,42 @@ export interface WalletSearchRow {
   score: number;
   trustTier: TrustTier;
   txCount: number;
+  /** ERC-8004 agentId on this row's chain, when materialized. null for Solana
+   *  and for EVM/Stellar agents not yet bound to an id. Lets callers render the
+   *  id and build a precise /agent link. */
+  agentId: number | null;
 }
 
 /**
- * Search wallets by address OR display_name substring (case-insensitive),
- * ranked by score descending. Returns the chain so callers can render a chain
- * badge and build a chain-aware /agent link. Powers the homepage search box
- * and the MCP `search_agents` tool — one place for the escaping + name logic.
+ * Search wallets by address OR display_name substring (case-insensitive). A
+ * purely-numeric query additionally matches an exact ERC-8004 agentId across the
+ * per-chain agentId columns, so typing `9058` surfaces Celo agent #9058. Ranked
+ * by score descending. Returns the chain + matched agentId so callers can render
+ * a chain badge and build a chain-aware /agent link. Powers the homepage search
+ * box and the MCP `search_agents` tool — one place for the escaping + name logic.
  */
 export async function searchWallets(query: string, limit = 8): Promise<WalletSearchRow[]> {
   const term = escapeSearchTerm(query);
   if (term.length < 3) return [];
 
+  // Numeric query → also match an exact agentId. Sub-3-char ids stay resolver-only
+  // (GET /api/v2/agent/[chain]/[id]); search keeps the 3-char floor to avoid noisy
+  // substring scans.
+  const asId = /^\d+$/.test(term) ? Number(term) : NaN;
+  const idClauses =
+    Number.isSafeInteger(asId) && asId >= 0 && asId <= MAX_INT32
+      ? ALL_AGENT_ID_COLUMNS.map((c) => `${c}.eq.${asId}`)
+      : [];
+  const orFilter = [
+    `address.ilike.%${term}%`,
+    `display_name.ilike.%${term}%`,
+    ...idClauses,
+  ].join(',');
+
   const { data, error } = await supabase
     .from('wallets')
-    .select('address, chain, display_name, score, trust_tier, tx_count')
-    .or(`address.ilike.%${term}%,display_name.ilike.%${term}%`)
+    .select('address, chain, display_name, score, trust_tier, tx_count, celo_agent_id, arc_agent_id, stellar_agent_id')
+    .or(orFilter)
     .order('score', { ascending: false })
     .limit(Math.max(1, Math.min(50, limit)));
 
@@ -533,14 +571,42 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
   return ((data ?? []) as Array<{
     address: string; chain: Chain; display_name: string | null;
     score: number; trust_tier: TrustTier; tx_count: number;
-  }>).map((w) => ({
-    address: w.address,
-    chain: w.chain,
-    displayName: w.display_name,
-    score: Number(w.score),
-    trustTier: w.trust_tier,
-    txCount: w.tx_count,
-  }));
+    celo_agent_id: number | null; arc_agent_id: number | null; stellar_agent_id: number | null;
+  }>).map((w) => {
+    const col = agentIdColumn(w.chain);
+    return {
+      address: w.address,
+      chain: w.chain,
+      displayName: w.display_name,
+      score: Number(w.score),
+      trustTier: w.trust_tier,
+      txCount: w.tx_count,
+      agentId: col ? (w[col] ?? null) : null,
+    };
+  });
+}
+
+/**
+ * Resolve a single wallet by its ERC-8004 agentId on one chain. Powers the
+ * GET /api/v2/agent/[chain]/[id] deep-link / SDK resolver. Returns null (not an
+ * error) for Solana (no agentId), out-of-range ids, and unknown ids. The
+ * agentId columns aren't UNIQUE (an owner may rotate ids), so we take the
+ * highest-scored match deterministically rather than risk a multi-row throw.
+ */
+export async function getWalletByAgentId(chain: Chain, agentId: number): Promise<Wallet | null> {
+  const col = agentIdColumn(chain);
+  if (!col || !Number.isInteger(agentId) || agentId < 0 || agentId > MAX_INT32) return null;
+
+  const { data, error } = await supabase
+    .from('wallets')
+    .select('*')
+    .eq('chain', chain)
+    .eq(col, agentId)
+    .order('score', { ascending: false })
+    .limit(1);
+
+  if (error) throw error;
+  return ((data ?? [])[0] as Wallet) ?? null;
 }
 
 // --- ERC-8004 Rater Resolution -----------------------------------------------
