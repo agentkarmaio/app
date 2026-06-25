@@ -222,6 +222,11 @@ export async function readFeedbackSummary(
  * Use this when you want "what does anyone say about this agent" rather than
  * "what does a specific validator set say". Normalizes per-record valueDecimals
  * before averaging so heterogeneous fixed-point scales mix cleanly.
+ *
+ * `count` / `average` ALWAYS exclude revoked records — a retracted rating must
+ * never move the headline aggregate. `includeRevoked` controls only whether
+ * revoked records appear in `.records` (the profile passes it to render them
+ * struck-through); it does not change the aggregate.
  */
 export async function aggregateFeedback(
   agentId: bigint | number,
@@ -232,7 +237,7 @@ export async function aggregateFeedback(
   records: FeedbackRecord[];
 }> {
   const records = await readAllFeedback(agentId, opts);
-  const live = opts.includeRevoked ? records : records.filter((r) => !r.revoked);
+  const live = records.filter((r) => !r.revoked);
   if (live.length === 0) return { count: 0, average: null, records };
   const sum = live.reduce((acc, r) => acc + r.value, 0);
   return { count: live.length, average: sum / live.length, records };

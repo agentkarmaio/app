@@ -110,9 +110,9 @@ export async function assertPublicHttpUrl(
   return url;
 }
 
-async function readCapped(res: Response, maxBytes: number): Promise<string> {
+async function readCappedBytes(res: Response, maxBytes: number): Promise<Buffer> {
   const reader = res.body?.getReader();
-  if (!reader) return res.text();
+  if (!reader) return Buffer.from(await res.arrayBuffer());
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
@@ -125,7 +125,11 @@ async function readCapped(res: Response, maxBytes: number): Promise<string> {
     }
     chunks.push(value);
   }
-  return Buffer.concat(chunks).toString('utf-8');
+  return Buffer.concat(chunks);
+}
+
+async function readCapped(res: Response, maxBytes: number): Promise<string> {
+  return (await readCappedBytes(res, maxBytes)).toString('utf-8');
 }
 
 /**
@@ -167,6 +171,123 @@ export async function safeFetchJson(
     }
     if (!res.ok) throw new SsrfError(`HTTP ${res.status}`);
     return JSON.parse(await readCapped(res, maxBytes));
+  }
+  throw new SsrfError(`exceeded ${maxRedirects} redirects`);
+}
+
+/** A status-bearing probe result. `json` is the parsed body when it parses as
+ *  JSON, else null (with the cause in `parseError`). */
+export interface SafeFetchResult {
+  status: number;
+  json: unknown | null;
+  parseError?: string;
+}
+
+/**
+ * SSRF-guarded probe that, unlike {@link safeFetchJson}, does NOT throw on a
+ * non-2xx status — it returns the status and the parsed body. This is what the
+ * x402 payee discovery needs: a paywalled endpoint answers an unpaid request
+ * with HTTP **402** and a JSON `accepts` body, which `safeFetchJson` would
+ * reject as `HTTP 402` before the body is read.
+ *
+ * Same defense as `safeFetchJson`: every hop (initial + each redirect) is
+ * host-validated BEFORE the request via {@link assertPublicHttpUrl}, redirects
+ * are followed manually, and the body is size-capped. Network / SSRF / redirect
+ * failures still throw {@link SsrfError}; a body that isn't valid JSON yields
+ * `{ status, json: null, parseError }` rather than throwing, so the caller can
+ * still act on the status code.
+ */
+export async function safeFetchWithStatus(
+  rawUrl: string,
+  opts: {
+    timeoutMs?: number;
+    maxBytes?: number;
+    maxRedirects?: number;
+    lookup?: DnsLookup;
+    headers?: Record<string, string>;
+  } = {},
+): Promise<SafeFetchResult> {
+  const {
+    timeoutMs = 6000,
+    maxBytes = 256 * 1024,
+    maxRedirects = 3,
+    lookup: lookupFn,
+    headers = { 'User-Agent': 'AgentKarma/1.0', Accept: 'application/json' },
+  } = opts;
+
+  let current = rawUrl;
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const url = await assertPublicHttpUrl(current, { lookup: lookupFn });
+    const res = await fetch(url, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers,
+    });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      if (!loc) throw new SsrfError('redirect without Location header');
+      current = new URL(loc, url).toString();
+      continue;
+    }
+    const text = await readCapped(res, maxBytes);
+    try {
+      return { status: res.status, json: text === '' ? null : JSON.parse(text) };
+    } catch (err) {
+      return {
+        status: res.status,
+        json: null,
+        parseError: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+  throw new SsrfError(`exceeded ${maxRedirects} redirects`);
+}
+
+/** Raw bytes + declared content type from an SSRF-guarded image fetch. */
+export interface SafeImageResult {
+  status: number;
+  contentType: string | null;
+  bytes: Buffer;
+}
+
+/**
+ * Fetch binary image bytes from an untrusted URL with the same SSRF defense as
+ * {@link safeFetchJson}: every hop (initial + each redirect) is host-validated
+ * before the request, redirects are followed manually, and the body is
+ * size-capped (default 2 MB). The caller is responsible for content-type
+ * allow-listing. Throws {@link SsrfError} on a blocked host / non-2xx / oversize.
+ */
+export async function safeFetchImage(
+  rawUrl: string,
+  opts: {
+    timeoutMs?: number;
+    maxBytes?: number;
+    maxRedirects?: number;
+    lookup?: DnsLookup;
+  } = {},
+): Promise<SafeImageResult> {
+  const { timeoutMs = 6000, maxBytes = 2 * 1024 * 1024, maxRedirects = 3, lookup: lookupFn } = opts;
+
+  let current = rawUrl;
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const url = await assertPublicHttpUrl(current, { lookup: lookupFn });
+    const res = await fetch(url, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { 'User-Agent': 'AgentKarma/1.0', Accept: 'image/*' },
+    });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      if (!loc) throw new SsrfError('redirect without Location header');
+      current = new URL(loc, url).toString();
+      continue;
+    }
+    if (!res.ok) throw new SsrfError(`HTTP ${res.status}`);
+    return {
+      status: res.status,
+      contentType: res.headers.get('content-type'),
+      bytes: await readCappedBytes(res, maxBytes),
+    };
   }
   throw new SsrfError(`exceeded ${maxRedirects} redirects`);
 }

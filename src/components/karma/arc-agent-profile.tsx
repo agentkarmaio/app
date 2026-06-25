@@ -20,14 +20,22 @@ import {
   type ArcAgent,
 } from '@/integrations/erc8004-arc';
 import { ScoreRing } from '@/components/karma/score-ring';
+import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge } from '@/components/karma/confidence-badge';
 import { WalletAddress } from '@/components/karma/wallet-address';
+import { BadgeButton } from '@/components/karma/badge-button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { resolveRaters, type RaterInfo } from '@/db/client';
 import type { Wallet, TrustTier, ConfidenceBadge as ConfidenceBadgeValue } from '@/db/schema';
 import { safeHref } from '@/lib/safe-url';
+import { EvmClaimBanner } from '@/components/wallet/evm-claim-banner';
+import { GiveFeedbackCard } from '@/components/karma/give-feedback-card';
+import { FeedbackRecordsCard } from '@/components/karma/feedback-records-card';
+import { ClaimProof } from '@/components/karma/claim-proof';
+import { ProveOwnership } from '@/components/wallet/prove-ownership';
 
 const CATEGORY_LABELS: Record<string, string> = {
   ai: 'AI / ML',
@@ -60,8 +68,18 @@ export async function ArcAgentProfile({
   // DB row alone — we still want to show something useful.
   const [agent, feedback] = await Promise.all([
     readAgent(BigInt(agentId)).catch(() => null as ArcAgent | null),
-    aggregateFeedback(BigInt(agentId)).catch(() => null),
+    // includeRevoked: surface retracted records in the list (struck-through);
+    // count/average still exclude them inside aggregateFeedback.
+    aggregateFeedback(BigInt(agentId), { includeRevoked: true }).catch(() => null),
   ]);
+
+  // Resolve rater addresses to names + AK profile links (best-effort, one DB
+  // round-trip). Depends on the feedback list, so it follows the parallel read.
+  const raters = feedback?.records.length
+    ? await resolveRaters(feedback.records.map((r) => r.client), 'arc').catch(
+        () => new Map<string, RaterInfo>(),
+      )
+    : new Map<string, RaterInfo>();
 
   const registrationName = agent?.registration?.name ?? null;
   const registrationDescription = agent?.registration?.description ?? null;
@@ -93,7 +111,9 @@ export async function ArcAgentProfile({
       </Link>
 
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-3">
+        <div className="flex items-start gap-4">
+          <AgentAvatar src={agent?.registration?.image} name={displayName} />
+          <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
               {displayName}
@@ -134,6 +154,7 @@ export async function ArcAgentProfile({
             >
               <ExternalLink className="size-3.5" />
             </a>
+            <BadgeButton wallet={wallet} chain="arc" />
           </div>
           {description && (
             <p className="text-[14px] text-[#8a8f98] leading-relaxed max-w-lg">
@@ -164,11 +185,18 @@ export async function ArcAgentProfile({
               </a>
             )}
           </div>
+          </div>
         </div>
         <ScoreRing score={score} tier={tier} size={90} strokeWidth={7} />
       </div>
 
       <Separator />
+
+      {!isClaimed && <EvmClaimBanner walletAddress={walletRow.address} chain="arc" />}
+
+      {isClaimed && !walletRow.claim_signature && (
+        <ProveOwnership chain="arc" address={walletRow.address} />
+      )}
 
       <div className="grid gap-6 md:grid-cols-2">
         <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
@@ -281,6 +309,12 @@ export async function ArcAgentProfile({
         </Card>
       </div>
 
+      {feedback && feedback.records.length > 0 && (
+        <FeedbackRecordsCard records={feedback.records} raters={raters} chain="arc" />
+      )}
+
+      <GiveFeedbackCard agentId={agentId} chain="arc" ownerAddress={agent?.owner ?? walletRow.address} />
+
       {services.length > 0 && (
         <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
           <CardHeader className="pb-3">
@@ -322,6 +356,15 @@ export async function ArcAgentProfile({
             <p className="font-mono text-[11px]">{agent.registrationError}</p>
           </CardContent>
         </Card>
+      )}
+
+      {isClaimed && walletRow.claim_signature && walletRow.claim_message && (
+        <ClaimProof
+          chain="arc"
+          address={walletRow.address}
+          message={walletRow.claim_message}
+          signature={walletRow.claim_signature}
+        />
       )}
 
       {deadMansSwitch}

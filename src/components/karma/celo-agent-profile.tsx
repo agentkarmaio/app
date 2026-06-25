@@ -16,14 +16,22 @@ import {
   type CeloAgent,
 } from '@/integrations/erc8004-celo';
 import { ScoreRing } from '@/components/karma/score-ring';
+import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge } from '@/components/karma/confidence-badge';
 import { WalletAddress } from '@/components/karma/wallet-address';
+import { BadgeButton } from '@/components/karma/badge-button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { resolveRaters, type RaterInfo } from '@/db/client';
 import type { Wallet, TrustTier, ConfidenceBadge as ConfidenceBadgeValue } from '@/db/schema';
 import { safeHref } from '@/lib/safe-url';
+import { EvmClaimBanner } from '@/components/wallet/evm-claim-banner';
+import { GiveFeedbackCard } from '@/components/karma/give-feedback-card';
+import { FeedbackRecordsCard } from '@/components/karma/feedback-records-card';
+import { ClaimProof } from '@/components/karma/claim-proof';
+import { ProveOwnership } from '@/components/wallet/prove-ownership';
 
 const CATEGORY_LABELS: Record<string, string> = {
   ai: 'AI / ML',
@@ -56,8 +64,18 @@ export async function CeloAgentProfile({
   // something useful.
   const [agent, feedback] = await Promise.all([
     readAgent(BigInt(agentId)).catch(() => null as CeloAgent | null),
-    aggregateFeedback(BigInt(agentId)).catch(() => null),
+    // includeRevoked: surface retracted records in the list (struck-through);
+    // count/average still exclude them inside aggregateFeedback.
+    aggregateFeedback(BigInt(agentId), { includeRevoked: true }).catch(() => null),
   ]);
+
+  // Resolve rater addresses to names + AK profile links (best-effort, one DB
+  // round-trip). Depends on the feedback list, so it follows the parallel read.
+  const raters = feedback?.records.length
+    ? await resolveRaters(feedback.records.map((r) => r.client), 'celo').catch(
+        () => new Map<string, RaterInfo>(),
+      )
+    : new Map<string, RaterInfo>();
 
   const registrationName = agent?.registration?.name ?? null;
   const registrationDescription = agent?.registration?.description ?? null;
@@ -88,7 +106,9 @@ export async function CeloAgentProfile({
       </Link>
 
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-3">
+        <div className="flex items-start gap-4">
+          <AgentAvatar src={agent?.registration?.image} name={displayName} />
+          <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
               {displayName}
@@ -122,6 +142,7 @@ export async function CeloAgentProfile({
             >
               <ExternalLink className="size-3.5" />
             </a>
+            <BadgeButton wallet={wallet} chain="celo" />
           </div>
           {description && (
             <p className="text-[14px] text-[#8a8f98] leading-relaxed max-w-lg">
@@ -152,11 +173,18 @@ export async function CeloAgentProfile({
               </a>
             )}
           </div>
+          </div>
         </div>
         <ScoreRing score={score} tier={tier} size={90} strokeWidth={7} />
       </div>
 
       <Separator />
+
+      {!isClaimed && <EvmClaimBanner walletAddress={walletRow.address} chain="celo" />}
+
+      {isClaimed && !walletRow.claim_signature && (
+        <ProveOwnership chain="celo" address={walletRow.address} />
+      )}
 
       <div className="grid gap-6 md:grid-cols-2">
         <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
@@ -268,6 +296,21 @@ export async function CeloAgentProfile({
           </CardContent>
         </Card>
       </div>
+
+      {isClaimed && walletRow.claim_signature && walletRow.claim_message && (
+        <ClaimProof
+          chain="celo"
+          address={walletRow.address}
+          message={walletRow.claim_message}
+          signature={walletRow.claim_signature}
+        />
+      )}
+
+      {feedback && feedback.records.length > 0 && (
+        <FeedbackRecordsCard records={feedback.records} raters={raters} chain="celo" />
+      )}
+
+      <GiveFeedbackCard agentId={agentId} chain="celo" ownerAddress={agent?.owner ?? walletRow.address} />
 
       {services.length > 0 && (
         <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
