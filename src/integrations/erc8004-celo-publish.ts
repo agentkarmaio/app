@@ -21,7 +21,7 @@ import {
 } from 'viem';
 import { celo } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 
 export const REPUTATION_REGISTRY_CELO = '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63' as const;
@@ -51,12 +51,33 @@ export interface PublishFeedbackResult {
   estimatedCostCelo?: string;
 }
 
+/**
+ * Resolve the signing keyfile. Prefers the dedicated, disclosed validator key
+ * (keeps routine attestations off the high-value treasury key); falls back to
+ * the treasury/controller key when the validator key isn't present. Override
+ * with CELO_VALIDATOR_KEYFILE.
+ */
+function resolveKeyfile(): string {
+  const explicit = process.env.CELO_VALIDATOR_KEYFILE;
+  if (explicit) return resolve(explicit);
+  const validator = resolve('.keys/agentkarma-celo-validator.json');
+  if (existsSync(validator)) return validator;
+  return resolve('.keys/agentkarma-celo.json');
+}
+
 function loadKeypair() {
-  const keyfile = resolve('.keys/agentkarma-celo.json');
-  const { privateKey } = JSON.parse(readFileSync(keyfile, 'utf-8')) as {
+  const { privateKey } = JSON.parse(readFileSync(resolveKeyfile(), 'utf-8')) as {
     privateKey: `0x${string}`;
   };
   return privateKeyToAccount(privateKey);
+}
+
+/** Public address of the wallet that will sign attestations (no key exposure). */
+export function activeSignerAddress(): `0x${string}` {
+  const { address } = JSON.parse(readFileSync(resolveKeyfile(), 'utf-8')) as {
+    address: `0x${string}`;
+  };
+  return address;
 }
 
 function makePublic() {

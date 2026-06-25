@@ -12,6 +12,8 @@
  * Spec: https://github.com/erc-8004/erc-8004-contracts/blob/master/ERC8004SPEC.md
  */
 
+import { AK_VALIDATOR } from '@/config/ak-validator';
+
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io';
 
 const AGENT_REGISTRATION = {
@@ -54,6 +56,20 @@ const AGENT_REGISTRATION = {
     },
   ],
   registrations: [] as Array<{ agentId: number; agentRegistry: string }>,
+  // Disclosed validator role: AK publishes openly-attributed metadata-quality
+  // attestations on Celo's ReputationRegistry. These are AK-authored oracle
+  // signals, NOT independent third-party reviews. Full disclosure: /validator.
+  validator: {
+    role: 'erc8004-reputation-validator',
+    chain: AK_VALIDATOR.chain,
+    disclosure: `${APP_URL}/validator`,
+    agentId: AK_VALIDATOR.agentId,
+    controllerAddress: AK_VALIDATOR.controller,
+    validatorAddress: AK_VALIDATOR.validator,
+    reputationRegistry: AK_VALIDATOR.reputationRegistry,
+    scheme: AK_VALIDATOR.scheme,
+    attestationsAreIndependent: false,
+  },
 } as const;
 
 export function GET() {
