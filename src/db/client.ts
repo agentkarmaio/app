@@ -21,6 +21,10 @@ import type { ScannedAgent, ScannedFeedback } from '@/indexer/erc8004-registry';
 // Pure tier-from-score helper (scoring/index imports only types from schema, so
 // no runtime cycle). Used to derive trust_tier for registry-mirror rows.
 import { getTrustTier } from '@/scoring/index';
+// Viem-free constants only — keeps the EVM write path's viem deps out of this
+// server DB bundle. Used by getAkConnectedFeedback (the /celo "feedback AK made"
+// list) to scope the mirror read to AK's schemes + rater wallets.
+import { AK_RATER_ADDRESSES, AK_METADATA_TAG1, AK_REVIEW_TAG1 } from '@/config/ak-validator';
 
 // Every DB helper that takes a wallet address optionally takes a chain. The
 // default is 'solana' for back-compat with all pre-existing callers — Solana
@@ -2670,6 +2674,108 @@ export async function getErc8004Agent(
     .maybeSingle();
   if (error) throw error;
   return (data as Record<string, unknown>) ?? null;
+}
+
+// --- ERC-8004 AK-connected feedback ------------------------------------------
+//
+// The feedback AgentKarma is directly involved in on an EVM 8004 chain:
+//   1. AK's own algorithmic metadata-quality attestations (AK_METADATA_TAG1),
+//      signed by an AK rater wallet (AK_RATER_ADDRESSES).
+//   2. Independent reviews published through AK's give-feedback UX
+//      (AK_REVIEW_TAG1) — any connected wallet; AK-connected by scheme.
+// Backs the "feedback AK made" list on /celo. Reads the registry mirror only
+// (no live RPC) and joins each target agent to a display name + headline stats.
+
+export interface AkConnectedFeedback {
+  agentId: number;
+  /** 'metadata' = AK's algorithmic attestation; 'review' = independent rater via AK UX. */
+  kind: 'metadata' | 'review';
+  tag2: string;
+  /** Normalized value = raw / 10^valueDecimals. 0–100 scale for both schemes. */
+  value: number;
+  revoked: boolean;
+  /** Rater address — an AK wallet for `metadata`, the third-party rater for `review`. */
+  client: string;
+  /** Target agent: registry display name + the /agent link address, when mirrored. */
+  targetName: string | null;
+  targetAddress: string | null;
+  /** Target agent's headline metadata score (0–100) and total feedback count. */
+  targetMetadataScore: number | null;
+  targetFeedbackCount: number | null;
+}
+
+export async function getAkConnectedFeedback(
+  chain: 'celo' | 'arc',
+): Promise<AkConnectedFeedback[]> {
+  const { data, error } = await supabase
+    .from('erc8004_feedback')
+    .select('agent_id, client, value, value_decimals, tag1, tag2, revoked')
+    .eq('chain', chain)
+    .in('tag1', [AK_METADATA_TAG1, AK_REVIEW_TAG1]);
+  if (error) throw error;
+
+  const akRaters = new Set(AK_RATER_ADDRESSES); // already lowercased
+  const rows = ((data ?? []) as Array<{
+    agent_id: number; client: string; value: number | string | null;
+    value_decimals: number | null; tag1: string; tag2: string; revoked: boolean;
+  }>).filter(
+    // A metadata record only counts as AK's when an AK wallet signed it; a review
+    // is AK-connected by virtue of the scheme, whoever the rater is.
+    (r) => r.tag1 === AK_REVIEW_TAG1 || akRaters.has(String(r.client).toLowerCase()),
+  );
+  if (rows.length === 0) return [];
+
+  // Resolve each target agent's name + display address + headline stats from the
+  // mirror. Chunk defensively though AK-rated ids are few (URI cap, ADDRESS_IN_CHUNK).
+  const ids = [...new Set(rows.map((r) => r.agent_id))];
+  const meta = new Map<number, {
+    name: string | null; address: string | null; score: number | null; count: number | null;
+  }>();
+  for (let i = 0; i < ids.length; i += ADDRESS_IN_CHUNK) {
+    const chunk = ids.slice(i, i + ADDRESS_IN_CHUNK);
+    const { data: agents, error: aErr } = await supabase
+      .from('erc8004_agents')
+      .select('agent_id, owner, agent_wallet, registration, metadata_score, feedback_count')
+      .eq('chain', chain)
+      .in('agent_id', chunk);
+    if (aErr) throw aErr;
+    for (const a of (agents ?? []) as Array<{
+      agent_id: number; owner: string; agent_wallet: string | null;
+      registration: { name?: string } | null; metadata_score: number | null; feedback_count: number | null;
+    }>) {
+      // Same rule as registryRowToWallet: a never-set agent wallet reads as the
+      // zero address — fall back to the owner so we never link 0x000…000.
+      const aw = a.agent_wallet;
+      const address = aw && aw.toLowerCase() !== ZERO_ADDRESS ? aw : a.owner;
+      meta.set(Number(a.agent_id), {
+        name: a.registration?.name ?? null,
+        address: address ?? null,
+        score: a.metadata_score ?? null,
+        count: a.feedback_count ?? null,
+      });
+    }
+  }
+
+  return rows
+    .map((r) => {
+      const m = meta.get(r.agent_id);
+      return {
+        agentId: r.agent_id,
+        kind: (r.tag1 === AK_REVIEW_TAG1 ? 'review' : 'metadata') as 'metadata' | 'review',
+        tag2: r.tag2,
+        value: Number(r.value ?? 0) / 10 ** (r.value_decimals ?? 0),
+        revoked: r.revoked,
+        client: r.client,
+        targetName: m?.name ?? null,
+        targetAddress: m?.address ?? null,
+        targetMetadataScore: m?.score ?? null,
+        targetFeedbackCount: m?.count ?? null,
+      };
+    })
+    // Live records first, then highest AK score; stable tiebreak on agentId.
+    .sort((a, b) =>
+      Number(a.revoked) - Number(b.revoked) || b.value - a.value || a.agentId - b.agentId,
+    );
 }
 
 // --- x402 Payee Discovery (endpoint-driven self-seeder) ----------------------

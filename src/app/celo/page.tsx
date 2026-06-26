@@ -1,7 +1,9 @@
 import Link from 'next/link';
 import { ArrowRight, ExternalLink } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
-import { readAgent, aggregateFeedback } from '@/integrations/erc8004-celo';
+import { readAgent } from '@/integrations/erc8004-celo';
+import { getAkConnectedFeedback } from '@/db/client';
+import { agentHref } from '@/lib/agent-href';
 
 export const metadata = {
   title: 'AgentKarma on Celo — multi-chain reputation primitive',
@@ -16,26 +18,13 @@ const AK_AGENT_ID = BigInt(9058);
 const AK_OWNER = '0xCfc0A11C75519FAf85B7872E27733CFaa4295b96';
 
 export default async function CeloPage() {
-  // Read AK's own on-chain identity + the feedback AK has issued (as client).
-  // aggregateFeedback by agentId returns feedback RECEIVED by an agent; AK has
-  // 0 received because it's a writer, not a target. We surface the WRITES via
-  // a known list — for now hand-curated; the indexer (M2) will materialize this.
-  const akAgent = await readAgent(AK_AGENT_ID).catch(() => null);
-
-  // First feedback AK published (M0 evidence) — agent 1 / 85 metadata_quality
-  const writtenTargets = [{ agentId: 1, scoreNote: '85/100 metadata_quality' }];
-  const writtenWithData = await Promise.all(
-    writtenTargets.map(async (t) => {
-      const agent = await readAgent(BigInt(t.agentId)).catch(() => null);
-      const agg = await aggregateFeedback(BigInt(t.agentId)).catch(() => null);
-      return {
-        ...t,
-        agent,
-        feedbackCount: agg?.count ?? 0,
-        average: agg?.average ?? null,
-      };
-    }),
-  );
+  // Read AK's own on-chain identity, plus every feedback record AK is connected
+  // to on Celo — AK's algorithmic metadata attestations AND independent reviews
+  // left through AK's give-feedback UX — from the registry mirror (no live RPC).
+  const [akAgent, akFeedback] = await Promise.all([
+    readAgent(AK_AGENT_ID).catch(() => null),
+    getAkConnectedFeedback('celo').catch(() => []),
+  ]);
 
   return (
     <main className="mx-auto max-w-4xl px-4 pb-24 pt-16">
@@ -95,41 +84,73 @@ export default async function CeloPage() {
 
       <Card className="mb-8">
         <CardContent className="p-6">
-          <h2 className="mb-4 text-xl font-semibold">As a 8004 validator</h2>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h2 className="text-xl font-semibold">Feedback AgentKarma made on Celo</h2>
+            <Link
+              href="/validator"
+              className="shrink-0 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Validator disclosure →
+            </Link>
+          </div>
           <p className="mb-4 text-sm text-muted-foreground">
             AK publishes <span className="font-mono text-foreground">agentkarma_metadata v0.1</span>{' '}
-            feedback to the Celo ReputationRegistry — scoring each agent&apos;s
-            on-chain registration JSON quality on a 0-100 scale. Open scheme,
-            deterministic, revokable.
+            attestations to the Celo ReputationRegistry — scoring each agent&apos;s
+            on-chain registration quality on a 0-100 scale. Open scheme,
+            deterministic, revokable. Independent reviews left through AK&apos;s
+            give-feedback UX appear here too.
           </p>
-          <div className="space-y-3">
-            {writtenWithData.map((t) => (
-              <div
-                key={t.agentId}
-                className="flex items-center justify-between rounded-lg border border-border bg-card/50 px-4 py-3"
-              >
-                <div>
-                  <div className="font-medium">
-                    {t.agent?.registration?.name ?? `Agent ${t.agentId}`}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    agentId {t.agentId} · {t.feedbackCount} total feedback · avg {t.average?.toFixed(0) ?? '—'}
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 text-sm">
-                  <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-400">
-                    AK rated: {t.scoreNote}
-                  </span>
-                  <Link
-                    href={`/api/v2/celo/${t.agentId}`}
-                    className="text-muted-foreground transition-colors hover:text-foreground"
+          {akFeedback.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-border bg-card/30 px-4 py-6 text-center text-sm text-muted-foreground">
+              No published feedback indexed yet.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {akFeedback.map((f) => {
+                const href = f.targetAddress
+                  ? agentHref({ chain: 'celo', address: f.targetAddress, agentId: f.agentId })
+                  : `/api/v2/celo/${f.agentId}`;
+                return (
+                  <div
+                    key={`${f.agentId}-${f.client}-${f.kind}`}
+                    className={`flex items-center justify-between rounded-lg border border-border bg-card/50 px-4 py-3 ${
+                      f.revoked ? 'opacity-60' : ''
+                    }`}
                   >
-                    <ArrowRight className="size-4" />
-                  </Link>
-                </div>
-              </div>
-            ))}
-          </div>
+                    <div className="min-w-0">
+                      <div className={`truncate font-medium ${f.revoked ? 'line-through' : ''}`}>
+                        {f.targetName ?? `Agent ${f.agentId}`}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        agentId {f.agentId} · {f.targetFeedbackCount ?? 0} total feedback
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-3 text-sm">
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs ${
+                          f.revoked
+                            ? 'bg-muted text-muted-foreground'
+                            : f.kind === 'review'
+                              ? 'bg-indigo-500/15 text-indigo-300'
+                              : 'bg-emerald-500/15 text-emerald-400'
+                        }`}
+                      >
+                        {f.revoked
+                          ? 'revoked'
+                          : `${f.kind === 'review' ? 'Review' : 'AK rated'}: ${f.value}/100`}
+                      </span>
+                      <Link
+                        href={href}
+                        className="text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <ArrowRight className="size-4" />
+                      </Link>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -180,11 +201,17 @@ export default async function CeloPage() {
           <h2 className="mb-3 text-xl font-semibold">Why both chains</h2>
           <p className="text-sm text-muted-foreground">
             Reputation is only useful if it&apos;s portable. AgentKarma reads
-            x402 receipts, ERC-8004 attestations, and behavioral signals from
-            Solana <em>and</em> Celo, then publishes one unified karma score back
-            to ERC-8004 — so any 8004-aware client on any chain can read it.
+            x402 receipts and behavioral signals on Solana, and ERC-8004 identity
+            + on-chain feedback on Celo, then publishes one unified karma score
+            back to ERC-8004 — so any 8004-aware client on any chain can read it.
             Agents operating on multiple chains keep their score; consumers
             preflight on whichever rail they paid through.
+          </p>
+          <p className="mt-3 rounded-md border border-yellow-500/20 bg-yellow-500/[0.04] px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-yellow-400/90">On Celo today, scores are declared-tier</span>{' '}
+            — ERC-8004 identity and on-chain feedback. Receipt-gated Tier-1 (x402)
+            is live on Solana, and coming to Celo as the x402 indexer lands. The
+            ⚪ Declared badge on each agent reflects this.
           </p>
         </CardContent>
       </Card>
