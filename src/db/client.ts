@@ -1567,6 +1567,87 @@ export async function upsertCursor(
   if (error) throw error;
 }
 
+// --- ERC-8004 feedback comments ----------------------------------------------
+// The feedback-URI scanner (src/indexer/erc8004-feedback-uri.ts) backfills the
+// inline review carried in a NewFeedback event's feedbackURI. These columns are
+// additive on erc8004_feedback (migration 0014); the row itself is created by
+// the registry scanner, so this is UPDATE-only and never clobbers value/revoked.
+
+/** Structural shape of a decoded comment record (matches indexer ScannedComment). */
+export interface FeedbackCommentUpdate {
+  agentId: number;
+  client: string;
+  feedbackIndex: number;
+  feedbackUri: string;
+  feedbackHash: string;
+  comment: string | null;
+  commentVerified: boolean;
+}
+
+/**
+ * UPDATE comment columns on existing erc8004_feedback rows, keyed by the full
+ * (chain, agent_id, client, feedback_index) PK. Returns the number of rows
+ * actually touched — a record whose registry row hasn't been inserted yet
+ * updates nothing (it lands on the next pass, by design). Per-row because
+ * comment-bearing feedback is sparse.
+ */
+export async function updateFeedbackComments<T extends FeedbackCommentUpdate>(
+  chain: Chain,
+  rows: T[],
+): Promise<{ updated: number; unmatched: T[] }> {
+  let updated = 0;
+  const unmatched: T[] = [];
+  for (const r of rows) {
+    const { error, count } = await supabase
+      .from('erc8004_feedback')
+      .update(
+        {
+          feedback_uri: r.feedbackUri,
+          feedback_hash: r.feedbackHash,
+          comment: r.comment,
+          comment_verified: r.commentVerified,
+        },
+        { count: 'exact' },
+      )
+      .eq('chain', chain)
+      .eq('agent_id', r.agentId)
+      .eq('client', r.client)
+      .eq('feedback_index', r.feedbackIndex);
+    if (error) throw error;
+    // 0 rows matched → the registry scanner hasn't inserted this feedback row
+    // yet. Report it so the scanner can rewind its cursor and retry next run,
+    // instead of advancing past it and losing the comment.
+    if ((count ?? 0) === 0) unmatched.push(r);
+    else updated += count ?? 0;
+  }
+  return { updated, unmatched };
+}
+
+/**
+ * Comments for an agent's feedback, keyed by `${lowercasedClient}-${index}` so
+ * the profile can merge them onto the live readAllFeedback records (whose client
+ * is a checksum address — look up with `.toLowerCase()`). Only rows with a
+ * decoded comment are returned.
+ */
+export async function getFeedbackComments(
+  chain: Chain,
+  agentId: number,
+): Promise<Map<string, { comment: string; verified: boolean }>> {
+  const { data, error } = await supabase
+    .from('erc8004_feedback')
+    .select('client, feedback_index, comment, comment_verified')
+    .eq('chain', chain)
+    .eq('agent_id', agentId)
+    .not('comment', 'is', null);
+
+  if (error) throw error;
+  const out = new Map<string, { comment: string; verified: boolean }>();
+  for (const r of (data ?? []) as Array<{ client: string; feedback_index: number; comment: string; comment_verified: boolean }>) {
+    out.set(`${r.client.toLowerCase()}-${r.feedback_index}`, { comment: r.comment, verified: r.comment_verified });
+  }
+  return out;
+}
+
 // --- Signal Events (Phase F) -------------------------------------------------
 
 export interface InsertSignalEventInput {

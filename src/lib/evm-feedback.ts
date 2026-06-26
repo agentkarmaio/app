@@ -10,15 +10,19 @@
  * Pure helpers (encode / starsToValue / feedbackChainConfig) are unit-tested;
  * the provider-taking helpers (ensureChain / submitFeedback) drive the wallet.
  */
-import { encodeFunctionData, parseAbi, toHex, type Hex } from 'viem';
+import { encodeFunctionData, keccak256, parseAbi, toHex, type Hex } from 'viem';
 import { celo } from 'viem/chains';
 import { arcTestnet } from '@/config/arc-chain';
+import { AK_REVIEW_TAG1 } from '@/config/ak-validator';
+import { buildFeedbackCommentBytes, encodeFeedbackCommentDataUri } from '@/lib/feedback-comment';
 import type { Eip1193Provider } from '@/components/wallet/evm-wallet-provider';
 
 export type EvmFeedbackChain = 'celo' | 'arc';
 
-/** AK's human-review scheme — distinct from the algorithmic 'agentkarma_metadata' tag. */
-export const REVIEW_TAG1 = 'agentkarma_review';
+/** AK's human-review scheme — distinct from the algorithmic 'agentkarma_metadata'
+ *  tag. Defined once in @/config/ak-validator (a viem-free module the server DB
+ *  client can import); re-exported here for the write path. */
+export const REVIEW_TAG1 = AK_REVIEW_TAG1;
 export const REVIEW_SCHEME_VERSION = 'v0.1';
 
 const ZERO_HASH = '0x0000000000000000000000000000000000000000000000000000000000000000' as const;
@@ -38,9 +42,28 @@ export interface FeedbackArgs {
   value: number;
   tag1?: string;
   tag2?: string;
+  /** Optional free-text review. When present, inlined on-chain as a
+   *  data: URI in feedbackURI, with feedbackHash = keccak256 of those bytes. */
+  comment?: string;
+  /** Original 1-5 star input, recorded in the comment payload for display. */
+  stars?: number;
+}
+
+/**
+ * Build the (feedbackURI, feedbackHash) pair for a comment, or the empty
+ * sentinel when there's no comment. The URI carries the comment fully on-chain
+ * (data: URI); the hash is keccak256 over the EXACT bytes the URI encodes, so
+ * the read side can verify integrity without trusting AK.
+ */
+function commentFields(args: FeedbackArgs): { uri: string; hash: Hex } {
+  const comment = args.comment?.trim();
+  if (!comment) return { uri: '', hash: ZERO_HASH };
+  const bytes = buildFeedbackCommentBytes({ value: args.value, stars: args.stars, comment });
+  return { uri: encodeFeedbackCommentDataUri(bytes), hash: keccak256(bytes) };
 }
 
 export function encodeGiveFeedback(args: FeedbackArgs): Hex {
+  const { uri, hash } = commentFields(args);
   return encodeFunctionData({
     abi: GIVE_FEEDBACK_ABI,
     functionName: 'giveFeedback',
@@ -51,8 +74,8 @@ export function encodeGiveFeedback(args: FeedbackArgs): Hex {
       args.tag1 ?? REVIEW_TAG1,
       args.tag2 ?? REVIEW_SCHEME_VERSION,
       '', // endpoint
-      '', // feedbackURI — no off-chain content in v1
-      ZERO_HASH,
+      uri, // feedbackURI — inline data: URI when a comment is present
+      hash,
     ],
   });
 }
