@@ -498,6 +498,14 @@ export const erc8004FeedbackTable = pgTable('erc8004_feedback', {
   tag1:           text('tag1').notNull().default(''),
   tag2:           text('tag2').notNull().default(''),
   revoked:        boolean('revoked').notNull().default(false),
+  // Off-chain detail emitted (NOT stored) by giveFeedback — only the NewFeedback
+  // event carries these. AK inlines a free-text review as a data: URI here; the
+  // event scanner backfills uri/hash and the decoded+verified comment. NULL =
+  // no comment (the common case for pre-existing / score-only records).
+  feedback_uri:     text('feedback_uri'),
+  feedback_hash:    text('feedback_hash'),
+  comment:          text('comment'),
+  comment_verified: boolean('comment_verified').notNull().default(false),
   indexed_at:     timestamp('indexed_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({
