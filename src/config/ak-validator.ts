@@ -33,6 +33,17 @@ export const AK_RATER_ADDRESSES: readonly string[] = [
   AK_VALIDATOR.validator.toLowerCase(),
 ];
 
+/** AK's algorithmic metadata-quality scheme tag (= AK_VALIDATOR.scheme.tag1). */
+export const AK_METADATA_TAG1 = AK_VALIDATOR.scheme.tag1;
+
+/**
+ * AK's independent human-review scheme tag — feedback published through AK's
+ * give-feedback UX by any connected wallet, distinct from AK's own algorithmic
+ * attestations above. Single source of truth; re-exported as REVIEW_TAG1 by
+ * lib/evm-feedback (the write path) so the value can't drift across modules.
+ */
+export const AK_REVIEW_TAG1 = 'agentkarma_review';
+
 export function isAkRater(address: string): boolean {
   return AK_RATER_ADDRESSES.includes(address.toLowerCase());
 }
