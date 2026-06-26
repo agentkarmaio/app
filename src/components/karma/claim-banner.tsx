@@ -12,6 +12,7 @@ import {
   buildSuccessionPlan,
 } from '@/components/karma/succession-declaration';
 import { uint8ArrayToBase58 } from '@/lib/base58';
+import { metadataHash, bindMetadata } from '@/lib/claim-challenge';
 
 const CATEGORIES = [
   { value: 'ai', label: 'AI / ML' },
@@ -71,8 +72,23 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
 
     setStatus('signing');
     try {
-      const timestamp = Date.now().toString();
-      const message = `AgentKarma: Claim wallet ${walletAddress} at ${timestamp}`;
+      // One metadata object feeds BOTH the bound-challenge hash and the POST body,
+      // so the server's recomputed hash matches byte-for-byte.
+      const meta = {
+        displayName: displayName.trim(),
+        description: description.trim() || null,
+        website: website.trim() || null,
+        category: category || null,
+        imageUrl: imageUrl.trim() || null,
+        tempoAddress: trimmedTempo || null,
+      };
+      // Build the succession plan BEFORE hashing so it's bound too — the route
+      // declares it from this same signed request, so it must be authenticated.
+      const successionPlan = buildSuccessionPlan(successionInterval, successionHeir);
+      const message = bindMetadata(
+        `AgentKarma: Claim wallet ${walletAddress} at ${Date.now()}`,
+        await metadataHash({ ...meta, succession: successionPlan }),
+      );
       const messageBytes = new TextEncoder().encode(message);
 
       const signatureBytes = await signMessage(messageBytes);
@@ -80,19 +96,12 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
 
       setStatus('submitting');
 
-      const successionPlan = buildSuccessionPlan(successionInterval, successionHeir);
-
       const res = await fetch('/api/agent/claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           address: walletAddress,
-          displayName: displayName.trim(),
-          description: description.trim() || null,
-          website: website.trim() || null,
-          category: category || null,
-          imageUrl: imageUrl.trim() || null,
-          tempoAddress: trimmedTempo || null,
+          ...meta,
           // Omit the field entirely when no heir was declared — a bad plan
           // returns a clean 400 from the route before any DB write.
           ...(successionPlan ? { succession: successionPlan } : {}),

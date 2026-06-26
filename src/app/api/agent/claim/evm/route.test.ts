@@ -14,6 +14,7 @@
 import { describe, expect, test, beforeEach, afterEach, mock } from 'bun:test';
 import { privateKeyToAccount } from 'viem/accounts';
 import { __setSupabaseForTest } from '@/db/client';
+import { metadataHash, bindMetadata } from '@/lib/claim-challenge';
 import { POST } from './route';
 
 function req(body: unknown): Request {
@@ -27,8 +28,28 @@ function req(body: unknown): Request {
 const account = privateKeyToAccount(`0x${'07'.repeat(32)}`);
 const address = account.address; // checksummed 0x…
 const ts = Date.now();
+// Bare (unbound) message — guards return before the metadata-binding check.
 const message = `AgentKarma: Claim wallet ${address} at ${ts}`;
 const signature = await account.signMessage({ message });
+
+/** Build a metadata-bound claim message + a real signature over it. */
+async function signedClaim(
+  addr: string,
+  meta: { displayName: string; description?: string | null; website?: string | null; category?: string | null; imageUrl?: string | null },
+  t: number = Date.now(),
+) {
+  const m = bindMetadata(
+    `AgentKarma: Claim wallet ${addr} at ${t}`,
+    await metadataHash({
+      displayName: meta.displayName,
+      description: meta.description ?? null,
+      website: meta.website ?? null,
+      category: meta.category ?? null,
+      imageUrl: meta.imageUrl ?? null,
+    }),
+  );
+  return { message: m, signature: await account.signMessage({ message: m }) };
+}
 
 describe('POST /api/agent/claim/evm — guards', () => {
   test('missing required fields → 400', async () => {
@@ -137,8 +158,9 @@ describe('POST /api/agent/claim/evm — honest claim write', () => {
   });
 
   test('valid claim → 200, lowercased address, on-chain registration PENDING', async () => {
+    const { message: m, signature: s } = await signedClaim(address, { displayName: 'My Agent' });
     const res = await POST(
-      req({ address, chain: 'celo', displayName: 'My Agent', signature, message }) as never,
+      req({ address, chain: 'celo', displayName: 'My Agent', signature: s, message: m }) as never,
     );
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -156,12 +178,20 @@ describe('POST /api/agent/claim/evm — honest claim write', () => {
     // embeds it verbatim, the wallet (checksummed account) signs it. The route
     // recovers the checksummed signer; getAddress on both sides clears the gate.
     const lower = address.toLowerCase();
-    const lowerMsg = `AgentKarma: Claim wallet ${lower} at ${Date.now()}`;
-    const lowerSig = await account.signMessage({ message: lowerMsg });
+    const { message: m, signature: s } = await signedClaim(lower, { displayName: 'Lower' });
     const res = await POST(
-      req({ address: lower, chain: 'arc', displayName: 'Lower', signature: lowerSig, message: lowerMsg }) as never,
+      req({ address: lower, chain: 'arc', displayName: 'Lower', signature: s, message: m }) as never,
     );
     expect(res.status).toBe(200);
     expect((await res.json()).chain).toBe('arc');
+  });
+
+  test('valid signature but body metadata differs from the binding → 401', async () => {
+    const { message: m, signature: s } = await signedClaim(address, { displayName: 'Honest Name' });
+    // Replayed signature, attacker swaps the displayName in the body.
+    const res = await POST(
+      req({ address, chain: 'celo', displayName: 'PWNED', signature: s, message: m }) as never,
+    );
+    expect(res.status).toBe(401);
   });
 });

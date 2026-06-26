@@ -3,6 +3,7 @@ import { PublicKey } from '@solana/web3.js';
 import { claimWallet, enqueueWalletScan } from '@/db/client';
 import { verifySolanaClaimSignature } from '@/lib/claim-verify';
 import { validateAgentMetadata, validateImageUrl } from '@/lib/agent-metadata';
+import { messageBindsMetadata } from '@/lib/claim-challenge';
 import { SsrfError } from '@/lib/ssrf-guard';
 import { declareSuccession } from '@/successions/declare';
 
@@ -76,9 +77,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid message format' }, { status: 400 });
   }
 
-  // Check timestamp is recent (within 5 minutes)
-  const timestampStr = message.slice(messagePrefix.length);
-  const messageTs = Number(timestampStr);
+  // Check timestamp is recent (within 5 minutes). parseInt (not Number) so the
+  // trailing " | sha256:…" metadata binding doesn't poison the parse.
+  const messageTs = parseInt(message.slice(messagePrefix.length), 10);
   if (isNaN(messageTs) || Math.abs(Date.now() - messageTs) > 5 * 60 * 1000) {
     return NextResponse.json({ error: 'Message timestamp expired (5 minute window)' }, { status: 400 });
   }
@@ -86,6 +87,26 @@ export async function POST(request: NextRequest) {
   // Verify Ed25519 signature (canonical verifier — shared with the prove route).
   if (!verifySolanaClaimSignature(address, message, signature)) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+  }
+
+  // Metadata binding: the signed message must commit to EXACTLY these fields, so
+  // a replayed signature cannot overwrite the profile with different values — or
+  // smuggle an attacker-chosen succession plan past the identity binding.
+  if (
+    !(await messageBindsMetadata(message, {
+      displayName,
+      description: description ?? null,
+      website: website ?? null,
+      category: category ?? null,
+      imageUrl: imageUrl ?? null,
+      tempoAddress: tempoAddress ?? null,
+      succession,
+    }))
+  ) {
+    return NextResponse.json(
+      { error: 'Signature does not match the submitted profile data' },
+      { status: 401 },
+    );
   }
 
   // Logo URL: async SSRF/DNS guard, gated behind auth so an unauthenticated

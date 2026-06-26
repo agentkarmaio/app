@@ -14,6 +14,7 @@ import { useStellarClaimWallet } from '@/hooks/use-stellar-claim-wallet';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { metadataHash, bindMetadata } from '@/lib/claim-challenge';
 
 const CATEGORIES = [
   { value: 'ai', label: 'AI / ML' },
@@ -56,17 +57,24 @@ export function StellarClaimBanner({ walletAddress }: { walletAddress: string })
 
     setStatus('signing');
     try {
-      const { message, signatureHex } = await signChallenge(walletAddress);
+      // One metadata object feeds BOTH the bound-challenge hash and the body.
+      const meta = {
+        displayName: displayName.trim(),
+        description: description.trim() || null,
+        website: website.trim() || null,
+        category: category || null,
+      };
+      const hash = await metadataHash(meta);
+      const { message, signatureHex } = await signChallenge(walletAddress, (addr, ts) =>
+        bindMetadata(`AgentKarma: Claim wallet ${addr} at ${ts}`, hash),
+      );
       setStatus('submitting');
       const res = await fetch('/api/agent/claim/stellar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           address: walletAddress,
-          displayName: displayName.trim(),
-          description: description.trim() || null,
-          website: website.trim() || null,
-          category: category || null,
+          ...meta,
           signature: signatureHex,
           message,
         }),

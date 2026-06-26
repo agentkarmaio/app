@@ -6,6 +6,7 @@ import {
   isStellarContractAddress,
 } from '@/lib/stellar-verify';
 import { validateAgentMetadata, validateImageUrl } from '@/lib/agent-metadata';
+import { messageBindsMetadata } from '@/lib/claim-challenge';
 import { SsrfError } from '@/lib/ssrf-guard';
 
 export const runtime = 'nodejs'; // validateImageUrl → SSRF guard needs node:dns/net
@@ -88,7 +89,8 @@ export async function POST(request: NextRequest) {
   if (!message.startsWith(messagePrefix)) {
     return NextResponse.json({ error: 'Invalid message format' }, { status: 400 });
   }
-  const messageTs = Number(message.slice(messagePrefix.length));
+  // parseInt (not Number) so the trailing " | sha256:…" binding doesn't poison it.
+  const messageTs = parseInt(message.slice(messagePrefix.length), 10);
   if (Number.isNaN(messageTs) || Math.abs(Date.now() - messageTs) > CLAIM_WINDOW_MS) {
     return NextResponse.json({ error: 'Message timestamp expired (5 minute window)' }, { status: 400 });
   }
@@ -96,6 +98,23 @@ export async function POST(request: NextRequest) {
   // The signature gate — only the keyholder can claim. verify never throws.
   if (!verifyStellarClaimSignature(address, message, signature)) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+  }
+
+  // Metadata binding: the signed message must commit to EXACTLY these fields, so
+  // a replayed signature cannot overwrite the profile with different values.
+  if (
+    !(await messageBindsMetadata(message, {
+      displayName,
+      description: description ?? null,
+      website: website ?? null,
+      category: category ?? null,
+      imageUrl: imageUrl ?? null,
+    }))
+  ) {
+    return NextResponse.json(
+      { error: 'Signature does not match the submitted profile data' },
+      { status: 401 },
+    );
   }
 
   // Logo URL: async SSRF/DNS guard, gated behind auth so an unauthenticated
