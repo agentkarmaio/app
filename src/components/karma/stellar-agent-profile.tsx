@@ -28,14 +28,19 @@ import {
   type StellarAgent,
 } from '@/integrations/erc8004-stellar';
 import { ScoreRing } from '@/components/karma/score-ring';
+import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge } from '@/components/karma/confidence-badge';
 import { WalletAddress } from '@/components/karma/wallet-address';
+import { BadgeButton } from '@/components/karma/badge-button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import type { Wallet, TrustTier, ConfidenceBadge as ConfidenceBadgeValue } from '@/db/schema';
 import { safeHref } from '@/lib/safe-url';
+import { ClaimProof } from '@/components/karma/claim-proof';
+import { ProveOwnership } from '@/components/wallet/prove-ownership';
+import { EditProfile } from '@/components/wallet/edit-profile';
 
 const CATEGORY_LABELS: Record<string, string> = {
   ai: 'AI / ML',
@@ -99,7 +104,9 @@ export async function StellarAgentProfile({
       </Link>
 
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-3">
+        <div className="flex items-start gap-4">
+          <AgentAvatar src={walletRow.image_url ?? agent?.registration?.image} name={displayName} />
+          <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
               {displayName}
@@ -133,6 +140,7 @@ export async function StellarAgentProfile({
             >
               <ExternalLink className="size-3.5" />
             </a>
+            <BadgeButton wallet={wallet} chain="stellar" />
           </div>
           {description && (
             <p className="text-[14px] text-[#8a8f98] leading-relaxed max-w-lg">
@@ -162,6 +170,7 @@ export async function StellarAgentProfile({
                 })()}
               </a>
             )}
+          </div>
           </div>
         </div>
         <ScoreRing score={score} tier={tier} size={90} strokeWidth={7} />
@@ -310,6 +319,34 @@ export async function StellarAgentProfile({
             <p className="font-mono text-[11px]">{agent.registrationError}</p>
           </CardContent>
         </Card>
+      )}
+
+      {isClaimed && !walletRow.claim_signature && (
+        <ProveOwnership chain="stellar" address={walletRow.address} />
+      )}
+
+      {isClaimed && (
+        <EditProfile
+          chain="stellar"
+          address={walletRow.address}
+          current={{
+            displayName: walletRow.display_name ?? '',
+            description: walletRow.description ?? '',
+            website: walletRow.website ?? '',
+            category: walletRow.category ?? '',
+            imageUrl: walletRow.image_url ?? '',
+            tempoAddress: walletRow.tempo_address ?? '',
+          }}
+        />
+      )}
+
+      {isClaimed && walletRow.claim_signature && walletRow.claim_message && (
+        <ClaimProof
+          chain="stellar"
+          address={walletRow.address}
+          message={walletRow.claim_message}
+          signature={walletRow.claim_signature}
+        />
       )}
 
       {deadMansSwitch}

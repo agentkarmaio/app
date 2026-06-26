@@ -138,9 +138,17 @@ export function useStellarClaimWallet() {
    * (nacl.sign.detached.verify over the SEP-53 digest) can decode it uniformly.
    */
   const signChallenge = useCallback(
-    async (walletAddress: string): Promise<StellarSignedClaim> => {
+    async (
+      walletAddress: string,
+      /**
+       * Operation-scoped challenge builder. Defaults to the claim challenge so
+       * existing claim/prove callers are unchanged; the edit flow passes its own
+       * "Edit wallet …" builder so an edit signature is distinct from a claim one.
+       */
+      buildMessage: (address: string, timestampMs: number) => string = buildStellarClaimChallenge,
+    ): Promise<StellarSignedClaim> => {
       const timestampMs = Date.now();
-      const message = buildStellarClaimChallenge(walletAddress, timestampMs);
+      const message = buildMessage(walletAddress, timestampMs);
 
       const result = await signMessage(message, {
         address: walletAddress,

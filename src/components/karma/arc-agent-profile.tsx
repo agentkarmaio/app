@@ -28,7 +28,7 @@ import { BadgeButton } from '@/components/karma/badge-button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { resolveRaters, type RaterInfo } from '@/db/client';
+import { resolveRaters, getFeedbackComments, type RaterInfo } from '@/db/client';
 import type { Wallet, TrustTier, ConfidenceBadge as ConfidenceBadgeValue } from '@/db/schema';
 import { safeHref } from '@/lib/safe-url';
 import { EvmClaimBanner } from '@/components/wallet/evm-claim-banner';
@@ -36,6 +36,7 @@ import { GiveFeedbackCard } from '@/components/karma/give-feedback-card';
 import { FeedbackRecordsCard } from '@/components/karma/feedback-records-card';
 import { ClaimProof } from '@/components/karma/claim-proof';
 import { ProveOwnership } from '@/components/wallet/prove-ownership';
+import { EditProfile } from '@/components/wallet/edit-profile';
 
 const CATEGORY_LABELS: Record<string, string> = {
   ai: 'AI / ML',
@@ -81,6 +82,14 @@ export async function ArcAgentProfile({
       )
     : new Map<string, RaterInfo>();
 
+  // Free-text reviews inlined on-chain (feedbackURI), backfilled by the
+  // feedback-URI scanner. Keyed by `${lowercasedClient}-${index}`.
+  const comments = feedback?.records.length
+    ? await getFeedbackComments('arc', Number(agentId)).catch(
+        () => new Map<string, { comment: string; verified: boolean }>(),
+      )
+    : new Map<string, { comment: string; verified: boolean }>();
+
   const registrationName = agent?.registration?.name ?? null;
   const registrationDescription = agent?.registration?.description ?? null;
   const services = agent?.registration?.services ?? [];
@@ -112,7 +121,7 @@ export async function ArcAgentProfile({
 
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-start gap-4">
-          <AgentAvatar src={agent?.registration?.image} name={displayName} />
+          <AgentAvatar src={walletRow.image_url ?? agent?.registration?.image} name={displayName} />
           <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
@@ -196,6 +205,21 @@ export async function ArcAgentProfile({
 
       {isClaimed && !walletRow.claim_signature && (
         <ProveOwnership chain="arc" address={walletRow.address} />
+      )}
+
+      {isClaimed && (
+        <EditProfile
+          chain="arc"
+          address={walletRow.address}
+          current={{
+            displayName: walletRow.display_name ?? '',
+            description: walletRow.description ?? '',
+            website: walletRow.website ?? '',
+            category: walletRow.category ?? '',
+            imageUrl: walletRow.image_url ?? '',
+            tempoAddress: walletRow.tempo_address ?? '',
+          }}
+        />
       )}
 
       <div className="grid gap-6 md:grid-cols-2">
@@ -310,7 +334,7 @@ export async function ArcAgentProfile({
       </div>
 
       {feedback && feedback.records.length > 0 && (
-        <FeedbackRecordsCard records={feedback.records} raters={raters} chain="arc" />
+        <FeedbackRecordsCard records={feedback.records} raters={raters} comments={comments} chain="arc" />
       )}
 
       <GiveFeedbackCard agentId={agentId} chain="arc" ownerAddress={agent?.owner ?? walletRow.address} />

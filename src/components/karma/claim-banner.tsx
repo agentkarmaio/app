@@ -11,6 +11,7 @@ import {
   SuccessionDeclaration,
   buildSuccessionPlan,
 } from '@/components/karma/succession-declaration';
+import { uint8ArrayToBase58 } from '@/lib/base58';
 
 const CATEGORIES = [
   { value: 'ai', label: 'AI / ML' },
@@ -30,6 +31,7 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
   const [description, setDescription] = useState('');
   const [website, setWebsite] = useState('');
   const [category, setCategory] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
   const [tempoAddress, setTempoAddress] = useState('');
   // Optional succession plan (Dead Man's Switch). Default interval = 7 days; an
   // empty heir address means "no plan declared" (the field is omitted on POST).
@@ -89,6 +91,7 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
           description: description.trim() || null,
           website: website.trim() || null,
           category: category || null,
+          imageUrl: imageUrl.trim() || null,
           tempoAddress: trimmedTempo || null,
           // Omit the field entirely when no heir was declared — a bad plan
           // returns a clean 400 from the route before any DB write.
@@ -188,6 +191,12 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
               className="bg-[rgb(255_255_255/0.03)] border-[rgb(255_255_255/0.08)] text-[13px] h-8"
             />
             <Input
+              placeholder="Logo image URL (optional, https://…)"
+              value={imageUrl}
+              onChange={(e) => setImageUrl(e.target.value)}
+              className="bg-[rgb(255_255_255/0.03)] border-[rgb(255_255_255/0.08)] text-[13px] h-8"
+            />
+            <Input
               placeholder="Tempo / MPP address (optional, 0x…)"
               value={tempoAddress}
               onChange={(e) => setTempoAddress(e.target.value)}
@@ -239,20 +248,3 @@ export function ClaimBanner({ walletAddress }: { walletAddress: string }) {
   );
 }
 
-function uint8ArrayToBase58(bytes: Uint8Array): string {
-  const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-  let num = BigInt(0);
-  for (const byte of bytes) {
-    num = num * BigInt(256) + BigInt(byte);
-  }
-  let str = '';
-  while (num > BigInt(0)) {
-    str = ALPHABET[Number(num % BigInt(58))] + str;
-    num = num / BigInt(58);
-  }
-  for (const byte of bytes) {
-    if (byte === 0) str = '1' + str;
-    else break;
-  }
-  return str || '1';
-}

@@ -710,10 +710,18 @@ export async function claimWallet(
    * existing stored proof with null.
    */
   proof: { signature: string; message: string } | null = null,
+  /**
+   * User-supplied logo URL (http(s)). Null-safe like `proof`: a blank claim form
+   * must NEVER wipe a logo the registry mirror previously denormalized into
+   * image_url. The edit route uses `updateClaimedAgentMetadata` for the
+   * full-replace path that CAN clear it.
+   */
+  imageUrl: string | null = null,
 ): Promise<void> {
   const proofFields = proof
     ? { claim_signature: proof.signature, claim_message: proof.message }
     : {};
+  const imageFields = imageUrl ? { image_url: imageUrl } : {};
 
   // Ensure the wallet row exists (upsert with minimal data if not). Lookup is
   // chain-scoped so a Stellar claim never matches a Solana row under the same
@@ -735,6 +743,7 @@ export async function claimWallet(
         category,
         tempo_address: tempoAddress,
         ...proofFields,
+        ...imageFields,
         claimed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
@@ -753,6 +762,7 @@ export async function claimWallet(
       category,
       tempo_address: tempoAddress,
       ...proofFields,
+      ...imageFields,
       claimed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
@@ -793,6 +803,67 @@ export async function setClaimProof(
 
   if (error) throw error;
   return true;
+}
+
+/**
+ * Full-replace update of an ALREADY-CLAIMED agent's identity metadata, backing
+ * the /api/agent/edit route. Distinct from `claimWallet` (an upsert that flips
+ * claimed=true, stamps claimed_at, and carries the Solana claim's
+ * succession/scan side-effects) — this is UPDATE-only on an existing CLAIMED
+ * row and touches ONLY the editable fields.
+ *
+ * Full-replace, not null-safe: a field passed as `null` CLEARS it (the form is
+ * pre-filled with current values, so a blank field is an explicit clear). Empty
+ * logo input must reach here as `null`, never `''` — see `validateImageUrl`.
+ * `tempoAddress` is the one exception: `undefined` leaves it unchanged (the
+ * non-Solana edit forms omit the field entirely).
+ *
+ * Deliberately does NOT write claim_signature / claim_message: the edit
+ * signature is operation-scoped ("Edit wallet …") and must never be persisted to
+ * the publicly-displayed claim receipt, or it would become a replayable
+ * edit-authorizer. Refreshing the claim proof is the dedicated /api/agent/prove
+ * route's job. Also never touches claimed / claimed_at / score / succession /
+ * scan state.
+ *
+ * Returns a discriminated result so the route can distinguish 404 (no row) from
+ * 409 (row exists but isn't claimed — claim it first).
+ */
+export async function updateClaimedAgentMetadata(
+  address: string,
+  chain: Chain,
+  fields: {
+    displayName: string;
+    description: string | null;
+    website: string | null;
+    category: string | null;
+    imageUrl: string | null;
+    /** undefined → leave tempo_address unchanged (non-Solana forms omit it). */
+    tempoAddress?: string | null;
+  },
+): Promise<{ ok: true } | { ok: false; reason: 'not_found' | 'not_claimed' }> {
+  const existing = await getWallet(address, chain);
+  if (!existing) return { ok: false, reason: 'not_found' };
+  if (!existing.claimed) return { ok: false, reason: 'not_claimed' };
+
+  const tempoFields =
+    fields.tempoAddress !== undefined ? { tempo_address: fields.tempoAddress } : {};
+
+  const { error } = await supabase
+    .from('wallets')
+    .update({
+      display_name: fields.displayName,
+      description: fields.description,
+      website: fields.website,
+      category: fields.category,
+      image_url: fields.imageUrl,
+      ...tempoFields,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('chain', chain)
+    .eq('address', address);
+
+  if (error) throw error;
+  return { ok: true };
 }
 
 /**

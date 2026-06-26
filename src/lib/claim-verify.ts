@@ -29,6 +29,18 @@ export function buildClaimChallenge(address: string, timestampMs: number | strin
   return `AgentKarma: Claim wallet ${address} at ${timestampMs}`;
 }
 
+/**
+ * Operation-scoped EDIT challenge — DISTINCT verb from the claim challenge so a
+ * claim/prove signature (which is persisted and displayed publicly as a
+ * re-verifiable receipt) can NEVER be replayed to authorize a profile edit, and
+ * vice-versa. The edit route verifies against this prefix; the edit UI signs it.
+ * Edit signatures are intentionally NOT persisted/displayed, so there is no
+ * public sink to replay back into the edit route.
+ */
+export function buildEditChallenge(address: string, timestampMs: number | string): string {
+  return `AgentKarma: Edit wallet ${address} at ${timestampMs}`;
+}
+
 /** Minimal base58 decode (Solana signatures are base58). Throws on invalid chars. */
 function bs58Decode(str: string): Uint8Array {
   const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
