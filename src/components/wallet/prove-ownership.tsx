@@ -20,6 +20,7 @@ import { useStellarClaimWallet } from '@/hooks/use-stellar-claim-wallet';
 import type { Chain } from '@/db/schema';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { uint8ArrayToBase58 } from '@/lib/base58';
 
 type ProveChain = Extract<Chain, 'solana' | 'stellar' | 'celo' | 'arc'>;
 type Status = 'idle' | 'signing' | 'submitting' | 'success' | 'error';
@@ -212,20 +213,4 @@ function ProveCard({
       </CardContent>
     </Card>
   );
-}
-
-function uint8ArrayToBase58(bytes: Uint8Array): string {
-  const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-  let num = BigInt(0);
-  for (const byte of bytes) num = num * BigInt(256) + BigInt(byte);
-  let str = '';
-  while (num > BigInt(0)) {
-    str = ALPHABET[Number(num % BigInt(58))] + str;
-    num = num / BigInt(58);
-  }
-  for (const byte of bytes) {
-    if (byte === 0) str = '1' + str;
-    else break;
-  }
-  return str || '1';
 }

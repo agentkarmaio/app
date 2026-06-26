@@ -1,6 +1,7 @@
 import { cn } from '@/lib/utils';
 import type { LivenessStatus } from '@/db/schema';
 import { getLivenessStatus } from '@/db/schema';
+import { formatRelativePast } from '@/lib/succession-format';
 
 const LIVENESS_CONFIG: Record<LivenessStatus, { label: string; dotClass: string; textClass: string }> = {
   Active: {
@@ -29,15 +30,19 @@ export function LivenessIndicator({
   lastSeen,
   status: statusOverride,
   size = 'default',
+  showRelative = false,
   className,
 }: {
   lastSeen?: string | Date;
   status?: LivenessStatus;
   size?: 'sm' | 'default';
+  /** Append the precise "last active" time (e.g. "· 4h ago") after the status label. */
+  showRelative?: boolean;
   className?: string;
 }) {
   const status = statusOverride ?? (lastSeen ? getLivenessStatus(lastSeen) : 'Inactive');
   const config = LIVENESS_CONFIG[status];
+  const relativeIso = lastSeen == null ? null : typeof lastSeen === 'string' ? lastSeen : lastSeen.toISOString();
 
   return (
     <span className={cn('inline-flex items-center gap-1.5', className)}>
@@ -58,6 +63,16 @@ export function LivenessIndicator({
       >
         {config.label}
       </span>
+      {showRelative && relativeIso && (
+        <span
+          className={cn(
+            'text-muted-foreground tracking-[-0.13px]',
+            size === 'sm' ? 'text-[11px]' : 'text-[13px]',
+          )}
+        >
+          · {formatRelativePast(relativeIso)}
+        </span>
+      )}
     </span>
   );
 }

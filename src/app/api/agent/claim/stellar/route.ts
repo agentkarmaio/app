@@ -5,8 +5,11 @@ import {
   isStellarAddress,
   isStellarContractAddress,
 } from '@/lib/stellar-verify';
+import { validateAgentMetadata, validateImageUrl } from '@/lib/agent-metadata';
+import { SsrfError } from '@/lib/ssrf-guard';
 
-const VALID_CATEGORIES = ['ai', 'data', 'defi', 'infra', 'social', 'utility', 'other'];
+export const runtime = 'nodejs'; // validateImageUrl → SSRF guard needs node:dns/net
+
 const CLAIM_WINDOW_MS = 5 * 60 * 1000;
 
 /**
@@ -44,12 +47,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { address, displayName, description, website, category, signature, message } = body as {
+  const { address, displayName, description, website, category, imageUrl, signature, message } = body as {
     address?: string;
     displayName?: string;
     description?: string;
     website?: string;
     category?: string;
+    imageUrl?: string | null;
     signature?: string;
     message?: string;
   };
@@ -73,25 +77,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid Stellar wallet address' }, { status: 400 });
   }
 
-  // Metadata validation (mirrors the Solana route)
-  if (displayName.length < 1 || displayName.length > 50) {
-    return NextResponse.json({ error: 'displayName must be 1-50 characters' }, { status: 400 });
-  }
-  if (description && description.length > 280) {
-    return NextResponse.json({ error: 'description must be 280 characters or less' }, { status: 400 });
-  }
-  if (category && !VALID_CATEGORIES.includes(category)) {
-    return NextResponse.json(
-      { error: `category must be one of: ${VALID_CATEGORIES.join(', ')}` },
-      { status: 400 },
-    );
-  }
-  if (website) {
-    try {
-      new URL(website);
-    } catch {
-      return NextResponse.json({ error: 'website must be a valid URL' }, { status: 400 });
-    }
+  // Shared field validation (sync). No tempo on Stellar claims.
+  const metaCheck = validateAgentMetadata({ displayName, description, website, category });
+  if (!metaCheck.ok) {
+    return NextResponse.json({ error: metaCheck.error }, { status: 400 });
   }
 
   // Challenge format: identical to Solana — "AgentKarma: Claim wallet {G…} at {ts}".
@@ -109,6 +98,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
   }
 
+  // Logo URL: async SSRF/DNS guard, gated behind auth so an unauthenticated
+  // caller can't trigger a server-side DNS resolution of an arbitrary host.
+  // 422 = well-formed request, unprocessable field value.
+  let safeImageUrl: string | null;
+  try {
+    safeImageUrl = await validateImageUrl(imageUrl);
+  } catch (err) {
+    if (err instanceof SsrfError) {
+      return NextResponse.json({ error: 'invalid imageUrl', detail: err.message }, { status: 422 });
+    }
+    throw err;
+  }
+
   // Persist the claim (chain-scoped — U1's claimWallet takes a trailing chain arg).
   try {
     await claimWallet(
@@ -119,6 +121,8 @@ export async function POST(request: NextRequest) {
       category ?? null,
       null,
       'stellar',
+      { signature, message },
+      safeImageUrl,
     );
   } catch (err) {
     console.error('[claim:stellar] DB error:', err);

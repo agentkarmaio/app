@@ -17,9 +17,10 @@ import {
   getBondsForAgent,
   getUnderwriterPositions,
   getLastMeaningfulTxAt,
+  getErc8004Agent,
   type WalletScanInfo,
 } from '@/db/client';
-import { calculateScore, type WalletScore } from '@/scoring/index';
+import { calculateScore, getTrustTier, type WalletScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy, type AutonomyResult } from '@/scoring/autonomy';
 import { readAttestation } from '@/integrations/attestation';
@@ -47,7 +48,12 @@ import { MetricBar } from '@/components/karma/metric-bar';
 import { TransactionList } from '@/components/karma/transaction-list';
 import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { ClaimBanner } from '@/components/karma/claim-banner';
+import { BadgeButton } from '@/components/karma/badge-button';
+import { ClaimProof } from '@/components/karma/claim-proof';
+import { ProveOwnership } from '@/components/wallet/prove-ownership';
+import { EditProfile } from '@/components/wallet/edit-profile';
 import { StellarClaimBanner } from '@/components/wallet/stellar-claim-banner';
+import { EvmClaimBanner } from '@/components/wallet/evm-claim-banner';
 import { isStellarAddress } from '@/lib/stellar-verify';
 import { safeHref } from '@/lib/safe-url';
 import { FeedbackSection } from '@/components/karma/feedback-section';
@@ -59,10 +65,47 @@ import { NotIndexedBlock, type NotIndexedChain } from '@/components/karma/not-in
 import { CeloAgentProfile } from '@/components/karma/celo-agent-profile';
 import { ArcAgentProfile } from '@/components/karma/arc-agent-profile';
 import { StellarAgentProfile } from '@/components/karma/stellar-agent-profile';
+import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import type { Chain, TrustTier, ConfidenceBadge as ConfidenceBadgeValue, AutonomyLabel } from '@/db/schema';
+import type { Chain, TrustTier, ConfidenceBadge as ConfidenceBadgeValue, AutonomyLabel, Wallet } from '@/db/schema';
+
+/**
+ * Build a minimal Wallet row for an ERC-8004 registry agent that has no entry in
+ * `wallets` (the common case — fleet owners control many agents but the
+ * address-keyed table holds at most one). Pulls score/registration from the
+ * cached erc8004_agents row so the profile shows the right tier; the profile
+ * component still reads identity + reputation live on-chain by agentId.
+ */
+async function synthesizeRegistryWalletRow(
+  chain: Chain,
+  agentId: number,
+  address: string,
+): Promise<Wallet> {
+  const row = await getErc8004Agent(chain, agentId).catch(() => null);
+  const score = row ? Number(row.metadata_score ?? 0) : 0;
+  const reg = (row?.registration ?? null) as { name?: string; description?: string } | null;
+  const nowIso = new Date().toISOString();
+  return {
+    chain,
+    address,
+    first_seen: (row?.first_indexed_at as string) ?? nowIso,
+    last_seen: (row?.last_indexed_at as string) ?? nowIso,
+    tx_count: 0,
+    score,
+    trust_tier: getTrustTier(score),
+    updated_at: (row?.last_indexed_at as string) ?? nowIso,
+    claimed: false,
+    display_name: reg?.name ?? null,
+    description: reg?.description ?? null,
+    provider_score: score,
+    consumer_score: null,
+    confidence_badge: 'declared',
+    celo_agent_id: chain === 'celo' ? agentId : null,
+    arc_agent_id: chain === 'arc' ? agentId : null,
+  } as Wallet;
+}
 import { resolveAgentChain } from './resolve-chain';
 import { getAdapter } from '@/chain-adapters/registry';
 
@@ -119,10 +162,11 @@ function UnindexedAgentStub({
   wallet: string;
   chain: NotIndexedChain;
 }) {
-  // Claim flow is wired to Solana and Stellar wallet signing only. Hide the
-  // banner on EVM chains (Celo/Arc) for now — a Celo-appropriate claim path is
-  // a separate piece of work.
-  const showClaimBanner = chain === 'solana' || chain === 'stellar';
+  // Claim flow covers Solana (Ed25519), Stellar (Freighter), and EVM (Celo/Arc
+  // injected personal_sign). evm-ambiguous/unknown stay hidden — no single chain
+  // to claim against.
+  const showClaimBanner =
+    chain === 'solana' || chain === 'stellar' || chain === 'celo' || chain === 'arc';
 
   const explorerChain: Chain | null =
     chain === 'evm-ambiguous' || chain === 'unknown' ? null : chain;
@@ -161,9 +205,11 @@ function UnindexedAgentStub({
 
       <NotIndexedBlock chain={chain} />
 
-      {showClaimBanner && (chain === 'stellar'
-        ? <StellarClaimBanner walletAddress={wallet} />
-        : <ClaimBanner walletAddress={wallet} />)}
+      {showClaimBanner && (
+        chain === 'stellar' ? <StellarClaimBanner walletAddress={wallet} /> :
+        chain === 'celo' || chain === 'arc' ? <EvmClaimBanner walletAddress={wallet} chain={chain} /> :
+        <ClaimBanner walletAddress={wallet} />
+      )}
     </div>
   );
 }
@@ -632,10 +678,11 @@ export default async function AgentProfilePage({
   searchParams,
 }: {
   params: Promise<{ wallet: string }>;
-  searchParams: Promise<{ chain?: string }>;
+  searchParams: Promise<{ chain?: string; agentId?: string }>;
 }) {
   const { wallet } = await params;
-  const { chain: chainHint } = await searchParams;
+  const { chain: chainHint, agentId: agentIdHint } = await searchParams;
+  const agentIdNum = agentIdHint != null && /^\d+$/.test(agentIdHint) ? Number(agentIdHint) : null;
   // Solana base58 is the shortest accepted format at 32 chars. EVM is exactly
   // 42 (0x + 40 hex); Stellar is 56. Anything below 32 is junk.
   if (!wallet || wallet.length < 32) notFound();
@@ -667,22 +714,36 @@ export default async function AgentProfilePage({
   // feedback form, no score trend — the profile is built from on-chain
   // ERC-8004 registration + reputation reads keyed by agentId.
   if (resolved.addressClass === 'evm') {
-    if (resolved.chain === 'celo' && resolved.wallet?.celo_agent_id != null) {
+    // Prefer a real wallet row's agentId; otherwise honor the ?agentId= hint
+    // from the registry-mirror leaderboard (fleet owners aren't in `wallets`, so
+    // most registry agents only resolve via this path). Build a minimal walletRow
+    // from the cached erc8004_agents row so the profile renders accurate
+    // score/tier without a wallets entry.
+    const evmChain: Chain | null =
+      resolved.chain ?? (chainHint === 'celo' || chainHint === 'arc' ? chainHint : null);
+
+    const celoAgentId = resolved.wallet?.celo_agent_id
+      ?? (evmChain === 'celo' ? agentIdNum : null);
+    if (evmChain === 'celo' && celoAgentId != null) {
+      const walletRow = resolved.wallet ?? await synthesizeRegistryWalletRow('celo', celoAgentId, wallet);
       return (
         <CeloAgentProfile
           wallet={wallet}
-          walletRow={resolved.wallet}
-          agentId={resolved.wallet.celo_agent_id}
+          walletRow={walletRow}
+          agentId={celoAgentId}
           deadMansSwitch={deadMansSwitch}
         />
       );
     }
-    if (resolved.chain === 'arc' && resolved.wallet?.arc_agent_id != null) {
+    const arcAgentId = resolved.wallet?.arc_agent_id
+      ?? (evmChain === 'arc' ? agentIdNum : null);
+    if (evmChain === 'arc' && arcAgentId != null) {
+      const walletRow = resolved.wallet ?? await synthesizeRegistryWalletRow('arc', arcAgentId, wallet);
       return (
         <ArcAgentProfile
           wallet={wallet}
-          walletRow={resolved.wallet}
-          agentId={resolved.wallet.arc_agent_id}
+          walletRow={walletRow}
+          agentId={arcAgentId}
           deadMansSwitch={deadMansSwitch}
         />
       );
@@ -847,7 +908,9 @@ export default async function AgentProfilePage({
       </Link>
 
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-3">
+        <div className="flex items-start gap-4">
+          <AgentAvatar src={walletRow?.image_url} name={displayName ?? wallet} />
+          <div className="space-y-3">
           <div className="flex items-center gap-3">
             {displayName ? (
               <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
@@ -880,8 +943,9 @@ export default async function AgentProfilePage({
             >
               <ExternalLink className="size-3.5" />
             </a>
+            <BadgeButton wallet={wallet} chain={chain} />
             {walletRow?.last_seen && (
-              <LivenessIndicator lastSeen={walletRow.last_seen} size="sm" />
+              <LivenessIndicator lastSeen={walletRow.last_seen} size="sm" showRelative />
             )}
           </div>
           {agentDescription && (
@@ -907,6 +971,7 @@ export default async function AgentProfilePage({
               </a>
             )}
           </div>
+          </div>
         </div>
         <ScoreRing score={score} tier={tier} size={90} strokeWidth={7} />
       </div>
@@ -916,6 +981,34 @@ export default async function AgentProfilePage({
       {!isClaimed && (isStellarAddress(wallet)
         ? <StellarClaimBanner walletAddress={wallet} />
         : <ClaimBanner walletAddress={wallet} />)}
+
+      {isClaimed && walletRow && !walletRow.claim_signature && (
+        <ProveOwnership chain="solana" address={walletRow.address} />
+      )}
+
+      {isClaimed && walletRow?.claim_signature && walletRow?.claim_message && (
+        <ClaimProof
+          chain="solana"
+          address={walletRow.address}
+          message={walletRow.claim_message}
+          signature={walletRow.claim_signature}
+        />
+      )}
+
+      {isClaimed && walletRow && (
+        <EditProfile
+          chain="solana"
+          address={walletRow.address}
+          current={{
+            displayName: walletRow.display_name ?? '',
+            description: walletRow.description ?? '',
+            website: walletRow.website ?? '',
+            category: walletRow.category ?? '',
+            imageUrl: walletRow.image_url ?? '',
+            tempoAddress: walletRow.tempo_address ?? '',
+          }}
+        />
+      )}
 
       <div className="grid gap-6 md:grid-cols-2">
         <ScoreBreakdownCard live={live} manifestValue={manifestValue} txCount={txCount} />
