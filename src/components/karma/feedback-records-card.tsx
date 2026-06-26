@@ -11,9 +11,16 @@
  * (REVIEW_TAG1) renders 1–5 stars; every other scheme keeps its raw 0–100 value.
  * Revoked records are kept for transparency but greyed + struck-through and sunk
  * below live ones (the headline aggregate already excludes them).
+ *
+ * Long histories (agents accrue 1000+ records) render behind progressive
+ * disclosure: the first INITIAL_VISIBLE show by default, "Show more" reveals the
+ * rest in PAGE_STEP chunks. All records ship in the payload (already fetched);
+ * this only bounds the DOM so the page stays short.
  */
+'use client';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ExternalLink, Star } from 'lucide-react';
+import { ExternalLink, Star, BadgeCheck } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { agentHref } from '@/lib/agent-href';
 import { REVIEW_TAG1 } from '@/lib/evm-feedback';
@@ -24,6 +31,10 @@ const EXPLORER_ADDR: Record<'celo' | 'arc', string> = {
   celo: 'https://celoscan.io/address/',
   arc: 'https://testnet.arcscan.app/address/',
 };
+
+/** How many records render before "Show more", and the reveal increment. */
+const INITIAL_VISIBLE = 10;
+const PAGE_STEP = 25;
 
 /** AK's published schemes get a friendly label; anything else shows its raw tag. */
 function schemeLabel(tag1: string): string {
@@ -62,19 +73,29 @@ function StarRating({ value }: { value: number }) {
 export function FeedbackRecordsCard({
   records,
   raters,
+  comments,
   chain,
 }: {
   records: FeedbackRecord[];
   /** Resolved rater identities keyed by lowercased address (resolveRaters). */
   raters?: Map<string, RaterInfo>;
+  /** On-chain review text keyed by `${lowercasedClient}-${index}` (getFeedbackComments). */
+  comments?: Map<string, { comment: string; verified: boolean }>;
   chain: 'celo' | 'arc';
 }) {
-  if (records.length === 0) return null;
   const base = EXPLORER_ADDR[chain];
+  const [visible, setVisible] = useState(INITIAL_VISIBLE);
 
   // Live records first; revoked sink to the bottom (their score is struck and
   // they don't count toward the headline aggregate). Stable within each group.
-  const ordered = [...records].sort((a, b) => Number(a.revoked) - Number(b.revoked));
+  const ordered = useMemo(
+    () => [...records].sort((a, b) => Number(a.revoked) - Number(b.revoked)),
+    [records],
+  );
+
+  if (records.length === 0) return null;
+  const shown = ordered.slice(0, visible);
+  const remaining = ordered.length - shown.length;
 
   return (
     <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
@@ -87,18 +108,20 @@ export function FeedbackRecordsCard({
         </p>
       </CardHeader>
       <CardContent className="space-y-2">
-        {ordered.map((r) => {
+        {shown.map((r) => {
           const addrLc = r.client.toLowerCase();
           const rater = raters?.get(addrLc);
           const isReview = r.tag1 === REVIEW_TAG1;
+          const review = comments?.get(`${addrLc}-${r.feedbackIndex.toString()}`);
 
           return (
             <div
               key={`${r.client}-${r.feedbackIndex.toString()}`}
-              className={`flex items-center justify-between gap-3 rounded-md border border-border bg-card/40 px-3 py-2 ${
+              className={`flex flex-col gap-2 rounded-md border border-border bg-card/40 px-3 py-2 ${
                 r.revoked ? 'opacity-50' : ''
               }`}
             >
+            <div className="flex items-center justify-between gap-3">
               <div className="flex min-w-0 flex-col gap-0.5">
                 {rater ? (
                   // Known agent → link into AK (resolved by agentId, or by the
@@ -141,8 +164,36 @@ export function FeedbackRecordsCard({
                 )}
               </div>
             </div>
+
+              {review && (
+                <div className="flex items-start gap-1.5 border-t border-[rgb(255_255_255/0.06)] pt-2">
+                  <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[12px] leading-[1.5] text-[#b4b8c0]">
+                    {review.comment}
+                  </p>
+                  {review.verified && (
+                    <span
+                      title="Comment matches the on-chain feedbackHash — integrity verified"
+                      className="mt-0.5 inline-flex shrink-0 items-center gap-0.5 text-[10px] text-[#30a46c]"
+                    >
+                      <BadgeCheck className="size-3" /> verified
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
           );
         })}
+
+        {remaining > 0 && (
+          <button
+            type="button"
+            onClick={() => setVisible((v) => v + PAGE_STEP)}
+            className="mt-1 w-full rounded-md border border-[rgb(255_255_255/0.08)] bg-card/40 py-2 text-[12px] font-[510] text-[#828fff] transition-colors hover:bg-card/60"
+          >
+            Show {Math.min(PAGE_STEP, remaining)} more
+            <span className="text-[#62666d]"> · {remaining} remaining</span>
+          </button>
+        )}
       </CardContent>
     </Card>
   );
