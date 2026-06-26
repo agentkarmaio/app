@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { uint8ArrayToBase58 } from '@/lib/base58';
+import { metadataHash, bindMetadata, type BoundMetadata } from '@/lib/claim-challenge';
 
 type EditChain = Extract<Chain, 'solana' | 'stellar' | 'celo' | 'arc'>;
 type Phase = 'signing' | 'submitting';
@@ -79,6 +80,22 @@ export function EditProfile({ chain, address, current }: EditProfileProps) {
 const buildEditMessage = (address: string, timestampMs: number | string = Date.now()) =>
   `AgentKarma: Edit wallet ${address} at ${timestampMs}`;
 
+/**
+ * Bound metadata for the challenge hash. MUST match buildEditBody's normalization
+ * AND the server edit route's binding (tempo is Solana-only on the edit form, so
+ * it's null on every other chain — both sides).
+ */
+function boundEditMetadata(chain: EditChain, f: EditProfileValues): BoundMetadata {
+  return {
+    displayName: f.displayName.trim(),
+    description: f.description.trim() || null,
+    website: f.website.trim() || null,
+    category: f.category || null,
+    imageUrl: f.imageUrl.trim() || null,
+    tempoAddress: chain === 'solana' ? f.tempoAddress.trim() || null : null,
+  };
+}
+
 /** Build the POST body, normalizing blanks → null. Tempo only on Solana. */
 function buildEditBody(
   chain: EditChain,
@@ -128,7 +145,10 @@ function EditSolana({ address, current }: { address: string; current: EditProfil
         throw new Error("Connected wallet doesn't match this agent.");
       }
       setPhase('signing');
-      const message = buildEditMessage(address);
+      const message = bindMetadata(
+        buildEditMessage(address),
+        await metadataHash(boundEditMetadata('solana', fields)),
+      );
       const sig = await signMessage(new TextEncoder().encode(message));
       setPhase('submitting');
       await postEdit(buildEditBody('solana', address, fields, uint8ArrayToBase58(sig), message));
@@ -162,7 +182,10 @@ function EditEvm({
         throw new Error("Connected wallet doesn't match this agent.");
       }
       setPhase('signing');
-      const message = buildEditMessage(address);
+      const message = bindMetadata(
+        buildEditMessage(address),
+        await metadataHash(boundEditMetadata(chain, fields)),
+      );
       const signature = await signMessage(message);
       setPhase('submitting');
       await postEdit(buildEditBody(chain, address, fields, signature, message));
@@ -188,7 +211,10 @@ function EditStellar({ address, current }: { address: string; current: EditProfi
         throw new Error("Connected wallet doesn't match this agent.");
       }
       setPhase('signing');
-      const { message, signatureHex } = await signChallenge(address, buildEditMessage);
+      const hash = await metadataHash(boundEditMetadata('stellar', fields));
+      const { message, signatureHex } = await signChallenge(address, (addr, ts) =>
+        bindMetadata(buildEditMessage(addr, ts), hash),
+      );
       setPhase('submitting');
       await postEdit(buildEditBody('stellar', address, fields, signatureHex, message));
     },

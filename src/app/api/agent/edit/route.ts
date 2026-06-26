@@ -6,6 +6,7 @@ import { updateClaimedAgentMetadata } from '@/db/client';
 import { buildEditChallenge, verifyClaimSignature } from '@/lib/claim-verify';
 import { isStellarAddress } from '@/lib/stellar-verify';
 import { validateAgentMetadata, validateImageUrl } from '@/lib/agent-metadata';
+import { messageBindsMetadata } from '@/lib/claim-challenge';
 import { SsrfError } from '@/lib/ssrf-guard';
 
 export const runtime = 'nodejs'; // validateImageUrl → SSRF guard needs node:dns/net
@@ -100,7 +101,8 @@ export async function POST(request: NextRequest) {
   if (!message.startsWith(prefix)) {
     return NextResponse.json({ error: 'Invalid message format' }, { status: 400 });
   }
-  const ts = Number(message.slice(prefix.length));
+  // parseInt (not Number) so the trailing " | sha256:…" binding doesn't poison it.
+  const ts = parseInt(message.slice(prefix.length), 10);
   if (Number.isNaN(ts) || Math.abs(Date.now() - ts) > CLAIM_WINDOW_MS) {
     return NextResponse.json({ error: 'Message timestamp expired (5 minute window)' }, { status: 400 });
   }
@@ -110,6 +112,25 @@ export async function POST(request: NextRequest) {
   // resolution of an arbitrary host via the SSRF check below.
   if (!(await verifyClaimSignature(chain as Chain, normalized, message, signature))) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+  }
+
+  // Metadata binding: the signed message must commit to EXACTLY these fields, so
+  // an intercepted edit signature cannot be replayed with different values.
+  // Tempo is Solana-only on the edit form (omitted elsewhere → null both sides).
+  if (
+    !(await messageBindsMetadata(message, {
+      displayName,
+      description: description ?? null,
+      website: website ?? null,
+      category: category ?? null,
+      imageUrl: imageUrl ?? null,
+      tempoAddress: isSolana ? tempoAddress ?? null : null,
+    }))
+  ) {
+    return NextResponse.json(
+      { error: 'Signature does not match the submitted profile data' },
+      { status: 401 },
+    );
   }
 
   // Logo URL: async SSRF/DNS guard, gated behind auth. 422 = well-formed

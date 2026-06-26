@@ -15,6 +15,7 @@ import type { Chain } from '@/db/schema';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { metadataHash, bindMetadata } from '@/lib/claim-challenge';
 
 const CATEGORIES = [
   { value: 'ai', label: 'AI / ML' },
@@ -67,7 +68,17 @@ export function EvmClaimBanner({
 
     setStatus('signing');
     try {
-      const message = `AgentKarma: Claim wallet ${walletAddress} at ${Date.now()}`;
+      // One metadata object feeds BOTH the bound-challenge hash and the body.
+      const meta = {
+        displayName: displayName.trim(),
+        description: description.trim() || null,
+        website: website.trim() || null,
+        category: category || null,
+      };
+      const message = bindMetadata(
+        `AgentKarma: Claim wallet ${walletAddress} at ${Date.now()}`,
+        await metadataHash(meta),
+      );
       const signature = await signMessage(message);
       setStatus('submitting');
       const res = await fetch('/api/agent/claim/evm', {
@@ -76,10 +87,7 @@ export function EvmClaimBanner({
         body: JSON.stringify({
           address: walletAddress,
           chain,
-          displayName: displayName.trim(),
-          description: description.trim() || null,
-          website: website.trim() || null,
-          category: category || null,
+          ...meta,
           signature,
           message,
         }),

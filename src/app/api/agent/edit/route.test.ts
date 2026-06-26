@@ -2,16 +2,18 @@
 /**
  * POST /api/agent/edit — claimed-agent metadata editor (SECURITY-CRITICAL).
  *
- * Mirrors the prove test: real EIP-191 signatures from a deterministic viem
- * account exercise the signature gate against bytes a real wallet emits. The
- * happy path full-replaces metadata on an existing CLAIMED row via a fake
- * Supabase and asserts the editable columns are written + the proof is refreshed
- * (but claimed/claimed_at are never touched). An unclaimed row → 409, no row →
- * 404, a private-IP logo URL → 422 (before the signature even matters).
+ * Real EIP-191 signatures from a deterministic viem account exercise the
+ * signature gate against bytes a real wallet emits. Edits sign an operation-
+ * scoped "Edit wallet …" challenge that BINDS a hash of the submitted metadata,
+ * so a replayed signature can't be reused with different fields, and a displayed
+ * "Claim wallet …" receipt can't authorize an edit. The happy path full-replaces
+ * metadata on an existing CLAIMED row via a fake Supabase; unclaimed → 409,
+ * no row → 404, private-IP logo → 422.
  */
 import { describe, expect, test, afterEach, mock } from 'bun:test';
 import { privateKeyToAccount } from 'viem/accounts';
 import { __setSupabaseForTest } from '@/db/client';
+import { metadataHash, bindMetadata } from '@/lib/claim-challenge';
 import { POST } from './route';
 
 function req(body: unknown): Request {
@@ -25,11 +27,40 @@ function req(body: unknown): Request {
 const account = privateKeyToAccount(`0x${'07'.repeat(32)}`);
 const lower = account.address.toLowerCase();
 const ts = Date.now();
+// Bare edit message (no metadata binding) — reaches the sig gate but fails the
+// binding check; used by guards that return before the binding step.
 const message = `AgentKarma: Edit wallet ${lower} at ${ts}`;
 const signature = await account.signMessage({ message });
-// The publicly-displayed claim/prove receipt — must NOT authorize an edit.
+// The publicly-displayed claim receipt — wrong verb, must NOT authorize an edit.
 const claimMessage = `AgentKarma: Claim wallet ${lower} at ${ts}`;
 const claimSignature = await account.signMessage({ message: claimMessage });
+
+type EditMeta = {
+  displayName: string;
+  description?: string | null;
+  website?: string | null;
+  category?: string | null;
+  imageUrl?: string | null;
+  tempoAddress?: string | null;
+};
+
+/** Build a metadata-bound "Edit wallet …" message + a real signature over it. */
+async function signedEdit(meta: EditMeta, opts: { addr?: string; ts?: number } = {}) {
+  const addr = opts.addr ?? lower;
+  const t = opts.ts ?? Date.now();
+  const m = bindMetadata(
+    `AgentKarma: Edit wallet ${addr} at ${t}`,
+    await metadataHash({
+      displayName: meta.displayName,
+      description: meta.description ?? null,
+      website: meta.website ?? null,
+      category: meta.category ?? null,
+      imageUrl: meta.imageUrl ?? null,
+      tempoAddress: meta.tempoAddress ?? null,
+    }),
+  );
+  return { message: m, signature: await account.signMessage({ message: m }) };
+}
 
 function makeFakeSupabase(captured: Array<Record<string, unknown>>, existing: unknown) {
   return {
@@ -79,36 +110,6 @@ describe('POST /api/agent/edit — guards', () => {
     expect(res.status).toBe(400);
   });
 
-  test('private-IP logo URL with valid signature → 422 (SSRF guard runs after auth)', async () => {
-    const res = await POST(
-      req({
-        address: account.address,
-        chain: 'celo',
-        displayName: 'X',
-        imageUrl: 'http://127.0.0.1/logo.png',
-        signature,
-        message,
-      }) as never,
-    );
-    expect(res.status).toBe(422);
-  });
-
-  test('bad imageUrl with INVALID signature → 401, not 422 (no pre-auth DNS)', async () => {
-    const other = privateKeyToAccount(`0x${'08'.repeat(32)}`);
-    const badSig = await other.signMessage({ message });
-    const res = await POST(
-      req({
-        address: lower,
-        chain: 'celo',
-        displayName: 'X',
-        imageUrl: 'http://attacker.example/probe',
-        signature: badSig,
-        message,
-      }) as never,
-    );
-    expect(res.status).toBe(401);
-  });
-
   test('claim-challenge signature does NOT authorize an edit → 400 (operation-scoped)', async () => {
     const res = await POST(
       req({ address: account.address, chain: 'celo', displayName: 'X', signature: claimSignature, message: claimMessage }) as never,
@@ -118,8 +119,7 @@ describe('POST /api/agent/edit — guards', () => {
 
   test('expired timestamp → 400', async () => {
     const oldTs = ts - 10 * 60 * 1000;
-    const oldMsg = `AgentKarma: Edit wallet ${lower} at ${oldTs}`;
-    const oldSig = await account.signMessage({ message: oldMsg });
+    const { message: oldMsg, signature: oldSig } = await signedEdit({ displayName: 'X' }, { ts: oldTs });
     const res = await POST(
       req({ address: lower, chain: 'celo', displayName: 'X', signature: oldSig, message: oldMsg }) as never,
     );
@@ -134,25 +134,38 @@ describe('POST /api/agent/edit — guards', () => {
     );
     expect(res.status).toBe(401);
   });
+
+  test('valid signature but body metadata differs from the binding → 401', async () => {
+    __setSupabaseForTest(makeFakeSupabase([], claimedRow));
+    const { message: m, signature: s } = await signedEdit({ displayName: 'Honest Name' });
+    // Attacker keeps the owner's sig+message but swaps the displayName in the body.
+    const res = await POST(
+      req({ address: account.address, chain: 'celo', displayName: 'PWNED', signature: s, message: m }) as never,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  test('private-IP logo URL (bound) with valid signature → 422 (SSRF guard after auth)', async () => {
+    const meta = { displayName: 'X', imageUrl: 'http://127.0.0.1/logo.png' };
+    const { message: m, signature: s } = await signedEdit(meta);
+    const res = await POST(
+      req({ address: account.address, chain: 'celo', ...meta, signature: s, message: m }) as never,
+    );
+    expect(res.status).toBe(422);
+  });
 });
 
 describe('POST /api/agent/edit — update', () => {
   let captured: Array<Record<string, unknown>>;
   afterEach(() => { __setSupabaseForTest(null); mock.restore(); });
 
-  test('valid edit on claimed row → 200, full-replace + refreshes proof', async () => {
+  test('valid edit on claimed row → 200, full-replace, no proof persisted', async () => {
     captured = [];
     __setSupabaseForTest(makeFakeSupabase(captured, claimedRow));
+    const meta = { displayName: 'New Name', description: 'fresh desc', imageUrl: 'http://1.1.1.1/logo.png' };
+    const { message: m, signature: s } = await signedEdit(meta);
     const res = await POST(
-      req({
-        address: account.address,
-        chain: 'celo',
-        displayName: 'New Name',
-        description: 'fresh desc',
-        imageUrl: 'http://1.1.1.1/logo.png', // public literal IP → sync pass, no DNS
-        signature,
-        message,
-      }) as never,
+      req({ address: account.address, chain: 'celo', ...meta, signature: s, message: m }) as never,
     );
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -163,8 +176,7 @@ describe('POST /api/agent/edit — update', () => {
     expect(row.display_name).toBe('New Name');
     expect(row.description).toBe('fresh desc');
     expect(row.image_url).toBe('http://1.1.1.1/logo.png');
-    // Edit must NOT persist its signature into the public claim receipt
-    // (it would become a replayable edit-authorizer).
+    // Edit must NOT persist its signature into the public claim receipt.
     expect('claim_signature' in row).toBe(false);
     expect('claim_message' in row).toBe(false);
     // Edit must NOT re-flip claim state or reset claim time.
@@ -177,8 +189,9 @@ describe('POST /api/agent/edit — update', () => {
   test('blank optional fields clear them (full-replace → null)', async () => {
     captured = [];
     __setSupabaseForTest(makeFakeSupabase(captured, claimedRow));
+    const { message: m, signature: s } = await signedEdit({ displayName: 'Only Name' });
     const res = await POST(
-      req({ address: account.address, chain: 'celo', displayName: 'Only Name', signature, message }) as never,
+      req({ address: account.address, chain: 'celo', displayName: 'Only Name', signature: s, message: m }) as never,
     );
     expect(res.status).toBe(200);
     const row = captured[0];
@@ -191,8 +204,9 @@ describe('POST /api/agent/edit — update', () => {
   test('row exists but is unclaimed → 409', async () => {
     captured = [];
     __setSupabaseForTest(makeFakeSupabase(captured, { ...claimedRow, claimed: false }));
+    const { message: m, signature: s } = await signedEdit({ displayName: 'X' });
     const res = await POST(
-      req({ address: account.address, chain: 'celo', displayName: 'X', signature, message }) as never,
+      req({ address: account.address, chain: 'celo', displayName: 'X', signature: s, message: m }) as never,
     );
     expect(res.status).toBe(409);
     expect(captured.length).toBe(0); // no write attempted
@@ -201,8 +215,9 @@ describe('POST /api/agent/edit — update', () => {
   test('no matching row → 404', async () => {
     captured = [];
     __setSupabaseForTest(makeFakeSupabase(captured, null));
+    const { message: m, signature: s } = await signedEdit({ displayName: 'X' });
     const res = await POST(
-      req({ address: account.address, chain: 'celo', displayName: 'X', signature, message }) as never,
+      req({ address: account.address, chain: 'celo', displayName: 'X', signature: s, message: m }) as never,
     );
     expect(res.status).toBe(404);
   });

@@ -14,6 +14,7 @@ import { describe, expect, test, beforeEach, afterEach, mock } from 'bun:test';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { __setSupabaseForTest } from '@/db/client';
+import { metadataHash, bindMetadata } from '@/lib/claim-challenge';
 import { POST } from './route';
 
 function req(body: unknown): Request {
@@ -43,8 +44,27 @@ const kp = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 7));
 const address = kp.publicKey(); // G…
 const C = StrKey.encodeContract(Buffer.alloc(32, 9)); // C… contract
 const ts = Date.now();
+// Bare (unbound) message — guards return before the metadata-binding check.
 const message = `AgentKarma: Claim wallet ${address} at ${ts}`;
 const signature = freighterSignHex(kp, message);
+
+/** Build a metadata-bound claim message + a real Freighter-style signature. */
+async function signedClaim(
+  meta: { displayName: string; description?: string | null; website?: string | null; category?: string | null; imageUrl?: string | null },
+  t: number = Date.now(),
+) {
+  const m = bindMetadata(
+    `AgentKarma: Claim wallet ${address} at ${t}`,
+    await metadataHash({
+      displayName: meta.displayName,
+      description: meta.description ?? null,
+      website: meta.website ?? null,
+      category: meta.category ?? null,
+      imageUrl: meta.imageUrl ?? null,
+    }),
+  );
+  return { message: m, signature: freighterSignHex(kp, m) };
+}
 
 describe('POST /api/agent/claim/stellar — guards', () => {
   test('missing required fields → 400', async () => {
@@ -165,8 +185,9 @@ describe('POST /api/agent/claim/stellar — honest on-chain registration', () =>
   });
 
   test('valid claim → 200, off-chain claimed, on-chain registration PENDING', async () => {
+    const { message: m, signature: s } = await signedClaim({ displayName: 'My Agent' });
     const res = await POST(
-      req({ address, displayName: 'My Agent', signature, message }) as never,
+      req({ address, displayName: 'My Agent', signature: s, message: m }) as never,
     );
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -197,13 +218,22 @@ describe('POST /api/agent/claim/stellar — honest on-chain registration', () =>
       mintStellarAgentIdentity: spy,
     }));
 
+    const { message: m, signature: s } = await signedClaim({ displayName: 'My Agent' });
     const res = await POST(
-      req({ address, displayName: 'My Agent', signature, message }) as never,
+      req({ address, displayName: 'My Agent', signature: s, message: m }) as never,
     );
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.onChainRegistration).toBe('pending');
     expect(json.stellarAgentId).toBeNull();
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  test('valid signature but body metadata differs from the binding → 401', async () => {
+    const { message: m, signature: s } = await signedClaim({ displayName: 'Honest Name' });
+    const res = await POST(
+      req({ address, displayName: 'PWNED', signature: s, message: m }) as never,
+    );
+    expect(res.status).toBe(401);
   });
 });
