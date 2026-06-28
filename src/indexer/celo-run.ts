@@ -15,7 +15,7 @@
  */
 
 import { runCeloX402Indexer } from './celo-x402';
-import { celoX402FacilitatorSet } from '../config/celo-x402';
+import { celoX402FacilitatorSetWithDiscovered } from '../config/celo-x402';
 
 function numArg(flag: string): number | undefined {
   const i = process.argv.indexOf(flag);
@@ -28,12 +28,13 @@ const dryRun = process.argv.includes('--dry-run');
 const windowSize = numArg('--window');
 const maxWindows = numArg('--max-windows');
 
-const facilitators = celoX402FacilitatorSet();
+// Merged set: curated + env + verified self-seeded payees (celo_x402_payees).
+const facilitators = await celoX402FacilitatorSetWithDiscovered();
 console.log(`[celo-indexer] mode: ${dryRun ? 'DRY-RUN (no DB writes)' : 'live'}`);
 console.log(`[celo-indexer] RPC: ${process.env.CELO_RPC_URL ? 'custom' : 'public Forno (rate-limited)'}`);
-console.log(`[celo-indexer] facilitators seeded: ${facilitators.size}`);
+console.log(`[celo-indexer] facilitators+payees seeded: ${facilitators.size}`);
 if (facilitators.size === 0) {
-  console.log('[celo-indexer] none seeded — no-op. Seed via CELO_X402_FACILITATORS env or config.');
+  console.log('[celo-indexer] none seeded — no-op. Seed via CELO_X402_FACILITATORS env, config, or scripts/celo-x402-discover-payees.ts.');
   process.exit(0);
 }
 console.log(`[celo-indexer] watching: ${[...facilitators].join(', ')}`);

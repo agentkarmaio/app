@@ -1,7 +1,8 @@
+import { Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { LivenessStatus } from '@/db/schema';
 import { getLivenessStatus } from '@/db/schema';
-import { formatRelativePast } from '@/lib/succession-format';
+import { formatRelativePastLong } from '@/lib/succession-format';
 
 const LIVENESS_CONFIG: Record<LivenessStatus, { label: string; dotClass: string; textClass: string }> = {
   Active: {
@@ -66,11 +67,12 @@ export function LivenessIndicator({
       {showRelative && relativeIso && (
         <span
           className={cn(
-            'text-muted-foreground tracking-[-0.13px]',
+            'inline-flex items-center gap-1 text-muted-foreground tracking-[-0.13px]',
             size === 'sm' ? 'text-[11px]' : 'text-[13px]',
           )}
         >
-          · {formatRelativePast(relativeIso)}
+          <Clock className={size === 'sm' ? 'size-3' : 'size-3.5'} aria-hidden />
+          Last active {formatRelativePastLong(relativeIso)}
         </span>
       )}
     </span>

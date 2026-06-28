@@ -18,8 +18,14 @@ const NAV_GROUPS: {
   {
     heading: "Developers",
     links: [
-      { label: "Karma Protocol RFC", href: "/protocol" },
+      { label: "SDK quickstart", href: "/integrate" },
+      {
+        label: "@agentkarma/sdk",
+        href: "https://www.npmjs.com/package/@agentkarma/sdk",
+        external: true,
+      },
       { label: "MCP server", href: "/docs/mcp" },
+      { label: "Karma Protocol RFC", href: "/protocol" },
       { label: "Embeddable widget", href: "/widget" },
       {
         label: "Score API",

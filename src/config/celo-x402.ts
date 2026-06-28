@@ -88,3 +88,45 @@ export function getCeloX402Token(addr: string): CeloX402Token | undefined {
   const lc = addr.toLowerCase();
   return CELO_X402_TOKENS.find((t) => t.address.toLowerCase() === lc);
 }
+
+/**
+ * Async facilitator/payee set: the curated + env set (`celoX402FacilitatorSet`)
+ * UNIONED with payees the endpoint-driven self-seeder discovered and persisted
+ * (`celo_x402_payees`, verified rows only). This is what the live indexer uses
+ * so it self-populates from agent declarations instead of needing a hand-curated
+ * config entry.
+ *
+ * The DB reader is injected (defaults to the real `getDiscoveredCeloX402Payees`)
+ * so the merge is unit-testable without a live Supabase, and so a pure consumer
+ * of the sync set never pulls the DB client. Discovered addresses are already
+ * lowercased + verified (self-payee) by the upsert path; a transient DB error is
+ * swallowed back to the sync set rather than killing an indexer run — the curated
+ * set still indexes, and the next run re-attempts the union.
+ *
+ * Empty-set no-op is preserved end-to-end: when curated, env, AND discovered are
+ * all empty, this returns an empty set and the indexer skips the RPC round-trip.
+ */
+export async function celoX402FacilitatorSetWithDiscovered(
+  loadDiscovered?: () => Promise<Set<string>>,
+): Promise<Set<string>> {
+  const set = celoX402FacilitatorSet();
+  try {
+    const loader =
+      loadDiscovered ??
+      (async () => {
+        // Lazy import keeps the Supabase client out of any pure consumer of the
+        // sync set (and out of the config module's own dependency graph).
+        const { getDiscoveredCeloX402Payees } = await import('@/db/client');
+        return getDiscoveredCeloX402Payees('celo');
+      });
+    const discovered = await loader();
+    for (const addr of discovered) {
+      if (EVM_ADDRESS.test(addr)) set.add(addr.toLowerCase());
+    }
+  } catch (err) {
+    // Defense-in-depth: never let a payee-table read failure stop the curated
+    // set from indexing. Log + fall back to the sync set.
+    console.error('[celo-x402] discovered-payee union failed; using sync set only:', err);
+  }
+  return set;
+}

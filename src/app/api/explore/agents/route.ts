@@ -84,6 +84,7 @@ export async function GET(request: NextRequest) {
       // resolve the per-agent profile (many agents share one owner address).
       agentId: w.celo_agent_id ?? w.arc_agent_id ?? w.stellar_agent_id ?? null,
       displayName: w.display_name ?? null,
+      imageUrl: w.image_url ?? null,
       claimed: w.claimed ?? false,
       providerScore: Number(w.provider_score ?? 0),
       consumerScore: w.consumer_score != null ? Number(w.consumer_score) : null,

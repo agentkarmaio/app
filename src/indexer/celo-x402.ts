@@ -41,7 +41,7 @@ import type { IndexRunResult } from '@/chain-adapters/types';
 import {
   CELO_X402_TOKENS,
   CELO_X402_FACILITATORS,
-  celoX402FacilitatorSet,
+  celoX402FacilitatorSetWithDiscovered,
   getCeloX402Token,
   type CeloX402Token,
 } from '@/config/celo-x402';
@@ -356,7 +356,9 @@ async function rpcGetLogs(
 export async function runCeloX402Indexer(
   opts: { windowSize?: number; maxWindows?: number; dryRun?: boolean } = {},
 ): Promise<IndexRunResult & { rows?: Omit<Transaction, 'id'>[] }> {
-  const facilitatorSet = celoX402FacilitatorSet();
+  // Curated/env set UNIONED with self-seeded discovered payees (verified rows in
+  // celo_x402_payees). Empty-set no-op preserved when all sources are empty.
+  const facilitatorSet = await celoX402FacilitatorSetWithDiscovered();
   if (facilitatorSet.size === 0) {
     return { fetched: 0, inserted: 0, cursors: new Map() };
   }

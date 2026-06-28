@@ -9,7 +9,7 @@ import { describe, expect, test, beforeEach, afterAll } from 'bun:test';
 import {
   __setSupabaseForTest, insertTransactions, upsertCursor, getCursor, claimWallet,
   getStellarAgentId, setStellarAgentId, claimDirtyWallets, markWalletsDirty,
-  ADDRESS_IN_CHUNK, getStats, normalizeCounterparty,
+  ADDRESS_IN_CHUNK, getStats, normalizeCounterparty, getAgents,
 } from './client';
 import type { Transaction } from './schema';
 
@@ -149,6 +149,43 @@ describe('claimWallet is chain-aware (C1)', () => {
   });
 });
 
+describe('claimWallet persists ownership proof', () => {
+  let captured: Captured[];
+
+  test('insert path includes claim_signature + claim_message when proof passed', async () => {
+    captured = [];
+    __setSupabaseForTest(makeFakeSupabase(captured, [], null));
+    await claimWallet('GAGENT', 'Agent', null, null, null, null, 'stellar', {
+      signature: 'SIG',
+      message: 'MSG',
+    });
+    const row = captured.find((c) => c.op === 'insert')!.rows as Record<string, unknown>;
+    expect(row.claim_signature).toBe('SIG');
+    expect(row.claim_message).toBe('MSG');
+  });
+
+  test('update path includes proof when the wallet already exists', async () => {
+    captured = [];
+    __setSupabaseForTest(makeFakeSupabase(captured, [], { chain: 'stellar', address: 'GAGENT' }));
+    await claimWallet('GAGENT', 'Agent', null, null, null, null, 'stellar', {
+      signature: 'SIG2',
+      message: 'MSG2',
+    });
+    const row = captured.find((c) => c.op === 'update')!.rows as Record<string, unknown>;
+    expect(row.claim_signature).toBe('SIG2');
+    expect(row.claim_message).toBe('MSG2');
+  });
+
+  test('proof-less claim omits the keys entirely (never wipes a stored proof)', async () => {
+    captured = [];
+    __setSupabaseForTest(makeFakeSupabase(captured, [], { chain: 'stellar', address: 'GAGENT' }));
+    await claimWallet('GAGENT', 'Agent', null, null, null, null, 'stellar');
+    const row = captured.find((c) => c.op === 'update')!.rows as Record<string, unknown>;
+    expect('claim_signature' in row).toBe(false);
+    expect('claim_message' in row).toBe(false);
+  });
+});
+
 describe('stellar_agent_id getter/setter (C2)', () => {
   let captured: Captured[];
 
@@ -258,9 +295,13 @@ describe('getStats degrades to best-effort when aggregate RPCs are missing', () 
   function makeStatsFake(opts: {
     txStats?: { total_count: number; total_volume: number } | null;
     tierRows?: { trust_tier: string; count: number }[] | null;
-    walletHeadCount?: number;
+    agentHeadCount?: number;
   }) {
+    const fromTables: string[] = [];
     return {
+      // Tables touched, in call order — lets a test assert WHICH population the
+      // agent count is read from (must be the canonical `explore_agents` view).
+      __fromTables: fromTables,
       rpc(name: string) {
         if (name === 'get_transaction_stats') {
           const result = opts.txStats
@@ -275,11 +316,12 @@ describe('getStats degrades to best-effort when aggregate RPCs are missing', () 
         }
         return Promise.resolve({ data: null, error: PGRST202 });
       },
-      from() {
+      from(table: string) {
+        fromTables.push(table);
         const b: Record<string, unknown> = {};
         b.select = (_cols: string, selOpts?: { head?: boolean; count?: string }) =>
           selOpts?.head
-            ? Promise.resolve({ count: opts.walletHeadCount ?? 0, error: null })
+            ? Promise.resolve({ count: opts.agentHeadCount ?? 0, error: null })
             // Any full-table row-stream is the exact prod failure — surface 57014.
             : Promise.resolve({ data: null, error: TIMEOUT_57014 });
         return b;
@@ -288,7 +330,8 @@ describe('getStats degrades to best-effort when aggregate RPCs are missing', () 
   }
 
   test('returns best-effort numbers without throwing when both RPCs are absent', async () => {
-    __setSupabaseForTest(makeStatsFake({ txStats: null, tierRows: null, walletHeadCount: 116672 }));
+    const fake = makeStatsFake({ txStats: null, tierRows: null, agentHeadCount: 103478 });
+    __setSupabaseForTest(fake);
 
     const stats = await getStats(); // must not throw — the prod 500 was an uncaught throw
 
@@ -296,7 +339,13 @@ describe('getStats degrades to best-effort when aggregate RPCs are missing', () 
     expect(stats.totalVolumeUsdc).toBe(0);
     expect(stats.tierDistribution).toEqual({});
     // totalAgents survives via a cheap HEAD count (no row scan) even with the RPC down.
-    expect(stats.totalAgents).toBe(116672);
+    expect(stats.totalAgents).toBe(103478);
+    // The HEAD count MUST target the canonical explore population (the same view
+    // the Explore "All" count reads), NOT raw `wallets` — counting all wallet
+    // rows (score=0 noise + owner-keyed celo/arc) is the homepage-vs-explore
+    // mismatch this guards against.
+    expect(fake.__fromTables).toContain('explore_agents');
+    expect(fake.__fromTables).not.toContain('wallets');
   });
 
   test('reads real figures from the aggregate RPCs when they are deployed', async () => {
@@ -314,5 +363,73 @@ describe('getStats degrades to best-effort when aggregate RPCs are missing', () 
     expect(stats.totalVolumeUsdc).toBe(1234.56);
     expect(stats.tierDistribution).toEqual({ Excellent: 10, Good: 90 });
     expect(stats.totalAgents).toBe(100); // summed from the tier RPC, no HEAD count needed
+  });
+});
+
+// Regression: Explore `claimed=true` on Celo/Arc returned the whole ERC-8004
+// registry mirror (9,529 agents on celo), all rendered claimed:false — the
+// claimed filter was silently ignored. Claimed EVM agents live in `wallets`
+// (claimWallet writes there), NOT the registry mirror, which is always
+// claimed:false. So `claimed=true` MUST read `wallets`; only the unfiltered /
+// claimed!=true population reads the registry. These tests drive a table-aware
+// fake and assert the routing + that every returned row is actually claimed.
+describe('getAgents routes claimed=true for registry chains to wallets', () => {
+  const SORT = { field: 'provider_score' as const, direction: 'desc' as const };
+
+  // Chainable builder: every query method returns the builder; the terminal
+  // .range() resolves to { data, count } sourced from whichever table .from()
+  // named. Records the tables queried so we can assert the routing decision.
+  function makeAgentsFake(opts: { registryRows: unknown[]; walletRows: unknown[] }) {
+    const tablesQueried: string[] = [];
+    return {
+      __tablesQueried: tablesQueried,
+      from(table: string) {
+        tablesQueried.push(table);
+        const rows = table === 'wallets' ? opts.walletRows : opts.registryRows;
+        const b: Record<string, unknown> = {};
+        for (const m of ['select', 'eq', 'gt', 'gte', 'lt', 'in', 'or', 'order', 'not', 'limit']) {
+          b[m] = () => b;
+        }
+        b.range = async () => ({ data: rows, error: null, count: rows.length });
+        return b;
+      },
+    };
+  }
+
+  // A raw erc8004_agents row (declared-only, always claimed:false once mapped).
+  const registryRow = {
+    agent_id: 1, metadata_score: 100, registration: { name: 'Arca' },
+    owner: '0xowner', agent_wallet: '0xwallet',
+    first_indexed_at: '2026-06-20T00:00:00Z', last_indexed_at: '2026-06-20T00:00:00Z',
+  };
+  // A claimed wallet row for the same chain (this is where claims actually land).
+  const claimedWalletRow = {
+    chain: 'celo', address: '0xclaimed', claimed: true, display_name: 'Claimed Agent',
+    score: 50, trust_tier: 'Fair', provider_score: 50, consumer_score: null,
+    confidence_badge: 'declared', tx_count: 3, last_seen: '2026-06-22T00:00:00Z',
+  };
+
+  test('claimed=true on celo reads wallets and returns only claimed rows', async () => {
+    const fake = makeAgentsFake({ registryRows: [registryRow], walletRows: [claimedWalletRow] });
+    __setSupabaseForTest(fake);
+
+    const { wallets, total } = await getAgents(25, 0, { chain: 'celo', claimed: true }, SORT);
+
+    expect(fake.__tablesQueried).toContain('wallets');
+    expect(fake.__tablesQueried).not.toContain('erc8004_agents');
+    expect(wallets.length).toBeGreaterThan(0);
+    expect(wallets.every((w) => w.claimed === true)).toBe(true); // pre-fix: registry rows were claimed:false
+    expect(total).toBe(1);
+  });
+
+  test('celo without claimed=true still reads the registry mirror (full population)', async () => {
+    const fake = makeAgentsFake({ registryRows: [registryRow], walletRows: [claimedWalletRow] });
+    __setSupabaseForTest(fake);
+
+    const { wallets } = await getAgents(25, 0, { chain: 'celo' }, SORT);
+
+    expect(fake.__tablesQueried).toContain('erc8004_agents');
+    expect(fake.__tablesQueried).not.toContain('wallets');
+    expect(wallets.length).toBe(1);
   });
 });

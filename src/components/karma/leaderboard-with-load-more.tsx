@@ -14,6 +14,7 @@ interface ApiEntry {
   address: string;
   chain: Chain;
   displayName: string | null;
+  imageUrl: string | null;
   score: number;
   trustTier: TrustTier;
   confidenceBadge?: ConfidenceBadge | null;
@@ -140,6 +141,7 @@ export function LeaderboardWithLoadMore({
           address: w.address,
           chain: w.chain,
           displayName: w.displayName,
+          imageUrl: w.imageUrl,
           score: w.score,
           trustTier: w.trustTier,
           confidenceBadge: w.confidenceBadge ?? null,

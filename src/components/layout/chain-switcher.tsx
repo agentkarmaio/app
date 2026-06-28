@@ -1,33 +1,22 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { chainOptions, CHAIN_META, DEFAULT_CHAIN } from '@/lib/chain-meta';
-import type { Chain } from '@/db/schema';
+import { chainOptions, CHAIN_META } from '@/lib/chain-meta';
+import { useChainSelection } from '@/components/layout/chain-selection';
 
-/** Derive the active chain from the pathname; falls back to Solana (default). */
-function activeChainFromPath(pathname: string): Chain {
-  // Longest-prefix match so '/celo/foo' resolves to celo, '/' to solana.
-  let best: Chain = DEFAULT_CHAIN;
-  let bestLen = -1;
-  for (const c of chainOptions()) {
-    const href = CHAIN_META[c].href;
-    if (href === '/') continue; // solana is the fallback, not a prefix
-    if ((pathname === href || pathname.startsWith(href + '/')) && href.length > bestLen) {
-      best = c;
-      bestLen = href.length;
-    }
-  }
-  return best;
-}
-
+/**
+ * Header chain switcher. On browse/landing pages (`navigate` true) each option
+ * links to that chain's context page. On an agent detail page (`navigate` false)
+ * it switches the active-chain context in place — no navigation — so the user
+ * isn't pushed off the agent they're viewing (the Connect button follows the
+ * selection instead). State comes from ChainSelectionProvider.
+ */
 export function ChainSwitcher() {
-  const pathname = usePathname();
+  const { active, navigate, select } = useChainSelection();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const active = activeChainFromPath(pathname);
 
   useEffect(() => {
     if (!open) return;
@@ -69,22 +58,33 @@ export function ChainSwitcher() {
           {chainOptions().map((c) => {
             const m = CHAIN_META[c];
             const isActive = c === active;
-            return (
-              <Link
-                key={c}
-                href={m.href}
-                role="menuitem"
-                onClick={() => setOpen(false)}
-                className={
-                  isActive
-                    ? 'flex items-center gap-2 rounded-lg bg-[rgb(255_255_255/0.06)] px-2.5 py-1.5 text-[13px] font-[510] text-[#f7f8f8]'
-                    : 'flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] font-[510] text-[#8a8f98] transition-colors hover:bg-[rgb(255_255_255/0.04)] hover:text-[#f7f8f8]'
-                }
-              >
+            const className = isActive
+              ? 'flex w-full items-center gap-2 rounded-lg bg-[rgb(255_255_255/0.06)] px-2.5 py-1.5 text-left text-[13px] font-[510] text-[#f7f8f8]'
+              : 'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] font-[510] text-[#8a8f98] transition-colors hover:bg-[rgb(255_255_255/0.04)] hover:text-[#f7f8f8]';
+            const inner = (
+              <>
                 {/* eslint-disable-next-line @next/next/no-img-element -- tiny static brand mark; Image optimizer needs dangerouslyAllowSVG for SVGs */}
                 <img aria-hidden alt="" src={m.logo} className="size-4 shrink-0 object-contain" />
                 {m.label}
+              </>
+            );
+            // Agent pages switch context in place (no navigation); browse pages
+            // link to the chain's context page as before.
+            return navigate ? (
+              <Link key={c} href={m.href} role="menuitem" onClick={() => setOpen(false)} className={className}>
+                {inner}
               </Link>
+            ) : (
+              <button
+                key={c}
+                type="button"
+                role="menuitemradio"
+                aria-checked={isActive}
+                onClick={() => { select(c); setOpen(false); }}
+                className={className}
+              >
+                {inner}
+              </button>
             );
           })}
         </div>

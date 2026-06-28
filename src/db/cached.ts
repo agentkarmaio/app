@@ -81,6 +81,7 @@ export const cachedLeaderboardEntries = defineCache(
         address: w.address,
         chain: w.chain,
         displayName: w.display_name,
+        imageUrl: w.image_url ?? null,
         score: Number(w.score),
         trustTier: w.trust_tier as TrustTier,
         confidenceBadge: w.confidence_badge ?? null,

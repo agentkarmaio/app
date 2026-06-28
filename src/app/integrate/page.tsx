@@ -45,7 +45,7 @@ if (!decision.allowed) {
 }
 // proceed with your own service call. AgentKarma never proxies it.`;
 
-const SDK_ROADMAP_SHAPE = `// Planned shape for evaluateTrust v0.2 (not shipped yet)
+const SDK_ROADMAP_SHAPE = `// Planned shape for evaluateTrust v0.3 (not shipped yet)
 const decision = evaluateTrust(snap, { face: 'provider' });
 
 decision.band;                     // 'high' | 'medium' | 'low' | 'unknown'
@@ -92,7 +92,7 @@ export default async function IntegratePage() {
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 text-[13px] font-[510] text-[#d0d6e0] transition-colors hover:text-[#f7f8f8]"
           >
-            npm install @agentkarma/sdk
+            bun add @agentkarma/sdk
             <ArrowUpRight className="size-3.5" />
           </a>
           <a
@@ -125,10 +125,10 @@ export default async function IntegratePage() {
             label="x402 receipts"
             sub="Tier-1 signal"
           />
-          <Stat value="2" label="Live chains" sub="Solana · Celo" />
+          <Stat value="3" label="Live chains" sub="Solana · Celo · Stellar" />
           <Stat
-            value="v0.1"
-            label="SDK shipped"
+            value="v0.2.1"
+            label="SDK on npm"
             sub="@agentkarma/sdk"
           />
         </div>
@@ -151,9 +151,9 @@ export default async function IntegratePage() {
             score is the attestation, on-chain, portable.
           </LiveFact>
           <LiveFact title="MCP server">
-            <span className="font-mono text-[#d0d6e0]">get_celo_agent</span> over
-            streamable HTTP. An agent can read another agent&apos;s reputation
-            without going through your code.
+            Turnkey <span className="font-mono text-[#d0d6e0]">npx @agentkarma/mcp</span> or
+            the hosted streamable-HTTP endpoint. An agent reads another
+            agent&apos;s reputation without going through your code.
           </LiveFact>
         </div>
 
@@ -255,34 +255,58 @@ export default async function IntegratePage() {
           <div className="space-y-3">
             <CodeBlock lang="ts">{SDK_QUICK_START}</CodeBlock>
             <p className="text-[11.5px] leading-relaxed text-[#62666d]">
-              The SDK is zero-runtime-dependency, framework-agnostic (Node, Bun,
-              Deno, browser, edge), and never signs or proxies anything. Pull the
-              snapshot, evaluate locally, decide locally.
+              <span className="font-mono text-[#8a8f98]">bun add @agentkarma/sdk</span>. Zero runtime
+              deps, framework-agnostic (Node, Bun, Deno, browser, edge), never signs or proxies
+              anything. Pull the snapshot, evaluate locally, decide locally. Need the MCP wiring? Import
+              the tool catalog from{' '}
+              <span className="font-mono text-[#8a8f98]">@agentkarma/sdk/tools</span> or a ready server
+              from <span className="font-mono text-[#8a8f98]">@agentkarma/sdk/mcp</span> — or just run{' '}
+              <span className="font-mono text-[#8a8f98]">npx @agentkarma/mcp</span>.
             </p>
           </div>
 
           <div className="space-y-4 rounded-md border border-[rgb(255_255_255/0.06)] bg-[rgb(255_255_255/0.015)] p-5">
             <p className="text-[10.5px] font-[510] uppercase tracking-[0.14em] text-[#62666d]">
-              What ships in v0.1
+              What ships in v0.2.1
             </p>
             <ul className="space-y-2.5 text-[12px] leading-relaxed text-[#d0d6e0]">
               <ShippedItem>createAgentKarmaClient()</ShippedItem>
               <ShippedItem>getKarma · getProviderKarma · getConsumerKarma</ShippedItem>
-              <ShippedItem>getCeloAgent(agentId)</ShippedItem>
-              <ShippedItem>evaluateTrust (boolean gate)</ShippedItem>
+              <ShippedItem>getCeloAgent · getAgentHistory · searchAgents</ShippedItem>
+              <ShippedItem>getSuccessionStatus · getBondStatus · getSuretyKarma</ShippedItem>
+              <ShippedItem>evaluateTrust (score, badge, autonomy, succession + bond gates)</ShippedItem>
               <ShippedItem>buildFeedbackMessage + submitFeedback</ShippedItem>
-              <ShippedItem>Typed error tree (7 subclasses)</ShippedItem>
+              <ShippedItem>Typed error tree (8 subclasses)</ShippedItem>
+              <ShippedItem>/tools — JSON-Schema MCP tool catalog</ShippedItem>
+              <ShippedItem>/mcp — drop-in MCP server builder</ShippedItem>
             </ul>
-            <div className="border-t border-[rgb(255_255_255/0.06)] pt-3 text-[11.5px] text-[#62666d]">
-              <span className="font-mono">@agentkarma/sdk@0.1</span> · MIT ·{' '}
-              <a
-                href="https://github.com/agentkarma"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[#8a8f98] underline underline-offset-2 hover:text-[#d0d6e0]"
-              >
-                GitHub
-              </a>
+            <div className="space-y-2 border-t border-[rgb(255_255_255/0.06)] pt-3 text-[11.5px] text-[#62666d]">
+              <p>
+                <span className="font-mono">@agentkarma/sdk@0.2.1</span> · zero runtime deps · MIT ·{' '}
+                <a
+                  href="https://github.com/agentkarmaio/sdk"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[#8a8f98] underline underline-offset-2 hover:text-[#d0d6e0]"
+                >
+                  GitHub
+                </a>
+              </p>
+              <p>
+                Wired up turnkey:{' '}
+                <a
+                  href="https://www.npmjs.com/package/@agentkarma/mcp"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-[#8a8f98] underline underline-offset-2 hover:text-[#d0d6e0]"
+                >
+                  npx @agentkarma/mcp
+                </a>{' '}
+                — see the{' '}
+                <Link href="/docs/mcp" className="text-[#8a8f98] underline underline-offset-2 hover:text-[#d0d6e0]">
+                  MCP guide
+                </Link>.
+              </p>
             </div>
           </div>
         </div>
@@ -365,8 +389,8 @@ export default async function IntegratePage() {
           />
           <RoadmapRow
             title="Risk-band pricing inputs"
-            blurb="evaluateTrust extends from { allowed, reasons } to { band, recommendedFeeMultiplier, recommendedRateLimit }. Reputation becomes a pricing primitive for lending desks, x402 facilitators, and marketplaces."
-            target="v0.2 — Q3 2026"
+            blurb="evaluateTrust extends from { allowed, reasons, observed } to add { band, recommendedFeeMultiplier, recommendedRateLimit }. Reputation becomes a pricing primitive for lending desks, x402 facilitators, and marketplaces."
+            target="v0.3 — Q3 2026"
             anchor="pricing"
           />
           <RoadmapRow
@@ -383,7 +407,7 @@ export default async function IntegratePage() {
           </p>
           <CodeBlock lang="ts">{SDK_ROADMAP_SHAPE}</CodeBlock>
           <p className="text-[11px] leading-relaxed text-[#62666d]">
-            Shape is provisional until v0.2 lands. Show this to your team to scope
+            Shape is provisional until v0.3 lands. Show this to your team to scope
             the change; don&apos;t ship against it yet.
           </p>
         </div>
@@ -412,7 +436,7 @@ export default async function IntegratePage() {
               <ArrowUpRight className="size-3" />
             </a>
             <a
-              href="https://github.com/agentkarma"
+              href="https://github.com/agentkarmaio/sdk"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 font-[510] text-[#8a8f98] hover:text-[#d0d6e0] transition-colors"

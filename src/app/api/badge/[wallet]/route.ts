@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getWallet, getTransactions, getFeedbackSummary, getLatestSignalValues } from '@/db/client';
+import { getTransactions, getFeedbackSummary, getLatestSignalValues } from '@/db/client';
+import { resolveAgentChain } from '@/app/agent/[wallet]/resolve-chain';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy } from '@/scoring/autonomy';
@@ -33,10 +34,21 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
   }
 
-  const [walletRow, transactions] = await Promise.all([
-    getWallet(wallet),
-    getTransactions(wallet, 1000),
-  ]);
+  // Resolve the agent's chain instead of assuming Solana. The badge is embedded
+  // for agents on every chain (leaderboard + explore are multi-chain), so a
+  // Solana-only lookup 404'd every Celo/Arc/Stellar agent — including the #1
+  // leaderboard agent the /widget Live Preview samples (the broken-image bug).
+  // An optional ?chain= hint disambiguates an EVM address registered on both
+  // Celo and Arc; absent, the address format + DB pick the chain.
+  const chainHint = searchParams.get('chain') ?? undefined;
+  const resolved = await resolveAgentChain(wallet, chainHint);
+  const walletRow = resolved.wallet;
+
+  // Receipt-based live scoring only applies to Solana — the only chain with
+  // indexed x402 transactions. Other chains render off the stored row.
+  const transactions = resolved.chain === 'solana'
+    ? await getTransactions(wallet, 1000)
+    : [];
 
   if (!walletRow && transactions.length === 0) {
     return NextResponse.json({ error: 'Wallet not found' }, { status: 404 });

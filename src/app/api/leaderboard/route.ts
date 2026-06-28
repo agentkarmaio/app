@@ -54,6 +54,7 @@ export async function GET(request: NextRequest) {
         address: w.address,
         chain: w.chain,
         displayName: w.display_name ?? null,
+        imageUrl: w.image_url ?? null,
         score: Number(w.score),
         providerScore: w.provider_score != null ? Number(w.provider_score) : Number(w.score),
         consumerScore: w.consumer_score != null ? Number(w.consumer_score) : null,

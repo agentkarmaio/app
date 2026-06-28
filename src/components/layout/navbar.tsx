@@ -6,7 +6,18 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Menu } from 'lucide-react';
 import { WalletConnectButton } from '@/components/wallet/wallet-connect-button';
+import { EvmWalletButton } from '@/components/wallet/evm-wallet-button';
 import { ChainSwitcher } from '@/components/layout/chain-switcher';
+import { ChainSelectionProvider, useChainSelection } from '@/components/layout/chain-selection';
+import { isEvmChain } from '@/lib/chain-meta';
+
+/** Chain-aware connect: injected EVM wallet on Celo/Arc, Solana adapter elsewhere.
+ *  Reads the active chain from context so an in-place switch on an agent page
+ *  swaps the wallet without navigating. */
+function ConnectButton() {
+  const { active } = useChainSelection();
+  return isEvmChain(active) ? <EvmWalletButton /> : <WalletConnectButton />;
+}
 
 const PRIMARY_ITEMS = [
   { href: '/', label: 'Leaderboard' },
@@ -79,6 +90,7 @@ export function Navbar() {
   }, [open, moreOpen]);
 
   return (
+    <ChainSelectionProvider>
     <header className="sticky top-0 z-50 px-4 pt-4">
       <div className="mx-auto flex h-11 max-w-5xl items-center justify-between rounded-full border border-[rgb(255_255_255/0.06)] bg-transparent pl-4 pr-2 backdrop-blur-xl backdrop-saturate-150 shadow-[0_1px_0_0_rgb(255_255_255/0.04)_inset,0_8px_24px_-12px_rgb(0_0_0/0.6)]">
         <Link href="/" className="karma-logo-group flex items-center gap-2">
@@ -186,7 +198,7 @@ export function Navbar() {
             data-tour="connect"
             className="ml-1 hidden border-l border-[rgb(255_255_255/0.06)] pl-2 md:block"
           >
-            <WalletConnectButton />
+            <ConnectButton />
           </div>
 
           <div ref={menuRef} className="relative md:hidden">
@@ -232,7 +244,7 @@ export function Navbar() {
                 <div className="mx-1 my-1 h-px bg-[rgb(255_255_255/0.06)]" />
 
                 <div className="px-1 pb-1">
-                  <WalletConnectButton />
+                  <ConnectButton />
                 </div>
               </div>
             )}
@@ -240,5 +252,6 @@ export function Navbar() {
         </div>
       </div>
     </header>
+    </ChainSelectionProvider>
   );
 }

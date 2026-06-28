@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Chain, TrustTier } from '@/db/schema';
 import { agentHref } from '@/lib/agent-href';
+import { ChainMark } from '@/components/karma/chain-badge';
+import { CHAIN_META } from '@/lib/chain-meta';
 
 interface Agent {
   // chain is included so addresses that collide across EVM chains (Celo/Arc)
@@ -209,16 +211,6 @@ export function TrustGraphMini() {
   const hoveredAgent = hovered
     ? data?.agents.find((a) => agentKey(a) === hovered) ?? null
     : null;
-
-  // Distinct chains actually present in the rendered set — drives the
-  // honest "{N} agents · {C} chains" caption. Stellar may contribute zero
-  // rows today, so this can read 3 chains instead of 4 without lying.
-  const chainCount = useMemo(() => {
-    if (!data) return 0;
-    const chains = new Set<Chain>();
-    for (const a of data.agents.slice(0, MAX_NODES)) chains.add(a.chain);
-    return chains.size;
-  }, [data]);
 
   if (!data || data.agents.length === 0) {
     return <div className="h-[360px] w-full" aria-hidden />;
@@ -563,9 +555,13 @@ export function TrustGraphMini() {
 
       {hoveredAgent && (
         <div className="pointer-events-none absolute left-2 top-2 rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(15_16_17/0.88)] px-2.5 py-1.5 text-[10.5px] backdrop-blur-sm shadow-[0_4px_12px_-4px_rgb(0_0_0/0.8)]">
-          <p className="font-mono text-[#f7f8f8]">
-            {hoveredAgent.displayName ?? shortAddr(hoveredAgent.address)}
-          </p>
+          <div className="flex items-center gap-1.5">
+            <ChainMark chain={hoveredAgent.chain} />
+            <span className="text-[#8a8f98]">{CHAIN_META[hoveredAgent.chain].label}</span>
+            <span className="font-mono text-[#f7f8f8]">
+              {hoveredAgent.displayName ?? shortAddr(hoveredAgent.address)}
+            </span>
+          </div>
           <p className="mt-0.5 flex items-center gap-1.5 text-[#8a8f98]">
             <span
               className="inline-block size-1.5 rounded-full"
@@ -576,9 +572,6 @@ export function TrustGraphMini() {
         </div>
       )}
 
-      <div className="pointer-events-none absolute bottom-1 right-1 font-mono text-[9px] tabular-nums text-[#4f5258]">
-        {Math.min(data.agents.length, MAX_NODES)} agents · {chainCount} chain{chainCount === 1 ? '' : 's'}
-      </div>
     </div>
   );
 }

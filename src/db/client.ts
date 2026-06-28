@@ -2828,6 +2828,28 @@ export async function getErc8004Agent(
   return (data as Record<string, unknown>) ?? null;
 }
 
+/**
+ * Find the best ERC-8004 registry agent an EVM address controls (as owner or
+ * agentWallet) across Celo + Arc, ranked by metadata score. Lets address-only
+ * surfaces (the OG image, which never sees `?agentId=`) resolve a registry agent
+ * that isn't in `wallets`. Fleet owners control many — we surface the top one.
+ */
+export async function getErc8004AgentByAddress(
+  address: string,
+): Promise<{ row: Record<string, unknown>; chain: string } | null> {
+  const lc = address.toLowerCase();
+  const { data, error } = await supabase
+    .from('erc8004_agents')
+    .select('*')
+    .in('chain', ['celo', 'arc'])
+    .or(`owner.eq.${lc},agent_wallet.eq.${lc}`)
+    .order('metadata_score', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  const row = data?.[0] as Record<string, unknown> | undefined;
+  return row ? { row, chain: String(row.chain) } : null;
+}
+
 // --- ERC-8004 AK-connected feedback ------------------------------------------
 //
 // The feedback AgentKarma is directly involved in on an EVM 8004 chain:

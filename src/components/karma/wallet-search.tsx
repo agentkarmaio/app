@@ -15,6 +15,7 @@ interface SearchResult {
   score: number;
   trustTier: TrustTier;
   txCount: number;
+  agentId: number | null;
 }
 
 function shortAddr(a: string): string {
@@ -197,6 +198,11 @@ export function WalletSearch() {
                       <span className="truncate text-[13px] text-[#d0d6e0]">
                         {r.displayName ?? shortAddr(r.address)}
                       </span>
+                      {r.agentId != null && (
+                        <span className="shrink-0 font-mono text-[11px] text-[#62666d]">
+                          #{r.agentId}
+                        </span>
+                      )}
                       <TierBadge tier={r.trustTier} size="sm" />
                     </div>
                     <span className="shrink-0 text-[13px] font-[510] tabular-nums text-[#8a8f98]">

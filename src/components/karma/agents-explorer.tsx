@@ -11,6 +11,7 @@ import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge as ConfidenceBadgeChip } from '@/components/karma/confidence-badge';
 import { AutonomyChip } from '@/components/karma/autonomy-chip';
 import { ChainBadge } from '@/components/karma/chain-badge';
+import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { ChainFilterPill, type ChainFilter } from '@/components/karma/chain-filter-pill';
 import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
@@ -65,6 +66,7 @@ interface ApiEntry {
   chain: Chain;
   agentId?: number | null;
   displayName: string | null;
+  imageUrl: string | null;
   claimed: boolean;
   providerScore: number;
   consumerScore: number | null;
@@ -812,6 +814,12 @@ function AgentRow({ entry }: { entry: ApiEntry }) {
       <td className="px-3 py-3 tabular-nums text-[#62666d] text-[11px]">{entry.rank}</td>
       <td className="px-3 py-3">
         <div className="flex items-center gap-2 min-w-0">
+          <AgentAvatar
+            src={entry.imageUrl}
+            name={entry.displayName ?? entry.address}
+            size={22}
+            className="rounded-md"
+          />
           <ChainBadge chain={entry.chain} />
           {entry.displayName ? (
             <Link

@@ -9,7 +9,7 @@ const PROTOCOLS = [
   { label: 'x402', role: 'payments' },
   { label: '8004', role: 'identity' },
   { label: 'SAS', role: 'attestation' },
-  { label: 'Solana · Celo', role: 'settlement' },
+  { label: 'Solana · Celo · Stellar · Arc*', role: 'settlement' },
 ];
 
 function LegendDiamond({ color }: { color: string }) {
@@ -281,6 +281,8 @@ export async function Hero() {
               </span>
             ))}
           </div>
+
+          <p className="mt-1.5 text-[10px] text-[#4f5258]">* Arc on testnet</p>
 
           <div className="mt-7 space-y-3">
             <div className="w-full max-w-md">

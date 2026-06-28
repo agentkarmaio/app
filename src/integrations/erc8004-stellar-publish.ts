@@ -284,14 +284,21 @@ export async function publishStellarScore(a: PublishStellarScoreArgs): Promise<P
     }
   }
 
-  const feedbackUri = `https://agentkarma.io/agent/${score.address}`;
-  const feedbackHash = feedbackHashFromJson({
+  // Inline the score attestation as a data: URI so the URI's CONTENT is exactly
+  // what feedbackHash covers (sha256 of the same JSON) — a verifier can decode,
+  // hash, and reconcile. Previously feedbackUri pointed at the HTML profile page
+  // while feedbackHash hashed this JSON, so the two never matched. The profile
+  // link is preserved inside the payload. (Server-side: Buffer is available.)
+  const payload = {
     address: score.address,
     providerScore: score.providerScore,
     consumerScore: score.consumerScore,
     trustTier: score.trustTier,
     confidenceBadge: score.confidenceBadge,
-  });
+    profile: `https://agentkarma.io/agent/${score.address}`,
+  };
+  const feedbackUri = `data:application/json;base64,${Buffer.from(JSON.stringify(payload)).toString('base64')}`;
+  const feedbackHash = feedbackHashFromJson(payload);
 
   const result = await publishStellarFeedback(
     {
