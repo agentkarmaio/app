@@ -12,6 +12,11 @@
 -- supersedes them) so an owner-fleet isn't double-counted against its agents.
 -- Column projection matches the `wallets` shape getAgents() filters/sorts on.
 
+-- Agent logo, denormalized onto wallets so list queries reading `wallets`
+-- directly (the homepage leaderboard) can render it. Idempotent + co-located so
+-- it runs before the view that projects the column, regardless of apply order.
+ALTER TABLE wallets ADD COLUMN IF NOT EXISTS image_url text;
+
 CREATE OR REPLACE VIEW explore_agents AS
   SELECT
     chain, address, display_name, claimed,
@@ -21,7 +26,10 @@ CREATE OR REPLACE VIEW explore_agents AS
     celo_agent_id::bigint   AS celo_agent_id,
     arc_agent_id::bigint    AS arc_agent_id,
     stellar_agent_id::bigint AS stellar_agent_id,
-    score
+    score,
+    -- Appended last: CREATE OR REPLACE VIEW only permits adding columns at the
+    -- end, never inserting mid-list.
+    image_url
   FROM wallets
   WHERE chain IN ('solana', 'stellar') AND score > 0
   UNION ALL
@@ -55,7 +63,8 @@ CREATE OR REPLACE VIEW explore_agents AS
     CASE WHEN chain = 'celo' THEN agent_id END AS celo_agent_id,
     CASE WHEN chain = 'arc'  THEN agent_id END AS arc_agent_id,
     NULL::bigint                         AS stellar_agent_id,
-    metadata_score::numeric              AS score
+    metadata_score::numeric              AS score,
+    registration->>'image'               AS image_url
   FROM erc8004_agents
   WHERE chain IN ('celo', 'arc');
 

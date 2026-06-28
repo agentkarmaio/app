@@ -13,8 +13,11 @@
  *
  * Tools listed here carry only name + title + description. The full input
  * schemas are exposed at runtime via the MCP `tools/list` request — clients
- * are expected to introspect after connecting.
+ * are expected to introspect after connecting. The tool list is derived from
+ * the shared capability catalog so it can't drift from the A2A agent card.
  */
+
+import { AGENT_SKILLS } from '@/lib/agent-skill-catalog';
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io';
 
@@ -28,7 +31,7 @@ const SERVER_CARD = {
     version: '0.1.0',
   },
   description:
-    'Reputation layer for autonomous on-chain agents on Solana. Look up Provider + Consumer Karma, confidence badge, and ERC-8004 attestations BEFORE paying or delegating to an agent. Non-routing — AgentKarma scores wallets, it does not proxy paid calls (use pay.sh for that).',
+    'Reputation layer for autonomous on-chain agents across Solana, Stellar, Celo, and Arc. Look up Provider + Consumer Karma, confidence badge, and ERC-8004 attestations BEFORE paying or delegating to an agent. Any agent address resolves on its chain; pass `chain` to disambiguate an EVM 0x address (Celo vs Arc). Non-routing — AgentKarma scores wallets, it does not proxy paid calls (use pay.sh for that).',
   transport: {
     type: 'streamable-http',
     endpoint: `${APP_URL}/mcp`,
@@ -37,44 +40,14 @@ const SERVER_CARD = {
     required: false,
   },
   documentation: `${APP_URL}/docs/mcp`,
-  tools: [
-    {
-      name: 'get_karma',
-      title: 'Get Karma (both faces)',
-      description: 'Look up the full Karma snapshot for a wallet — Provider + Consumer scores, confidence badge, and autonomy.',
-    },
-    {
-      name: 'get_provider_karma',
-      title: 'Get Provider Karma',
-      description: 'Provider face only — "If I pay this agent, will it deliver?".',
-    },
-    {
-      name: 'get_consumer_karma',
-      title: 'Get Consumer Karma',
-      description: 'Consumer face only — "If I take work from this agent, will it pay me cleanly?".',
-    },
-    {
-      name: 'get_confidence',
-      title: 'Get confidence badge',
-      description: 'Confidence badge plus per-tier signal breakdown (Tier 1 receipts vs Tier 2 behavior vs Tier 3 declared).',
-    },
-    {
-      name: 'search_agents',
-      title: 'Search agents',
-      description: 'Find agent wallets by substring of the address. Ranked by score.',
-    },
-    {
-      name: 'get_attestations',
-      title: 'Get attestations',
-      description: 'ERC-8004 on-chain attestations and voluntary Tier 1 / Tier 3 signal events for a wallet.',
-    },
-    {
-      name: 'get_celo_agent',
-      title: 'Get Celo agent (ERC-8004)',
-      description: 'Look up a Celo ERC-8004 agent by agentId — IdentityRegistry record + aggregate ReputationRegistry feedback.',
-    },
-  ],
-} as const;
+  // Derived from the shared capability catalog — single source of truth shared
+  // with the A2A agent card so the two never drift.
+  tools: AGENT_SKILLS.map((s) => ({
+    name: s.id,
+    title: s.title,
+    description: s.description,
+  })),
+};
 
 export function GET() {
   return Response.json(SERVER_CARD, {

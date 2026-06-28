@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runCeloX402Indexer } from '@/indexer/celo-x402';
-import { celoX402FacilitatorSet } from '@/config/celo-x402';
+import { celoX402FacilitatorSetWithDiscovered } from '@/config/celo-x402';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -37,14 +37,16 @@ export async function POST(request: NextRequest) {
   }
 
   // Honest dormant signal in the scheduler log: nothing to match until seeded.
-  if (celoX402FacilitatorSet().size === 0) {
+  // Uses the merged set (curated + env + verified self-seeded payees) so a run
+  // driven purely by discovered payees is not falsely reported as dormant.
+  if ((await celoX402FacilitatorSetWithDiscovered()).size === 0) {
     return NextResponse.json(
       {
         fetched: 0,
         inserted: 0,
         skipped:
-          'CELO_X402_FACILITATORS not seeded — add a verified payee/facilitator to ' +
-          'src/config/celo-x402.ts or the CELO_X402_FACILITATORS env',
+          'no Celo x402 facilitator/payee seeded — add one to src/config/celo-x402.ts, ' +
+          'the CELO_X402_FACILITATORS env, or run scripts/celo-x402-discover-payees.ts',
       },
       { status: 200 },
     );

@@ -11,12 +11,31 @@
  */
 
 import { ImageResponse } from 'next/og';
-import { getWallet } from '@/db/client';
+import { resolveAgentCardFields } from './og-fields';
 
 export const runtime = 'nodejs';
 export const contentType = 'image/png';
 export const size = { width: 1200, height: 630 };
 export const alt = 'AgentKarma agent reputation card';
+
+const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io';
+const LOGO_URL = `${BASE_URL}/brand/agentkarma-dark-X-transparent.png`;
+
+/**
+ * Fetch the brand mark and inline it as a data URI so Satori renders it without
+ * a network dependency at draw time. Returns null on any failure — the card
+ * then renders without the mark rather than 500-ing the whole OG image.
+ */
+async function loadLogo(): Promise<string | null> {
+  try {
+    const res = await fetch(LOGO_URL);
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    return `data:image/png;base64,${buf.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
 
 const TIER_COLORS: Record<string, string> = {
   Excellent: '#10b981',
@@ -41,17 +60,21 @@ export default async function AgentOGImage(
   { params }: { params: Promise<{ wallet: string }> },
 ) {
   const { wallet } = await params;
-  const row = await getWallet(wallet).catch(() => null);
+  // The OG image gets no searchParams, so resolveAgentCardFields falls back to
+  // an address→ERC-8004-registry lookup for agents that aren't in `wallets`
+  // (the Celina demo agents etc.) — so the card shows real score/tier, not 0.
+  const f = await resolveAgentCardFields(wallet);
 
-  const name = row?.display_name ?? `Agent ${shortAddr(wallet)}`;
-  const score = Number(row?.provider_score ?? row?.score ?? 0);
-  const tier = (row?.trust_tier ?? 'Unrated') as keyof typeof TIER_COLORS;
-  const badge = (row?.confidence_badge ?? 'declared') as keyof typeof BADGE_TEXT;
-  const txCount = row?.tx_count ?? 0;
+  const name = f.name;
+  const score = f.score;
+  const tier = f.tier as keyof typeof TIER_COLORS;
+  const badge = f.badge as keyof typeof BADGE_TEXT;
+  const txCount = f.txCount;
 
   const tierColor = TIER_COLORS[tier] ?? TIER_COLORS.Unrated;
   const badgeMeta = BADGE_TEXT[badge] ?? BADGE_TEXT.declared;
-  const isClaimed = row?.claimed ?? false;
+  const isClaimed = f.claimed;
+  const logo = await loadLogo();
 
   return new ImageResponse(
     (
@@ -100,16 +123,15 @@ export default async function AgentOGImage(
               color: '#f7f8f8',
             }}
           >
-            <div
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                background:
-                  'linear-gradient(135deg, #8a92ff 0%, #7170ff 50%, #5e6ad2 100%)',
-                display: 'flex',
-              }}
-            />
+            {logo && (
+              <img
+                src={logo}
+                width={36}
+                height={36}
+                style={{ width: 36, height: 36 }}
+                alt="AgentKarma"
+              />
+            )}
             AgentKarma
           </div>
           {isClaimed && (

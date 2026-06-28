@@ -17,8 +17,9 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  // Matches address OR display_name across all chains. `chain` + `displayName`
-  // let the client render the agent's name + chain badge and link chain-aware.
+  // Matches address OR display_name OR exact ERC-8004 agentId across all chains.
+  // `chain` + `displayName` + `agentId` let the client render the agent's name +
+  // chain badge and link chain-aware (agentId disambiguates EVM owners).
   const rows = await searchWallets(q, 8);
   const results = rows.map((w) => ({
     address: w.address,
@@ -27,6 +28,7 @@ export async function GET(request: NextRequest) {
     score: w.score,
     trustTier: w.trustTier,
     txCount: w.txCount,
+    agentId: w.agentId,
   }));
 
   return NextResponse.json({ results }, {

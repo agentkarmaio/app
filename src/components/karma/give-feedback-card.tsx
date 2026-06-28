@@ -18,6 +18,7 @@ import {
   feedbackChainConfig,
   type EvmFeedbackChain,
 } from '@/lib/evm-feedback';
+import { MAX_COMMENT_LEN } from '@/lib/feedback-comment';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
@@ -36,6 +37,7 @@ export function GiveFeedbackCard({
   const { address, connect, getProvider } = useEvmWallet();
   const [stars, setStars] = useState(0);
   const [hover, setHover] = useState(0);
+  const [comment, setComment] = useState('');
   const [status, setStatus] = useState<Status>('idle');
   const [txHash, setTxHash] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -75,6 +77,8 @@ export function GiveFeedbackCard({
       const hash = await submitFeedback(provider, active, chain, {
         agentId,
         value: starsToValue(stars),
+        stars,
+        comment: comment.trim() || undefined,
       });
       setTxHash(hash);
       setStatus('success');
@@ -148,6 +152,25 @@ export function GiveFeedbackCard({
             <span className="ml-2 text-[12px] tabular-nums text-[#8a8f98]">{starsToValue(stars)} / 100</span>
           )}
         </div>
+
+        {!isOwner && (
+          <div className="space-y-1">
+            <textarea
+              value={comment}
+              onChange={(e) => setComment(e.target.value.slice(0, MAX_COMMENT_LEN))}
+              maxLength={MAX_COMMENT_LEN}
+              rows={2}
+              disabled={status === 'submitting'}
+              placeholder="Add a comment (optional) — stored on-chain with your rating"
+              className="w-full resize-none rounded-md border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] px-2.5 py-2 text-[12px] text-[#f7f8f8] placeholder:text-[#62666d] outline-none focus:border-[#5e6ad2] disabled:opacity-50"
+            />
+            {comment.length > 0 && (
+              <p className="text-right text-[10.5px] tabular-nums text-[#62666d]">
+                {comment.length} / {MAX_COMMENT_LEN}
+              </p>
+            )}
+          </div>
+        )}
 
         {isOwner ? (
           <p className="text-[12px] text-[#62666d]">

@@ -36,11 +36,16 @@ AgentKarma is *x402-first, not x402-only*. It indexes x402 payments, pay.sh rout
 - [pay.sh provider directory](${APP_URL}/paysh): 75 APIs ranked by Provider Karma.
 - [Agent profile](${APP_URL}/agent/{wallet}): full per-wallet karma breakdown.
 
+## Developer packages (npm)
+
+- [@agentkarma/sdk](https://www.npmjs.com/package/@agentkarma/sdk): TypeScript SDK, zero runtime deps, framework-agnostic (Node/Bun/Deno/browser/edge). \`createAgentKarmaClient()\` typed client + \`evaluateTrust(snapshot, policy)\` — a pure, local, explainable allow/deny trust gate (no network). Subpaths: \`@agentkarma/sdk/tools\` (JSON-Schema MCP tool catalog) and \`@agentkarma/sdk/mcp\` (server builder). Install: \`bun add @agentkarma/sdk\`. Repo: github.com/agentkarmaio/sdk.
+- [@agentkarma/mcp](https://www.npmjs.com/package/@agentkarma/mcp): turnkey MCP server — \`npx @agentkarma/mcp\` (stdio for Claude Desktop / Cursor) or \`--http\`. Bundles the SDK + MCP SDK. Read-only, no keys, non-routing. Repo: github.com/agentkarmaio/mcp.
+
 ## AI/MCP integration
 
-- [MCP server](${APP_URL}/mcp): streamable-http; tools: get_karma, get_provider_karma, get_consumer_karma, get_confidence, search_agents, get_attestations.
+- [MCP server](${APP_URL}/mcp): hosted streamable-http; tools include get_karma, get_provider_karma, get_consumer_karma, get_confidence, search_agents, get_attestations, get_celo_agent, get_stellar_karma, get_arc_karma, get_score_history, get_leaderboard, get_stats, get_succession, get_bond.
 - [MCP server card](${APP_URL}/.well-known/mcp/server-card.json): SEP-1649 discovery document.
-- [MCP integration guide](${APP_URL}/docs/mcp): Claude Desktop / Cursor / Continue config snippets.
+- [MCP integration guide](${APP_URL}/docs/mcp): \`npx @agentkarma/mcp\` turnkey + hosted endpoint config for Claude Desktop / Cursor / Continue.
 - [Full content for ingestion](${APP_URL}/llms-full.txt): canonical pitch + glossary + RFC excerpt.
 
 ## Optional

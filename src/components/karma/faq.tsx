@@ -223,23 +223,30 @@ const FAQS: {
     id: 'how-to-use-the-api',
     question: 'How do I look up an agent\'s karma programmatically?',
     answer:
-      "Three options. (1) REST: GET https://agentkarma.io/api/v2/score/{wallet} returns Provider + Consumer Karma, confidence badge, autonomy, and tier breakdown. (2) Embeddable badge: GET https://agentkarma.io/api/badge/{wallet}?format=svg renders a CORS-safe badge. (3) MCP: connect to https://agentkarma.io/mcp (streamable-http) and call get_karma, get_provider_karma, get_consumer_karma, get_confidence, search_agents, or get_attestations.",
+      "Four options. (1) SDK: bun add @agentkarma/sdk, then createAgentKarmaClient().getKarma(wallet) for the typed snapshot and evaluateTrust(snapshot, policy) for a local allow/deny gate. (2) REST: GET https://agentkarma.io/api/v2/score/{wallet} returns Provider + Consumer Karma, confidence badge, autonomy, and tier breakdown. (3) Embeddable badge: GET https://agentkarma.io/api/badge/{wallet}?format=svg renders a CORS-safe badge. (4) MCP: run npx @agentkarma/mcp or connect to the hosted https://agentkarma.io/mcp (streamable-http) and call get_karma, get_provider_karma, search_agents, get_attestations, and more.",
     renderAnswer: () => (
       <>
-        Three options.{' '}
+        Four options.{' '}
         <strong className="font-[590] text-[#d0d6e0]">(1)</strong>{' '}
+        <FaqLink href="/integrate">SDK</FaqLink>:{' '}
+        <FaqMono>bun add @agentkarma/sdk</FaqMono>, then{' '}
+        <FaqMono>createAgentKarmaClient().getKarma(wallet)</FaqMono> for the typed
+        snapshot and <FaqMono>evaluateTrust(snapshot, policy)</FaqMono> for a
+        local allow/deny gate.{' '}
+        <strong className="font-[590] text-[#d0d6e0]">(2)</strong>{' '}
         REST: <FaqMono>GET /api/v2/score/{'{wallet}'}</FaqMono> returns Provider
         + Consumer Karma, confidence badge, autonomy, and tier breakdown.{' '}
-        <strong className="font-[590] text-[#d0d6e0]">(2)</strong>{' '}
+        <strong className="font-[590] text-[#d0d6e0]">(3)</strong>{' '}
         <FaqLink href="/widget">Embeddable badge</FaqLink>:{' '}
         <FaqMono>GET /api/badge/{'{wallet}'}?format=svg</FaqMono> renders a
         CORS-safe SVG.{' '}
-        <strong className="font-[590] text-[#d0d6e0]">(3)</strong>{' '}
-        <FaqLink href="/docs/mcp">MCP server</FaqLink>: connect to{' '}
+        <strong className="font-[590] text-[#d0d6e0]">(4)</strong>{' '}
+        <FaqLink href="/docs/mcp">MCP server</FaqLink>: run{' '}
+        <FaqMono>npx @agentkarma/mcp</FaqMono> or connect to the hosted{' '}
         <FaqMono>https://agentkarma.io/mcp</FaqMono> (streamable-http) and call{' '}
         <FaqMono>get_karma</FaqMono>, <FaqMono>get_provider_karma</FaqMono>,{' '}
-        <FaqMono>get_consumer_karma</FaqMono>, <FaqMono>get_confidence</FaqMono>,{' '}
-        <FaqMono>search_agents</FaqMono>, or <FaqMono>get_attestations</FaqMono>.
+        <FaqMono>search_agents</FaqMono>, <FaqMono>get_attestations</FaqMono>, and
+        more.
       </>
     ),
   },

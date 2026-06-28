@@ -46,6 +46,11 @@ const AGENT_REGISTRATION = {
       endpoint: `${APP_URL}/.well-known/mcp/server-card.json`,
     },
     {
+      name: 'a2a-agent-card',
+      endpoint: `${APP_URL}/.well-known/agent-card.json`,
+      version: '0.3.0',
+    },
+    {
       name: 'protocol-rfc',
       endpoint: `${APP_URL}/protocol`,
       version: '0.3',

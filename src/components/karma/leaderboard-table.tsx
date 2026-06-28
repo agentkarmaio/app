@@ -6,6 +6,7 @@ import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge } from '@/components/karma/confidence-badge';
 import { AutonomyChip } from '@/components/karma/autonomy-chip';
 import { ChainBadge } from '@/components/karma/chain-badge';
+import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { agentHref } from '@/lib/agent-href';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { LivenessIndicator } from '@/components/karma/liveness-indicator';
@@ -19,6 +20,7 @@ export interface LeaderboardEntry {
   address: string;
   chain: Chain;
   displayName?: string | null;
+  imageUrl?: string | null;
   score: number;
   trustTier: TrustTier;
   confidenceBadge?: ConfidenceBadgeValue | null;
@@ -76,6 +78,12 @@ export function LeaderboardTable({
             </TableCell>
             <TableCell>
               <div className="flex items-center gap-2 min-w-0">
+                <AgentAvatar
+                  src={entry.imageUrl}
+                  name={entry.displayName ?? entry.address}
+                  size={22}
+                  className="rounded-md"
+                />
                 <ChainBadge chain={entry.chain} />
                 <Link
                   href={agentHref(entry)}

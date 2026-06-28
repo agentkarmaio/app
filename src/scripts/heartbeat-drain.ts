@@ -16,6 +16,12 @@
 
 import { drainHeartbeatsOnce } from './../successions/heartbeat-worker';
 import { isChain, type Chain } from '../db/schema';
+import { requireEnv } from '../lib/require-env';
+
+// DB writes are mandatory. Fail at line 1 with a clear message if the floor's
+// secrets are unset (see the 2026-06-23 outage — empty CI secrets crashed every
+// run silently). Mirrors keep-fresh.
+const REQUIRED_ENV = ['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'] as const;
 
 function numArg(flag: string, fallback: number): number {
   const i = process.argv.indexOf(flag);
@@ -37,6 +43,7 @@ const maxBatches = numArg('--max-batches', 20);
 const chain = chainArg();
 
 async function main() {
+  requireEnv(REQUIRED_ENV);
   const start = Date.now();
   console.log(`[heartbeat-drain] start · batch=${batch} maxBatches=${maxBatches} chain=${chain ?? 'all'}`);
 

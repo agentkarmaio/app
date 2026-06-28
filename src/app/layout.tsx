@@ -7,6 +7,7 @@ import { Navbar } from "@/components/layout/navbar";
 import { Footer } from "@/components/layout/footer";
 import { OpenReplay } from "@/components/layout/openreplay";
 import { SolanaWalletProvider } from "@/components/wallet/wallet-provider";
+import { EvmWalletProvider } from "@/components/wallet/evm-wallet-provider";
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono' });
@@ -154,12 +155,14 @@ export default function RootLayout({
     <html lang="en" className={cn("dark font-sans", inter.variable, mono.variable)}>
       <body className="min-h-screen overflow-x-hidden bg-background antialiased">
         <SolanaWalletProvider>
-          <OpenReplay />
-          <Navbar />
-          <main className="mx-auto max-w-5xl px-4 py-8">
-            {children}
-          </main>
-          <Footer />
+          <EvmWalletProvider>
+            <OpenReplay />
+            <Navbar />
+            <main className="mx-auto max-w-5xl px-4 py-8">
+              {children}
+            </main>
+            <Footer />
+          </EvmWalletProvider>
         </SolanaWalletProvider>
         <script
           type="application/ld+json"

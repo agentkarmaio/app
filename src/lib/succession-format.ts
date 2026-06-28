@@ -69,22 +69,63 @@ export function formatInterval(seconds: number): string {
   return `every ${d}d`;
 }
 
+type RelUnit = 'minute' | 'hour' | 'day' | 'month' | 'year';
+
+const TERSE_SUFFIX: Record<RelUnit, string> = {
+  minute: 'm',
+  hour: 'h',
+  day: 'd',
+  month: 'mo',
+  year: 'y',
+};
+
+const RTF_LONG = new Intl.RelativeTimeFormat('en', { numeric: 'always' });
+
 /**
- * Terse relative-past string ("3h ago", "2d ago", "just now") for a heartbeat
- * timestamp. Null in → "never".
+ * Bucket an elapsed-past duration into the coarsest sensible {value, unit}.
+ * 'just now' for sub-minute; null for null/unparseable input. The single source
+ * of bucket boundaries shared by the terse and verbose formatters below.
  */
-export function formatRelativePast(iso: string | null, now: Date = new Date()): string {
-  if (!iso) return 'never';
+function relativePastParts(
+  iso: string | null,
+  now: Date,
+): { value: number; unit: RelUnit } | 'just now' | null {
+  if (!iso) return null;
   const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return 'never';
+  if (!Number.isFinite(then)) return null;
   const secs = Math.max(0, (now.getTime() - then) / 1000);
   if (secs < 60) return 'just now';
   const mins = secs / 60;
-  if (mins < 60) return `${Math.round(mins)}m ago`;
+  if (mins < 60) return { value: Math.round(mins), unit: 'minute' };
   const hours = mins / 60;
-  if (hours < 24) return `${Math.round(hours)}h ago`;
+  if (hours < 24) return { value: Math.round(hours), unit: 'hour' };
   const days = hours / 24;
-  return `${Math.round(days)}d ago`;
+  if (days < 30) return { value: Math.round(days), unit: 'day' };
+  const months = days / 30;
+  if (months < 12) return { value: Math.round(months), unit: 'month' };
+  return { value: Math.round(days / 365), unit: 'year' };
+}
+
+/**
+ * Terse relative-past string ("3h ago", "2d ago", "3mo ago", "just now") for a
+ * timestamp. Used for heartbeats. Null in → "never".
+ */
+export function formatRelativePast(iso: string | null, now: Date = new Date()): string {
+  const parts = relativePastParts(iso, now);
+  if (parts === null) return 'never';
+  if (parts === 'just now') return 'just now';
+  return `${parts.value}${TERSE_SUFFIX[parts.unit]} ago`;
+}
+
+/**
+ * Verbose relative-past string ("8 hours ago", "2 months ago", "1 year ago")
+ * for "last active"–style display. Localized via Intl. Null in → "never".
+ */
+export function formatRelativePastLong(iso: string | null, now: Date = new Date()): string {
+  const parts = relativePastParts(iso, now);
+  if (parts === null) return 'never';
+  if (parts === 'just now') return 'just now';
+  return RTF_LONG.format(-parts.value, parts.unit);
 }
 
 /** The interval presets offered in the claim-form succession disclosure. */

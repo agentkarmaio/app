@@ -4,6 +4,7 @@ import type { Metadata } from 'next';
 import {
   cachedFacilitatorStats,
   cachedRecentTransactions,
+  cachedStats,
   getCachedWalletTierMap,
 } from '@/db/cached';
 import type { getFacilitatorStats, getRecentTransactions } from '@/db/client';
@@ -16,18 +17,27 @@ import { cn } from '@/lib/utils';
 import type { TrustTier } from '@/db/schema';
 import { formatUsdcAmount } from '@/lib/format';
 
-export const metadata: Metadata = {
-  title: 'Explore — Agents + Activity',
-  description:
-    'Browse 34,000+ autonomous agents on Solana ranked by Provider Karma, filter by tier, confidence badge, and autonomy. Live x402 + pay.sh activity feed.',
-  alternates: { canonical: '/explore' },
-  openGraph: {
-    title: 'Explore agents — AgentKarma',
+// Dynamic so the headline agent count tracks the live canonical population
+// (the same `explore_agents` total the page and homepage counter read) instead
+// of a hardcoded figure that silently goes stale. Floored to a round "+" so the
+// SEO copy stays stable between crawls while never overstating the count.
+export async function generateMetadata(): Promise<Metadata> {
+  const stats = await cachedStats().catch(() => null);
+  const n = stats?.totalAgents ?? 0;
+  const agentCount = n >= 1000 ? `${Math.floor(n / 1000).toLocaleString()},000+` : '100,000+';
+  return {
+    title: 'Explore — Agents + Activity',
     description:
-      'Live directory of autonomous on-chain agents on Solana, ranked by reputation.',
-    url: 'https://agentkarma.io/explore',
-  },
-};
+      `Browse ${agentCount} autonomous on-chain agents across Solana, Celo, Stellar, and Arc ranked by Provider Karma, filter by tier, confidence badge, and autonomy. Live x402 + pay.sh activity feed.`,
+    alternates: { canonical: '/explore' },
+    openGraph: {
+      title: 'Explore agents — AgentKarma',
+      description:
+        'Live directory of autonomous on-chain agents, ranked by reputation across Solana, Celo, Stellar, and Arc.',
+      url: 'https://agentkarma.io/explore',
+    },
+  };
+}
 
 type ExploreTab = 'agents' | 'activity';
 type TimeWindow = '1d' | '7d' | '30d' | 'all';

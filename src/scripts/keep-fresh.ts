@@ -29,6 +29,13 @@ import { runIndexer } from '../indexer/index';
 import { drainOnce } from './rescore-dirty';
 import { getRecentTransactions } from '../db/client';
 import { assessIngestFreshness } from '../lib/ingest-health';
+import { requireEnv } from '../lib/require-env';
+
+// DB writes are mandatory; without them the floor cannot ingest. Fail at line 1
+// with a clear message (the 2026-06-23 outage: secrets unset → cryptic crash 8
+// frames deep, no alert). Helius is optional — the indexer falls back to the
+// free SOLANA_RPC_URL / public RPC, and the webhook step self-skips without a key.
+const REQUIRED_ENV = ['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'] as const;
 
 function numArg(flag: string, fallback: number): number {
   const i = process.argv.indexOf(flag);
@@ -43,6 +50,7 @@ const drainBatches = numArg('--drain-batches', 50);
 const drainLimit = numArg('--drain-limit', 500);
 
 async function main() {
+  requireEnv(REQUIRED_ENV);
   const start = Date.now();
   console.log(`[keep-fresh] start · mode=${backfill ? 'backfill' : 'incremental'} limit=${limit}`);
 

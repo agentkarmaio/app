@@ -21,14 +21,14 @@ interface ChainMark {
   testnet?: boolean;
   /** Brand tint approximations — kept dim so rows stay scannable. */
   tint: { bg: string; border: string; fg: string };
-  /** Inline SVG mark. 12px box, brand fill. */
-  Mark: () => React.ReactElement;
+  /** Inline SVG mark. 12px box by default; pass a className to resize. */
+  Mark: (props: { className?: string }) => React.ReactElement;
 }
 
 // Solana purple→cyan gradient → use the purple primary as a single fill.
-function SolanaMark() {
+function SolanaMark({ className = 'size-3 shrink-0' }: { className?: string }) {
   return (
-    <svg viewBox="0 0 12 12" aria-hidden className="size-3 shrink-0">
+    <svg viewBox="0 0 12 12" aria-hidden className={className}>
       <path
         d="M2.4 8.5h6.3a.4.4 0 0 1 .29.68l-1 1a.6.6 0 0 1-.43.18H1.27a.4.4 0 0 1-.29-.68l1-1a.6.6 0 0 1 .43-.18Zm0-3.25h6.3a.4.4 0 0 1 .29.68l-1 1a.6.6 0 0 1-.43.17H1.27a.4.4 0 0 1-.29-.68l1-1a.6.6 0 0 1 .43-.17Zm6.73-2.07-1 1a.6.6 0 0 1-.43.17H1.27a.4.4 0 0 1-.29-.68l1-1a.6.6 0 0 1 .43-.18H8.7a.4.4 0 0 1 .43.69Z"
         fill="#9c7cf9"
@@ -38,9 +38,9 @@ function SolanaMark() {
 }
 
 // Celo: the yellow square+circle mark.
-function CeloMark() {
+function CeloMark({ className = 'size-3 shrink-0' }: { className?: string }) {
   return (
-    <svg viewBox="0 0 12 12" aria-hidden className="size-3 shrink-0">
+    <svg viewBox="0 0 12 12" aria-hidden className={className}>
       <path
         fill="#fcff52"
         d="M1 1h10v3.57h-1.73a3.57 3.57 0 1 0 0 2.86H11V11H1z"
@@ -50,9 +50,9 @@ function CeloMark() {
 }
 
 // Stellar: simplified swept-arc mark.
-function StellarMark() {
+function StellarMark({ className = 'size-3 shrink-0' }: { className?: string }) {
   return (
-    <svg viewBox="0 0 12 12" aria-hidden className="size-3 shrink-0">
+    <svg viewBox="0 0 12 12" aria-hidden className={className}>
       <path
         fill="#cfe9ff"
         d="M6 1.2a4.8 4.8 0 0 0-4.6 6.13L11 2.6V1.5L4.4 4.93A3.6 3.6 0 0 1 9.46 2.7l1.18-.6A4.8 4.8 0 0 0 6 1.2Zm4.6 3.47L1 9.4v1.1l6.6-3.43A3.6 3.6 0 0 1 2.54 9.3l-1.18.6A4.8 4.8 0 0 0 10.6 4.67Z"
@@ -62,9 +62,9 @@ function StellarMark() {
 }
 
 // Arc: arch silhouette in a Circle-ish slate-blue.
-function ArcMark() {
+function ArcMark({ className = 'size-3 shrink-0' }: { className?: string }) {
   return (
-    <svg viewBox="0 0 12 12" aria-hidden className="size-3 shrink-0">
+    <svg viewBox="0 0 12 12" aria-hidden className={className}>
       <path
         fill="#7da6ff"
         d="M.2 11.3c.13-3.46.86-6.7 2.08-9.16C3.92.83 4.99.2 6 .2c1.01 0 2.08.63 3.72 1.94 1.22 2.46 1.95 5.7 2.08 9.16h-2.04c-.04-1.62-.21-3.16-.5-4.5C8.84 4 7.4 2.45 6 2.45S3.16 4 2.74 6.8a23 23 0 0 0-.5 4.5H.2Z"
@@ -112,6 +112,29 @@ const MARKS: Record<Chain, ChainMark> = {
     Mark: ArcMark,
   },
 };
+
+/**
+ * Bare chain glyph — the same brand-filled mark as <ChainBadge>, but without the
+ * chip/border, for dense visual contexts (the trust constellation legend + hover
+ * card) where a full chip would be too heavy. Defaults to 12px; pass a Tailwind
+ * size class to match surrounding text.
+ */
+export function ChainMark({
+  chain,
+  className,
+}: {
+  chain: Chain;
+  className?: string;
+}) {
+  const meta = MARKS[chain];
+  const Mark = meta.Mark;
+  const title = meta.testnet ? `${meta.label} (testnet)` : meta.label;
+  return (
+    <span role="img" aria-label={title} title={title} className="inline-flex shrink-0">
+      <Mark className={`${className ?? 'size-3'} shrink-0`} />
+    </span>
+  );
+}
 
 export function ChainBadge({
   chain,

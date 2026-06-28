@@ -4,7 +4,6 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ArrowLeft, ExternalLink, Globe, Verified } from 'lucide-react';
 import {
-  getWallet,
   getTransactions,
   getTransactionCount,
   getFeedbackSummary,
@@ -107,6 +106,33 @@ async function synthesizeRegistryWalletRow(
   } as Wallet;
 }
 import { resolveAgentChain } from './resolve-chain';
+import { resolveAgentCardFields } from './og-fields';
+
+/**
+ * Disambiguate which EVM chain an agentId belongs to using the address already
+ * in the URL. Without a `?chain=` hint an EVM 0x address is Celo-vs-Arc
+ * ambiguous, and the same agentId exists on BOTH chains as different agents — so
+ * we match on ownership: probe both registries and pick the chain whose agentId
+ * record is owned by (or whose agentWallet is) this address. Returns null when
+ * neither matches, or when BOTH match (a real conflict that still needs an
+ * explicit `?chain=`).
+ */
+async function probeRegistryChainByAgentId(address: string, agentId: number): Promise<Chain | null> {
+  const lc = address.toLowerCase();
+  const owns = (row: Record<string, unknown> | null): boolean =>
+    !!row &&
+    (String(row.owner ?? '').toLowerCase() === lc ||
+      String(row.agent_wallet ?? '').toLowerCase() === lc);
+  const [celo, arc] = await Promise.all([
+    getErc8004Agent('celo', agentId).catch(() => null),
+    getErc8004Agent('arc', agentId).catch(() => null),
+  ]);
+  const celoOwns = owns(celo);
+  const arcOwns = owns(arc);
+  if (celoOwns && !arcOwns) return 'celo';
+  if (arcOwns && !celoOwns) return 'arc';
+  return null;
+}
 import { getAdapter } from '@/chain-adapters/registry';
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -314,31 +340,35 @@ function ScanningAgentStub({
 }
 
 export async function generateMetadata(
-  { params }: { params: Promise<{ wallet: string }> },
+  { params, searchParams }: {
+    params: Promise<{ wallet: string }>;
+    searchParams: Promise<{ chain?: string; agentId?: string }>;
+  },
 ): Promise<Metadata> {
   const { wallet } = await params;
+  const { agentId: agentIdHint } = await searchParams;
   if (!wallet || wallet.length < 32) {
     return { title: 'Agent not found' };
   }
+  const agentId = agentIdHint != null && /^\d+$/.test(agentIdHint) ? Number(agentIdHint) : null;
 
-  const row = await getWallet(wallet).catch(() => null);
-  const name = row?.display_name ?? `Agent ${shortAddr(wallet)}`;
-  const score = Number(row?.provider_score ?? row?.score ?? 0);
-  const tier = row?.trust_tier ?? 'Unrated';
-  const badge = row?.confidence_badge ?? 'declared';
-  const txCount = row?.tx_count ?? 0;
-
-  const badgeLabel = badge === 'receipt-backed'
+  // Resolve the SAME fields the OG image uses — handles ERC-8004 registry agents
+  // (not in `wallets`) so the unfurl shows real score/tier/chain, not 0/Unrated.
+  const f = await resolveAgentCardFields(wallet, { agentId });
+  const badgeLabel = f.badge === 'receipt-backed'
     ? 'Receipt-backed'
-    : badge === 'behavior-inferred'
+    : f.badge === 'behavior-inferred'
       ? 'Behavior-inferred'
       : 'Declared';
+  const chainLabel = f.chain.charAt(0).toUpperCase() + f.chain.slice(1);
 
-  const title = `${name} — Karma ${score.toFixed(0)}/100 · ${tier}`;
-  const description =
-    `${name}: Provider Karma ${score.toFixed(1)}/100, trust tier ${tier}, confidence ${badgeLabel}. `
-    + `${txCount.toLocaleString()} on-chain transactions indexed. `
-    + `Live reputation snapshot for autonomous agent ${wallet} on Solana via AgentKarma.`;
+  const title = `${f.name} — Karma ${f.score.toFixed(0)}/100 · ${f.tier}`;
+  const description = f.isRegistry
+    ? `${f.name}: Provider Karma ${f.score.toFixed(1)}/100, trust tier ${f.tier}, confidence ${badgeLabel}. `
+      + `ERC-8004 agent on ${chainLabel}. Live reputation snapshot via AgentKarma.`
+    : `${f.name}: Provider Karma ${f.score.toFixed(1)}/100, trust tier ${f.tier}, confidence ${badgeLabel}. `
+      + `${f.txCount.toLocaleString()} on-chain transactions indexed. `
+      + `Live reputation snapshot for autonomous agent on ${chainLabel} via AgentKarma.`;
 
   const canonical = `/agent/${wallet}`;
   return {
@@ -719,8 +749,17 @@ export default async function AgentProfilePage({
     // most registry agents only resolve via this path). Build a minimal walletRow
     // from the cached erc8004_agents row so the profile renders accurate
     // score/tier without a wallets entry.
-    const evmChain: Chain | null =
+    let evmChain: Chain | null =
       resolved.chain ?? (chainHint === 'celo' || chainHint === 'arc' ? chainHint : null);
+
+    // No explicit chain (from a ?chain= hint or a wallets row), but we have an
+    // agentId: resolve the chain by matching that agentId's on-chain owner to the
+    // address in the URL, so a shared link like /agent/<addr>?agentId=N works
+    // without a manual ?chain=. Only a genuine conflict (the same address owns
+    // agentId N on BOTH Celo and Arc) stays ambiguous and still needs ?chain=.
+    if (evmChain == null && agentIdNum != null) {
+      evmChain = await probeRegistryChainByAgentId(wallet, agentIdNum);
+    }
 
     const celoAgentId = resolved.wallet?.celo_agent_id
       ?? (evmChain === 'celo' ? agentIdNum : null);
