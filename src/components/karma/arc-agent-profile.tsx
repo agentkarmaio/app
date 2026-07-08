@@ -14,11 +14,7 @@
  */
 import Link from 'next/link';
 import { ArrowLeft, ExternalLink, Globe, Verified } from 'lucide-react';
-import {
-  readAgent,
-  aggregateFeedback,
-  type ArcAgent,
-} from '@/integrations/erc8004-arc';
+import { getCachedEvmAgentOnchain } from '@/db/cached';
 import { ScoreRing } from '@/components/karma/score-ring';
 import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { TierBadge } from '@/components/karma/tier-badge';
@@ -64,15 +60,11 @@ export async function ArcAgentProfile({
   /** Observe-only Succession + Bonding grid, loaded chain-aware in the page. */
   deadMansSwitch?: React.ReactNode;
 }) {
-  // Read on-chain identity + aggregate feedback in parallel. If the chain call
-  // fails (Arc testnet RPC blip, contract redeploys, etc.), fall back to the
-  // DB row alone — we still want to show something useful.
-  const [agent, feedback] = await Promise.all([
-    readAgent(BigInt(agentId)).catch(() => null as ArcAgent | null),
-    // includeRevoked: surface retracted records in the list (struck-through);
-    // count/average still exclude them inside aggregateFeedback.
-    aggregateFeedback(BigInt(agentId), { includeRevoked: true }).catch(() => null),
-  ]);
+  // On-chain identity + aggregate feedback, read through the per-agent cache
+  // (120s) so repeat profile views don't re-hit the Arc testnet RPC.
+  // includeRevoked: retracted records surface struck-through; count/average
+  // still exclude them. If the chain call fails, fall back to the DB row.
+  const { agent, feedback } = await getCachedEvmAgentOnchain('arc', agentId);
 
   // Resolve rater addresses to names + AK profile links (best-effort, one DB
   // round-trip). Depends on the feedback list, so it follows the parallel read.

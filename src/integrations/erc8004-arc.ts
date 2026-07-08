@@ -43,7 +43,9 @@ function makeClient() {
   const rpcUrl = process.env.ARC_RPC_URL; // optional override; viem defaults to arcTestnet RPC
   return createPublicClient({
     chain: arcTestnet,
-    transport: http(rpcUrl),
+    // Bounded: viem's defaults (10s × 3 retries) let a wedged RPC hold a
+    // profile render for ~40s. One retry, then fail fast to the DB fallback.
+    transport: http(rpcUrl, { timeout: 10_000, retryCount: 1 }),
   });
 }
 

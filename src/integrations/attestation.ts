@@ -37,10 +37,18 @@ function getSDK(): SolanaSDK {
  * Returns a normalized value 0–1, or 0 if no feedback exists.
  */
 export async function readAttestation(walletAddress: string): Promise<number> {
+  // Hard deadline: the SDK read has no timeout of its own, and a wedged RPC
+  // here blocks every surface that scores live (profile pages most visibly).
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const sdk = getSDK();
     const pubkey = new PublicKey(walletAddress);
-    const summary = await sdk.getSummary(pubkey);
+    const summary = await Promise.race([
+      sdk.getSummary(pubkey),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('8004 summary read timed out')), 5_000);
+      }),
+    ]);
 
     if (!summary || summary.averageScore == null) return 0;
 
@@ -48,6 +56,8 @@ export async function readAttestation(walletAddress: string): Promise<number> {
     return Math.min(summary.averageScore / 100, 1);
   } catch {
     return 0;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

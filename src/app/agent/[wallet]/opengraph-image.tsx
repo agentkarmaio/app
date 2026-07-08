@@ -11,7 +11,7 @@
  */
 
 import { ImageResponse } from 'next/og';
-import { resolveAgentCardFields } from './og-fields';
+import { cachedAgentCardFields } from '@/db/cached';
 
 export const runtime = 'nodejs';
 export const contentType = 'image/png';
@@ -63,7 +63,7 @@ export default async function AgentOGImage(
   // The OG image gets no searchParams, so resolveAgentCardFields falls back to
   // an address→ERC-8004-registry lookup for agents that aren't in `wallets`
   // (the Celina demo agents etc.) — so the card shows real score/tier, not 0.
-  const f = await resolveAgentCardFields(wallet);
+  const f = await cachedAgentCardFields(wallet, null);
 
   const name = f.name;
   const score = f.score;
