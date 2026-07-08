@@ -28,6 +28,18 @@ import {
 } from './client';
 import { CacheTags, type CacheTag } from './cache-tags';
 import type { TrustTier } from './schema';
+import { computeAgentLiveBundle, type AgentLiveBundle } from '@/scoring/live-agent-score';
+import { resolveAgentCardFields } from '@/lib/agent-card-fields';
+import {
+  readAgent as readCeloAgent,
+  aggregateFeedback as aggregateCeloFeedback,
+  type CeloAgent,
+  type FeedbackRecord,
+} from '@/integrations/erc8004-celo';
+import {
+  readAgent as readArcAgent,
+  aggregateFeedback as aggregateArcFeedback,
+} from '@/integrations/erc8004-arc';
 
 // --- JSON-safety guard -------------------------------------------------------
 // Compile error if a wrapper tries to return a Map/Set/Date/class instance.
@@ -126,6 +138,105 @@ export async function getCachedWalletTierMap(
   if (addresses.length === 0) return new Map();
   const record = await cachedWalletTierRecord(addresses);
   return new Map(Object.entries(record));
+}
+
+/**
+ * Full live-score bundle for an agent profile (up to 10k tx rows + one Solana
+ * RPC attestation read per compute). This is the expensive read behind
+ * /agent/[wallet]; caching it per-wallet is what makes profile navigation
+ * fast on repeat visits. 60s matches the leaderboard/stats staleness budget.
+ */
+export const cachedAgentLiveBundle: (wallet: string) => Promise<AgentLiveBundle> = defineCache(
+  (wallet: string) => computeAgentLiveBundle(wallet),
+  { key: 'agent-live-bundle', tag: CacheTags.AgentProfile, revalidate: 60 },
+);
+
+/** Shared unfurl fields for generateMetadata + the OG image (2-3 DB reads). */
+export const cachedAgentCardFields = defineCache(
+  (wallet: string, agentId: number | null) => resolveAgentCardFields(wallet, { agentId }),
+  { key: 'agent-card-fields', tag: CacheTags.AgentProfile, revalidate: 60 },
+);
+
+// --- EVM on-chain profile reads (Celo/Arc) -----------------------------------
+// readAgent + readAllFeedback hit the public RPC (forno / Arc testnet) live —
+// the flakiest dependency the profile has. Cache the pair per (chain, agentId);
+// bigint fields cross the JSON boundary as number/string and are hydrated back
+// below. A fully-failed read (both null) THROWS so the failure is never cached
+// — the caller falls back to the DB row and the next request retries the RPC.
+
+interface EvmOnchainJson {
+  agent: (Omit<CeloAgent, 'agentId'> & { agentId: number }) | null;
+  feedback: {
+    count: number;
+    average: number | null;
+    records: (Omit<FeedbackRecord, 'feedbackIndex' | 'rawValue'> & {
+      feedbackIndex: number;
+      rawValue: string;
+    })[];
+  } | null;
+}
+
+const cachedEvmAgentOnchainJson = defineCache(
+  async (chain: 'celo' | 'arc', agentId: number): Promise<EvmOnchainJson> => {
+    const [agent, feedback] = chain === 'celo'
+      ? await Promise.all([
+          readCeloAgent(BigInt(agentId)).catch(() => null),
+          aggregateCeloFeedback(BigInt(agentId), { includeRevoked: true }).catch(() => null),
+        ])
+      : await Promise.all([
+          readArcAgent(BigInt(agentId)).catch(() => null),
+          aggregateArcFeedback(BigInt(agentId), { includeRevoked: true }).catch(() => null),
+        ]);
+    if (agent === null && feedback === null) {
+      throw new Error(`on-chain reads failed for ${chain} agent ${agentId}`);
+    }
+    return {
+      agent: agent ? { ...agent, agentId: Number(agent.agentId) } : null,
+      feedback: feedback
+        ? {
+            count: feedback.count,
+            average: feedback.average,
+            records: feedback.records.map((r) => ({
+              ...r,
+              feedbackIndex: Number(r.feedbackIndex),
+              rawValue: r.rawValue.toString(),
+            })),
+          }
+        : null,
+    };
+  },
+  { key: 'evm-agent-onchain', tag: CacheTags.AgentProfile, revalidate: 120 },
+);
+
+export interface EvmAgentOnchain {
+  agent: CeloAgent | null;
+  feedback: { count: number; average: number | null; records: FeedbackRecord[] } | null;
+}
+
+/** Hydration helper — call sites get real bigint-typed records back. */
+export async function getCachedEvmAgentOnchain(
+  chain: 'celo' | 'arc',
+  agentId: number,
+): Promise<EvmAgentOnchain> {
+  let raw: EvmOnchainJson;
+  try {
+    raw = await cachedEvmAgentOnchainJson(chain, agentId);
+  } catch {
+    return { agent: null, feedback: null };
+  }
+  return {
+    agent: raw.agent ? { ...raw.agent, agentId: BigInt(raw.agent.agentId) } : null,
+    feedback: raw.feedback
+      ? {
+          ...raw.feedback,
+          records: raw.feedback.records.map((r) => ({
+            ...r,
+            feedbackIndex: BigInt(r.feedbackIndex),
+            rawValue: BigInt(r.rawValue),
+          })),
+        }
+      : null,
+  };
 }
 
 export const cachedOrganization = defineCache(

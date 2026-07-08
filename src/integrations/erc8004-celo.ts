@@ -43,7 +43,9 @@ function makeClient() {
   const rpcUrl = process.env.CELO_RPC_URL; // optional override; viem defaults to celo public RPC
   return createPublicClient({
     chain: celo,
-    transport: http(rpcUrl),
+    // Bounded: viem's defaults (10s × 3 retries) let a wedged forno hold a
+    // profile render for ~40s. One retry, then fail fast to the DB fallback.
+    transport: http(rpcUrl, { timeout: 10_000, retryCount: 1 }),
   });
 }
 

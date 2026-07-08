@@ -5,6 +5,7 @@ export const CacheTags = {
   RecentTransactions: 'recent-txs',
   WalletTiers: 'wallet-tiers',
   Organization: 'organization',
+  AgentProfile: 'agent-profile',
 } as const;
 
 export type CacheTag = (typeof CacheTags)[keyof typeof CacheTags];

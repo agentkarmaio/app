@@ -1,4 +1,4 @@
-import { Suspense } from 'react';
+import { Suspense, cache } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import type { Metadata } from 'next';
@@ -6,11 +6,9 @@ import { ArrowLeft, ExternalLink, Globe, Verified } from 'lucide-react';
 import {
   getTransactions,
   getTransactionCount,
-  getFeedbackSummary,
   getFeedbackRatingsForSignatures,
   getScoreHistory,
   getAgentManifestsForWallet,
-  getLatestSignalValues,
   getWalletScanState,
   getSuccession,
   getBondsForAgent,
@@ -19,10 +17,9 @@ import {
   getErc8004Agent,
   type WalletScanInfo,
 } from '@/db/client';
-import { calculateScore, getTrustTier, type WalletScore } from '@/scoring/index';
-import { computeCadence } from '@/scoring/cadence';
-import { computeAutonomy, type AutonomyResult } from '@/scoring/autonomy';
-import { readAttestation } from '@/integrations/attestation';
+import { cachedAgentLiveBundle, cachedAgentCardFields } from '@/db/cached';
+import { getTrustTier } from '@/scoring/index';
+import type { AgentLiveBundle, WalletScoreJson } from '@/scoring/live-agent-score';
 import { ScoreRing } from '@/components/karma/score-ring';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge } from '@/components/karma/confidence-badge';
@@ -66,6 +63,7 @@ import { ArcAgentProfile } from '@/components/karma/arc-agent-profile';
 import { StellarAgentProfile } from '@/components/karma/stellar-agent-profile';
 import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import type { Chain, TrustTier, ConfidenceBadge as ConfidenceBadgeValue, AutonomyLabel, Wallet } from '@/db/schema';
@@ -106,7 +104,6 @@ async function synthesizeRegistryWalletRow(
   } as Wallet;
 }
 import { resolveAgentChain } from './resolve-chain';
-import { resolveAgentCardFields } from './og-fields';
 
 /**
  * Disambiguate which EVM chain an agentId belongs to using the address already
@@ -354,7 +351,7 @@ export async function generateMetadata(
 
   // Resolve the SAME fields the OG image uses — handles ERC-8004 registry agents
   // (not in `wallets`) so the unfurl shows real score/tier/chain, not 0/Unrated.
-  const f = await resolveAgentCardFields(wallet, { agentId });
+  const f = await cachedAgentCardFields(wallet, agentId);
   const badgeLabel = f.badge === 'receipt-backed'
     ? 'Receipt-backed'
     : f.badge === 'behavior-inferred'
@@ -414,32 +411,28 @@ function CardSkeleton({ title, rows = 5 }: { title: string; rows?: number }) {
 // Full-history live score used by every tier-bearing surface on this page so
 // the ring, header badge, summary, and breakdown bars can never disagree.
 // Matches what /api/score/refresh computes (cap 10000 txs, same tier gating).
-async function computeLiveAgentScore(
-  wallet: string,
-  feedback: { deliveryRate: number; total: number },
-): Promise<{
-  live: WalletScore | null;
-  manifestValue: number | null;
-  txCount: number;
-  autonomy: AutonomyResult | null;
-}> {
-  const [txs, attestation, manifestMap] = await Promise.all([
-    getTransactions(wallet, 10000),
-    readAttestation(wallet).catch(() => 0),
-    getLatestSignalValues([wallet], 'manifest').catch(() => new Map<string, number>()),
-  ]);
-  const manifestValue = manifestMap.get(wallet) ?? null;
-  if (txs.length === 0) return { live: null, manifestValue, txCount: 0, autonomy: null };
-  const cadence = computeCadence(txs.map((tx) => new Date(tx.timestamp)));
-  const autonomy = computeAutonomy(
-    txs.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
-  );
-  const live = calculateScore(
-    txs, attestation, feedback.deliveryRate, feedback.total,
-    cadence?.automationScore ?? null,
-    manifestValue,
-  );
-  return { live, manifestValue, txCount: txs.length, autonomy };
+// Cached per-wallet (60s) in db/cached.ts; react cache() dedupes the header
+// chips, score ring, and body reading it within one request.
+const getAgentLiveBundle = cache((wallet: string) => cachedAgentLiveBundle(wallet));
+
+/** Live-first display values with walletRow fallbacks (wallets below the
+ *  autonomy threshold, rows pre-dating backfills). Pure — every streamed
+ *  section derives from the SAME cached bundle so they can never disagree. */
+function deriveLiveView(b: AgentLiveBundle, walletRow?: Wallet) {
+  const score = b.live?.score ?? Number(walletRow?.score ?? 0);
+  const tier: TrustTier = b.live?.trustTier ?? ((walletRow?.trust_tier ?? 'Unrated') as TrustTier);
+  const txCount = b.txCount || (walletRow?.tx_count ?? 0);
+  const providerScore = b.live?.providerScore
+    ?? (walletRow?.provider_score != null ? Number(walletRow.provider_score) : score);
+  const consumerScore = b.live?.consumerScore
+    ?? (walletRow?.consumer_score != null ? Number(walletRow.consumer_score) : null);
+  const confidenceBadge: ConfidenceBadgeValue =
+    b.live?.confidenceBadge ?? walletRow?.confidence_badge ?? 'declared';
+  const autonomyScore = b.autonomy?.score
+    ?? (walletRow?.autonomy_score != null ? Number(walletRow.autonomy_score) : null);
+  const autonomyLabel: AutonomyLabel | null = (b.autonomy?.label
+    ?? (walletRow?.autonomy_label ?? null)) as AutonomyLabel | null;
+  return { score, tier, txCount, providerScore, consumerScore, confidenceBadge, autonomyScore, autonomyLabel };
 }
 
 /**
@@ -500,7 +493,7 @@ function ScoreBreakdownCard({
   manifestValue,
   txCount,
 }: {
-  live: WalletScore | null;
+  live: WalletScoreJson | null;
   manifestValue: number | null;
   txCount: number;
 }) {
@@ -818,21 +811,13 @@ export default async function AgentProfilePage({
   }
 
   // ── Solana branch ──────────────────────────────────────────────────────────
-  // Existing Solana receipt/scoring flow.
+  // Existing Solana receipt/scoring flow. Only the fast DB reads (chain
+  // resolution, scan gate, DMS blocks) block the shell; the expensive live
+  // score bundle streams in behind Suspense below, so the identity header
+  // paints immediately from the wallets row.
   const chain: Chain = resolved.chain ?? 'solana';
 
-  let walletRow = resolved.wallet ?? undefined;
-  let feedbackSummary = { total: 0, delivered: 0, failed: 0, deliveryRate: 0 };
-
-  let manifests: Awaited<ReturnType<typeof getAgentManifestsForWallet>> = [];
-  try {
-    [feedbackSummary, manifests] = await Promise.all([
-      getFeedbackSummary(wallet).catch(() => feedbackSummary),
-      getAgentManifestsForWallet(wallet).catch(() => []),
-    ]);
-  } catch {
-    notFound();
-  }
+  const walletRow = resolved.wallet ?? undefined;
 
   // Show the live "Scanning history…" stub when a regressive scan is in
   // flight. Note enqueueWalletScan upserts a stub wallet row when state goes
@@ -847,12 +832,6 @@ export default async function AgentProfilePage({
     if (!walletRow) return <UnindexedAgentStub wallet={wallet} chain={chain} />;
   }
 
-  // Single source of truth for this page: recompute the score from current
-  // transactions, attestations, and signals. walletRow is only used for
-  // identity + timestamps; never for tier labels (they drift when DB isn't
-  // backfilled after a scoring change).
-  const { live, manifestValue, txCount: liveTxCount, autonomy } = await computeLiveAgentScore(wallet, feedbackSummary);
-
   // Observe-only Dead Man's Switch + Bonding blocks (additive — never gate the
   // core profile). Loaded once above (chain-aware) and reused here; the
   // succession + bond grid renders via `deadMansSwitch`, while the header chips
@@ -861,22 +840,6 @@ export default async function AgentProfilePage({
   const succession = dmsBlocks?.succession ?? null;
   const bond = dmsBlocks?.bond ?? null;
   const surety = dmsBlocks?.surety ?? null;
-
-  const score = live?.score ?? Number(walletRow?.score ?? 0);
-  const tier: TrustTier = live?.trustTier ?? (walletRow?.trust_tier ?? 'Unrated') as TrustTier;
-  const txCount = liveTxCount || (walletRow?.tx_count ?? 0);
-  const providerScore = live?.providerScore
-    ?? (walletRow?.provider_score != null ? Number(walletRow.provider_score) : score);
-  const consumerScore = live?.consumerScore
-    ?? (walletRow?.consumer_score != null ? Number(walletRow.consumer_score) : null);
-  const confidenceBadge: ConfidenceBadgeValue =
-    live?.confidenceBadge ?? walletRow?.confidence_badge ?? 'declared';
-  // Prefer live compute; fall back to persisted columns for wallets below the
-  // MIN_TX_FOR_AUTONOMY threshold or when rows pre-date the backfill.
-  const autonomyScore = autonomy?.score
-    ?? (walletRow?.autonomy_score != null ? Number(walletRow.autonomy_score) : null);
-  const autonomyLabel: AutonomyLabel | null = (autonomy?.label
-    ?? (walletRow?.autonomy_label ?? null)) as AutonomyLabel | null;
 
   const isClaimed = walletRow?.claimed ?? false;
   const displayName = walletRow?.display_name;
@@ -887,34 +850,6 @@ export default async function AgentProfilePage({
   // and manifest-card use. Returns null for unsafe/unparseable values.
   const agentWebsite = safeHref(walletRow?.website);
   const agentCategory = walletRow?.category;
-  const agentTempoAddress = walletRow?.tempo_address;
-
-  const agentLd = {
-    '@context': 'https://schema.org',
-    '@type': 'Thing',
-    name: displayName ?? `Agent ${shortAddr(wallet)}`,
-    identifier: wallet,
-    url: `${SITE_URL}/agent/${wallet}`,
-    description:
-      agentDescription
-      ?? `Autonomous on-chain agent on ${chain === 'celo' ? 'Celo' : chain === 'arc' ? 'Arc' : 'Solana'}. Provider Karma ${providerScore.toFixed(1)}/100, trust tier ${tier}, confidence ${confidenceBadge}.`,
-    sameAs: [
-      explorerAccountUrl(wallet, chain),
-      ...(agentWebsite ? [agentWebsite] : []),
-    ],
-    additionalProperty: [
-      { '@type': 'PropertyValue', name: 'Provider Karma', value: Number(providerScore.toFixed(1)), maxValue: 100 },
-      ...(consumerScore != null
-        ? [{ '@type': 'PropertyValue', name: 'Consumer Karma', value: Number(consumerScore.toFixed(1)), maxValue: 100 }]
-        : []),
-      { '@type': 'PropertyValue', name: 'Trust Tier', value: tier },
-      { '@type': 'PropertyValue', name: 'Confidence Badge', value: confidenceBadge },
-      ...(autonomyScore != null && autonomyLabel
-        ? [{ '@type': 'PropertyValue', name: 'Autonomy Confidence', value: Math.round(autonomyScore), unitText: autonomyLabel }]
-        : []),
-      { '@type': 'PropertyValue', name: 'Transactions Indexed', value: txCount },
-    ],
-  };
 
   const breadcrumbLd = {
     '@context': 'https://schema.org',
@@ -928,11 +863,6 @@ export default async function AgentProfilePage({
 
   return (
     <div className="space-y-6">
-      <script
-        type="application/ld+json"
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(agentLd) }}
-      />
       <script
         type="application/ld+json"
         // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
@@ -960,9 +890,9 @@ export default async function AgentProfilePage({
                 Agent Profile
               </h1>
             )}
-            <TierBadge tier={tier} />
-            <ConfidenceBadge badge={confidenceBadge} size="sm" />
-            <AutonomyChip score={autonomyScore} label={autonomyLabel} size="sm" />
+            <Suspense fallback={<HeaderChipsSkeleton />}>
+              <LiveHeaderChips wallet={wallet} walletRow={walletRow} />
+            </Suspense>
             <SuccessionChip status={succession?.status ?? null} size="sm" />
             <SuretyChip score={surety?.score ?? null} label={surety?.label ?? null} size="sm" />
             {isClaimed && (
@@ -1012,7 +942,9 @@ export default async function AgentProfilePage({
           </div>
           </div>
         </div>
-        <ScoreRing score={score} tier={tier} size={90} strokeWidth={7} />
+        <Suspense fallback={<Skeleton className="size-[90px] rounded-full" />}>
+          <LiveScoreRing wallet={wallet} walletRow={walletRow} />
+        </Suspense>
       </div>
 
       <Separator />
@@ -1049,6 +981,126 @@ export default async function AgentProfilePage({
         />
       )}
 
+      <Suspense fallback={<ProfileBodySkeleton />}>
+        <SolanaProfileBody
+          wallet={wallet}
+          walletRow={walletRow}
+          chain={chain}
+          succession={succession}
+          bond={bond}
+          deadMansSwitch={deadMansSwitch}
+        />
+      </Suspense>
+    </div>
+  );
+}
+
+/** Header tier/confidence/autonomy chips — streamed off the shared bundle. */
+async function LiveHeaderChips({ wallet, walletRow }: { wallet: string; walletRow?: Wallet }) {
+  const v = deriveLiveView(await getAgentLiveBundle(wallet), walletRow);
+  return (
+    <>
+      <TierBadge tier={v.tier} />
+      <ConfidenceBadge badge={v.confidenceBadge} size="sm" />
+      <AutonomyChip score={v.autonomyScore} label={v.autonomyLabel} size="sm" />
+    </>
+  );
+}
+
+function HeaderChipsSkeleton() {
+  return (
+    <>
+      <Skeleton className="h-5 w-16 rounded-full" />
+      <Skeleton className="h-5 w-24 rounded-full" />
+    </>
+  );
+}
+
+async function LiveScoreRing({ wallet, walletRow }: { wallet: string; walletRow?: Wallet }) {
+  const v = deriveLiveView(await getAgentLiveBundle(wallet), walletRow);
+  return <ScoreRing score={v.score} tier={v.tier} size={90} strokeWidth={7} />;
+}
+
+function ProfileBodySkeleton() {
+  return (
+    <>
+      <div className="grid gap-6 md:grid-cols-2">
+        <CardSkeleton title="Score Breakdown" rows={6} />
+        <CardSkeleton title="Summary" rows={6} />
+      </div>
+      <CardSkeleton title="Score Trend" rows={3} />
+    </>
+  );
+}
+
+/**
+ * Everything below the claim banners: score breakdown, summary, manifest,
+ * DMS grid, trend, feedback, transactions. Streams as one boundary off the
+ * cached live bundle so the identity header never waits on the 10k-tx
+ * recompute or the attestation RPC.
+ */
+async function SolanaProfileBody({
+  wallet,
+  walletRow,
+  chain,
+  succession,
+  bond,
+  deadMansSwitch,
+}: {
+  wallet: string;
+  walletRow?: Wallet;
+  chain: Chain;
+  succession: SuccessionView | null;
+  bond: BondBlock | null;
+  deadMansSwitch: React.ReactNode;
+}) {
+  const [bundle, manifests] = await Promise.all([
+    getAgentLiveBundle(wallet),
+    getAgentManifestsForWallet(wallet).catch(() => []),
+  ]);
+  const { live, manifestValue, feedback: feedbackSummary } = bundle;
+  const v = deriveLiveView(bundle, walletRow);
+  const { providerScore, consumerScore, tier, confidenceBadge, autonomyScore, autonomyLabel, txCount } = v;
+
+  const displayName = walletRow?.display_name;
+  const agentDescription = walletRow?.description;
+  const agentWebsite = safeHref(walletRow?.website);
+  const agentTempoAddress = walletRow?.tempo_address;
+
+  const agentLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Thing',
+    name: displayName ?? `Agent ${shortAddr(wallet)}`,
+    identifier: wallet,
+    url: `${SITE_URL}/agent/${wallet}`,
+    description:
+      agentDescription
+      ?? `Autonomous on-chain agent on ${chain === 'celo' ? 'Celo' : chain === 'arc' ? 'Arc' : 'Solana'}. Provider Karma ${providerScore.toFixed(1)}/100, trust tier ${tier}, confidence ${confidenceBadge}.`,
+    sameAs: [
+      explorerAccountUrl(wallet, chain),
+      ...(agentWebsite ? [agentWebsite] : []),
+    ],
+    additionalProperty: [
+      { '@type': 'PropertyValue', name: 'Provider Karma', value: Number(providerScore.toFixed(1)), maxValue: 100 },
+      ...(consumerScore != null
+        ? [{ '@type': 'PropertyValue', name: 'Consumer Karma', value: Number(consumerScore.toFixed(1)), maxValue: 100 }]
+        : []),
+      { '@type': 'PropertyValue', name: 'Trust Tier', value: tier },
+      { '@type': 'PropertyValue', name: 'Confidence Badge', value: confidenceBadge },
+      ...(autonomyScore != null && autonomyLabel
+        ? [{ '@type': 'PropertyValue', name: 'Autonomy Confidence', value: Math.round(autonomyScore), unitText: autonomyLabel }]
+        : []),
+      { '@type': 'PropertyValue', name: 'Transactions Indexed', value: txCount },
+    ],
+  };
+
+  return (
+    <>
+      <script
+        type="application/ld+json"
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(agentLd) }}
+      />
       <div className="grid gap-6 md:grid-cols-2">
         <ScoreBreakdownCard live={live} manifestValue={manifestValue} txCount={txCount} />
 
@@ -1167,6 +1219,6 @@ export default async function AgentProfilePage({
       <Suspense fallback={<CardSkeleton title="Recent Transactions" rows={6} />}>
         <TransactionsCard wallet={wallet} />
       </Suspense>
-    </div>
+    </>
   );
 }
