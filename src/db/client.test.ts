@@ -9,9 +9,10 @@ import { describe, expect, test, beforeEach, afterAll } from 'bun:test';
 import {
   __setSupabaseForTest, insertTransactions, upsertCursor, getCursor, claimWallet,
   getStellarAgentId, setStellarAgentId, claimDirtyWallets, markWalletsDirty,
-  ADDRESS_IN_CHUNK, getStats, normalizeCounterparty, getAgents,
+  ADDRESS_IN_CHUNK, getStats, getArcDashboardStats, normalizeCounterparty, getAgents,
 } from './client';
 import type { Transaction } from './schema';
+import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
 
 // The injected fake lives in a module-level singleton shared across the whole
 // `bun test` process. Without this teardown the last fake set here leaks into
@@ -363,6 +364,165 @@ describe('getStats degrades to best-effort when aggregate RPCs are missing', () 
     expect(stats.totalVolumeUsdc).toBe(1234.56);
     expect(stats.tierDistribution).toEqual({ Excellent: 10, Good: 90 });
     expect(stats.totalAgents).toBe(100); // summed from the tier RPC, no HEAD count needed
+  });
+});
+
+// Arc grant-demo dashboard: chain-filtered bounded reads + best-effort degrade.
+describe('getArcDashboardStats', () => {
+  function makeArcDashFake(opts: {
+    txs?: { amount: string; wallet_address: string; counterparty: string }[];
+    recent?: {
+      tx_signature: string;
+      wallet_address: string;
+      counterparty: string;
+      amount: string;
+      timestamp: string;
+    }[];
+    signals?: {
+      agent_wallet: string;
+      kind: string;
+      face: string;
+      signed_by: string;
+      payload?: unknown;
+    }[];
+    registryAgents?: number;
+    registryFeedbacks?: number;
+    failTxs?: boolean;
+  }) {
+    const chainable = (resolve: () => Promise<{ data: unknown; error: unknown; count?: number }>) => {
+      const b: Record<string, unknown> = {};
+      const self = () => b;
+      b.select = () => b;
+      b.eq = () => b;
+      b.order = () => b;
+      b.limit = () => resolve();
+      // HEAD-count paths used by getRegistryStats resolve without .limit
+      b.then = undefined;
+      // When select is called with head:true, PostgREST returns immediately after eq
+      // — our chainable returns `b` from eq; make it thenable for head paths.
+      const makeThenable = (p: Promise<{ data: unknown; error: unknown; count?: number }>) => {
+        (b as { then?: unknown }).then = (onFulfilled: (v: unknown) => unknown, onRejected?: (e: unknown) => unknown) =>
+          p.then(onFulfilled, onRejected);
+        return b;
+      };
+      // Re-bind select to detect head counts
+      b.select = (_cols: string, selOpts?: { head?: boolean }) => {
+        if (selOpts?.head) {
+          return makeThenable(resolve());
+        }
+        return b;
+      };
+      b.eq = self;
+      b.order = self;
+      b.limit = () => resolve();
+      return b;
+    };
+
+    return {
+      from(table: string) {
+        if (table === 'erc8004_agents') {
+          return chainable(async () => ({
+            data: null,
+            error: null,
+            count: opts.registryAgents ?? 0,
+          }));
+        }
+        if (table === 'erc8004_feedback') {
+          return chainable(async () => ({
+            data: null,
+            error: null,
+            count: opts.registryFeedbacks ?? 0,
+          }));
+        }
+        if (table === 'signal_events') {
+          return chainable(async () => ({
+            data: opts.signals ?? [],
+            error: null,
+          }));
+        }
+        // transactions — first call is agg select, second is recent (order+limit)
+        // The fake doesn't distinguish; return txs for any non-recent-shaped need.
+        // Call order in getArcDashboardStats: txs (no order), then recent (order).
+        let txCall = 0;
+        const txState = { n: 0 };
+        return {
+          select: (_cols: string, selOpts?: { head?: boolean }) => {
+            const b: Record<string, unknown> = {};
+            let ordered = false;
+            b.eq = () => b;
+            b.order = () => {
+              ordered = true;
+              return b;
+            };
+            b.limit = async () => {
+              if (opts.failTxs) {
+                return { data: null, error: { message: 'boom' } };
+              }
+              if (selOpts?.head) {
+                return { data: null, error: null, count: (opts.txs ?? []).length };
+              }
+              if (ordered) {
+                return { data: opts.recent ?? opts.txs ?? [], error: null };
+              }
+              txState.n += 1;
+              txCall = txState.n;
+              void txCall;
+              // First select is amount/wallet/counterparty (no order)
+              if (_cols.includes('amount') && !_cols.includes('tx_signature')) {
+                return { data: opts.txs ?? [], error: null };
+              }
+              return { data: opts.recent ?? [], error: null };
+            };
+            return b;
+          },
+        };
+      },
+    };
+  }
+
+  test('aggregates matched settlements + quality + recent', async () => {
+    __setSupabaseForTest(makeArcDashFake({
+      registryAgents: 845_000,
+      registryFeedbacks: 2_980,
+      txs: [
+        { amount: '10', wallet_address: '0xclient', counterparty: '0xprov' },
+        { amount: '5', wallet_address: '0xclient2', counterparty: '0xprov' },
+      ],
+      recent: [
+        {
+          tx_signature: '1:0xabc',
+          wallet_address: '0xclient',
+          counterparty: '0xprov',
+          amount: '10',
+          timestamp: '2026-07-01T00:00:00Z',
+        },
+      ],
+      signals: [
+        // 3 distinct CPs → reliable
+        { agent_wallet: '0xprov', kind: ERC8183_SETTLED_KIND, face: 'provider', signed_by: '0xa' },
+        { agent_wallet: '0xprov', kind: ERC8183_SETTLED_KIND, face: 'provider', signed_by: '0xb' },
+        { agent_wallet: '0xprov', kind: ERC8183_SETTLED_KIND, face: 'provider', signed_by: '0xc' },
+      ],
+    }));
+
+    const stats = await getArcDashboardStats();
+
+    expect(stats.matchedSettlements).toBe(2);
+    expect(stats.volumeUsdc).toBe(15);
+    expect(stats.agentsWithReceipts).toBe(1);
+    expect(stats.quality.reliable).toBe(1);
+    expect(stats.recent).toHaveLength(1);
+    expect(stats.recent[0].txHash).toBe('0xabc');
+    expect(stats.registry.agents).toBe(845_000);
+    expect(stats.empty).toBe(false);
+  });
+
+  test('degrades to empty zeros without throwing when queries fail', async () => {
+    __setSupabaseForTest(makeArcDashFake({ failTxs: true, registryAgents: 10 }));
+    const stats = await getArcDashboardStats();
+    expect(stats.matchedSettlements).toBe(0);
+    expect(stats.empty).toBe(true);
+    expect(stats.registry.agents).toBe(10);
   });
 });
 

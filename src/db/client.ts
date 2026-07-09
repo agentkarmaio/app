@@ -24,7 +24,24 @@ import { getTrustTier } from '@/scoring/index';
 // Viem-free constants only — keeps the EVM write path's viem deps out of this
 // server DB bundle. Used by getAkConnectedFeedback (the /celo "feedback AK made"
 // list) to scope the mirror read to AK's schemes + rater wallets.
-import { AK_RATER_ADDRESSES, AK_METADATA_TAG1, AK_REVIEW_TAG1 } from '@/config/ak-validator';
+import { AK_RATER_ADDRESSES, AK_METADATA_TAG1, AK_REVIEW_TAG1, AK_VALIDATOR } from '@/config/ak-validator';
+// Pure, deterministic, network-free metadata-quality scorer (imports only TYPES
+// from the viem-backed celo adapter, so no viem leaks into this server DB
+// bundle). Used by getAkConnectedFeedback to recompute the CURRENT (v0.2)
+// per-agent breakdown server-side for the /celo disclosure list.
+import { scoreMetadataQuality, type MetadataQualityResult } from '@/scoring/celo-metadata';
+import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
+import {
+  aggregateArcQuality,
+  aggregateArcTransactions,
+  countAgentsWithReceipts,
+  emptyArcDashboardStats,
+  mapRecentSettlements,
+  type ArcDashboardStats,
+  type ArcSignalAggRow,
+  type ArcTxAggRow,
+} from '@/lib/arc-dashboard-stats';
+import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
 
 // Every DB helper that takes a wallet address optionally takes a chain. The
 // default is 'solana' for back-compat with all pre-existing callers — Solana
@@ -1638,6 +1655,26 @@ export async function upsertCursor(
   if (error) throw error;
 }
 
+// --- ERC-8004 registry-scan cursor -------------------------------------------
+// The registry mirror's incremental scanner persists the last-scanned tip in the
+// generic indexer_cursors table under the synthetic facilitator key 'registry'
+// (composite PK ⇒ one row per chain, i.e. `celo:registry`). The tip is an
+// agentId, stored in last_slot (integer); last_signature is a NOT-NULL column so
+// it carries a constant marker. This reuses the table rather than adding a new
+// one — same shape, same migration surface.
+export const REGISTRY_CURSOR_KEY = 'registry';
+
+/** Last agentId scanned by the registry mirror for a chain (0 = never scanned). */
+export async function getRegistryCursorTip(chain: Chain): Promise<number> {
+  const cursor = await getCursor(REGISTRY_CURSOR_KEY, chain);
+  return cursor?.last_slot ?? 0;
+}
+
+/** Persist the tip a successful registry scan reached, for the next incremental run. */
+export async function setRegistryCursorTip(chain: Chain, tip: number): Promise<void> {
+  await upsertCursor(REGISTRY_CURSOR_KEY, 'registry-scan', tip, chain);
+}
+
 // --- ERC-8004 feedback comments ----------------------------------------------
 // The feedback-URI scanner (src/indexer/erc8004-feedback-uri.ts) backfills the
 // inline review carried in a NewFeedback event's feedbackURI. These columns are
@@ -2800,6 +2837,115 @@ export async function getRegistryStats(
   return out;
 }
 
+// --- Arc grant-demo dashboard -------------------------------------------------
+// Pure aggregators live in lib/arc-dashboard-stats.ts. This function only does
+// bounded, chain-filtered reads (never full-table scans) and degrades best-effort
+// like getStats — a missing table never 500s the /arc page.
+
+/** Cap row streams so a runaway Arc testnet flood cannot blow statement timeout. */
+const ARC_DASH_TX_LIMIT = 10_000;
+const ARC_DASH_SIGNAL_LIMIT = 5_000;
+const ARC_DASH_RECENT_LIMIT = 8;
+
+export type { ArcDashboardStats };
+
+/**
+ * AK-scored Arc dashboard payload for /arc. Matched ERC-8183 settlements first;
+ * registry mirror is secondary (farmed-heavy on testnet). Never throws.
+ */
+export async function getArcDashboardStats(): Promise<ArcDashboardStats> {
+  // Registry secondary — independent failure domain.
+  let registry = { agents: 0, feedbacks: 0 };
+  try {
+    const rows = await getRegistryStats(['arc']);
+    if (rows[0]) registry = { agents: rows[0].agents, feedbacks: rows[0].feedbacks };
+  } catch (err) {
+    console.warn('[db] getArcDashboardStats registry:', err instanceof Error ? err.message : err);
+  }
+
+  // Matched settlements live in transactions (arc-jobs only inserts when
+  // JobCreated ⋈ PaymentReleased). Bound the stream; Arc is testnet-scale.
+  let txRows: ArcTxAggRow[] = [];
+  try {
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('amount, wallet_address, counterparty')
+      .eq('chain', 'arc')
+      .limit(ARC_DASH_TX_LIMIT);
+    if (error) {
+      console.warn('[db] getArcDashboardStats transactions:', error.message);
+    } else {
+      txRows = (data ?? []) as ArcTxAggRow[];
+    }
+  } catch (err) {
+    console.warn('[db] getArcDashboardStats transactions:', err instanceof Error ? err.message : err);
+  }
+
+  // Provider-face settlement receipts drive quality + agentsWithReceipts.
+  let signalRows: ArcSignalAggRow[] = [];
+  try {
+    const { data, error } = await supabase
+      .from('signal_events')
+      .select('agent_wallet, kind, face, signed_by, payload')
+      .eq('chain', 'arc')
+      .eq('kind', ERC8183_SETTLED_KIND)
+      .eq('face', 'provider')
+      .limit(ARC_DASH_SIGNAL_LIMIT);
+    if (error) {
+      console.warn('[db] getArcDashboardStats signals:', error.message);
+    } else {
+      signalRows = (data ?? []) as ArcSignalAggRow[];
+    }
+  } catch (err) {
+    console.warn('[db] getArcDashboardStats signals:', err instanceof Error ? err.message : err);
+  }
+
+  // Recent matched settlements for the activity table.
+  let recentRaw: {
+    tx_signature: string;
+    wallet_address: string;
+    counterparty?: string | null;
+    amount: number | string;
+    timestamp: string;
+  }[] = [];
+  try {
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('tx_signature, wallet_address, counterparty, amount, timestamp')
+      .eq('chain', 'arc')
+      .order('timestamp', { ascending: false })
+      .limit(ARC_DASH_RECENT_LIMIT);
+    if (error) {
+      console.warn('[db] getArcDashboardStats recent:', error.message);
+    } else {
+      recentRaw = (data ?? []) as typeof recentRaw;
+    }
+  } catch (err) {
+    console.warn('[db] getArcDashboardStats recent:', err instanceof Error ? err.message : err);
+  }
+
+  const txAgg = aggregateArcTransactions(txRows);
+  const quality = aggregateArcQuality(signalRows);
+  // Prefer signal-based provider count; fall back to tx-side distinct if signals
+  // empty but txs exist (partial index lag).
+  const fromSignals = countAgentsWithReceipts(signalRows);
+  const agentsWithReceipts = fromSignals > 0 ? fromSignals : txAgg.distinctAgents;
+
+  if (txAgg.matchedSettlements === 0 && signalRows.length === 0) {
+    return emptyArcDashboardStats(registry);
+  }
+
+  return {
+    matchedSettlements: txAgg.matchedSettlements,
+    volumeUsdc: txAgg.volumeUsdc,
+    agentsWithReceipts,
+    quality,
+    recent: mapRecentSettlements(recentRaw),
+    registry,
+    empty: txAgg.matchedSettlements === 0,
+  };
+}
+
 /** Highest agent_id already mirrored for a chain (0 if none) — drives the
  *  incremental scan that only reads ids past the last sweep. */
 export async function getMaxErc8004AgentId(chain: string): Promise<number> {
@@ -2864,7 +3010,17 @@ export interface AkConnectedFeedback {
   agentId: number;
   /** 'metadata' = AK's algorithmic attestation; 'review' = independent rater via AK UX. */
   kind: 'metadata' | 'review';
+  /** Scheme tag1 — 'agentkarma_metadata' | 'agentkarma_review'. The open scheme name. */
+  tag1: string;
+  /** Scheme version tag2 — e.g. 'v0.1'. */
   tag2: string;
+  /**
+   * Per-(agent, client) sequential counter from readAllFeedback. NOT a tx hash —
+   * the contract view returns no hash or block, so this is the only on-chain
+   * identifier we can surface per record. Pairs with (agentId, client) to locate
+   * the exact attestation in the registry.
+   */
+  feedbackIndex: number;
   /** Normalized value = raw / 10^valueDecimals. 0–100 scale for both schemes. */
   value: number;
   revoked: boolean;
@@ -2876,6 +3032,19 @@ export interface AkConnectedFeedback {
   /** Target agent's headline metadata score (0–100) and total feedback count. */
   targetMetadataScore: number | null;
   targetFeedbackCount: number | null;
+  /**
+   * AK's CURRENT (v0.2) metadata-quality assessment, recomputed deterministically
+   * from the target's mirrored registration JSON + token_uri. This is the
+   * "why did it get this score" breakdown for the /celo per-agent disclosure.
+   * It is the LIVE rubric output and may differ from the on-chain `value`
+   * (which can be a v0.1 attestation) — that divergence is honest, not a bug.
+   * null when the registration isn't mirrored (can't recompute).
+   */
+  currentAssessment: {
+    /** Scheme version of the rubric used to compute `result` (AK_VALIDATOR.scheme.tag2). */
+    schemeVersion: string;
+    result: MetadataQualityResult;
+  } | null;
 }
 
 export async function getAkConnectedFeedback(
@@ -2883,14 +3052,15 @@ export async function getAkConnectedFeedback(
 ): Promise<AkConnectedFeedback[]> {
   const { data, error } = await supabase
     .from('erc8004_feedback')
-    .select('agent_id, client, value, value_decimals, tag1, tag2, revoked')
+    .select('agent_id, client, feedback_index, value, value_decimals, tag1, tag2, revoked')
     .eq('chain', chain)
     .in('tag1', [AK_METADATA_TAG1, AK_REVIEW_TAG1]);
   if (error) throw error;
 
   const akRaters = new Set(AK_RATER_ADDRESSES); // already lowercased
   const rows = ((data ?? []) as Array<{
-    agent_id: number; client: string; value: number | string | null;
+    agent_id: number; client: string; feedback_index: number | null;
+    value: number | string | null;
     value_decimals: number | null; tag1: string; tag2: string; revoked: boolean;
   }>).filter(
     // A metadata record only counts as AK's when an AK wallet signed it; a review
@@ -2904,28 +3074,44 @@ export async function getAkConnectedFeedback(
   const ids = [...new Set(rows.map((r) => r.agent_id))];
   const meta = new Map<number, {
     name: string | null; address: string | null; score: number | null; count: number | null;
+    assessment: AkConnectedFeedback['currentAssessment'];
   }>();
   for (let i = 0; i < ids.length; i += ADDRESS_IN_CHUNK) {
     const chunk = ids.slice(i, i + ADDRESS_IN_CHUNK);
     const { data: agents, error: aErr } = await supabase
       .from('erc8004_agents')
-      .select('agent_id, owner, agent_wallet, registration, metadata_score, feedback_count')
+      .select('agent_id, owner, agent_wallet, registration, token_uri, metadata_score, feedback_count')
       .eq('chain', chain)
       .in('agent_id', chunk);
     if (aErr) throw aErr;
     for (const a of (agents ?? []) as Array<{
       agent_id: number; owner: string; agent_wallet: string | null;
-      registration: { name?: string } | null; metadata_score: number | null; feedback_count: number | null;
+      registration: AgentRegistrationFile | null; token_uri: string | null;
+      metadata_score: number | null; feedback_count: number | null;
     }>) {
       // Same rule as registryRowToWallet: a never-set agent wallet reads as the
       // zero address — fall back to the owner so we never link 0x000…000.
       const aw = a.agent_wallet;
       const address = aw && aw.toLowerCase() !== ZERO_ADDRESS ? aw : a.owner;
+      // Recompute the CURRENT (v0.2) breakdown deterministically from the
+      // mirrored registration JSON + token_uri (for tamperResistance). Pure +
+      // network-free, so it's safe to do inline server-side per /celo render.
+      // No registration mirrored → no recompute (assessment stays null).
+      const assessment = a.registration
+        ? {
+            schemeVersion: AK_VALIDATOR.scheme.tag2,
+            result: scoreMetadataQuality({
+              registration: a.registration,
+              tokenURI: a.token_uri ?? undefined,
+            }),
+          }
+        : null;
       meta.set(Number(a.agent_id), {
         name: a.registration?.name ?? null,
         address: address ?? null,
         score: a.metadata_score ?? null,
         count: a.feedback_count ?? null,
+        assessment,
       });
     }
   }
@@ -2936,7 +3122,9 @@ export async function getAkConnectedFeedback(
       return {
         agentId: r.agent_id,
         kind: (r.tag1 === AK_REVIEW_TAG1 ? 'review' : 'metadata') as 'metadata' | 'review',
+        tag1: r.tag1,
         tag2: r.tag2,
+        feedbackIndex: Number(r.feedback_index ?? 0),
         value: Number(r.value ?? 0) / 10 ** (r.value_decimals ?? 0),
         revoked: r.revoked,
         client: r.client,
@@ -2944,6 +3132,7 @@ export async function getAkConnectedFeedback(
         targetAddress: m?.address ?? null,
         targetMetadataScore: m?.score ?? null,
         targetFeedbackCount: m?.count ?? null,
+        currentAssessment: m?.assessment ?? null,
       };
     })
     // Live records first, then highest AK score; stable tiebreak on agentId.

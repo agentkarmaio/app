@@ -1,7 +1,11 @@
 import Link from 'next/link';
+import { Suspense } from 'react';
 import { ArrowRight, ExternalLink } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { SettlementQualityPill } from '@/components/settlement-quality-badge';
+import { ArcDashboard } from '@/components/karma/arc-dashboard';
 import { arcTestnet } from '@/config/arc-chain';
+import { getArcDashboardStats } from '@/db/client';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
@@ -10,16 +14,14 @@ export const metadata: Metadata = {
     'Arc is Circle\'s USDC-native EVM L1. AgentKarma indexes Arc\'s ERC-8183 agentic-commerce job settlements as Tier-1 receipt-grade signals and reads ERC-8004 reputation, publishing portable karma any 8004-aware client can read.',
 };
 
-// Static explainer page for AgentKarma on Arc. AK is registered on Arc's
-// ERC-8004 IdentityRegistry (agentId 72077, verified via ownerOf); the page
-// surfaces that identity plus the verified contract surface + signal model.
-// Static render — the on-chain values are immutable constants, so no per-request
-// RPC. Arc is testnet-only; signal volume builds as agents transact.
+// Live Arc dashboard (matched settlements + quality) — revalidate so grant demos
+// see fresh numbers without hammering RPC. Narrative cards below stay static.
+export const revalidate = 60;
 
 // ─── Verified Arc Testnet contract surface ──────────────────────────────────
 // Ground truth from docs.arc.io + live RPC probe. The 0x8004… vanity prefix
 // marks the CANONICAL ERC-8004 reference contracts — same family as Celo, so
-// the Celo ABIs port verbatim. Move to src/config when an Arc adapter lands.
+// the Celo ABIs port verbatim.
 const ARC_IDENTITY_REGISTRY = '0x8004A818BFB912233c491871b3d84c89A494BD9e';
 const ARC_REPUTATION_REGISTRY = '0x8004B663056A597Dffe9eCcC1965A193B7388713';
 const ARC_AGENTIC_COMMERCE = '0x0747EEf0706327138c69792bF28Cd525089e4583';
@@ -41,13 +43,39 @@ const DEMO_ADDRESS = '0x0747EEf0706327138c69792bF28Cd525089e4583';
 const explorerAddressUrl = (addr: string) =>
   `${arcTestnet.blockExplorers.default.url}/address/${addr}`;
 
+async function ArcDashboardSection() {
+  const stats = await getArcDashboardStats().catch(() => null);
+  if (!stats) {
+    // Absolute last resort — page still renders narrative without KPIs.
+    return (
+      <p className="mb-10 rounded-lg border border-border px-4 py-6 text-center text-sm text-muted-foreground">
+        Arc dashboard temporarily unavailable.
+      </p>
+    );
+  }
+  return <ArcDashboard data={stats} />;
+}
+
+function DashboardSkeleton() {
+  return (
+    <div className="mb-10 space-y-6" aria-hidden>
+      <div className="h-28 animate-pulse rounded-lg border border-slate-400/15 bg-slate-400/[0.04]" />
+      <div className="grid gap-6 md:grid-cols-2">
+        <div className="h-40 animate-pulse rounded-lg border border-slate-400/15 bg-slate-400/[0.04]" />
+        <div className="h-40 animate-pulse rounded-lg border border-slate-400/15 bg-slate-400/[0.04]" />
+      </div>
+      <div className="h-48 animate-pulse rounded-lg border border-slate-400/15 bg-slate-400/[0.04]" />
+    </div>
+  );
+}
+
 export default function ArcPage() {
   return (
     <main className="mx-auto max-w-4xl px-4 pb-24 pt-16">
-      <div className="mb-12 space-y-4">
+      <div className="mb-10 space-y-4">
         <div className="inline-flex items-center gap-2 rounded-full border border-slate-400/30 bg-slate-400/10 px-3 py-1 text-xs font-medium text-slate-300">
           <span className="size-1.5 rounded-full bg-slate-400" />
-          Arc · Testnet
+          Arc · Testnet · USDC-native
         </div>
         <h1 className="text-4xl font-semibold tracking-tight">
           AgentKarma scores Arc&apos;s USDC settlements
@@ -60,6 +88,11 @@ export default function ArcPage() {
           8004-aware client can read.
         </p>
       </div>
+
+      {/* Grant-demo dashboard: matched settlements first, narrative below. */}
+      <Suspense fallback={<DashboardSkeleton />}>
+        <ArcDashboardSection />
+      </Suspense>
 
       {/* AK's registered ERC-8004 identity on Arc Testnet. Real on-chain values
           (agentId from the mint's Transfer log, verified via ownerOf) — no
@@ -220,6 +253,58 @@ export default function ArcPage() {
               contract settles the job; AK observes the completed settlement on
               the public ledger and records an attestation. Non-routing mandate
               holds on Arc exactly as on every other rail.
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Honest finding: on Arc's testnet registry both feedback AND settlements
+          are farmable, so AK scores neither by raw count — it gates on receipts
+          from distinct, independent counterparties. */}
+      <Card className="mb-8">
+        <CardContent className="p-6">
+          <h2 className="mb-4 text-xl font-semibold">Reviews can be farmed. Receipts can&apos;t.</h2>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Arc&apos;s ERC-8004 IdentityRegistry is farmed-heavy on testnet. Most agents
+            carry on-chain feedback — but ungated ERC-8004 reviews and unpaired{' '}
+            <span className="font-mono text-foreground">PaymentReleased</span> events
+            are not proof. Neither a review count nor a raw settlement count is evidence.
+          </p>
+          <p className="mb-4 text-sm text-muted-foreground">
+            So AgentKarma scores delivery by <span className="text-foreground">settlement
+            quality</span>: receipts that clear the ERC-8183 escrow, weighted by how many{' '}
+            <span className="text-foreground">distinct, independent</span> counterparties actually
+            paid — never a self-reported percentage. The dashboard above shows that split live.
+          </p>
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <SettlementQualityPill label="reliable" />
+              <span className="text-sm text-muted-foreground">
+                3+ receipts across 3+ distinct, non-clustered counterparties.
+              </span>
+            </div>
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <SettlementQualityPill label="mixed" />
+              <span className="text-sm text-muted-foreground">
+                Receipts exist, but the counterparty breadth is thin (1–2 payers).
+              </span>
+            </div>
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <SettlementQualityPill label="unproven" />
+              <span className="text-sm text-muted-foreground">
+                Too few receipts, or high volume funneled through &lt;3 counterparties (a wash
+                pattern).
+              </span>
+            </div>
+          </div>
+          <div className="mt-4 rounded-md border border-slate-400/40 bg-slate-400/[0.06] p-3 text-sm">
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-slate-300">
+              The counterparty is the proof
+            </div>
+            <div>
+              A score means nothing unless the party on the other side was real and independent.
+              Self-issued reviews and wash settlements collapse to ⚪ Unproven — the one signal a
+              spam operator can&apos;t manufacture is a distinct counterparty who actually paid.
             </div>
           </div>
         </CardContent>
