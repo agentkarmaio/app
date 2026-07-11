@@ -6,18 +6,18 @@
  * agentId on the IdentityRegistry, so readAttestation returns 0 and
  * publishAttestation skips until the agent registers. NO class.
  */
-import { isAddress } from 'viem';
-import type { ChainAdapter, IndexRunResult, PublishResult } from './types';
-import type { WalletScore } from '@/scoring/index';
-import { aggregateFeedback } from '@/integrations/erc8004-arc';
-import { runArcJobsIndexer } from '@/indexer/arc-jobs';
-import { runArcTransfersIndexer } from '@/indexer/arc-transfers';
+import { isAddress } from "viem";
+import type { ChainAdapter, IndexRunResult, PublishResult } from "./types";
+import type { WalletScore } from "@/scoring/index";
+import { aggregateFeedback } from "@/integrations/erc8004-arc";
+import { runArcJobsIndexer } from "@/indexer/arc-jobs";
+import { runArcTransfersIndexer } from "@/indexer/arc-transfers";
 
-const TAG2 = 'agentkarma';
+const TAG2 = "agentkarma";
 
 export function makeArcAdapter(): ChainAdapter {
   return {
-    chain: 'arc',
+    chain: "arc",
 
     validateAddress: (address) => isAddress(address),
     normalizeAddress: (address) => address.toLowerCase(),
@@ -28,7 +28,10 @@ export function makeArcAdapter(): ChainAdapter {
     //   - ERC-8183 job-escrow settlements (ARC_JOBS_START_BLOCK)
     //   - plain USDC transfers, e.g. AgentStack nanopayments (ARC_TRANSFERS_START_BLOCK)
     // Each paginates in <=10k-block windows, bounded per run by its maxWindows cap.
-    async indexReceipts(_opts?: { backfill?: boolean; limit?: number }): Promise<IndexRunResult> {
+    async indexReceipts(_opts?: {
+      backfill?: boolean;
+      limit?: number;
+    }): Promise<IndexRunResult> {
       const jobs = process.env.ARC_JOBS_START_BLOCK
         ? await runArcJobsIndexer()
         : { fetched: 0, inserted: 0, cursors: new Map<string, string>() };
@@ -36,7 +39,10 @@ export function makeArcAdapter(): ChainAdapter {
         ? await runArcTransfersIndexer()
         : { fetched: 0, inserted: 0, cursors: new Map<string, string>() };
 
-      const cursors = new Map<string, string>([...jobs.cursors, ...transfers.cursors]);
+      const cursors = new Map<string, string>([
+        ...jobs.cursors,
+        ...transfers.cursors,
+      ]);
       return {
         fetched: jobs.fetched + transfers.fetched,
         inserted: jobs.inserted + transfers.inserted,
@@ -54,19 +60,29 @@ export function makeArcAdapter(): ChainAdapter {
 
     async readAttestations(addresses: string[]): Promise<Map<string, number>> {
       const out = new Map<string, number>();
-      for (const addr of addresses) out.set(addr, await this.readAttestation(addr));
+      for (const addr of addresses)
+        out.set(addr, await this.readAttestation(addr));
       return out;
     },
 
-    async publishAttestation(address: string, _score: WalletScore): Promise<PublishResult> {
+    async publishAttestation(
+      address: string,
+      _score: WalletScore,
+    ): Promise<PublishResult> {
       // Identity gate: no agentId resolvable from the bare address → skip,
       // badge-gated until the agent is registered. Mirrors erc8004-arc-publish
       // precondition (caller must supply a registered agentId).
       void TAG2;
-      return { address, dryRun: true, skipped: true, reason: 'no_arc_agent_id' };
+      return {
+        address,
+        dryRun: true,
+        skipped: true,
+        reason: "no_arc_agent_id",
+      };
     },
 
     explorerTxUrl: (txId) => `https://testnet.arcscan.app/tx/${txId}`,
-    explorerAddressUrl: (address) => `https://testnet.arcscan.app/address/${address}`,
+    explorerAddressUrl: (address) =>
+      `https://testnet.arcscan.app/address/${address}`,
   };
 }

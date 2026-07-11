@@ -7,10 +7,13 @@
  * moving USDC wallet-to-wallet, e.g. github.com/TheVertexAgents/agent-stack-arc)
  * that never touch the job-escrow contract.
  *
- * Deliberately writes ONLY `signal_events` (+ `ensureWallet`) — no `transactions`
- * row. arc-jobs.ts's `transactions` rows back the /arc dashboard's "Matched
- * Settlements" KPI (see 2026-07-09-arc-dashboard-design.md); folding plain
- * transfers into that same table would silently change what that metric means.
+ * Writes both `signal_events` and a `transactions` row (needed for Tier-2
+ * scoring — activity/volume/diversity/age are computed live per profile-page
+ * render from `transactions`, not from `signal_events`; see calculateScore in
+ * scoring/index.ts). The `transactions` row uses `facilitator: ARC_USDC_CONTRACT`
+ * (not the escrow address), so /arc's "Matched Settlements" KPI — which filters
+ * on `facilitator = <escrow>` — never conflates plain transfers with ERC-8183
+ * settlements (see getArcDashboardStats in db/client.ts).
  * See 2026-07-11-arc-usdc-transfer-signals-design.md.
  *
  * DEDUP vs arc-jobs: an ERC-8183 settlement's `safeTransfer`/`safeTransferFrom`
@@ -23,10 +26,11 @@
  */
 
 import { createPublicClient, http, parseAbiItem, type Log } from 'viem';
-import type { Chain } from '@/db/schema';
+import type { Chain, Transaction } from '@/db/schema';
 import type { IndexRunResult } from '@/chain-adapters/types';
 import { arcTestnet } from '@/config/arc-chain';
 import {
+  insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
   upsertWallet as dbUpsertWallet,
   getCursor as dbGetCursor,
@@ -34,7 +38,19 @@ import {
   type InsertSignalEventInput,
 } from '@/db/client';
 import { buildUsdcTransferSignal } from '@/scoring/signals';
-import { ARC_JOBS_CONTRACT, ARC_MAX_LOG_WINDOW, ARC_DEFAULT_MAX_WINDOWS, GENESIS_FALLBACK_BLOCK } from './arc-jobs';
+import { ARC_JOBS_CONTRACT, GENESIS_FALLBACK_BLOCK } from './arc-jobs';
+
+/**
+ * Plain USDC Transfer log density on Arc Testnet is far higher than the
+ * ERC-8183 job-escrow path (arc-jobs.ts) — a 10k-block window (arc-jobs's
+ * ARC_MAX_LOG_WINDOW) can exceed the RPC's 20,000-result eth_getLogs cap here.
+ * Confirmed 2026-07-11: a real production run failed on exactly this. Use a
+ * much smaller window for this indexer specifically.
+ */
+export const ARC_TRANSFERS_MAX_LOG_WINDOW = 500;
+
+/** Smaller window → more windows needed to cover the same block range as arc-jobs. */
+export const ARC_TRANSFERS_DEFAULT_MAX_WINDOWS = 200;
 
 /** Arc Testnet USDC ERC-20 token — same contract used as the ERC-8183 payment token. */
 export const ARC_USDC_CONTRACT = '0x3600000000000000000000000000000000000000' as const;
@@ -81,6 +97,30 @@ function isEscrowInternal(transfer: ArcTransfer): boolean {
   return transfer.from.toLowerCase() === escrow || transfer.to.toLowerCase() === escrow;
 }
 
+/**
+ * Pure: map a transfer to an AK `transactions` row. wallet_address is the
+ * sender (consumer/payer face); counterparty is the receiver (provider/payee
+ * face) — mirrors arc-jobs.ts's toTransactionRow convention. facilitator is
+ * the USDC token contract itself (not an escrow), which is exactly what lets
+ * getArcDashboardStats tell this apart from ERC-8183 settlements.
+ */
+export function toTransactionRow(
+  transfer: ArcTransfer,
+  usdcContract: string,
+  observedAt: string,
+): Omit<Transaction, 'id'> {
+  return {
+    chain: ARC_CHAIN,
+    wallet_address: transfer.from,
+    facilitator: usdcContract,
+    counterparty: transfer.to,
+    amount: transfer.amount,
+    timestamp: observedAt,
+    success: true,
+    tx_signature: transfer.txHash,
+  };
+}
+
 // ─── DI core ──────────────────────────────────────────────────────────────────
 
 export interface ArcTransfersIndexerDeps {
@@ -88,6 +128,7 @@ export interface ArcTransfersIndexerDeps {
   getHead: () => Promise<bigint>;
   getLogs: (fromBlock: bigint, toBlock: bigint) => Promise<ArcTransfer[]>;
   blockTimestamp: (blockNumber: bigint) => Promise<string>;
+  insertTransactions: (rows: Omit<Transaction, 'id'>[]) => Promise<number>;
   insertSignalEvents: (inputs: InsertSignalEventInput[]) => Promise<number>;
   ensureWallet: (address: string) => Promise<void>;
   getCursor: (key: string) => Promise<{ last_signature: string; last_slot: number | null } | null>;
@@ -108,7 +149,7 @@ export function arcTransfersCursorKey(usdcContract: string): string {
  */
 export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promise<IndexRunResult> {
   const cursors = new Map<string, string>();
-  const windowSize = deps.windowSize ?? ARC_MAX_LOG_WINDOW;
+  const windowSize = deps.windowSize ?? ARC_TRANSFERS_MAX_LOG_WINDOW;
   const maxWindows = deps.maxWindows ?? Number.POSITIVE_INFINITY;
   const cursorKey = arcTransfersCursorKey(deps.usdcContract);
 
@@ -123,6 +164,7 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
     return { fetched: 0, inserted: 0, cursors };
   }
 
+  const rows: Omit<Transaction, 'id'>[] = [];
   const signals: InsertSignalEventInput[] = [];
   const wallets = new Set<string>();
   const tsCache = new Map<string, string>();
@@ -154,6 +196,7 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
       wallets.add(transfer.from);
       wallets.add(transfer.to);
 
+      rows.push(toTransactionRow(transfer, deps.usdcContract, observedAt));
       signals.push(
         buildUsdcTransferSignal({
           walletAddress: transfer.to, face: 'provider', chain: ARC_CHAIN,
@@ -180,6 +223,7 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
   }
 
   for (const w of wallets) await deps.ensureWallet(w);
+  await deps.insertTransactions(rows);
   const inserted = await deps.insertSignalEvents(signals);
 
   await advanceCursor();
@@ -224,7 +268,7 @@ export async function runArcTransfersIndexer(
   return arcTransfersIndexer({
     usdcContract,
     windowSize: opts.windowSize,
-    maxWindows: opts.maxWindows ?? ARC_DEFAULT_MAX_WINDOWS,
+    maxWindows: opts.maxWindows ?? ARC_TRANSFERS_DEFAULT_MAX_WINDOWS,
     getHead: async () => client.getBlockNumber(),
     getLogs: async (fromBlock, toBlock) => {
       const logs = await client.getLogs({
@@ -241,6 +285,7 @@ export async function runArcTransfersIndexer(
       const block = await client.getBlock({ blockNumber });
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
+    insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
     ensureWallet: async (a) => { await dbUpsertWallet(a, 0, 'Unrated', 0, {}, ARC_CHAIN); },
     getCursor: async (key) => {
