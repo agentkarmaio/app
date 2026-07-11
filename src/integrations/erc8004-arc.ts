@@ -13,28 +13,30 @@
  * Spec: https://github.com/erc-8004/erc-8004-contracts/blob/master/ERC8004SPEC.md
  */
 
-import { createPublicClient, http, parseAbi } from 'viem';
-import { arcTestnet } from '@/config/arc-chain';
-import { gunzipSync } from 'zlib';
-import { safeFetchJson } from '@/lib/ssrf-guard';
+import { createPublicClient, http, parseAbi } from "viem";
+import { arcTestnet } from "@/config/arc-chain";
+import { gunzipSync } from "zlib";
+import { safeFetchJson } from "@/lib/ssrf-guard";
 
-export const IDENTITY_REGISTRY_ARC = '0x8004A818BFB912233c491871b3d84c89A494BD9e' as const;
-export const REPUTATION_REGISTRY_ARC = '0x8004B663056A597Dffe9eCcC1965A193B7388713' as const;
+export const IDENTITY_REGISTRY_ARC =
+  "0x8004A818BFB912233c491871b3d84c89A494BD9e" as const;
+export const REPUTATION_REGISTRY_ARC =
+  "0x8004B663056A597Dffe9eCcC1965A193B7388713" as const;
 
 // ─── Minimal ABIs ─────────────────────────────────────────────────────────────
 // Read-only surface only. Write paths are colocated with their tx scripts.
 
 const IDENTITY_ABI = parseAbi([
-  'function ownerOf(uint256 tokenId) view returns (address)',
-  'function tokenURI(uint256 tokenId) view returns (string)',
-  'function balanceOf(address owner) view returns (uint256)',
-  'function getAgentWallet(uint256 agentId) view returns (address)',
-  'function getMetadata(uint256 agentId, string metadataKey) view returns (bytes)',
+  "function ownerOf(uint256 tokenId) view returns (address)",
+  "function tokenURI(uint256 tokenId) view returns (string)",
+  "function balanceOf(address owner) view returns (uint256)",
+  "function getAgentWallet(uint256 agentId) view returns (address)",
+  "function getMetadata(uint256 agentId, string metadataKey) view returns (bytes)",
 ]);
 
 const REPUTATION_ABI = parseAbi([
-  'function getSummary(uint256 agentId, address[] clientAddresses, string tag1, string tag2) view returns (uint64 count, int128 summaryValue, uint8 summaryValueDecimals)',
-  'function readAllFeedback(uint256 agentId, address[] clientAddresses, string tag1, string tag2, bool includeRevoked) view returns (address[] clients, uint64[] feedbackIndexes, int128[] values, uint8[] valueDecimals, string[] tag1s, string[] tag2s, bool[] revokedStatuses)',
+  "function getSummary(uint256 agentId, address[] clientAddresses, string tag1, string tag2) view returns (uint64 count, int128 summaryValue, uint8 summaryValueDecimals)",
+  "function readAllFeedback(uint256 agentId, address[] clientAddresses, string tag1, string tag2, bool includeRevoked) view returns (address[] clients, uint64[] feedbackIndexes, int128[] values, uint8[] valueDecimals, string[] tag1s, string[] tag2s, bool[] revokedStatuses)",
 ]);
 
 // ─── Client ───────────────────────────────────────────────────────────────────
@@ -105,7 +107,9 @@ export interface FeedbackSummary {
 
 // ─── IdentityRegistry reads ───────────────────────────────────────────────────
 
-export async function readAgent(agentId: bigint | number): Promise<ArcAgent | null> {
+export async function readAgent(
+  agentId: bigint | number,
+): Promise<ArcAgent | null> {
   const client = getClient();
   const id = BigInt(agentId);
 
@@ -114,19 +118,19 @@ export async function readAgent(agentId: bigint | number): Promise<ArcAgent | nu
       client.readContract({
         address: IDENTITY_REGISTRY_ARC,
         abi: IDENTITY_ABI,
-        functionName: 'ownerOf',
+        functionName: "ownerOf",
         args: [id],
       }),
       client.readContract({
         address: IDENTITY_REGISTRY_ARC,
         abi: IDENTITY_ABI,
-        functionName: 'tokenURI',
+        functionName: "tokenURI",
         args: [id],
       }),
       client.readContract({
         address: IDENTITY_REGISTRY_ARC,
         abi: IDENTITY_ABI,
-        functionName: 'getAgentWallet',
+        functionName: "getAgentWallet",
         args: [id],
       }),
     ]);
@@ -144,48 +148,57 @@ export async function readAgent(agentId: bigint | number): Promise<ArcAgent | nu
       const reg = await fetchRegistration(tokenURI as string);
       agent.registration = reg;
     } catch (err) {
-      agent.registrationError = err instanceof Error ? err.message : String(err);
+      agent.registrationError =
+        err instanceof Error ? err.message : String(err);
     }
 
     return agent;
   } catch (err) {
     // ownerOf reverts for non-existent tokens — treat as null
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('ERC721NonexistentToken') || msg.includes('invalid token ID')) return null;
+    if (
+      msg.includes("ERC721NonexistentToken") ||
+      msg.includes("invalid token ID")
+    )
+      return null;
     throw err;
   }
 }
 
-async function fetchRegistration(uri: string): Promise<AgentRegistrationFile | null> {
+async function fetchRegistration(
+  uri: string,
+): Promise<AgentRegistrationFile | null> {
   // data:application/json[;enc=gzip[;level=N]];base64,XXXX — fully on-chain
   // encoded metadata. Gas-optimized agents commonly use this pattern. Parse
   // inline rather than treating as unsupported.
-  if (uri.startsWith('data:application/json')) {
-    const commaIdx = uri.indexOf(',');
-    if (commaIdx < 0) throw new Error('data URI missing comma separator');
+  if (uri.startsWith("data:application/json")) {
+    const commaIdx = uri.indexOf(",");
+    if (commaIdx < 0) throw new Error("data URI missing comma separator");
     const header = uri.slice(5, commaIdx); // strip 'data:'
     const body = uri.slice(commaIdx + 1);
-    const params = header.split(';');
-    const isBase64 = params.includes('base64');
-    const isGzip = params.some((p) => p.startsWith('enc=gzip'));
+    const params = header.split(";");
+    const isBase64 = params.includes("base64");
+    const isGzip = params.some((p) => p.startsWith("enc=gzip"));
 
     let buf: Buffer;
     if (isBase64) {
-      buf = Buffer.from(body, 'base64');
+      buf = Buffer.from(body, "base64");
     } else {
-      buf = Buffer.from(decodeURIComponent(body), 'utf-8');
+      buf = Buffer.from(decodeURIComponent(body), "utf-8");
     }
     if (isGzip) buf = gunzipSync(buf);
-    return JSON.parse(buf.toString('utf-8')) as AgentRegistrationFile;
+    return JSON.parse(buf.toString("utf-8")) as AgentRegistrationFile;
   }
 
-  if (!uri.startsWith('http://') && !uri.startsWith('https://')) {
+  if (!uri.startsWith("http://") && !uri.startsWith("https://")) {
     // ipfs:// and ar:// can be added later when the demand shows up.
     throw new Error(`unsupported URI scheme: ${uri.slice(0, 32)}…`);
   }
   // SSRF guard: uri is an attacker-controlled on-chain registration URL —
   // validate the host (and every redirect hop) is public before fetching.
-  return (await safeFetchJson(uri, { timeoutMs: 8000 })) as AgentRegistrationFile;
+  return (await safeFetchJson(uri, {
+    timeoutMs: 8000,
+  })) as AgentRegistrationFile;
 }
 
 // ─── ReputationRegistry reads ─────────────────────────────────────────────────
@@ -198,18 +211,20 @@ async function fetchRegistration(uri: string): Promise<AgentRegistrationFile | n
 export async function readFeedbackSummary(
   agentId: bigint | number,
   clientAddresses: [`0x${string}`, ...`0x${string}`[]],
-  tag1 = '',
-  tag2 = '',
+  tag1 = "",
+  tag2 = "",
 ): Promise<FeedbackSummary> {
   const client = getClient();
   const id = BigInt(agentId);
 
-  const [count, summaryValue, summaryValueDecimals] = await client.readContract({
-    address: REPUTATION_REGISTRY_ARC,
-    abi: REPUTATION_ABI,
-    functionName: 'getSummary',
-    args: [id, clientAddresses, tag1, tag2],
-  });
+  const [count, summaryValue, summaryValueDecimals] = await client.readContract(
+    {
+      address: REPUTATION_REGISTRY_ARC,
+      abi: REPUTATION_ABI,
+      functionName: "getSummary",
+      args: [id, clientAddresses, tag1, tag2],
+    },
+  );
 
   return {
     count: Number(count),
@@ -261,18 +276,19 @@ export async function readAllFeedback(
   const client = getClient();
   const id = BigInt(agentId);
 
-  const [clients, indexes, values, decimals, tag1s, tag2s, revoked] = await client.readContract({
-    address: REPUTATION_REGISTRY_ARC,
-    abi: REPUTATION_ABI,
-    functionName: 'readAllFeedback',
-    args: [
-      id,
-      opts.clientAddresses ?? [],
-      opts.tag1 ?? '',
-      opts.tag2 ?? '',
-      opts.includeRevoked ?? false,
-    ],
-  });
+  const [clients, indexes, values, decimals, tag1s, tag2s, revoked] =
+    await client.readContract({
+      address: REPUTATION_REGISTRY_ARC,
+      abi: REPUTATION_ABI,
+      functionName: "readAllFeedback",
+      args: [
+        id,
+        opts.clientAddresses ?? [],
+        opts.tag1 ?? "",
+        opts.tag2 ?? "",
+        opts.includeRevoked ?? false,
+      ],
+    });
 
   const out: FeedbackRecord[] = [];
   for (let i = 0; i < clients.length; i++) {

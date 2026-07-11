@@ -45,6 +45,7 @@ function makeDeps(
   transfers: ArcTransfer[],
   overrides: Partial<Parameters<typeof arcTransfersIndexer>[0]> = {},
 ) {
+  const inserted: unknown[] = [];
   const signals: unknown[] = [];
   const ensured: string[] = [];
   const cursors: Array<[string, string, number | undefined]> = [];
@@ -55,6 +56,7 @@ function makeDeps(
     getHead: async () => BigInt(100),
     getLogs: async () => { getLogsCalls++; return transfers; },
     blockTimestamp: async () => TS,
+    insertTransactions: async (rows: unknown[]) => { inserted.push(...rows); return rows.length; },
     insertSignalEvents: async (s: unknown[]) => { signals.push(...s); return s.length; },
     ensureWallet: async (a: string) => { ensured.push(a); },
     getCursor: async () => null,
@@ -62,7 +64,7 @@ function makeDeps(
     ...overrides,
   };
 
-  return { deps, state: { signals, ensured, cursors, get getLogsCalls() { return getLogsCalls; } } };
+  return { deps, state: { inserted, signals, ensured, cursors, get getLogsCalls() { return getLogsCalls; } } };
 }
 
 describe('parseTransfer', () => {
@@ -97,6 +99,13 @@ describe('arcTransfersIndexer', () => {
     expect(result.inserted).toBe(2);
     expect(state.signals).toHaveLength(2);
     expect(state.ensured).toEqual(expect.arrayContaining([FROM, TO]));
+
+    expect(state.inserted).toHaveLength(1);
+    const row = state.inserted[0] as any;
+    expect(row.wallet_address).toBe(FROM);
+    expect(row.counterparty).toBe(TO);
+    expect(row.facilitator).toBe(ARC_USDC_CONTRACT);
+    expect(row.amount).toBe(1);
 
     const provider = state.signals.find((s: any) => s.face === 'provider') as any;
     const consumer = state.signals.find((s: any) => s.face === 'consumer') as any;

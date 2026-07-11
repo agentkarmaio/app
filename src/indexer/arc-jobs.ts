@@ -29,10 +29,10 @@
  *   ARC_JOBS_START_BLOCK — genesis block for the first scan (optional).
  */
 
-import { createPublicClient, http, parseAbiItem, type Log } from 'viem';
-import type { Transaction, Chain } from '@/db/schema';
-import type { IndexRunResult } from '@/chain-adapters/types';
-import { arcTestnet } from '@/config/arc-chain';
+import { createPublicClient, http, parseAbiItem, type Log } from "viem";
+import type { Transaction, Chain } from "@/db/schema";
+import type { IndexRunResult } from "@/chain-adapters/types";
+import { arcTestnet } from "@/config/arc-chain";
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
@@ -41,15 +41,16 @@ import {
   upsertCursor as dbUpsertCursor,
   getWallet as dbGetWallet,
   type InsertSignalEventInput,
-} from '@/db/client';
-import { buildJobSettledSignal } from '@/scoring/signals';
-import { readAgent } from '@/integrations/erc8004-arc';
-import { isTemplatedIdentity } from '@/scoring/identity-fingerprint';
+} from "@/db/client";
+import { buildJobSettledSignal } from "@/scoring/signals";
+import { readAgent } from "@/integrations/erc8004-arc";
+import { isTemplatedIdentity } from "@/scoring/identity-fingerprint";
 
 // ── ERC-8183 AgenticCommerce escrow address + decimals (Arc Testnet) ──────────
 
 /** ERC-8183 AgenticCommerce (job escrow). Canonical Arc Testnet deployment. */
-export const ARC_JOBS_CONTRACT = '0x0747EEf0706327138c69792bF28Cd525089e4583' as const;
+export const ARC_JOBS_CONTRACT =
+  "0x0747EEf0706327138c69792bF28Cd525089e4583" as const;
 
 /** ERC-8183 job amounts are USDC token units — 6 decimals, NOT 18-dec gas. */
 export const ARC_USDC_DECIMALS = 6;
@@ -59,7 +60,7 @@ const USDC_SCALE = 10 ** ARC_USDC_DECIMALS;
 // 'arc' is not yet in the schema Chain union (added by the schema CHANGES pass
 // that wires Arc in after this indexer). Cast keeps this file type-safe and
 // independent of that edit landing first.
-const ARC_CHAIN = 'arc' as Chain;
+const ARC_CHAIN = "arc" as Chain;
 
 // ── Canonical EIP-8183 event ABIs (decoded via viem getLogs) ──────────────────
 
@@ -71,11 +72,11 @@ const ARC_CHAIN = 'arc' as Chain;
 // PaymentReleased was therefore unmatched and skipped. Confirmed 2026-07-10:
 // real topic0 0xb0f0239b… vs. the 5-param signature's 0xef137df1….
 export const JOB_CREATED_EVENT = parseAbiItem(
-  'event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt, address hook)',
+  "event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt, address hook)",
 );
 
 export const PAYMENT_RELEASED_EVENT = parseAbiItem(
-  'event PaymentReleased(uint256 indexed jobId, address indexed provider, uint256 amount)',
+  "event PaymentReleased(uint256 indexed jobId, address indexed provider, uint256 amount)",
 );
 
 // ── Decoded event records ─────────────────────────────────────────────────────
@@ -114,7 +115,8 @@ export function parseJobCreated(
     jobId,
     client,
     provider,
-    evaluator: (evaluator ?? '0x0000000000000000000000000000000000000000') as `0x${string}`,
+    evaluator: (evaluator ??
+      "0x0000000000000000000000000000000000000000") as `0x${string}`,
     expiredAt: expiredAt ?? BigInt(0),
     blockNumber: log.blockNumber,
     txHash: log.transactionHash,
@@ -160,7 +162,7 @@ export function toTransactionRow(
   settled: ArcPaymentReleased,
   client: string,
   observedAt: string,
-): Omit<Transaction, 'id'> {
+): Omit<Transaction, "id"> {
   return {
     chain: ARC_CHAIN,
     wallet_address: client,
@@ -211,11 +213,17 @@ export interface ArcJobsIndexerDeps {
   isTemplatedCounterparty?: (address: string) => Promise<boolean>;
   /** ISO timestamp source for a block (settlement time). */
   blockTimestamp: (blockNumber: bigint) => Promise<string>;
-  insertTransactions: (rows: Omit<Transaction, 'id'>[]) => Promise<number>;
+  insertTransactions: (rows: Omit<Transaction, "id">[]) => Promise<number>;
   insertSignalEvents: (inputs: InsertSignalEventInput[]) => Promise<number>;
   ensureWallet: (address: string) => Promise<void>;
-  getCursor: (key: string) => Promise<{ last_signature: string; last_slot: number | null } | null>;
-  upsertCursor: (key: string, lastSignature: string, lastSlot?: number) => Promise<void>;
+  getCursor: (
+    key: string,
+  ) => Promise<{ last_signature: string; last_slot: number | null } | null>;
+  upsertCursor: (
+    key: string,
+    lastSignature: string,
+    lastSlot?: number,
+  ) => Promise<void>;
   /** Max blocks per getLogs call. Arc caps eth_getLogs at 10k. */
   windowSize?: number;
   /**
@@ -263,7 +271,9 @@ export function arcJobsCursorKey(jobsContract: string): string {
  * provider-only receipt. Skipped settlements still advance the cursor (the
  * block was scanned), so they are never re-examined.
  */
-export async function arcJobsIndexer(deps: ArcJobsIndexerDeps): Promise<IndexRunResult> {
+export async function arcJobsIndexer(
+  deps: ArcJobsIndexerDeps,
+): Promise<IndexRunResult> {
   const cursors = new Map<string, string>();
   const windowSize = deps.windowSize ?? ARC_MAX_LOG_WINDOW;
   const maxWindows = deps.maxWindows ?? Number.POSITIVE_INFINITY;
@@ -272,7 +282,8 @@ export async function arcJobsIndexer(deps: ArcJobsIndexerDeps): Promise<IndexRun
   // Resolve start block from cursor (last_slot + 1), else genesis fallback.
   let startBlock = BigInt(GENESIS_FALLBACK_BLOCK);
   const cursor = await deps.getCursor(cursorKey);
-  if (cursor?.last_slot != null) startBlock = BigInt(cursor.last_slot) + BigInt(1);
+  if (cursor?.last_slot != null)
+    startBlock = BigInt(cursor.last_slot) + BigInt(1);
 
   const head = await deps.getHead();
 
@@ -282,7 +293,7 @@ export async function arcJobsIndexer(deps: ArcJobsIndexerDeps): Promise<IndexRun
     return { fetched: 0, inserted: 0, cursors };
   }
 
-  const rows: Omit<Transaction, 'id'>[] = [];
+  const rows: Omit<Transaction, "id">[] = [];
   const signals: InsertSignalEventInput[] = [];
   const wallets = new Set<string>();
   // Cache block timestamps so a window's many settlements at the same block
@@ -338,24 +349,44 @@ export async function arcJobsIndexer(deps: ArcJobsIndexerDeps): Promise<IndexRun
 
       // Templated-identity check runs on each face's COUNTERPARTY (the wallet
       // being vouched for by this settlement), not on the wallet itself.
-      const clientIsTemplated = deps.isTemplatedCounterparty ? await deps.isTemplatedCounterparty(client) : false;
-      const providerIsTemplated = deps.isTemplatedCounterparty ? await deps.isTemplatedCounterparty(provider) : false;
+      const clientIsTemplated = deps.isTemplatedCounterparty
+        ? await deps.isTemplatedCounterparty(client)
+        : false;
+      const providerIsTemplated = deps.isTemplatedCounterparty
+        ? await deps.isTemplatedCounterparty(provider)
+        : false;
 
       // Tier-1 receipt pair — provider got paid, client settled clean.
       // buildJobSettledSignal never sets `chain` (InsertSignalEventInput.chain
       // is optional, DB defaults to 'solana') — set it here or every Arc signal
       // silently mis-keys to the wrong chain and violates the wallets FK.
       signals.push(
-        { ...buildJobSettledSignal({
-          walletAddress: provider, face: 'provider', jobId: jobKey, txHash: settled.txHash,
-          amount: settled.amount, counterparty: client, observedAt,
-          templatedCounterparty: clientIsTemplated,
-        }), chain: ARC_CHAIN },
-        { ...buildJobSettledSignal({
-          walletAddress: client, face: 'consumer', jobId: jobKey, txHash: settled.txHash,
-          amount: settled.amount, counterparty: provider, observedAt,
-          templatedCounterparty: providerIsTemplated,
-        }), chain: ARC_CHAIN },
+        {
+          ...buildJobSettledSignal({
+            walletAddress: provider,
+            face: "provider",
+            jobId: jobKey,
+            txHash: settled.txHash,
+            amount: settled.amount,
+            counterparty: client,
+            observedAt,
+            templatedCounterparty: clientIsTemplated,
+          }),
+          chain: ARC_CHAIN,
+        },
+        {
+          ...buildJobSettledSignal({
+            walletAddress: client,
+            face: "consumer",
+            jobId: jobKey,
+            txHash: settled.txHash,
+            amount: settled.amount,
+            counterparty: provider,
+            observedAt,
+            templatedCounterparty: providerIsTemplated,
+          }),
+          chain: ARC_CHAIN,
+        },
       );
     }
 
@@ -392,12 +423,15 @@ export async function arcJobsIndexer(deps: ArcJobsIndexerDeps): Promise<IndexRun
 
 function getRpcUrl(): string {
   const url = process.env.ARC_RPC_URL;
-  if (!url) throw new Error('ARC_RPC_URL env var is not set'); // raise, no fallback
+  if (!url) throw new Error("ARC_RPC_URL env var is not set"); // raise, no fallback
   return url;
 }
 
 function makeClient() {
-  return createPublicClient({ chain: arcTestnet, transport: http(getRpcUrl()) });
+  return createPublicClient({
+    chain: arcTestnet,
+    transport: http(getRpcUrl()),
+  });
 }
 
 /**
@@ -407,10 +441,12 @@ function makeClient() {
  */
 export function resolveStartBlockEnv(): number {
   const raw = process.env.ARC_JOBS_START_BLOCK;
-  if (raw === undefined || raw === '') return GENESIS_FALLBACK_BLOCK;
+  if (raw === undefined || raw === "") return GENESIS_FALLBACK_BLOCK;
   const n = Number.parseInt(raw, 10);
   if (!Number.isInteger(n) || n < 0) {
-    throw new Error(`ARC_JOBS_START_BLOCK is not a non-negative integer: ${raw}`);
+    throw new Error(
+      `ARC_JOBS_START_BLOCK is not a non-negative integer: ${raw}`,
+    );
   }
   return n;
 }
@@ -426,7 +462,9 @@ export function resolveStartBlockEnv(): number {
  * (getLogs Transfer-log or full id-range scan) was ruled out as prohibitively
  * expensive for a per-settlement check.
  */
-export async function isTemplatedCounterparty(address: string): Promise<boolean> {
+export async function isTemplatedCounterparty(
+  address: string,
+): Promise<boolean> {
   const wallet = await dbGetWallet(address.toLowerCase(), ARC_CHAIN);
   if (!wallet?.arc_agent_id) return false;
   const agent = await readAgent(wallet.arc_agent_id);
@@ -439,7 +477,11 @@ export async function isTemplatedCounterparty(address: string): Promise<boolean>
  * Raises on missing ARC_RPC_URL (no silent fallback).
  */
 export async function runArcJobsIndexer(
-  opts: { jobsContract?: string; windowSize?: number; maxWindows?: number } = {},
+  opts: {
+    jobsContract?: string;
+    windowSize?: number;
+    maxWindows?: number;
+  } = {},
 ): Promise<IndexRunResult> {
   const jobsContract = opts.jobsContract ?? ARC_JOBS_CONTRACT;
   const client = makeClient();
@@ -452,8 +494,18 @@ export async function runArcJobsIndexer(
     getHead: async () => client.getBlockNumber(),
     getLogs: async (fromBlock, toBlock) => {
       const [createdLogs, releasedLogs] = await Promise.all([
-        client.getLogs({ address: jobsContract as `0x${string}`, event: JOB_CREATED_EVENT, fromBlock, toBlock }),
-        client.getLogs({ address: jobsContract as `0x${string}`, event: PAYMENT_RELEASED_EVENT, fromBlock, toBlock }),
+        client.getLogs({
+          address: jobsContract as `0x${string}`,
+          event: JOB_CREATED_EVENT,
+          fromBlock,
+          toBlock,
+        }),
+        client.getLogs({
+          address: jobsContract as `0x${string}`,
+          event: PAYMENT_RELEASED_EVENT,
+          fromBlock,
+          toBlock,
+        }),
       ]);
       const created: ArcJobCreated[] = [];
       for (const log of createdLogs) {
@@ -477,17 +529,25 @@ export async function runArcJobsIndexer(
     },
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
-    ensureWallet: async (a) => { await dbUpsertWallet(a, 0, 'Unrated', 0, {}, ARC_CHAIN); },
+    ensureWallet: async (a) => {
+      await dbUpsertWallet(a, 0, "Unrated", 0, {}, ARC_CHAIN);
+    },
     getCursor: async (key) => {
       const c = await dbGetCursor(key, ARC_CHAIN);
-      if (c) return { last_signature: c.last_signature, last_slot: c.last_slot };
+      if (c)
+        return { last_signature: c.last_signature, last_slot: c.last_slot };
       // No persisted cursor → seed the start from ARC_JOBS_START_BLOCK (env)
       // via a synthetic last_slot of (start - 1), so the core's `last_slot + 1`
       // lands the first window exactly on the configured genesis block. Never
       // silently scans from block 0 when the env is set.
-      return { last_signature: String(envStartBlock - 1), last_slot: envStartBlock - 1 };
+      return {
+        last_signature: String(envStartBlock - 1),
+        last_slot: envStartBlock - 1,
+      };
     },
-    upsertCursor: async (key, last, slot) => { await dbUpsertCursor(key, last, slot, ARC_CHAIN); },
+    upsertCursor: async (key, last, slot) => {
+      await dbUpsertCursor(key, last, slot, ARC_CHAIN);
+    },
     isTemplatedCounterparty,
   });
 }

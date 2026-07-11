@@ -36,6 +36,7 @@ import {
   aggregateArcTransactions,
   countAgentsWithReceipts,
   emptyArcDashboardStats,
+  filterAgentPayments,
   mapRecentSettlements,
   type ArcDashboardStats,
   type ArcSignalAggRow,
@@ -2846,6 +2847,18 @@ export async function getRegistryStats(
 const ARC_DASH_TX_LIMIT = 10_000;
 const ARC_DASH_SIGNAL_LIMIT = 5_000;
 const ARC_DASH_RECENT_LIMIT = 8;
+// Plain-transfer rows scanned to find agent-to-agent payments before the
+// registered-payee filter. Bounded: Arc testnet transfer volume is high, but we
+// only need the most-recent handful whose payee is a registered agent.
+const ARC_DASH_AGENT_PAY_SCAN = 500;
+/** Registered-agent addresses pulled from the mirror to filter agent payments. */
+const ARC_DASH_MIRROR_LIMIT = 50_000;
+/** ERC-8183 escrow facilitator — the marker distinguishing escrow settlements
+ *  from plain USDC transfers in the `transactions` table. Hardcoded to avoid a
+ *  db/client <-> indexer import cycle. */
+const ARC_ESCROW_FACILITATOR = '0x0747EEf0706327138c69792bF28Cd525089e4583';
+/** Arc USDC ERC-20 — the facilitator arc-transfers.ts stamps on plain transfers. */
+const ARC_USDC_FACILITATOR = '0x3600000000000000000000000000000000000000';
 
 export type { ArcDashboardStats };
 
@@ -2863,14 +2876,17 @@ export async function getArcDashboardStats(): Promise<ArcDashboardStats> {
     console.warn('[db] getArcDashboardStats registry:', err instanceof Error ? err.message : err);
   }
 
-  // Matched settlements live in transactions (arc-jobs only inserts when
-  // JobCreated ⋈ PaymentReleased). Bound the stream; Arc is testnet-scale.
+  // Matched settlements = ERC-8183 escrow only. Scoped by facilitator, not just
+  // chain='arc' — arc-transfers.ts also writes `transactions` rows (plain USDC
+  // transfers, e.g. AgentStack nanopayments) so Tier-2 scoring picks them up;
+  // without this filter they'd silently inflate this KPI's meaning.
   let txRows: ArcTxAggRow[] = [];
   try {
     const { data, error } = await supabase
       .from('transactions')
       .select('amount, wallet_address, counterparty')
       .eq('chain', 'arc')
+      .eq('facilitator', ARC_ESCROW_FACILITATOR)
       .limit(ARC_DASH_TX_LIMIT);
     if (error) {
       console.warn('[db] getArcDashboardStats transactions:', error.message);
@@ -2900,28 +2916,78 @@ export async function getArcDashboardStats(): Promise<ArcDashboardStats> {
     console.warn('[db] getArcDashboardStats signals:', err instanceof Error ? err.message : err);
   }
 
-  // Recent matched settlements for the activity table.
-  let recentRaw: {
+  // Recent matched settlements for the activity table — ESCROW ONLY (facilitator
+  // scope), so the table matches its "ERC-8183 job escrow" header and the KPIs
+  // above. Without the facilitator filter it leaked plain transfers here.
+  type RecentRaw = {
     tx_signature: string;
     wallet_address: string;
     counterparty?: string | null;
     amount: number | string;
     timestamp: string;
-  }[] = [];
+  };
+  let recentRaw: RecentRaw[] = [];
   try {
     const { data, error } = await supabase
       .from('transactions')
       .select('tx_signature, wallet_address, counterparty, amount, timestamp')
       .eq('chain', 'arc')
+      .eq('facilitator', ARC_ESCROW_FACILITATOR)
       .order('timestamp', { ascending: false })
       .limit(ARC_DASH_RECENT_LIMIT);
     if (error) {
       console.warn('[db] getArcDashboardStats recent:', error.message);
     } else {
-      recentRaw = (data ?? []) as typeof recentRaw;
+      recentRaw = (data ?? []) as RecentRaw[];
     }
   } catch (err) {
     console.warn('[db] getArcDashboardStats recent:', err instanceof Error ? err.message : err);
+  }
+
+  // Recent AGENT-TO-AGENT payments — plain USDC transfers (facilitator = USDC
+  // token) whose payee is a registered ERC-8004 agent. Two bounded reads +
+  // pure JS filter (filterAgentPayments): the mirror-membership test drops
+  // testnet transfer noise (0 noise payees are registered). This is where
+  // AgentStack (Circle Wallets) nanopayments surface on /arc.
+  const registeredWallets = new Set<string>();
+  try {
+    const { data, error } = await supabase
+      .from('erc8004_agents')
+      .select('agent_wallet, owner')
+      .eq('chain', 'arc')
+      .limit(ARC_DASH_MIRROR_LIMIT);
+    if (error) {
+      console.warn('[db] getArcDashboardStats mirror:', error.message);
+    } else {
+      for (const r of data ?? []) {
+        const w = (r.agent_wallet as string | null)?.trim().toLowerCase();
+        const o = (r.owner as string | null)?.trim().toLowerCase();
+        if (w) registeredWallets.add(w);
+        if (o) registeredWallets.add(o);
+      }
+    }
+  } catch (err) {
+    console.warn('[db] getArcDashboardStats mirror:', err instanceof Error ? err.message : err);
+  }
+
+  let agentPayRaw: RecentRaw[] = [];
+  if (registeredWallets.size > 0) {
+    try {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('tx_signature, wallet_address, counterparty, amount, timestamp')
+        .eq('chain', 'arc')
+        .eq('facilitator', ARC_USDC_FACILITATOR)
+        .order('timestamp', { ascending: false })
+        .limit(ARC_DASH_AGENT_PAY_SCAN);
+      if (error) {
+        console.warn('[db] getArcDashboardStats agentPayments:', error.message);
+      } else {
+        agentPayRaw = (data ?? []) as RecentRaw[];
+      }
+    } catch (err) {
+      console.warn('[db] getArcDashboardStats agentPayments:', err instanceof Error ? err.message : err);
+    }
   }
 
   const txAgg = aggregateArcTransactions(txRows);
@@ -2930,8 +2996,12 @@ export async function getArcDashboardStats(): Promise<ArcDashboardStats> {
   // empty but txs exist (partial index lag).
   const fromSignals = countAgentsWithReceipts(signalRows);
   const agentsWithReceipts = fromSignals > 0 ? fromSignals : txAgg.distinctAgents;
+  const agentPayments = filterAgentPayments(agentPayRaw, registeredWallets, ARC_DASH_RECENT_LIMIT);
 
-  if (txAgg.matchedSettlements === 0 && signalRows.length === 0) {
+  // Empty only when there's NOTHING to show — escrow settlements, receipt
+  // signals, AND agent-to-agent payments all absent. Agent payments alone keep
+  // the page non-empty (escrow KPIs legitimately stay 0 — they're escrow-scoped).
+  if (txAgg.matchedSettlements === 0 && signalRows.length === 0 && agentPayments.length === 0) {
     return emptyArcDashboardStats(registry);
   }
 
@@ -2941,6 +3011,7 @@ export async function getArcDashboardStats(): Promise<ArcDashboardStats> {
     agentsWithReceipts,
     quality,
     recent: mapRecentSettlements(recentRaw),
+    agentPayments,
     registry,
     empty: txAgg.matchedSettlements === 0,
   };

@@ -54,6 +54,13 @@ export interface ArcDashboardStats {
   agentsWithReceipts: number;
   quality: ArcQualityHistogram;
   recent: ArcRecentSettlement[];
+  /**
+   * Recent direct USDC payments (plain transfers, no escrow) whose PAYEE is a
+   * registered ERC-8004 agent — e.g. AgentStack nanopayments via Circle Wallets.
+   * Registered-payee membership filters out testnet transfer noise (0 of which
+   * are in AK's ERC-8004 registry mirror). Distinct from `recent` (escrow only).
+   */
+  agentPayments: ArcRecentSettlement[];
   registry: { agents: number; feedbacks: number };
   /** True when AK has no matched settlements yet (honest empty dashboard). */
   empty: boolean;
@@ -163,6 +170,42 @@ export function mapRecentSettlements(
   }));
 }
 
+/**
+ * Filter plain-transfer rows to those whose PAYEE (counterparty) is a registered
+ * ERC-8004 agent, then map + cap. `registeredWallets` is the lowercased set of
+ * `agent_wallet`/`owner` addresses from the arc erc8004_agents mirror. This is
+ * what isolates AgentStack-style agent-to-agent payments from testnet transfer
+ * noise (noise payees are not in the mirror). Rows are assumed pre-ordered by
+ * timestamp desc by the caller; we keep that order and take the first `limit`.
+ */
+export function filterAgentPayments(
+  rows: ReadonlyArray<{
+    tx_signature: string;
+    wallet_address: string;
+    counterparty?: string | null;
+    amount: number | string;
+    timestamp: string;
+  }>,
+  registeredWallets: ReadonlySet<string>,
+  limit = 8,
+): ArcRecentSettlement[] {
+  const out: ArcRecentSettlement[] = [];
+  for (const r of rows) {
+    const payee = r.counterparty?.trim().toLowerCase();
+    if (!payee || !registeredWallets.has(payee)) continue;
+    out.push({
+      txSignature: r.tx_signature,
+      txHash: parseArcTxHash(r.tx_signature),
+      walletAddress: r.wallet_address,
+      counterparty: r.counterparty ?? null,
+      amount: Number(r.amount) || 0,
+      timestamp: r.timestamp,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 export function emptyArcDashboardStats(
   registry: { agents: number; feedbacks: number } = { agents: 0, feedbacks: 0 },
 ): ArcDashboardStats {
@@ -172,6 +215,7 @@ export function emptyArcDashboardStats(
     agentsWithReceipts: 0,
     quality: { ...EMPTY_QUALITY },
     recent: [],
+    agentPayments: [],
     registry,
     empty: true,
   };

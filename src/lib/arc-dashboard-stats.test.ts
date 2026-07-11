@@ -5,6 +5,7 @@ import {
   aggregateArcTransactions,
   countAgentsWithReceipts,
   emptyArcDashboardStats,
+  filterAgentPayments,
   mapRecentSettlements,
   parseArcTxHash,
 } from './arc-dashboard-stats';
@@ -29,6 +30,55 @@ describe('aggregateArcTransactions', () => {
       volumeUsdc: 0,
       distinctAgents: 0,
     });
+  });
+});
+
+describe('filterAgentPayments', () => {
+  const REG = '0xRegisteredPayee';
+  const NOISE = '0xNoisePayee';
+  const registered = new Set([REG.toLowerCase()]);
+
+  function row(counterparty: string, ts: string, sig = ts) {
+    return {
+      tx_signature: sig,
+      wallet_address: '0xPayer',
+      counterparty,
+      amount: 0.002,
+      timestamp: ts,
+    };
+  }
+
+  test('keeps rows whose payee is a registered agent, drops noise', () => {
+    const out = filterAgentPayments(
+      [row(REG, '2026-07-12T00:03:00Z'), row(NOISE, '2026-07-12T00:02:00Z'), row(REG, '2026-07-12T00:01:00Z')],
+      registered,
+    );
+    expect(out).toHaveLength(2);
+    expect(out.every((r) => r.counterparty === REG)).toBe(true);
+    // preserves input order (caller pre-sorts desc)
+    expect(out[0].timestamp).toBe('2026-07-12T00:03:00Z');
+  });
+
+  test('matches payee case-insensitively', () => {
+    const out = filterAgentPayments([row(REG.toUpperCase(), '2026-07-12T00:01:00Z')], registered);
+    expect(out).toHaveLength(1);
+  });
+
+  test('respects the limit', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => row(REG, `2026-07-12T00:${String(i).padStart(2, '0')}:00Z`, `sig${i}`));
+    expect(filterAgentPayments(rows, registered, 8)).toHaveLength(8);
+  });
+
+  test('empty registered set → nothing', () => {
+    expect(filterAgentPayments([row(REG, '2026-07-12T00:01:00Z')], new Set())).toHaveLength(0);
+  });
+
+  test('null/blank payee is skipped', () => {
+    const out = filterAgentPayments(
+      [{ tx_signature: 's', wallet_address: '0xP', counterparty: null, amount: 1, timestamp: 't' }],
+      registered,
+    );
+    expect(out).toHaveLength(0);
   });
 });
 

@@ -274,6 +274,89 @@ export function ArcDashboard({ data }: { data: ArcDashboardStats }) {
           )}
         </CardContent>
       </Card>
+
+      {/* Recent agent-to-agent payments (plain USDC transfers, registered payee) */}
+      {data.agentPayments.length > 0 && (
+        <Card className="border-slate-400/15">
+          <CardContent className="p-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold tracking-tight">
+                  Recent agent-to-agent payments
+                </h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Direct USDC nanopayments between registered ERC-8004 agents — e.g. AgentStack
+                  paying workers via Circle Wallets. No escrow.
+                </p>
+              </div>
+              <a
+                href={arcTestnet.blockExplorers.default.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Arcscan
+                <ExternalLink className="size-3" />
+              </a>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                    <th className="pb-2 pr-3 font-medium">When</th>
+                    <th className="pb-2 pr-3 font-medium">Payer</th>
+                    <th className="pb-2 pr-3 font-medium">Payee</th>
+                    <th className="pb-2 pr-3 text-right font-medium">USDC</th>
+                    <th className="pb-2 text-right font-medium">Tx</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.agentPayments.map((row) => (
+                    <tr key={row.txSignature} className="border-b border-border/50 last:border-0">
+                      <td className="py-2.5 pr-3 text-xs text-muted-foreground whitespace-nowrap">
+                        {shortTime(row.timestamp)}
+                      </td>
+                      <td className="py-2.5 pr-3 font-mono text-xs">
+                        <WalletAddress
+                          address={row.walletAddress}
+                          href={`/agent/${row.walletAddress}?chain=arc`}
+                          className="text-xs"
+                        />
+                      </td>
+                      <td className="py-2.5 pr-3 font-mono text-xs">
+                        {row.counterparty ? (
+                          <WalletAddress
+                            address={row.counterparty}
+                            href={`/agent/${row.counterparty}?chain=arc`}
+                            className="text-xs"
+                          />
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right font-mono text-xs tabular-nums text-[#828fff]">
+                        {formatUsdcAmount(row.amount, true)}
+                      </td>
+                      <td className="py-2.5 text-right">
+                        <a
+                          href={explorerTx(row.txHash)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 font-mono text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                        >
+                          {row.txHash.slice(0, 6)}…{row.txHash.slice(-4)}
+                          <ExternalLink className="size-3" />
+                        </a>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </section>
   );
 }
