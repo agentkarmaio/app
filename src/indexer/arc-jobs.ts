@@ -60,8 +60,15 @@ const ARC_CHAIN = 'arc' as Chain;
 
 // ── Canonical EIP-8183 event ABIs (decoded via viem getLogs) ──────────────────
 
+// Deployed contract emits a trailing `hook` address (verified against
+// 0xA316fd02827242D537F84730F8a37D0BA5fd351a, the implementation behind
+// ARC_JOBS_CONTRACT, via testnet.arcscan.app) that the EIP-8183 draft text
+// omits. Missing it here changes the event's topic0 hash entirely, so
+// getLogs's event filter matched ZERO real JobCreated logs — every
+// PaymentReleased was therefore unmatched and skipped. Confirmed 2026-07-10:
+// real topic0 0xb0f0239b… vs. the 5-param signature's 0xef137df1….
 export const JOB_CREATED_EVENT = parseAbiItem(
-  'event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt)',
+  'event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt, address hook)',
 );
 
 export const PAYMENT_RELEASED_EVENT = parseAbiItem(
@@ -313,15 +320,18 @@ export async function arcJobsIndexer(deps: ArcJobsIndexerDeps): Promise<IndexRun
       wallets.add(provider);
 
       // Tier-1 receipt pair — provider got paid, client settled clean.
+      // buildJobSettledSignal never sets `chain` (InsertSignalEventInput.chain
+      // is optional, DB defaults to 'solana') — set it here or every Arc signal
+      // silently mis-keys to the wrong chain and violates the wallets FK.
       signals.push(
-        buildJobSettledSignal({
+        { ...buildJobSettledSignal({
           walletAddress: provider, face: 'provider', jobId: jobKey, txHash: settled.txHash,
           amount: settled.amount, counterparty: client, observedAt,
-        }),
-        buildJobSettledSignal({
+        }), chain: ARC_CHAIN },
+        { ...buildJobSettledSignal({
           walletAddress: client, face: 'consumer', jobId: jobKey, txHash: settled.txHash,
           amount: settled.amount, counterparty: provider, observedAt,
-        }),
+        }), chain: ARC_CHAIN },
       );
     }
 
