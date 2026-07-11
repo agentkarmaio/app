@@ -39,9 +39,12 @@ import {
   upsertWallet as dbUpsertWallet,
   getCursor as dbGetCursor,
   upsertCursor as dbUpsertCursor,
+  getWallet as dbGetWallet,
   type InsertSignalEventInput,
 } from '@/db/client';
 import { buildJobSettledSignal } from '@/scoring/signals';
+import { readAgent } from '@/integrations/erc8004-arc';
+import { isTemplatedIdentity } from '@/scoring/identity-fingerprint';
 
 // ── ERC-8183 AgenticCommerce escrow address + decimals (Arc Testnet) ──────────
 
@@ -198,6 +201,14 @@ export interface ArcJobsIndexerDeps {
    * PaymentReleased is SKIPPED (see unmatched-release policy below).
    */
   resolveJobClient?: (jobId: bigint) => Promise<string | null>;
+  /**
+   * Optional: does `address` present a templated (bulk-mint farm) on-chain
+   * identity (see identity-fingerprint.ts)? Flags the signal payload for
+   * settlement-quality.ts to exclude from its distinct-counterparty gate —
+   * never blocks the settlement. Left undefined → nothing is ever flagged
+   * (back-compat; the unit core tests this default).
+   */
+  isTemplatedCounterparty?: (address: string) => Promise<boolean>;
   /** ISO timestamp source for a block (settlement time). */
   blockTimestamp: (blockNumber: bigint) => Promise<string>;
   insertTransactions: (rows: Omit<Transaction, 'id'>[]) => Promise<number>;
@@ -325,6 +336,11 @@ export async function arcJobsIndexer(deps: ArcJobsIndexerDeps): Promise<IndexRun
       wallets.add(client);
       wallets.add(provider);
 
+      // Templated-identity check runs on each face's COUNTERPARTY (the wallet
+      // being vouched for by this settlement), not on the wallet itself.
+      const clientIsTemplated = deps.isTemplatedCounterparty ? await deps.isTemplatedCounterparty(client) : false;
+      const providerIsTemplated = deps.isTemplatedCounterparty ? await deps.isTemplatedCounterparty(provider) : false;
+
       // Tier-1 receipt pair — provider got paid, client settled clean.
       // buildJobSettledSignal never sets `chain` (InsertSignalEventInput.chain
       // is optional, DB defaults to 'solana') — set it here or every Arc signal
@@ -333,10 +349,12 @@ export async function arcJobsIndexer(deps: ArcJobsIndexerDeps): Promise<IndexRun
         { ...buildJobSettledSignal({
           walletAddress: provider, face: 'provider', jobId: jobKey, txHash: settled.txHash,
           amount: settled.amount, counterparty: client, observedAt,
+          templatedCounterparty: clientIsTemplated,
         }), chain: ARC_CHAIN },
         { ...buildJobSettledSignal({
           walletAddress: client, face: 'consumer', jobId: jobKey, txHash: settled.txHash,
           amount: settled.amount, counterparty: provider, observedAt,
+          templatedCounterparty: providerIsTemplated,
         }), chain: ARC_CHAIN },
       );
     }
@@ -398,6 +416,25 @@ export function resolveStartBlockEnv(): number {
 }
 
 /**
+ * Cache-only templated-identity check: does `address` already have a known
+ * `arc_agent_id` in `wallets` (populated by scripts/arc-backfill-agents.ts,
+ * run independently and incrementally — NOT triggered from here)? If so, one
+ * cheap tokenURI read confirms/denies the bulk-mint template shape. A cache
+ * miss (address not yet backfilled) returns false (unresolved, not flagged) —
+ * this NEVER scans the registry to resolve an unknown address; see
+ * project_erc8183_hardening_plan memory for why a live reverse-lookup
+ * (getLogs Transfer-log or full id-range scan) was ruled out as prohibitively
+ * expensive for a per-settlement check.
+ */
+async function isTemplatedCounterparty(address: string): Promise<boolean> {
+  const wallet = await dbGetWallet(address.toLowerCase(), ARC_CHAIN);
+  if (!wallet?.arc_agent_id) return false;
+  const agent = await readAgent(wallet.arc_agent_id);
+  if (!agent) return false;
+  return isTemplatedIdentity(agent.tokenURI);
+}
+
+/**
  * Production indexer run. Reads the canonical Arc Testnet ERC-8183 escrow.
  * Raises on missing ARC_RPC_URL (no silent fallback).
  */
@@ -451,5 +488,6 @@ export async function runArcJobsIndexer(
       return { last_signature: String(envStartBlock - 1), last_slot: envStartBlock - 1 };
     },
     upsertCursor: async (key, last, slot) => { await dbUpsertCursor(key, last, slot, ARC_CHAIN); },
+    isTemplatedCounterparty,
   });
 }

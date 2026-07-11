@@ -242,6 +242,37 @@ describe('arcJobsIndexer — DI core', () => {
     expect(state.ensured).toContain(PROVIDER);
   });
 
+  test('templated counterparty is flagged in payload but still recorded (unlike self-dealing, not skipped)', async () => {
+    const window: GetLogsWindow = {
+      created: [created({ jobId: BigInt(50), client: CLIENT, provider: PROVIDER })],
+      released: [released({ jobId: BigInt(50), rawAmount: BigInt(1_000_000), txHash: '0xtemplated' })],
+    };
+    const { deps, state } = makeDeps(window, {
+      // CLIENT presents a templated (bulk-mint farm) identity; PROVIDER does not.
+      isTemplatedCounterparty: async (address) => address === CLIENT,
+    });
+    const res = await arcJobsIndexer(deps);
+
+    expect(res.fetched).toBe(1); // still recorded — not skipped like self-dealing
+    const provider = state.signals.find((s) => (s as { face: string }).face === 'provider') as Record<string, unknown>;
+    const consumer = state.signals.find((s) => (s as { face: string }).face === 'consumer') as Record<string, unknown>;
+    // provider's counterparty is CLIENT (templated) → flagged
+    expect((provider.payload as Record<string, unknown>).templatedCounterparty).toBe(true);
+    // consumer's counterparty is PROVIDER (not templated) → not flagged
+    expect((consumer.payload as Record<string, unknown>).templatedCounterparty).toBe(false);
+  });
+
+  test('no isTemplatedCounterparty hook injected → defaults to not flagged (back-compat)', async () => {
+    const window: GetLogsWindow = {
+      created: [created({ jobId: BigInt(51) })],
+      released: [released({ jobId: BigInt(51), rawAmount: BigInt(1_000_000), txHash: '0xnohook' })],
+    };
+    const { deps, state } = makeDeps(window); // no isTemplatedCounterparty
+    await arcJobsIndexer(deps);
+    const provider = state.signals.find((s) => (s as { face: string }).face === 'provider') as Record<string, unknown>;
+    expect((provider.payload as Record<string, unknown>).templatedCounterparty).toBe(false);
+  });
+
   test('batch settlement: 2 PaymentReleased in one tx → 2 distinct receipt rows (no UNIQUE collision)', async () => {
     const window: GetLogsWindow = {
       created: [
