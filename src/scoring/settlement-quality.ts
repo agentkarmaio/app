@@ -50,6 +50,14 @@ export interface SettlementReceipt {
   counterparty: string;
   /** Settled amount (human USDC). Reserved for future volume weighting. */
   amount?: number;
+  /**
+   * True when the counterparty's on-chain identity matches the documented
+   * bulk-mint template shape (see identity-fingerprint.ts). Still counts
+   * toward `settledCount` (the job really settled) but NEVER toward
+   * `distinctCounterparties` — a templated identity proves nothing about
+   * independent delivery.
+   */
+  templated?: boolean;
 }
 
 export interface SettlementQualityResult {
@@ -92,6 +100,7 @@ export function computeSettlementQuality(receipts: SettlementReceipt[]): Settlem
   const settledCount = receipts.length;
   const distinct = new Set(
     receipts
+      .filter((r) => !r.templated)
       .map((r) => r.counterparty.trim().toLowerCase())
       .filter((cp) => cp.length > 0 && cp !== ZERO_ADDRESS),
   );
@@ -126,12 +135,15 @@ export function settlementReceiptsFromSignals(
   const out: SettlementReceipt[] = [];
   for (const e of events) {
     if (e.kind !== ERC8183_SETTLED_KIND || e.face !== face) continue;
-    const payload = (e.payload ?? {}) as { counterparty?: unknown; amount?: unknown };
+    const payload = (e.payload ?? {}) as {
+      counterparty?: unknown; amount?: unknown; templatedCounterparty?: unknown;
+    };
     const counterparty =
       e.signed_by ?? (typeof payload.counterparty === 'string' ? payload.counterparty : '') ?? '';
     out.push({
       counterparty: counterparty || '',
       amount: typeof payload.amount === 'number' ? payload.amount : undefined,
+      templated: payload.templatedCounterparty === true,
     });
   }
   return out;

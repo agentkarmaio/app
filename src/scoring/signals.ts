@@ -175,6 +175,13 @@ export interface JobSettledSignalInput {
   amount: number;
   /** The other face's wallet (provider for a consumer signal, vice versa). */
   counterparty: string;
+  /**
+   * True when `counterparty` presents a templated (bulk-mint farm) on-chain
+   * identity (see identity-fingerprint.ts). Consumed by settlement-quality.ts
+   * to exclude it from the distinct-counterparty gate — never blocks the
+   * settlement itself (unlike a self-dealt job, which is skipped upstream).
+   */
+  templatedCounterparty?: boolean;
   observedAt?: string | Date;
 }
 
@@ -194,6 +201,7 @@ export function buildJobSettledSignal(
       jobId: input.jobId,
       amount: input.amount,
       counterparty: input.counterparty,
+      templatedCounterparty: input.templatedCounterparty ?? false,
     },
   };
   if (input.observedAt !== undefined) out.observedAt = input.observedAt;

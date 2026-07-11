@@ -110,6 +110,30 @@ describe('computeSettlementQuality — counterparty normalization', () => {
   });
 });
 
+describe('computeSettlementQuality — templated-identity discount', () => {
+  test('templated counterparties never count toward distinct, even at high volume', () => {
+    const templated: SettlementReceipt[] = Array.from({ length: 50 }, (_, i) => ({
+      counterparty: `0xTemplated${i}`, templated: true,
+    }));
+    const r = computeSettlementQuality(templated)!;
+    expect(r.distinctCounterparties).toBe(0);
+    expect(r.label).toBe('unproven');
+  });
+
+  test('3 real distinct counterparties stay reliable despite many templated ones mixed in', () => {
+    const real: SettlementReceipt[] = [
+      { counterparty: '0xReal1' }, { counterparty: '0xReal2' }, { counterparty: '0xReal3' },
+    ];
+    const templated: SettlementReceipt[] = Array.from({ length: 30 }, (_, i) => ({
+      counterparty: `0xTemplated${i}`, templated: true,
+    }));
+    const r = computeSettlementQuality([...real, ...templated])!;
+    expect(r.distinctCounterparties).toBe(3);
+    expect(r.label).toBe('reliable');
+    expect(r.settledCount).toBe(33); // total receipts still counted, just not toward "distinct"
+  });
+});
+
 describe('settlementReceiptsFromSignals — adapter', () => {
   const events = [
     { kind: 'erc8183_job_settled', face: 'provider', signed_by: '0xClientA', payload: { amount: 5 } },
@@ -135,6 +159,22 @@ describe('settlementReceiptsFromSignals — adapter', () => {
       'provider',
     );
     expect(r[0].counterparty).toBe('0xFromPayload');
+  });
+
+  test('reads templatedCounterparty flag from payload into receipt.templated', () => {
+    const r = settlementReceiptsFromSignals(
+      [{ kind: 'erc8183_job_settled', face: 'provider', signed_by: '0xTemplateName', payload: { templatedCounterparty: true } }],
+      'provider',
+    );
+    expect(r[0].templated).toBe(true);
+  });
+
+  test('templated defaults to false/undefined when the flag is absent', () => {
+    const r = settlementReceiptsFromSignals(
+      [{ kind: 'erc8183_job_settled', face: 'provider', signed_by: '0xNormal', payload: { amount: 1 } }],
+      'provider',
+    );
+    expect(r[0].templated).toBeFalsy();
   });
 
   test('end-to-end: farmed agent (many self-settlements, one counterparty) reads unproven', () => {
