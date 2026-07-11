@@ -11,6 +11,7 @@ import type { ChainAdapter, IndexRunResult, PublishResult } from './types';
 import type { WalletScore } from '@/scoring/index';
 import { aggregateFeedback } from '@/integrations/erc8004-arc';
 import { runArcJobsIndexer } from '@/indexer/arc-jobs';
+import { runArcTransfersIndexer } from '@/indexer/arc-transfers';
 
 const TAG2 = 'agentkarma';
 
@@ -21,16 +22,26 @@ export function makeArcAdapter(): ChainAdapter {
     validateAddress: (address) => isAddress(address),
     normalizeAddress: (address) => address.toLowerCase(),
 
-    // ERC-8183 job-settlement indexer. OPT-IN: no-op until ARC_JOBS_START_BLOCK
-    // is configured (mirrors Celo's no-op + Stellar's empty-set guard), so the
-    // keep-fresh cron never triggers an unbounded from-genesis backfill. Once
-    // configured, runArcJobsIndexer paginates in <=10k-block windows, bounded
-    // per run by its maxWindows cap.
+    // Two independent Tier-1 sources, both OPT-IN via their own start-block env
+    // (mirrors Celo's no-op + Stellar's empty-set guard) so the keep-fresh cron
+    // never triggers an unbounded from-genesis backfill:
+    //   - ERC-8183 job-escrow settlements (ARC_JOBS_START_BLOCK)
+    //   - plain USDC transfers, e.g. AgentStack nanopayments (ARC_TRANSFERS_START_BLOCK)
+    // Each paginates in <=10k-block windows, bounded per run by its maxWindows cap.
     async indexReceipts(_opts?: { backfill?: boolean; limit?: number }): Promise<IndexRunResult> {
-      if (!process.env.ARC_JOBS_START_BLOCK) {
-        return { fetched: 0, inserted: 0, cursors: new Map() };
-      }
-      return runArcJobsIndexer();
+      const jobs = process.env.ARC_JOBS_START_BLOCK
+        ? await runArcJobsIndexer()
+        : { fetched: 0, inserted: 0, cursors: new Map<string, string>() };
+      const transfers = process.env.ARC_TRANSFERS_START_BLOCK
+        ? await runArcTransfersIndexer()
+        : { fetched: 0, inserted: 0, cursors: new Map<string, string>() };
+
+      const cursors = new Map<string, string>([...jobs.cursors, ...transfers.cursors]);
+      return {
+        fetched: jobs.fetched + transfers.fetched,
+        inserted: jobs.inserted + transfers.inserted,
+        cursors,
+      };
     },
 
     // Reading by EVM address requires an agentId; absent a resolver here we

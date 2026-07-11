@@ -3,6 +3,7 @@ import { Suspense } from 'react';
 import { ArrowRight, ExternalLink } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { SettlementQualityPill } from '@/components/settlement-quality-badge';
+import { ConfidenceBadge } from '@/components/karma/confidence-badge';
 import { ArcDashboard } from '@/components/karma/arc-dashboard';
 import { arcTestnet } from '@/config/arc-chain';
 import { getArcDashboardStats } from '@/db/client';
@@ -144,7 +145,8 @@ export default function ArcPage() {
             <span className="font-mono text-foreground">agentId 9058</span> on Celo). Arc is
             testnet-only today, so signal volume builds as agents transact — AK reads ERC-8183
             settlements + ERC-8004 reputation and writes karma back as a validator. Unregistered
-            wallets stay badge-gated (🟡 / ⚪) until they claim — never a fabricated score.
+            wallets stay badge-gated (<ConfidenceBadge badge="behavior-inferred" size="sm" /> /{' '}
+            <ConfidenceBadge badge="declared" size="sm" />) until they claim — never a fabricated score.
           </p>
         </CardContent>
       </Card>
@@ -303,8 +305,8 @@ export default function ArcPage() {
             </div>
             <div>
               A score means nothing unless the party on the other side was real and independent.
-              Self-issued reviews and wash settlements collapse to ⚪ Unproven — the one signal a
-              spam operator can&apos;t manufacture is a distinct counterparty who actually paid.
+              Self-issued reviews and wash settlements collapse to <SettlementQualityPill label="unproven" /> —
+              the one signal a spam operator can&apos;t manufacture is a distinct counterparty who actually paid.
             </div>
           </div>
         </CardContent>
@@ -331,9 +333,9 @@ export default function ArcPage() {
             </div>
             <div>
               Registered or claimed agents are attested on-chain. Unregistered
-              wallets stay badge-gated (🟡 Behavior-inferred / ⚪ Declared) until
-              they claim — never a single collapsed score, never a receipt-backed
-              number without a settlement behind it.
+              wallets stay badge-gated (<ConfidenceBadge badge="behavior-inferred" size="sm" /> /{' '}
+              <ConfidenceBadge badge="declared" size="sm" />) until they claim — never a single
+              collapsed score, never a receipt-backed number without a settlement behind it.
             </div>
           </div>
         </CardContent>

@@ -39,6 +39,11 @@ import { AK_VALIDATOR, isAkRater } from '../src/config/ak-validator';
 import { supabase } from '../src/db/client';
 
 const AK_AGENT_ID = BigInt(AK_VALIDATOR.agentId);
+// Scheme tag1/tag2 sourced from the validator config so the on-chain version
+// can never drift from the rubric in src/scoring/celo-metadata.ts. Bumping the
+// rubric → bump AK_VALIDATOR.scheme.tag2 → new records carry the new version.
+const SCHEME_TAG1 = AK_VALIDATOR.scheme.tag1;
+const SCHEME_TAG2 = AK_VALIDATOR.scheme.tag2;
 
 // The wallet that will actually sign (dedicated validator key when present).
 const AK_SIGNER = activeSignerAddress();
@@ -188,11 +193,13 @@ for (let t = 0; t < targets.length; t++) {
       continue;
     }
 
-    // Skip if AK already rated this agent under our scheme. Live read is the
-    // source of truth — the mirror used for selection can lag the chain.
+    // Skip if AK already rated this agent under our scheme. Filter on tag1 ONLY
+    // (no tag2): an agent rated under ANY scheme version — including the 26
+    // existing v0.1 records — counts as already-rated, so the v0.2 bump never
+    // re-rates (and never rewrites) an agent AK has already scored. Live read is
+    // the source of truth — the mirror used for selection can lag the chain.
     const allFb = await readAllFeedback(agentId, {
-      tag1: 'agentkarma_metadata',
-      tag2: 'v0.1',
+      tag1: SCHEME_TAG1,
     }).catch(() => []);
     const akRated = allFb.some((r) => isAkRater(r.client) && !r.revoked);
     if (akRated) {
@@ -209,8 +216,8 @@ for (let t = 0; t < targets.length; t++) {
       rater: 'AgentKarma',
       raterAgentId: AK_AGENT_ID.toString(),
       target: agentId.toString(),
-      scheme: 'agentkarma_metadata',
-      version: 'v0.1',
+      scheme: SCHEME_TAG1,
+      version: SCHEME_TAG2,
       score: quality.score,
       breakdown: quality.breakdown,
       notes: quality.notes,
@@ -222,8 +229,8 @@ for (let t = 0; t < targets.length; t++) {
         agentId,
         value: quality.score,
         valueDecimals: 0,
-        tag1: 'agentkarma_metadata',
-        tag2: 'v0.1',
+        tag1: SCHEME_TAG1,
+        tag2: SCHEME_TAG2,
         endpoint: recordURI,
         feedbackURI: recordURI,
         feedbackHash: feedbackHashFromJson(assessment),

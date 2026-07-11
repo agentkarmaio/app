@@ -1,0 +1,40 @@
+name: Telegram alert
+description: >
+  Page a Telegram chat. Used by the out-of-process floor workflows (keep-fresh,
+  heartbeat-drain) in an `if: failure()` step so a broken safety net pages
+  instead of rotting silently — the gap that let the 2026-06-23 floor outage go
+  unnoticed for weeks. No-ops with a warning if the alert secrets are unset, so
+  it never turns a real failure into a confusing action error.
+
+inputs:
+  bot-token:
+    description: Telegram bot token (TELEGRAM_BOT_TOKEN secret).
+    required: true
+  chat-id:
+    description: Telegram chat id (TELEGRAM_ALERT_CHAT_ID secret).
+    required: true
+  text:
+    description: Message body (Telegram HTML parse mode).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        BOT_TOKEN: ${{ inputs.bot-token }}
+        CHAT_ID: ${{ inputs.chat-id }}
+        TEXT: ${{ inputs.text }}
+      run: |
+        if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
+          echo "::warning::Telegram alert secrets unset (TELEGRAM_BOT_TOKEN / TELEGRAM_ALERT_CHAT_ID) — cannot page on failure"
+          exit 0
+        fi
+        curl -fsS --max-time 15 \
+          "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+          --data-urlencode "chat_id=${CHAT_ID}" \
+          --data-urlencode "parse_mode=HTML" \
+          --data-urlencode "disable_web_page_preview=true" \
+          --data-urlencode "text=${TEXT}" \
+          >/dev/null \
+          || echo "::warning::Telegram notification failed to send"

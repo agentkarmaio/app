@@ -6,6 +6,16 @@ name: Keep data fresh
 # in-process workers are wedged (which is exactly how the 2026-05-21 → 06-06
 # outage went unnoticed). servel cron is non-functional on this cluster.
 #
+# A second job (registry-scan) keeps the ERC-8004 Celo registry mirror the
+# /celo page reads fresh with a cheap INCREMENTAL scan (new ids + a bounded
+# recent re-scan window), replacing the manual `registry:scan`. It runs the
+# scan DIRECTLY via bun with the DB secrets — same resilient pattern as the
+# keep-fresh / heartbeat-drain jobs — NOT by curling the in-app cron route, so
+# it cannot fail silently for a missing CRON_SECRET (the in-app cron route at
+# /api/cron/registry-scan stays available for manual/external invocation). It
+# uses only the two DB secrets below; the require-env preflight fails it loudly
+# at line 1 if they are unset, and the if: failure() step pages.
+#
 # Required repo secrets:
 #   HELIUS_RPC_URL              Helius RPC endpoint incl. ?api-key=… (used for
 #                              RPC fetches AND webhook-API key extraction)
@@ -69,3 +79,52 @@ jobs:
           else
             bun run keep-fresh
           fi
+
+      # A broken floor must page, not rot silently — the exact gap that let the
+      # 2026-06-23 outage (secrets unset → 100% failure for weeks) go unnoticed.
+      - name: Page on failure
+        if: failure()
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            🛟 <b>AgentKarma keep-fresh FLOOR FAILED</b>
+            The out-of-process ingest floor crashed — Solana ingestion may stall.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  # Incremental ERC-8004 Celo registry-mirror refresh — the /celo disclosure's
+  # data source. Same resilient bun-script pattern as keep-fresh/heartbeat-drain
+  # (DB secrets via env, require-env preflight, if: failure() alert) so it can't
+  # fail silently. Cheap: scans new ids since the cursor + a recent re-scan
+  # window, never the full ~9.6k-id / ~12-min sweep.
+  registry-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run incremental registry scan
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Optional RPC override; falls back to the config default when unset.
+          CELO_RPC_URL: ${{ secrets.CELO_RPC_URL }}
+        run: bun run registry:scan:incremental
+
+      # A broken mirror refresh must page, not rot silently (2026-06-23 lesson).
+      - name: Page on failure
+        if: failure()
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            🛟 <b>AgentKarma registry-scan FAILED</b>
+            The Celo ERC-8004 registry-mirror refresh crashed — /celo data may stall.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

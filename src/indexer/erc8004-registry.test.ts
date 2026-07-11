@@ -19,6 +19,9 @@ import {
   findRegistryTip,
   chunk,
   runRegistryScan,
+  incrementalScanRange,
+  runIncrementalRegistryScan,
+  DEFAULT_RESCAN_WINDOW,
   type ScannedAgent,
   type ScannedFeedback,
 } from './erc8004-registry';
@@ -303,5 +306,136 @@ describe('runRegistryScan (orchestrator, injected fake client)', () => {
     const sumCounts = [...agentsSink.values()].reduce((s, a) => s + (a.feedback?.count ?? 0), 0);
     expect(sumCounts).toBe(feedbackSink.length);
     expect(agentsSink.get(1)?.feedback?.avg).toBe(85); // (90+80)/2
+  });
+});
+
+describe('incrementalScanRange', () => {
+  test('re-scan window wins when few new ids were added', () => {
+    // 100 new ids since last sweep, but the 500-id window reaches further back.
+    expect(incrementalScanRange(9000, 9100, 500)).toEqual({ from: 8601, to: 9100 });
+  });
+
+  test('new-ids window wins when a large backlog of new ids accrued', () => {
+    // 700 new ids — older than the 500 re-scan window, so we must start at the
+    // first un-scanned id, not just the window, or new ids would be missed.
+    expect(incrementalScanRange(9000, 9700, 500)).toEqual({ from: 9001, to: 9700 });
+  });
+
+  test('no new ids → re-scan window only (catches feedback on existing agents)', () => {
+    expect(incrementalScanRange(9100, 9100, 500)).toEqual({ from: 8601, to: 9100 });
+  });
+
+  test('clamps from to 1 when the window or new-range underflows', () => {
+    expect(incrementalScanRange(0, 300, 500)).toEqual({ from: 1, to: 300 });
+    expect(incrementalScanRange(0, 9100, 500)).toEqual({ from: 1, to: 9100 });
+  });
+
+  test('empty registry (tip 0) → nothing to do', () => {
+    expect(incrementalScanRange(0, 0, 500)).toEqual({ from: 0, to: 0 });
+    expect(incrementalScanRange(50, 0, 500)).toEqual({ from: 0, to: 0 });
+  });
+
+  test('default window is DEFAULT_RESCAN_WINDOW', () => {
+    expect(incrementalScanRange(9000, 9100)).toEqual(
+      incrementalScanRange(9000, 9100, DEFAULT_RESCAN_WINDOW),
+    );
+  });
+});
+
+describe('runIncrementalRegistryScan (cursor-driven)', () => {
+  // A fake client whose registry tip is `maxId`; every id 1..maxId has an owner
+  // and zero feedback. Lets us assert which id range the scan actually touched.
+  function fakeClient(maxId: number, scannedIds: Set<number>) {
+    return {
+      readContract: (async ({ args }: { args: readonly unknown[] }) => {
+        const id = Number(args[0] as bigint);
+        if (id >= 1 && id <= maxId) return '0xowner';
+        throw new Error('reverted');
+      }) as never,
+      multicall: (async ({ contracts }: { contracts: { functionName: string; args: readonly unknown[] }[] }) =>
+        contracts.map((c) => {
+          const id = Number(c.args[0] as bigint);
+          if (c.functionName === 'readAllFeedback') return { status: 'success', result: [[], [], [], [], [], [], []] };
+          if (id < 1 || id > maxId) return { status: 'failure' };
+          if (c.functionName === 'ownerOf') { scannedIds.add(id); return { status: 'success', result: '0xowner' }; }
+          if (c.functionName === 'getAgentWallet') return { status: 'success', result: '0xowner' };
+          if (c.functionName === 'tokenURI') return { status: 'success', result: '' };
+          return { status: 'failure' };
+        })) as never,
+    };
+  }
+
+  const config = {
+    chain: 'celo', viemChain: {},
+    identityRegistry: '0x0', reputationRegistry: '0x0', rpcEnvVar: 'X',
+  } as unknown as Erc8004RegistryConfig;
+
+  const noopPersist = async (_c: string, items: unknown[]) => items.length;
+
+  test('scans only [new-ids ∪ window] and advances the cursor on a clean run', async () => {
+    const scanned = new Set<number>();
+    const savedTips: number[] = [];
+    const result = await runIncrementalRegistryScan(
+      config, noopPersist, noopPersist,
+      async () => 30,                       // lastTip = 30
+      async (_c, tip) => { savedTips.push(tip); },
+      { client: fakeClient(40, scanned), rescanWindow: 5, fetchRemote: false },
+    );
+    // window=5, currentTip=40 → from = min(31, 36) = 31. Scans 31..40.
+    expect([...scanned].sort((a, b) => a - b)).toEqual([31, 32, 33, 34, 35, 36, 37, 38, 39, 40]);
+    expect(savedTips).toEqual([40]);       // cursor advanced to the discovered tip
+    expect(result.errors).toBe(0);
+    expect(result.tip).toBe(40);
+  });
+
+  test('re-scan window reaches back past new ids to catch feedback on old agents', async () => {
+    const scanned = new Set<number>();
+    await runIncrementalRegistryScan(
+      config, noopPersist, noopPersist,
+      async () => 40,                       // lastTip == currentTip: no NEW ids
+      async () => {},
+      { client: fakeClient(40, scanned), rescanWindow: 5, fetchRemote: false },
+    );
+    // No new ids, but window=5 still re-scans the most recent 5 (36..40).
+    expect([...scanned].sort((a, b) => a - b)).toEqual([36, 37, 38, 39, 40]);
+  });
+
+  test('does NOT advance the cursor when the scan hit RPC errors', async () => {
+    // readContract bounds the tip (so findRegistryTip terminates at 20); the
+    // identity multicall throws → result.errors > 0 → cursor must be held.
+    const erroringClient = {
+      readContract: (async ({ args }: { args: readonly unknown[] }) => {
+        const id = Number(args[0] as bigint);
+        if (id >= 1 && id <= 20) return '0xowner';
+        throw new Error('reverted');
+      }) as never,
+      multicall: (async () => { throw new Error('rpc down'); }) as never,
+    };
+    let saved = false;
+    const result = await runIncrementalRegistryScan(
+      config, noopPersist, noopPersist,
+      async () => 10,
+      async () => { saved = true; },
+      { client: erroringClient, rescanWindow: 5, fetchRemote: false },
+    );
+    expect(result.errors).toBeGreaterThan(0);
+    expect(saved).toBe(false);             // cursor NOT advanced → ids retried next run
+  });
+
+  test('empty registry (tip 0) → no scan, no cursor write', async () => {
+    const emptyClient = {
+      readContract: (async () => { throw new Error('reverted'); }) as never,
+      multicall: (async () => []) as never,
+    };
+    let saved = false;
+    const result = await runIncrementalRegistryScan(
+      config, noopPersist, noopPersist,
+      async () => 0,
+      async () => { saved = true; },
+      { client: emptyClient, rescanWindow: 5, fetchRemote: false },
+    );
+    expect(result.tip).toBe(0);
+    expect(result.agentsScanned).toBe(0);
+    expect(saved).toBe(false);
   });
 });

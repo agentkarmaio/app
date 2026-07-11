@@ -43,7 +43,7 @@ describe('getAkConnectedFeedback', () => {
     __setSupabaseForTest(makeFakeSupabase({
       erc8004_feedback: {
         data: [{
-          agent_id: 17, client: AK.toUpperCase(), value: 100, value_decimals: 0,
+          agent_id: 17, client: AK.toUpperCase(), feedback_index: 3, value: 100, value_decimals: 0,
           tag1: 'agentkarma_metadata', tag2: 'v0.1', revoked: false,
         }],
       },
@@ -58,7 +58,8 @@ describe('getAkConnectedFeedback', () => {
     const out = await getAkConnectedFeedback('celo');
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({
-      agentId: 17, kind: 'metadata', value: 100, revoked: false,
+      agentId: 17, kind: 'metadata', tag1: 'agentkarma_metadata', tag2: 'v0.1',
+      feedbackIndex: 3, value: 100, revoked: false,
       targetName: 'Loopuman', targetAddress: '0xwallet',
       targetMetadataScore: 100, targetFeedbackCount: 1349,
     });
@@ -68,7 +69,7 @@ describe('getAkConnectedFeedback', () => {
     __setSupabaseForTest(makeFakeSupabase({
       erc8004_feedback: {
         data: [{
-          agent_id: 5, client: STRANGER, value: 90, value_decimals: 0,
+          agent_id: 5, client: STRANGER, feedback_index: 0, value: 90, value_decimals: 0,
           tag1: 'agentkarma_metadata', tag2: 'v0.1', revoked: false,
         }],
       },
@@ -81,7 +82,7 @@ describe('getAkConnectedFeedback', () => {
     __setSupabaseForTest(makeFakeSupabase({
       erc8004_feedback: {
         data: [{
-          agent_id: 8, client: STRANGER, value: 80, value_decimals: 0,
+          agent_id: 8, client: STRANGER, feedback_index: 1, value: 80, value_decimals: 0,
           tag1: 'agentkarma_review', tag2: 'v0.1', revoked: false,
         }],
       },
@@ -91,13 +92,17 @@ describe('getAkConnectedFeedback', () => {
     }));
     const out = await getAkConnectedFeedback('celo');
     expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({ agentId: 8, kind: 'review', value: 80, client: STRANGER });
+    expect(out[0]).toMatchObject({
+      agentId: 8, kind: 'review', tag1: 'agentkarma_review', feedbackIndex: 1,
+      value: 80, client: STRANGER,
+    });
   });
 
   test('value is normalized by valueDecimals (850 @ dec 1 → 85)', async () => {
     __setSupabaseForTest(makeFakeSupabase({
       erc8004_feedback: {
         data: [{
+          // feedback_index intentionally omitted → defaults to 0.
           agent_id: 1, client: AK, value: 850, value_decimals: 1,
           tag1: 'agentkarma_metadata', tag2: 'v0.1', revoked: false,
         }],
@@ -108,6 +113,8 @@ describe('getAkConnectedFeedback', () => {
     }));
     const out = await getAkConnectedFeedback('celo');
     expect(out[0].value).toBe(85);
+    // A null/absent feedback_index normalizes to 0.
+    expect(out[0].feedbackIndex).toBe(0);
     // agent_wallet is the zero address → display address falls back to the owner.
     expect(out[0].targetAddress).toBe('0xo');
   });
@@ -116,9 +123,9 @@ describe('getAkConnectedFeedback', () => {
     __setSupabaseForTest(makeFakeSupabase({
       erc8004_feedback: {
         data: [
-          { agent_id: 2, client: AK, value: 75, value_decimals: 0, tag1: 'agentkarma_metadata', tag2: 'v0.1', revoked: false },
-          { agent_id: 3, client: AK, value: 100, value_decimals: 0, tag1: 'agentkarma_metadata', tag2: 'v0.1', revoked: true },
-          { agent_id: 4, client: AK, value: 90, value_decimals: 0, tag1: 'agentkarma_metadata', tag2: 'v0.1', revoked: false },
+          { agent_id: 2, client: AK, feedback_index: 0, value: 75, value_decimals: 0, tag1: 'agentkarma_metadata', tag2: 'v0.1', revoked: false },
+          { agent_id: 3, client: AK, feedback_index: 0, value: 100, value_decimals: 0, tag1: 'agentkarma_metadata', tag2: 'v0.1', revoked: true },
+          { agent_id: 4, client: AK, feedback_index: 0, value: 90, value_decimals: 0, tag1: 'agentkarma_metadata', tag2: 'v0.1', revoked: false },
         ],
       },
       erc8004_agents: {

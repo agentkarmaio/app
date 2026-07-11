@@ -49,3 +49,15 @@ jobs:
           else
             bun run heartbeat:drain
           fi
+
+      # A broken floor must page, not rot silently (2026-06-23 outage lesson).
+      - name: Page on failure
+        if: failure()
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            🛟 <b>AgentKarma heartbeat-drain FLOOR FAILED</b>
+            The out-of-process Dead Man's Switch liveness floor crashed.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

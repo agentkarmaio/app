@@ -26,6 +26,7 @@ import { safeHref } from '@/lib/safe-url';
 import { EvmClaimBanner } from '@/components/wallet/evm-claim-banner';
 import { GiveFeedbackCard } from '@/components/karma/give-feedback-card';
 import { FeedbackRecordsCard } from '@/components/karma/feedback-records-card';
+import { scoreMetadataQuality, METADATA_SCHEME_VERSION } from '@/scoring/celo-metadata';
 import { ClaimProof } from '@/components/karma/claim-proof';
 import { ProveOwnership } from '@/components/wallet/prove-ownership';
 import { EditProfile } from '@/components/wallet/edit-profile';
@@ -57,9 +58,9 @@ export async function CeloAgentProfile({
   deadMansSwitch?: React.ReactNode;
 }) {
   // On-chain identity + aggregate feedback, read through the per-agent cache
-  // (120s) so repeat profile views don't re-hit the RPC.
-  // includeRevoked: retracted records surface struck-through; count/average
-  // still exclude them. If the chain call fails, fall back to the DB row.
+  // (120s) so repeat profile views don't re-hit the RPC. includeRevoked:
+  // retracted records surface struck-through; count/average still exclude
+  // them. If the chain call fails, fall back to the DB row alone.
   const { agent, feedback } = await getCachedEvmAgentOnchain('celo', agentId);
 
   // Resolve rater addresses to names + AK profile links (best-effort, one DB
@@ -81,6 +82,14 @@ export async function CeloAgentProfile({
   const registrationName = agent?.registration?.name ?? null;
   const registrationDescription = agent?.registration?.description ?? null;
   const services = agent?.registration?.services ?? [];
+
+  // AK's CURRENT (v0.2) metadata-quality assessment of THIS agent, recomputed
+  // deterministically from the already-loaded registration JSON (pure, no extra
+  // RPC). Drives the per-record "Why" breakdown on AK-metadata feedback rows. No
+  // registration mirrored → no breakdown (FeedbackRecordsCard renders as before).
+  const metadataAssessment = agent?.registration
+    ? { result: scoreMetadataQuality(agent), schemeVersion: METADATA_SCHEME_VERSION }
+    : null;
 
   const displayName = walletRow.display_name ?? registrationName ?? `Agent ${shortAddr(wallet)}`;
   const description = walletRow.description ?? registrationDescription;
@@ -323,7 +332,13 @@ export async function CeloAgentProfile({
       )}
 
       {feedback && feedback.records.length > 0 && (
-        <FeedbackRecordsCard records={feedback.records} raters={raters} comments={comments} chain="celo" />
+        <FeedbackRecordsCard
+          records={feedback.records}
+          raters={raters}
+          comments={comments}
+          chain="celo"
+          metadataAssessment={metadataAssessment}
+        />
       )}
 
       <GiveFeedbackCard agentId={agentId} chain="celo" ownerAddress={agent?.owner ?? walletRow.address} />

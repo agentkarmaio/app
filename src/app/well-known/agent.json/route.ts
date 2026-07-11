@@ -64,6 +64,13 @@ const AGENT_REGISTRATION = {
   // Disclosed validator role: AK publishes openly-attributed metadata-quality
   // attestations on Celo's ReputationRegistry. These are AK-authored oracle
   // signals, NOT independent third-party reviews. Full disclosure: /validator.
+  //
+  // The `signers` array publicly binds EVERY wallet AK signs giveFeedback from,
+  // so a verifier reading this file can prove an on-chain attestation came from
+  // AK (not an anonymous third party impersonating AK). Both addresses are
+  // single-sourced from src/config/ak-validator.ts (AK_RATER_ADDRESSES), by
+  // least-privilege design: the controller is cold and owns the identity +
+  // treasury; the validator is the hot operational signer for automated batches.
   validator: {
     role: 'erc8004-reputation-validator',
     chain: AK_VALIDATOR.chain,
@@ -74,6 +81,20 @@ const AGENT_REGISTRATION = {
     reputationRegistry: AK_VALIDATOR.reputationRegistry,
     scheme: AK_VALIDATOR.scheme,
     attestationsAreIndependent: false,
+    signers: [
+      {
+        address: AK_VALIDATOR.controller,
+        role: 'controller',
+        custody: 'cold',
+        note: 'Owns ERC-8004 identity + treasury. Seeded AK\'s early attestations.',
+      },
+      {
+        address: AK_VALIDATOR.validator,
+        role: 'operational-signer',
+        custody: 'hot',
+        note: 'Dedicated signer for AK\'s automated metadata-quality attestations.',
+      },
+    ],
   },
 } as const;
 

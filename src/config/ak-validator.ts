@@ -22,8 +22,12 @@ export const AK_VALIDATOR = {
   agentId: 9058,
   identityRegistry: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432',
   reputationRegistry: '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63',
-  /** AK's algorithmic attestation scheme. Human reviews use `agentkarma_review`. */
-  scheme: { tag1: 'agentkarma_metadata', tag2: 'v0.1' },
+  /** AK's algorithmic attestation scheme. Human reviews use `agentkarma_review`.
+   *  tag2 is the metadata-rubric version (see src/scoring/celo-metadata.ts).
+   *  Bumped to v0.2 for the deepened deterministic rubric; the 26 pre-existing
+   *  on-chain attestations remain v0.1 (AK skips already-rated agents, so they
+   *  are never rewritten — the version on chain is honest about which rubric ran). */
+  scheme: { tag1: 'agentkarma_metadata', tag2: 'v0.2' },
   keyfile: '.keys/agentkarma-celo-validator.json',
 } as const;
 
