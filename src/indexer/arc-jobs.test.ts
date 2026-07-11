@@ -24,14 +24,15 @@ import {
   ARC_JOBS_CONTRACT,
   ARC_MAX_LOG_WINDOW,
   GENESIS_FALLBACK_BLOCK,
+  JOB_CREATED_EVENT,
   type ArcJobCreated,
   type ArcPaymentReleased,
   type GetLogsWindow,
-  type JOB_CREATED_EVENT,
   type PAYMENT_RELEASED_EVENT,
 } from './arc-jobs';
 import type { Transaction } from '../db/schema';
 import type { Log } from 'viem';
+import { toEventSelector } from 'viem';
 
 // ── Fixture addresses (EVM 0x, 40 hex chars) ──────────────────────────────────
 const CLIENT = '0x1111111111111111111111111111111111111111' as const;
@@ -152,6 +153,25 @@ describe('parseJobCreated / parsePaymentReleased', () => {
       blockNumber: BigInt(60), transactionHash: '0xd',
     } as unknown as Log<bigint, number, false, typeof PAYMENT_RELEASED_EVENT>;
     expect(parsePaymentReleased(log)).toBeNull();
+  });
+});
+
+describe('event ABI matches the deployed ERC-8183 contract, not the EIP-8183 draft text', () => {
+  test('JOB_CREATED_EVENT topic0 is the verified 6-param signature (trailing `hook`)', () => {
+    // Deployed AgenticCommerce implementation (0xA316fd02827242D537F84730F8a37D0BA5fd351a,
+    // verified via testnet.arcscan.app) emits a trailing `hook` address that the
+    // EIP-8183 draft text omits. A silent revert to the 5-param draft signature
+    // changes this hash and reintroduces the original bug: getLogs's event filter
+    // matches ZERO real JobCreated logs, so every PaymentReleased is unmatched
+    // and silently skipped (see the UNMATCHED-RELEASE POLICY tests below).
+    expect(toEventSelector(JOB_CREATED_EVENT)).toBe(
+      '0xb0f0239bfdd96453e24733e18bfc24b70d8fadf123dd977473518dd577ee79b9',
+    );
+    // The 5-param draft signature (what shipped originally) hashes differently —
+    // pinned here so a future reader can see exactly what NOT to revert to.
+    expect(toEventSelector(JOB_CREATED_EVENT)).not.toBe(
+      '0xef137df1d007645178f3f70e5c306d8d0b84bb5c70cabda9bb0f8f3c71932a0f',
+    );
   });
 });
 
