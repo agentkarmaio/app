@@ -66,6 +66,11 @@ jobs:
           HELIUS_WEBHOOK_SECRET: ${{ secrets.HELIUS_WEBHOOK_SECRET }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Arc job-escrow + plain-USDC-transfer indexers (chain-adapters/arc.ts).
+          # Non-sensitive (public RPC + block numbers) — repo Variables, not Secrets.
+          ARC_RPC_URL: ${{ vars.ARC_RPC_URL }}
+          ARC_JOBS_START_BLOCK: ${{ vars.ARC_JOBS_START_BLOCK }}
+          ARC_TRANSFERS_START_BLOCK: ${{ vars.ARC_TRANSFERS_START_BLOCK }}
           # Pass the input via env (never interpolate ${{ }} into the shell).
           BACKFILL: ${{ inputs.backfill }}
         run: |
