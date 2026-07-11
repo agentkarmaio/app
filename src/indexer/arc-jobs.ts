@@ -426,7 +426,7 @@ export function resolveStartBlockEnv(): number {
  * (getLogs Transfer-log or full id-range scan) was ruled out as prohibitively
  * expensive for a per-settlement check.
  */
-async function isTemplatedCounterparty(address: string): Promise<boolean> {
+export async function isTemplatedCounterparty(address: string): Promise<boolean> {
   const wallet = await dbGetWallet(address.toLowerCase(), ARC_CHAIN);
   if (!wallet?.arc_agent_id) return false;
   const agent = await readAgent(wallet.arc_agent_id);
