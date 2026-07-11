@@ -1,21 +1,47 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
-import { ArrowRight, ExternalLink } from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { readAgent } from '@/integrations/erc8004-celo';
 import { getAkConnectedFeedback } from '@/db/client';
-import { agentHref } from '@/lib/agent-href';
+import { DisclosureList } from '@/components/karma/disclosure-list';
+import { METADATA_RUBRIC, METADATA_SCHEME_VERSION } from '@/scoring/celo-metadata';
+import { AK_VALIDATOR, celoscanAddress } from '@/config/ak-validator';
 
-export const metadata = {
+export const metadata: Metadata = {
   title: 'AgentKarma on Celo — multi-chain reputation primitive',
   description:
     'AgentKarma is registered on Celo as ERC-8004 agentId 9058, publishing portable reputation feedback across Solana and Celo.',
 };
 
+// Max points the rubric can award — derived from the rubric itself so the
+// headline "/100" stays in sync if a dimension's weight ever changes.
+const RUBRIC_MAX = METADATA_RUBRIC.reduce((sum, d) => sum + d.max, 0);
+
 // Server-render the on-chain state. ISR keeps it fresh without hammering RPC.
 export const revalidate = 300;
 
-const AK_AGENT_ID = BigInt(9058);
-const AK_OWNER = '0xCfc0A11C75519FAf85B7872E27733CFaa4295b96';
+const AK_AGENT_ID = BigInt(AK_VALIDATOR.agentId);
+// Controller wallet — single-sourced from config (owns identity 9058 + treasury).
+const AK_OWNER = AK_VALIDATOR.controller;
+
+// AK signs giveFeedback from TWO wallets, both disclosed in AK_VALIDATOR and
+// both in the AK-rater set. Each wallet's Celoscan address page is its full
+// transaction list — every giveFeedback tx lives there. The registry VIEW
+// (readAllFeedback) the mirror is built from returns no per-record tx hash, so
+// there is no per-row celoscan.io/tx link to surface; we link the wallets.
+const AK_CONTROLLER_CELOSCAN_URL = celoscanAddress(AK_VALIDATOR.controller);
+const AK_VALIDATOR_CELOSCAN_URL = celoscanAddress(AK_VALIDATOR.validator);
+
+// Exact per-wallet counts of successful giveFeedback transactions AK has sent to
+// the Celo mainnet ReputationRegistry, verified on-chain (asOf 2026-06-29). This
+// is on-chain TRANSACTION activity — verifiable on Celoscan — and is distinct
+// from the indexed per-agent list length below (which can lag the chain or fold
+// revocations differently). The split reflects least-privilege: the cold
+// controller seeded the early attestations; the operational validator wallet
+// signs the automated batch now.
+const AK_GIVEFEEDBACK_TX = { controller: 26, validator: 42, asOf: '2026-06-29' } as const;
+const AK_GIVEFEEDBACK_TX_COUNT = AK_GIVEFEEDBACK_TX.controller + AK_GIVEFEEDBACK_TX.validator;
 
 export default async function CeloPage() {
   // Read AK's own on-chain identity, plus every feedback record AK is connected
@@ -93,64 +119,117 @@ export default async function CeloPage() {
               Validator disclosure →
             </Link>
           </div>
-          <p className="mb-4 text-sm text-muted-foreground">
-            AK publishes <span className="font-mono text-foreground">agentkarma_metadata v0.1</span>{' '}
-            attestations to the Celo ReputationRegistry — scoring each agent&apos;s
-            on-chain registration quality on a 0-100 scale. Open scheme,
-            deterministic, revokable. Independent reviews left through AK&apos;s
-            give-feedback UX appear here too.
+          <p className="mb-3 text-sm text-muted-foreground">
+            AK has published{' '}
+            <span className="font-medium text-foreground">
+              {AK_GIVEFEEDBACK_TX_COUNT} giveFeedback attestations
+            </span>{' '}
+            to the Celo ReputationRegistry — each an on-chain transaction, scoring
+            an agent&apos;s registration quality on a 0-100 scale via the open{' '}
+            <span className="font-mono text-foreground">agentkarma_metadata</span>{' '}
+            scheme. Deterministic, revokable. Early records were written under
+            rubric <span className="font-mono text-foreground">v0.1</span>; the
+            current rubric is{' '}
+            <span className="font-mono text-foreground">{METADATA_SCHEME_VERSION}</span>{' '}
+            (see <em>How AgentKarma scores</em> below). Expand any row for AK&apos;s
+            current breakdown of that agent&apos;s metadata. Independent reviews left
+            through AK&apos;s give-feedback UX appear here too.
           </p>
-          {akFeedback.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-border bg-card/30 px-4 py-6 text-center text-sm text-muted-foreground">
-              No published feedback indexed yet.
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {akFeedback.map((f) => {
-                const href = f.targetAddress
-                  ? agentHref({ chain: 'celo', address: f.targetAddress, agentId: f.agentId })
-                  : `/api/v2/celo/${f.agentId}`;
-                return (
-                  <div
-                    key={`${f.agentId}-${f.client}-${f.kind}`}
-                    className={`flex items-center justify-between rounded-lg border border-border bg-card/50 px-4 py-3 ${
-                      f.revoked ? 'opacity-60' : ''
-                    }`}
-                  >
-                    <div className="min-w-0">
-                      <div className={`truncate font-medium ${f.revoked ? 'line-through' : ''}`}>
-                        {f.targetName ?? `Agent ${f.agentId}`}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        agentId {f.agentId} · {f.targetFeedbackCount ?? 0} total feedback
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-3 text-sm">
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-xs ${
-                          f.revoked
-                            ? 'bg-muted text-muted-foreground'
-                            : f.kind === 'review'
-                              ? 'bg-indigo-500/15 text-indigo-300'
-                              : 'bg-emerald-500/15 text-emerald-400'
-                        }`}
-                      >
-                        {f.revoked
-                          ? 'revoked'
-                          : `${f.kind === 'review' ? 'Review' : 'AK rated'}: ${f.value}/100`}
-                      </span>
-                      <Link
-                        href={href}
-                        className="text-muted-foreground transition-colors hover:text-foreground"
-                      >
-                        <ArrowRight className="size-4" />
-                      </Link>
-                    </div>
-                  </div>
-                );
-              })}
+          <p className="mb-3 text-sm text-muted-foreground">
+            AK signs these attestations from{' '}
+            <span className="font-medium text-foreground">two wallets</span>, by
+            least-privilege design: the{' '}
+            <span className="font-medium text-foreground">controller</span> (owns
+            identity {AK_VALIDATOR.agentId} and the treasury, kept cold —{' '}
+            {AK_GIVEFEEDBACK_TX.controller} attestations) and the{' '}
+            <span className="font-medium text-foreground">validator</span> (the hot
+            operational signer for automated attestations —{' '}
+            {AK_GIVEFEEDBACK_TX.validator} attestations). Both are AK-controlled
+            and disclosed; neither is presented as an independent third party.
+          </p>
+          <div className="mb-4 rounded-md border border-border bg-card/40 px-3 py-2 text-xs text-muted-foreground">
+            <span>
+              On-chain count is verifiable — every giveFeedback tx lives in each
+              wallet&apos;s transaction list (asOf {AK_GIVEFEEDBACK_TX.asOf}).
+            </span>
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+              <a
+                href={AK_CONTROLLER_CELOSCAN_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex shrink-0 items-center gap-1 font-medium text-foreground underline-offset-2 hover:underline"
+              >
+                Verify controller on Celoscan ({AK_GIVEFEEDBACK_TX.controller})
+                <ExternalLink className="size-3" />
+              </a>
+              <a
+                href={AK_VALIDATOR_CELOSCAN_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex shrink-0 items-center gap-1 font-medium text-foreground underline-offset-2 hover:underline"
+              >
+                Verify validator on Celoscan ({AK_GIVEFEEDBACK_TX.validator})
+                <ExternalLink className="size-3" />
+              </a>
             </div>
-          )}
+          </div>
+          <DisclosureList records={akFeedback} />
+        </CardContent>
+      </Card>
+
+      <Card className="mb-8">
+        <CardContent className="p-6">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h2 className="text-xl font-semibold">How AgentKarma scores</h2>
+            <span className="shrink-0 font-mono text-xs text-muted-foreground">
+              agentkarma_metadata {METADATA_SCHEME_VERSION}
+            </span>
+          </div>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Every <span className="font-medium text-foreground">AK rated N/100</span>{' '}
+            above is a pure, deterministic function of the agent&apos;s ERC-8004
+            registration JSON — same registration always yields the same score, no
+            network calls, no clock, no randomness. It is a{' '}
+            <span className="font-medium text-foreground">Tier-3 declared / registration-quality</span>{' '}
+            signal: it measures how completely and tamper-resistantly an agent has
+            described itself. It is{' '}
+            <span className="text-foreground">not a behavioral judgement</span> and{' '}
+            <span className="text-foreground">not a verdict on whether the agent is &ldquo;good&rdquo;</span>.
+            The methodology is open, the scheme is versioned, and each attestation
+            is revokable on-chain.
+          </p>
+          <div className="overflow-hidden rounded-lg border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-card/40 text-left text-xs text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Dimension</th>
+                  <th className="w-16 px-3 py-2 text-right font-medium">Max</th>
+                  <th className="px-3 py-2 font-medium">What it checks</th>
+                </tr>
+              </thead>
+              <tbody>
+                {METADATA_RUBRIC.map((dim) => (
+                  <tr key={dim.key} className="border-b border-border/50 last:border-0">
+                    <td className="px-3 py-2 font-medium text-foreground">{dim.label}</td>
+                    <td className="px-3 py-2 text-right font-mono text-muted-foreground">{dim.max}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{dim.checks}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-card/40 text-xs">
+                  <td className="px-3 py-2 font-medium text-foreground">Total</td>
+                  <td className="px-3 py-2 text-right font-mono text-foreground">{RUBRIC_MAX}</td>
+                  <td className="px-3 py-2 text-muted-foreground">Sum of all dimensions</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <p className="mt-4 rounded-md border border-border bg-card/40 px-3 py-2 text-xs text-muted-foreground">
+            Endpoint <em>reachability</em> is deliberately excluded from the score —
+            a live check would be non-deterministic and network-bound. Liveness, if
+            published, is a separate signal, never folded into this number.
+          </p>
         </CardContent>
       </Card>
 

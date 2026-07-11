@@ -1,10 +1,10 @@
 /**
  * Settlement Quality badge — the display surface for the receipt-gated delivery
  * axis (src/scoring/settlement-quality.ts). Presentational + server-safe (no
- * "use client"): renders the 🟢/🟡/⚪ confidence badge that AgentKarma already
- * speaks, plus an honest detail line. Never fabricates a percentage — a farmed
- * agent (self-issued reviews, unpaired settlements) reads ⚪ Unproven, and an
- * agent with no receipts renders "no receipts", not a zero.
+ * "use client"): renders the reliable/mixed/unproven confidence badge that
+ * AgentKarma already speaks, plus an honest detail line. Never fabricates a
+ * percentage — a farmed agent (self-issued reviews, unpaired settlements) reads
+ * Unproven, and an agent with no receipts renders "no receipts", not a zero.
  *
  * `SettlementQualityPill` is the bare label chip (used in explainers / legends);
  * `SettlementQualityBadge` composes it with the receipt/counterparty detail for
@@ -13,19 +13,19 @@
 
 import type { SettlementLabel, SettlementQualityResult } from '@/scoring/settlement-quality';
 
-const TONE: Record<SettlementLabel, { badge: string; title: string; className: string }> = {
+const TONE: Record<SettlementLabel, { dotClassName: string; title: string; className: string }> = {
   reliable: {
-    badge: '🟢',
+    dotClassName: 'bg-emerald-400',
     title: 'Reliable',
     className: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300',
   },
   mixed: {
-    badge: '🟡',
+    dotClassName: 'bg-amber-400',
     title: 'Mixed',
     className: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
   },
   unproven: {
-    badge: '⚪',
+    dotClassName: 'bg-slate-400',
     title: 'Unproven',
     className: 'border-slate-400/30 bg-slate-400/10 text-slate-300',
   },
@@ -37,7 +37,7 @@ export function SettlementQualityPill({ label }: { label: SettlementLabel }) {
     <span
       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ${tone.className}`}
     >
-      <span aria-hidden>{tone.badge}</span>
+      <span aria-hidden className={`size-1.5 rounded-full ${tone.dotClassName}`} />
       {tone.title}
     </span>
   );

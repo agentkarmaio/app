@@ -30,6 +30,7 @@ import { safeHref } from '@/lib/safe-url';
 import { EvmClaimBanner } from '@/components/wallet/evm-claim-banner';
 import { GiveFeedbackCard } from '@/components/karma/give-feedback-card';
 import { FeedbackRecordsCard } from '@/components/karma/feedback-records-card';
+import { scoreMetadataQuality, METADATA_SCHEME_VERSION } from '@/scoring/celo-metadata';
 import { ClaimProof } from '@/components/karma/claim-proof';
 import { ProveOwnership } from '@/components/wallet/prove-ownership';
 import { EditProfile } from '@/components/wallet/edit-profile';
@@ -85,6 +86,14 @@ export async function ArcAgentProfile({
   const registrationName = agent?.registration?.name ?? null;
   const registrationDescription = agent?.registration?.description ?? null;
   const services = agent?.registration?.services ?? [];
+
+  // AK's CURRENT (v0.2) metadata-quality assessment of THIS agent, recomputed
+  // deterministically from the already-loaded registration JSON (pure, no extra
+  // RPC). Drives the per-record "Why" breakdown on AK-metadata feedback rows. No
+  // registration mirrored → no breakdown (FeedbackRecordsCard renders as before).
+  const metadataAssessment = agent?.registration
+    ? { result: scoreMetadataQuality(agent), schemeVersion: METADATA_SCHEME_VERSION }
+    : null;
 
   const displayName = walletRow.display_name ?? registrationName ?? `Agent ${shortAddr(wallet)}`;
   const description = walletRow.description ?? registrationDescription;
@@ -326,7 +335,13 @@ export async function ArcAgentProfile({
       </div>
 
       {feedback && feedback.records.length > 0 && (
-        <FeedbackRecordsCard records={feedback.records} raters={raters} comments={comments} chain="arc" />
+        <FeedbackRecordsCard
+          records={feedback.records}
+          raters={raters}
+          comments={comments}
+          chain="arc"
+          metadataAssessment={metadataAssessment}
+        />
       )}
 
       <GiveFeedbackCard agentId={agentId} chain="arc" ownerAddress={agent?.owner ?? walletRow.address} />

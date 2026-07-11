@@ -8,8 +8,14 @@
  *   chain                  celo (default) | arc
  *   --from <id>            first agentId (default 1)
  *   --to <id>              last agentId (default = discovered registry tip)
- *   --incremental         start one past the highest agent_id already mirrored
- *                         (resumes/extends a prior full scan; cheap for crons)
+ *   --incremental         cursor-driven cheap scan for schedules: scans only NEW
+ *                         ids since the last run (cursor in indexer_cursors) PLUS
+ *                         a bounded recent re-scan window, so feedback added to
+ *                         already-mirrored agents is still caught. Default/--full
+ *                         keeps the 1..tip behavior.
+ *   --full                 force the full 1..tip sweep (the default when neither
+ *                         --incremental nor --from/--to is given)
+ *   --rescan-window <n>    recent ids to re-scan in --incremental mode (default 500)
  *   --no-feedback          skip the ReputationRegistry pass (agents only)
  *   --no-remote            skip http/ipfs registration fetches (inline-only, fast)
  *   --identity-batch <n>   ids per identity multicall (default 250)
@@ -21,7 +27,14 @@
  */
 
 import { getRegistryConfig } from '@/config/erc8004-registries';
-import { runRegistryScan, type ScannedAgent, type ScannedFeedback } from '@/indexer/erc8004-registry';
+import {
+  runRegistryScan,
+  runIncrementalRegistryScan,
+  type ScannedAgent,
+  type ScannedFeedback,
+} from '@/indexer/erc8004-registry';
+import type { Chain } from '@/db/schema';
+import { requireEnv } from '@/lib/require-env';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -44,42 +57,68 @@ if (!config) {
 }
 
 const dryRun = flag('dry-run');
+const incremental = flag('incremental');
 const scanFeedback = !flag('no-feedback');
 const fetchRemote = !flag('no-remote');
 
+if (incremental && dryRun) {
+  console.error('[registry] --incremental needs the DB cursor and is incompatible with --dry-run');
+  process.exit(1);
+}
+
 console.log(`[registry] chain=${chain} identity=${config.identityRegistry} reputation=${config.reputationRegistry}`);
-console.log(`[registry] mode=${dryRun ? 'DRY-RUN (no writes)' : 'WRITE'} feedback=${scanFeedback} remote=${fetchRemote}`);
+console.log(`[registry] mode=${dryRun ? 'DRY-RUN (no writes)' : 'WRITE'} scan=${incremental ? 'INCREMENTAL' : 'FULL'} feedback=${scanFeedback} remote=${fetchRemote}`);
 
 // Persist callbacks. --dry-run swaps in no-op counters so the scan exercises the
 // full read path (incl. RPC + decode) without touching the DB.
 let persistAgents: (chain: string, agents: ScannedAgent[]) => Promise<number>;
 let persistFeedback: (chain: string, fb: ScannedFeedback[]) => Promise<number>;
 
-let fromId = numArg('from');
-if (dryRun) {
-  persistAgents = async (_c, a) => a.length;
-  persistFeedback = async (_c, f) => f.length;
-} else {
-  const db = await import('@/db/client');
-  persistAgents = db.upsertErc8004Agents;
-  persistFeedback = db.upsertErc8004Feedback;
-  if (flag('incremental') && fromId == null) {
-    const maxId = await db.getMaxErc8004AgentId(chain);
-    fromId = maxId + 1;
-    console.log(`[registry] incremental: resuming from id ${fromId} (max mirrored = ${maxId})`);
-  }
-}
-
-const start = Date.now();
-const result = await runRegistryScan(config, persistAgents, persistFeedback, {
-  fromId,
-  toId: numArg('to'),
+const fromId = numArg('from');
+const sharedOpts = {
   identityBatch: numArg('identity-batch'),
   feedbackBatch: numArg('feedback-batch'),
   fetchRemote,
   scanFeedback,
-  onProgress: (m) => console.log(`[registry] ${m}`),
-});
+  onProgress: (m: string) => console.log(`[registry] ${m}`),
+};
+
+const start = Date.now();
+let result;
+
+if (dryRun) {
+  persistAgents = async (_c, a) => a.length;
+  persistFeedback = async (_c, f) => f.length;
+  result = await runRegistryScan(config, persistAgents, persistFeedback, {
+    ...sharedOpts,
+    fromId,
+    toId: numArg('to'),
+  });
+} else {
+  // Fail loudly at line 1 if DB secrets are unset (GitHub injects unset secrets
+  // as empty strings) — same preflight as keep-fresh/heartbeat so a scheduled
+  // run can't sail past checkout and crash deep in the write path unnoticed.
+  requireEnv(['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']);
+  const db = await import('@/db/client');
+  persistAgents = db.upsertErc8004Agents;
+  persistFeedback = db.upsertErc8004Feedback;
+  if (incremental) {
+    result = await runIncrementalRegistryScan(
+      config,
+      persistAgents,
+      persistFeedback,
+      (c) => db.getRegistryCursorTip(c as Chain),
+      (c, tip) => db.setRegistryCursorTip(c as Chain, tip),
+      { ...sharedOpts, rescanWindow: numArg('rescan-window') },
+    );
+  } else {
+    result = await runRegistryScan(config, persistAgents, persistFeedback, {
+      ...sharedOpts,
+      fromId,
+      toId: numArg('to'),
+    });
+  }
+}
 
 const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 console.log('');

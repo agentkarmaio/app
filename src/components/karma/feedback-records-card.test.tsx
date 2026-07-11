@@ -10,9 +10,35 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { FeedbackRecordsCard } from './feedback-records-card';
+import { FeedbackRecordsCard, type MetadataAssessment } from './feedback-records-card';
+import { AK_METADATA_TAG1 } from '@/config/ak-validator';
 import type { FeedbackRecord } from '@/integrations/erc8004-celo';
 import type { RaterInfo } from '@/db/client';
+
+/** An AK metadata-quality assessment for the agent on the profile. */
+function assessment(): MetadataAssessment {
+  return {
+    schemeVersion: 'v0.2',
+    result: {
+      score: 62,
+      breakdown: {
+        resolves: 15,
+        typeCorrect: 10,
+        name: 8,
+        descriptionSubstance: 6,
+        image: 7,
+        imageUrlValid: 3,
+        services: 8,
+        serviceRichness: 0,
+        endpointUrlValid: 5,
+        activeAndTrust: 0,
+        tamperResistance: 0,
+        crossChain: 0,
+      },
+      notes: ['registration JSON resolves'],
+    },
+  };
+}
 
 function rec(over: Partial<FeedbackRecord>): FeedbackRecord {
   return {
@@ -79,5 +105,34 @@ describe('FeedbackRecordsCard', () => {
       <FeedbackRecordsCard records={[]} chain="celo" />,
     );
     expect(html).toBe('');
+  });
+
+  // The breakdown panel itself is gated behind the per-row "Why" toggle (client
+  // state), so a static render only exposes the toggle button — the expanded
+  // panel's markup is covered directly by metadata-breakdown.test.tsx. These
+  // assertions verify WHICH records get the toggle.
+  test('AK metadata record gets a "Why" toggle when an assessment is passed', () => {
+    const ak = rec({ tag1: AK_METADATA_TAG1, tag2: 'v0.1', value: 62 });
+    const html = renderToStaticMarkup(
+      <FeedbackRecordsCard records={[ak]} chain="celo" metadataAssessment={assessment()} />,
+    );
+    expect(html).toContain('>Why<');
+    expect(html).toContain('aria-expanded="false"');
+  });
+
+  test('AK metadata record gets NO "Why" toggle when no assessment is mirrored', () => {
+    const ak = rec({ tag1: AK_METADATA_TAG1, tag2: 'v0.2', value: 62 });
+    const html = renderToStaticMarkup(
+      <FeedbackRecordsCard records={[ak]} chain="celo" metadataAssessment={null} />,
+    );
+    expect(html).not.toContain('>Why<');
+  });
+
+  test('third-party (non-AK-metadata) record never gets a "Why" toggle', () => {
+    const third = rec({ tag1: 'trust-v2', tag2: 'v2', value: 88 });
+    const html = renderToStaticMarkup(
+      <FeedbackRecordsCard records={[third]} chain="celo" metadataAssessment={assessment()} />,
+    );
+    expect(html).not.toContain('>Why<');
   });
 });

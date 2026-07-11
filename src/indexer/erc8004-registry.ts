@@ -97,6 +97,44 @@ export function chunk<T>(items: T[], size: number): T[][] {
   return out;
 }
 
+/** Default recent re-scan window for incremental runs. Re-reads the most recent
+ *  ~500 ids every run so feedback ADDED to already-mirrored agents is caught —
+ *  a pure new-ids-only sweep would miss it (existing agents keep their id). */
+export const DEFAULT_RESCAN_WINDOW = 500;
+
+export interface IncrementalRange {
+  /** First id to scan (inclusive). 0 ⇒ nothing to do (empty registry). */
+  from: number;
+  /** Last id to scan (inclusive) = current registry tip. */
+  to: number;
+}
+
+/**
+ * Compute the id range an `--incremental` scan covers: every NEW id since the
+ * last sweep (`lastTip+1 .. currentTip`) UNIONED with a bounded recent re-scan
+ * window (the most recent `window` ids). The two ranges always overlap or abut,
+ * so their union is the single contiguous span starting at the LOWER of the two
+ * lower bounds — no need to scan twice. Pure + clamped to [1, currentTip] so a
+ * shrunk/empty registry or a window larger than the tip can't produce a bad id.
+ *
+ *   lastTip=9000 currentTip=9100 window=500 → from=8601 (re-scan window wins)
+ *   lastTip=9000 currentTip=9700 window=500 → from=9001 (new-ids window wins)
+ *   lastTip=0    currentTip=300  window=500 → from=1    (clamped to 1)
+ *   lastTip=9100 currentTip=9100 window=500 → from=8601 (re-scan only, no new)
+ *   currentTip=0 (empty registry)           → from=0,to=0 (nothing to do)
+ */
+export function incrementalScanRange(
+  lastTip: number,
+  currentTip: number,
+  window: number = DEFAULT_RESCAN_WINDOW,
+): IncrementalRange {
+  if (currentTip < 1) return { from: 0, to: 0 };
+  const newIdsFrom = lastTip + 1;          // first id never scanned before
+  const rescanFrom = currentTip - window + 1; // start of the recent re-scan window
+  const from = Math.max(1, Math.min(newIdsFrom, rescanFrom));
+  return { from, to: currentTip };
+}
+
 /**
  * Decode an ERC-8004 registration tokenURI. Handles every scheme seen in the
  * wild on Celo: inline data: URIs (base64 / gzip / utf8), bare raw JSON, http(s),
@@ -358,6 +396,68 @@ export async function runRegistryScan(
     log(`progress: ${result.agentsScanned} agents, ${result.feedbackScanned} feedback (id ${batch[batch.length - 1]}/${tip})`);
   }
 
+  return result;
+}
+
+// ─── Incremental scan (cursor-driven, for scheduled runs) ──────────────────────
+
+/** Reads the last scanned tip for a chain (0 = never scanned). */
+export type GetCursorTip = (chain: string) => Promise<number>;
+/** Persists the tip reached by a successful incremental scan. */
+export type SetCursorTip = (chain: string, tip: number) => Promise<void>;
+
+export interface IncrementalScanOptions extends RegistryScanOptions {
+  /** Recent re-scan window — re-reads the most recent N ids so feedback added to
+   *  already-mirrored agents is caught (default DEFAULT_RESCAN_WINDOW = 500). */
+  rescanWindow?: number;
+}
+
+/**
+ * Cursor-driven incremental scan, the cheap path for a schedule. Discovers the
+ * current tip, reads the persisted last tip, scans only `incrementalScanRange`
+ * (new ids + a bounded recent re-scan window), then advances the cursor to the
+ * tip — but ONLY after a clean run (errors === 0). A run that hit RPC errors
+ * leaves the cursor where it was so the missed ids are retried next run rather
+ * than silently skipped. The full 1..tip sweep stays `runRegistryScan`.
+ */
+export async function runIncrementalRegistryScan(
+  config: Erc8004RegistryConfig,
+  persistAgents: PersistAgents,
+  persistFeedback: PersistFeedback,
+  getCursorTip: GetCursorTip,
+  setCursorTip: SetCursorTip,
+  opts: IncrementalScanOptions = {},
+): Promise<RegistryScanResult> {
+  const client = opts.client ?? makeRegistryClient(config);
+  const log = opts.onProgress ?? (() => {});
+  const window = opts.rescanWindow ?? DEFAULT_RESCAN_WINDOW;
+
+  const currentTip = await findRegistryTip(client, config.identityRegistry);
+  const lastTip = await getCursorTip(config.chain);
+  const { from, to } = incrementalScanRange(lastTip, currentTip, window);
+  log(`incremental: lastTip=${lastTip} currentTip=${currentTip} window=${window} → scan ${from}..${to}`);
+
+  if (to < 1) {
+    return {
+      chain: config.chain, tip: currentTip, agentsScanned: 0, agentsPersisted: 0,
+      feedbackScanned: 0, feedbackPersisted: 0, errors: 0,
+    };
+  }
+
+  const result = await runRegistryScan(config, persistAgents, persistFeedback, {
+    ...opts,
+    client,
+    fromId: from,
+    toId: to,
+  });
+
+  // Advance the cursor only on a clean run so error-skipped ids are retried.
+  if (result.errors === 0) {
+    await setCursorTip(config.chain, currentTip);
+    log(`incremental: cursor advanced to ${currentTip}`);
+  } else {
+    log(`incremental: ${result.errors} error(s) — cursor held at ${lastTip} for retry`);
+  }
   return result;
 }
 

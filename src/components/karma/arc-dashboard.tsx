@@ -151,8 +151,11 @@ export function ArcDashboard({ data }: { data: ArcDashboardStats }) {
           <CardContent className="p-6">
             <h2 className="mb-1 text-base font-semibold tracking-tight">Settlement quality</h2>
             <p className="mb-4 text-xs text-muted-foreground">
-              Distinct independent counterparties — not review count. Farmed wash patterns read
-              ⚪ Unproven.
+              Distinct independent counterparties — not review count. Farmed wash patterns read{' '}
+              <span className="inline-flex items-center gap-1">
+                <span aria-hidden className="size-1.5 rounded-full bg-slate-400" />
+                Unproven.
+              </span>
             </p>
             {data.agentsWithReceipts === 0 && data.quality.reliable + data.quality.mixed + data.quality.unproven === 0 ? (
               <p className="text-sm text-muted-foreground">No receipt-backed agents yet.</p>

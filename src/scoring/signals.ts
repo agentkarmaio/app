@@ -13,7 +13,7 @@
  * settlement" for the full reasoning.
  */
 
-import type { Transaction, KarmaFace } from '@/db/schema';
+import type { Transaction, KarmaFace, Chain } from '@/db/schema';
 import type { InsertSignalEventInput } from '@/db/client';
 import type { CadenceResult } from './cadence';
 import type { AutonomyResult } from './autonomy';
@@ -192,6 +192,47 @@ export function buildJobSettledSignal(
     txRef: `${input.jobId}:${input.txHash}`,
     payload: {
       jobId: input.jobId,
+      amount: input.amount,
+      counterparty: input.counterparty,
+    },
+  };
+  if (input.observedAt !== undefined) out.observedAt = input.observedAt;
+  return out;
+}
+
+/**
+ * Build the Tier 1 `usdc_transfer_settled` signal for one plain ERC-20 USDC
+ * transfer (no escrow, no evaluator confirmation) — e.g. AgentStack-style
+ * Circle Developer-Controlled Wallet nanopayments on Arc. Weaker than
+ * `erc8183_job_settled` (weight 0.6 vs 1.0): a bare transfer proves payment
+ * happened, not that a job was delivered and confirmed. `chain` is REQUIRED
+ * (not optional) — buildJobSettledSignal's omission silently defaulted every
+ * Arc signal to chain='solana' and broke the wallets FK; see arc-jobs.ts.
+ */
+export interface UsdcTransferSignalInput {
+  walletAddress: string;
+  face: KarmaFace;
+  chain: Chain;
+  txHash: string;
+  amount: number;
+  counterparty: string;
+  observedAt?: string | Date;
+}
+
+export function buildUsdcTransferSignal(
+  input: UsdcTransferSignalInput,
+): InsertSignalEventInput {
+  const out: InsertSignalEventInput = {
+    agentWallet: input.walletAddress,
+    chain: input.chain,
+    tier: 1,
+    kind: 'usdc_transfer_settled',
+    face: input.face,
+    weight: 0.6,
+    value: 1.0,
+    signedBy: input.counterparty,
+    txRef: input.txHash,
+    payload: {
       amount: input.amount,
       counterparty: input.counterparty,
     },

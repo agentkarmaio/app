@@ -189,6 +189,7 @@ async function processAgent(id: number): Promise<Outcome> {
     updated_at: nowIso,
   };
   if (name) walletRow.display_name = name;
+  if (agent.registration?.image) walletRow.image_url = agent.registration.image;
   if (agent.registration?.description) walletRow.description = agent.registration.description;
   if (website) walletRow.website = website;
 

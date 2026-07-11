@@ -11,15 +11,20 @@
  *    anyway, but the early check gives a clean error.
  *  - Fetches the target's IdentityRegistry record + registration JSON.
  *  - Scores metadata quality 0-100 via src/scoring/celo-metadata.ts.
- *  - Writes a feedback record tagged ('agentkarma_metadata', 'v0.1') with
- *    integer value = the metadata-quality score.
+ *  - Writes a feedback record tagged ('agentkarma_metadata', <scheme version>)
+ *    with integer value = the metadata-quality score. The scheme version is
+ *    sourced from AK_VALIDATOR.scheme.tag2 (currently v0.2) so it can never
+ *    drift from the rubric the score was computed with.
  */
 
 import { readAgent } from '../src/integrations/erc8004-celo';
 import { scoreMetadataQuality } from '../src/scoring/celo-metadata';
 import { publishFeedback, feedbackHashFromJson } from '../src/integrations/erc8004-celo-publish';
+import { AK_VALIDATOR } from '../src/config/ak-validator';
 
 const AK_AGENT_ID = BigInt(9058);
+const SCHEME_TAG1 = AK_VALIDATOR.scheme.tag1;
+const SCHEME_TAG2 = AK_VALIDATOR.scheme.tag2;
 
 const args = process.argv.slice(2);
 const execute = args.includes('--execute');
@@ -60,8 +65,8 @@ const assessmentPayload = {
   rater: 'AgentKarma',
   raterAgentId: AK_AGENT_ID.toString(),
   target: targetId.toString(),
-  scheme: 'agentkarma_metadata',
-  version: 'v0.1',
+  scheme: SCHEME_TAG1,
+  version: SCHEME_TAG2,
   score: quality.score,
   breakdown: quality.breakdown,
   notes: quality.notes,
@@ -72,8 +77,8 @@ const feedbackURI = `https://agentkarma.io/api/v2/celo/${targetId}`;
 const feedbackHash = feedbackHashFromJson(assessmentPayload);
 
 console.log(`[3/4] preparing feedback record…`);
-console.log(`    tag1:         agentkarma_metadata`);
-console.log(`    tag2:         v0.1`);
+console.log(`    tag1:         ${SCHEME_TAG1}`);
+console.log(`    tag2:         ${SCHEME_TAG2}`);
 console.log(`    value:        ${quality.score}`);
 console.log(`    feedbackURI:  ${feedbackURI}`);
 console.log(`    feedbackHash: ${feedbackHash}`);
@@ -83,8 +88,8 @@ const result = await publishFeedback(
     agentId: targetId,
     value: quality.score,
     valueDecimals: 0,
-    tag1: 'agentkarma_metadata',
-    tag2: 'v0.1',
+    tag1: SCHEME_TAG1,
+    tag2: SCHEME_TAG2,
     endpoint: '',
     feedbackURI,
     feedbackHash,

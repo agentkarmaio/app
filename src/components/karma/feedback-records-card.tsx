@@ -20,12 +20,29 @@
 'use client';
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ExternalLink, Star, BadgeCheck } from 'lucide-react';
+import { ExternalLink, Star, BadgeCheck, ChevronDown } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { agentHref } from '@/lib/agent-href';
 import { REVIEW_TAG1 } from '@/lib/evm-feedback';
+import { AK_METADATA_TAG1 } from '@/config/ak-validator';
+import { MetadataBreakdown } from '@/components/karma/metadata-breakdown';
 import type { FeedbackRecord } from '@/integrations/erc8004-celo';
 import type { RaterInfo } from '@/db/client';
+import type { MetadataQualityResult } from '@/scoring/celo-metadata';
+
+/**
+ * AK's CURRENT (v0.2) metadata-quality assessment of THIS agent, recomputed
+ * deterministically from its registration JSON server-side. Passed once by the
+ * profile; the card attaches a "Why" breakdown to each AK-metadata record (the
+ * agentkarma_metadata scheme). Third-party schemes carry no AK rubric, so they
+ * get no breakdown. null when no registration is mirrored (no recompute).
+ */
+export interface MetadataAssessment {
+  /** Pure {@link scoreMetadataQuality} output: score + per-dimension breakdown + notes. */
+  result: MetadataQualityResult;
+  /** Version of the rubric that produced `result` (AK_VALIDATOR.scheme.tag2). */
+  schemeVersion: string;
+}
 
 const EXPLORER_ADDR: Record<'celo' | 'arc', string> = {
   celo: 'https://celoscan.io/address/',
@@ -70,11 +87,132 @@ function StarRating({ value }: { value: number }) {
   );
 }
 
+/**
+ * One feedback record row. Owns its own "Why" toggle state, which is why it's a
+ * component rather than inline JSX (hooks can't live inside a `.map` callback).
+ * The "Why" breakdown only appears for AK's algorithmic metadata records
+ * (AK_METADATA_TAG1) AND only when the profile passed an assessment for THIS
+ * agent — third-party schemes (trust-v2, liveness, etc.) carry no AK rubric.
+ */
+function FeedbackRecordRow({
+  record: r,
+  chain,
+  base,
+  rater,
+  review,
+  metadataAssessment,
+}: {
+  record: FeedbackRecord;
+  chain: 'celo' | 'arc';
+  base: string;
+  rater?: RaterInfo;
+  review?: { comment: string; verified: boolean };
+  metadataAssessment?: MetadataAssessment | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const addrLc = r.client.toLowerCase();
+  const isReview = r.tag1 === REVIEW_TAG1;
+  // AK's algorithmic metadata attestation for this agent → it has a rubric to
+  // explain. Only render the "Why" toggle when we actually have the breakdown.
+  const isAkMetadata = r.tag1 === AK_METADATA_TAG1;
+  const showWhy = isAkMetadata && !!metadataAssessment;
+
+  return (
+    <div
+      className={`flex flex-col gap-2 rounded-md border border-border bg-card/40 px-3 py-2 ${
+        r.revoked ? 'opacity-50' : ''
+      }`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          {rater ? (
+            // Known agent → link into AK (resolved by agentId, or by the
+            // claimed wallet row when no agentId). Address lowercased to
+            // match the stored EVM rows the /agent route resolves against.
+            <Link
+              href={agentHref({ chain, address: addrLc, agentId: rater.agentId })}
+              className="truncate text-[12px] text-[#828fff] hover:underline underline-offset-2"
+              title={r.client}
+            >
+              {rater.name ?? shortAddr(r.client)}
+            </Link>
+          ) : (
+            <a
+              href={`${base}${r.client}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 font-mono text-[12px] text-[#828fff] hover:underline underline-offset-2"
+            >
+              {shortAddr(r.client)}
+              <ExternalLink className="size-3" />
+            </a>
+          )}
+          <span className="text-[10.5px] text-[#62666d]">
+            {schemeLabel(r.tag1)}
+            {r.tag2 ? ` · ${r.tag2}` : ''}
+            {r.revoked ? ' · revoked' : ''}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {showWhy && (
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              aria-expanded={open}
+              className="inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px] text-[#62666d] transition-colors hover:bg-card hover:text-[#f7f8f8]"
+            >
+              Why
+              <ChevronDown className={`size-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
+            </button>
+          )}
+          <div className={`text-right ${r.revoked ? 'line-through' : ''}`}>
+            {isReview ? (
+              <StarRating value={r.value} />
+            ) : (
+              <>
+                <span className="font-bold tabular-nums text-[13px] text-[#f7f8f8]">
+                  {Math.round(r.value)}
+                </span>
+                <span className="text-[11px] text-[#62666d]"> / 100</span>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {review && (
+        <div className="flex items-start gap-1.5 border-t border-[rgb(255_255_255/0.06)] pt-2">
+          <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[12px] leading-[1.5] text-[#b4b8c0]">
+            {review.comment}
+          </p>
+          {review.verified && (
+            <span
+              title="Comment matches the on-chain feedbackHash — integrity verified"
+              className="mt-0.5 inline-flex shrink-0 items-center gap-0.5 text-[10px] text-[#30a46c]"
+            >
+              <BadgeCheck className="size-3" /> verified
+            </span>
+          )}
+        </div>
+      )}
+
+      {showWhy && open && metadataAssessment && (
+        <MetadataBreakdown
+          result={metadataAssessment.result}
+          schemeVersion={metadataAssessment.schemeVersion}
+          onChainVersion={r.tag2}
+        />
+      )}
+    </div>
+  );
+}
+
 export function FeedbackRecordsCard({
   records,
   raters,
   comments,
   chain,
+  metadataAssessment,
 }: {
   records: FeedbackRecord[];
   /** Resolved rater identities keyed by lowercased address (resolveRaters). */
@@ -82,6 +220,10 @@ export function FeedbackRecordsCard({
   /** On-chain review text keyed by `${lowercasedClient}-${index}` (getFeedbackComments). */
   comments?: Map<string, { comment: string; verified: boolean }>;
   chain: 'celo' | 'arc';
+  /** AK's current metadata-quality assessment of THIS agent — drives the per-record
+   *  "Why" breakdown on AK-metadata records. Omit/null when no registration is
+   *  mirrored; third-party records never get a breakdown regardless. */
+  metadataAssessment?: MetadataAssessment | null;
 }) {
   const base = EXPLORER_ADDR[chain];
   const [visible, setVisible] = useState(INITIAL_VISIBLE);
@@ -110,77 +252,16 @@ export function FeedbackRecordsCard({
       <CardContent className="space-y-2">
         {shown.map((r) => {
           const addrLc = r.client.toLowerCase();
-          const rater = raters?.get(addrLc);
-          const isReview = r.tag1 === REVIEW_TAG1;
-          const review = comments?.get(`${addrLc}-${r.feedbackIndex.toString()}`);
-
           return (
-            <div
+            <FeedbackRecordRow
               key={`${r.client}-${r.feedbackIndex.toString()}`}
-              className={`flex flex-col gap-2 rounded-md border border-border bg-card/40 px-3 py-2 ${
-                r.revoked ? 'opacity-50' : ''
-              }`}
-            >
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex min-w-0 flex-col gap-0.5">
-                {rater ? (
-                  // Known agent → link into AK (resolved by agentId, or by the
-                  // claimed wallet row when no agentId). Address lowercased to
-                  // match the stored EVM rows the /agent route resolves against.
-                  <Link
-                    href={agentHref({ chain, address: addrLc, agentId: rater.agentId })}
-                    className="truncate text-[12px] text-[#828fff] hover:underline underline-offset-2"
-                    title={r.client}
-                  >
-                    {rater.name ?? shortAddr(r.client)}
-                  </Link>
-                ) : (
-                  <a
-                    href={`${base}${r.client}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 font-mono text-[12px] text-[#828fff] hover:underline underline-offset-2"
-                  >
-                    {shortAddr(r.client)}
-                    <ExternalLink className="size-3" />
-                  </a>
-                )}
-                <span className="text-[10.5px] text-[#62666d]">
-                  {schemeLabel(r.tag1)}
-                  {r.tag2 ? ` · ${r.tag2}` : ''}
-                  {r.revoked ? ' · revoked' : ''}
-                </span>
-              </div>
-              <div className={`shrink-0 text-right ${r.revoked ? 'line-through' : ''}`}>
-                {isReview ? (
-                  <StarRating value={r.value} />
-                ) : (
-                  <>
-                    <span className="font-bold tabular-nums text-[13px] text-[#f7f8f8]">
-                      {Math.round(r.value)}
-                    </span>
-                    <span className="text-[11px] text-[#62666d]"> / 100</span>
-                  </>
-                )}
-              </div>
-            </div>
-
-              {review && (
-                <div className="flex items-start gap-1.5 border-t border-[rgb(255_255_255/0.06)] pt-2">
-                  <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[12px] leading-[1.5] text-[#b4b8c0]">
-                    {review.comment}
-                  </p>
-                  {review.verified && (
-                    <span
-                      title="Comment matches the on-chain feedbackHash — integrity verified"
-                      className="mt-0.5 inline-flex shrink-0 items-center gap-0.5 text-[10px] text-[#30a46c]"
-                    >
-                      <BadgeCheck className="size-3" /> verified
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
+              record={r}
+              chain={chain}
+              base={base}
+              rater={raters?.get(addrLc)}
+              review={comments?.get(`${addrLc}-${r.feedbackIndex.toString()}`)}
+              metadataAssessment={metadataAssessment}
+            />
           );
         })}
 

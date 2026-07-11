@@ -30,6 +30,7 @@ import { drainOnce } from './rescore-dirty';
 import { getRecentTransactions } from '../db/client';
 import { assessIngestFreshness } from '../lib/ingest-health';
 import { requireEnv } from '../lib/require-env';
+import { makeArcAdapter } from '../chain-adapters/arc';
 
 // DB writes are mandatory; without them the floor cannot ingest. Fail at line 1
 // with a clear message (the 2026-06-23 outage: secrets unset → cryptic crash 8
@@ -76,6 +77,18 @@ async function main() {
     `[keep-fresh] indexer: fetched=${idx.fetched} inserted=${idx.inserted} ` +
     `scored=${idx.scored} payshSignals=${idx.payshSignals} operatorsScored=${idx.operatorsScored}`,
   );
+
+  // 2b. Arc — job-escrow settlements + plain USDC transfers (own try/catch so a
+  // wedged Arc RPC never blocks the Solana ingest floor above). Both are
+  // no-ops until their respective *_START_BLOCK env vars are set.
+  try {
+    const arc = await makeArcAdapter().indexReceipts();
+    if (arc.inserted > 0) {
+      console.log(`[keep-fresh] arc: fetched=${arc.fetched} inserted=${arc.inserted}`);
+    }
+  } catch (err) {
+    console.error('[keep-fresh] arc step failed:', err instanceof Error ? err.message : err);
+  }
 
   // 3. Drain the deferred-scoring backlog (bounded). Steady-state this clears
   // in one batch; the first recovery run chews through the accumulated backlog.
