@@ -342,6 +342,30 @@ describe('arcJobsIndexer — DI core', () => {
     expect(state.cursors[0][1]).toBe('120');
   });
 
+  test('self-dealt job (client === provider) is skipped — never emitted as a receipt', async () => {
+    // Real-world case: Arc Testnet jobId 155689, a disclosed AK test settlement
+    // where the validator wallet played client, provider, AND evaluator
+    // (tx 0xdd0cfb80.../0xf5d69b79...). A self-funded, self-paid job proves
+    // nothing about independent delivery and must never read as a Tier-1
+    // receipt — same skip outcome as an unmatched PaymentReleased.
+    const SELF = '0xeE2a20AEF0f5F9B52FC334806256014F4DDcB8fc' as const;
+    const window: GetLogsWindow = {
+      created: [created({ jobId: BigInt(155689), client: SELF, provider: SELF })],
+      released: [released({ jobId: BigInt(155689), provider: SELF, rawAmount: BigInt(100_000), txHash: '0xselfdeal' })],
+    };
+    const { deps, state } = makeDeps(window);
+    const res = await arcJobsIndexer(deps);
+
+    expect(res.fetched).toBe(0);
+    expect(res.inserted).toBe(0);
+    expect(state.inserted.length).toBe(0);
+    expect(state.signals.length).toBe(0);
+    expect(state.ensured.length).toBe(0);
+    // cursor still advances so the self-dealt block is never re-scanned
+    expect(state.cursors.length).toBe(1);
+    expect(state.cursors[0][1]).toBe('120');
+  });
+
   test('unmatched PaymentReleased IS indexed when resolveJobClient recovers the client', async () => {
     const window: GetLogsWindow = {
       created: [],

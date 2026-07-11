@@ -315,6 +315,12 @@ export async function arcJobsIndexer(deps: ArcJobsIndexerDeps): Promise<IndexRun
       const observedAt = await tsFor(settled.blockNumber);
       const provider = settled.provider;
 
+      // Self-dealt job (client === provider) → skip. A wallet funding and
+      // paying itself proves nothing about independent delivery, so it must
+      // never read as a Tier-1 receipt (see jobId 155689, a disclosed AK test
+      // settlement where one key played client+provider+evaluator).
+      if (client.toLowerCase() === provider.toLowerCase()) continue;
+
       rows.push(toTransactionRow(settled, client, observedAt));
       wallets.add(client);
       wallets.add(provider);
