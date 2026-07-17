@@ -12,6 +12,12 @@ type TechWithLogo = {
    * as a wordmark, so chain marks read as a lockup next to the full wordmarks.
    */
   label?: string;
+  /**
+   * Opt out of the row's dim/grayscale resting treatment. Arc's brand
+   * guidelines (§3.3) forbid recoloring, effects, and low-contrast rendering,
+   * so its mark renders at full fidelity. See ARC-BRAND.md.
+   */
+  noDim?: boolean;
 };
 
 type TechWithWordmark = {
@@ -56,13 +62,17 @@ const STACK: Tech[] = [
     label: 'Stellar',
   },
   {
+    // Arc network icon (navy badge), not the bare arch mark: Arc's guidelines
+    // §3.4 reserve this asset for referencing the Arc network, which is what a
+    // chain row does. The bare mark and the yellow badge mean other things.
     name: 'Arc',
-    href: 'https://arc.network',
-    logo: '/logos/arc.svg',
-    width: 31,
-    height: 32,
-    heightClass: 'h-[13px] sm:h-[14px]',
+    href: 'https://www.arc.io',
+    logo: '/logos/arc-network.svg',
+    width: 500,
+    height: 500,
+    heightClass: 'h-[16px] sm:h-[17px]',
     label: 'Arc',
+    noDim: true,
   },
   {
     name: 'Helius',
@@ -116,17 +126,27 @@ export function BuiltWith() {
           >
             {hasLogo(tech) ? (
               tech.label ? (
-                <span className="inline-flex items-center gap-1.5 opacity-25 transition-opacity duration-200 group-hover:opacity-70">
+                <span
+                  className={`inline-flex items-center gap-1.5 transition-opacity duration-200 ${
+                    tech.noDim ? '' : 'opacity-25 group-hover:opacity-70'
+                  }`}
+                >
                   <Image
                     src={tech.logo}
                     alt=""
                     aria-hidden
                     width={tech.width}
                     height={tech.height}
-                    className={`${tech.heightClass} w-auto grayscale transition-[filter] duration-200 group-hover:grayscale-0`}
+                    className={`${tech.heightClass} w-auto transition-[filter] duration-200 ${
+                      tech.noDim ? '' : 'grayscale group-hover:grayscale-0'
+                    }`}
                     unoptimized
                   />
-                  <span className="font-mono text-[12px] font-[510] uppercase tracking-[0.04em] text-[#f7f8f8] sm:text-[13px]">
+                  <span
+                    className={`font-mono text-[12px] font-[510] uppercase tracking-[0.04em] text-[#f7f8f8] sm:text-[13px] ${
+                      tech.noDim ? 'opacity-25 transition-opacity duration-200 group-hover:opacity-70' : ''
+                    }`}
+                  >
                     {tech.label}
                   </span>
                 </span>
@@ -136,7 +156,9 @@ export function BuiltWith() {
                   alt={tech.name}
                   width={tech.width}
                   height={tech.height}
-                  className={`${tech.heightClass} w-auto opacity-25 grayscale transition-[opacity,filter] duration-200 group-hover:opacity-70 group-hover:grayscale-0`}
+                  className={`${tech.heightClass} w-auto transition-[opacity,filter] duration-200 ${
+                    tech.noDim ? '' : 'opacity-25 grayscale group-hover:opacity-70 group-hover:grayscale-0'
+                  }`}
                   unoptimized
                 />
               )

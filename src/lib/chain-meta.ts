@@ -19,7 +19,10 @@ export const CHAIN_META: Record<Chain, ChainMeta> = {
   solana: { label: 'Solana', logo: '/logos/solana-mark.svg', href: '/' },
   celo: { label: 'Celo', logo: '/logos/celo.svg', href: '/celo' },
   stellar: { label: 'Stellar', logo: '/logos/stellar.svg', href: '/stellar' },
-  arc: { label: 'Arc', logo: '/logos/arc.svg', href: '/arc' },
+  // Arc network icon per Arc brand guidelines §3.4 — that asset is the one
+  // reserved for referencing the network (the yellow badge means the ARC
+  // token). Its navy disc is part of the mark; never dim or recolor it.
+  arc: { label: 'Arc', logo: '/logos/arc-network.svg', href: '/arc' },
 };
 
 /** Solana first, then remaining chains in CHAINS declaration order. */
