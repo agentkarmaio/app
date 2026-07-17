@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import Link from 'next/link';
 import { Suspense } from 'react';
 import { ArrowRight, ExternalLink } from 'lucide-react';
@@ -10,9 +11,12 @@ import { getArcDashboardStats } from '@/db/client';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'AgentKarma on Arc — receipt-grade reputation from USDC settlements',
+  // Arc naming per Circle's partner toolkit: "Arc Network" on first mention,
+  // "Arc" after; adjective/proper-noun only, never possessive. Metadata is its
+  // own surface (search/OG), so it carries its own first mention.
+  title: 'AgentKarma on Arc Network — receipt-grade reputation from USDC settlements',
   description:
-    'Arc is Circle\'s USDC-native EVM L1. AgentKarma indexes Arc\'s ERC-8183 agentic-commerce job settlements as Tier-1 receipt-grade signals and reads ERC-8004 reputation, publishing portable karma any 8004-aware client can read.',
+    'Arc Network is Circle\'s USDC-native EVM L1. AgentKarma indexes the ERC-8183 agentic-commerce job settlements on Arc as Tier-1 receipt-grade signals and reads ERC-8004 reputation, publishing portable karma any 8004-aware client can read.',
 };
 
 // Live Arc dashboard (matched settlements + quality) — revalidate so grant demos
@@ -76,10 +80,10 @@ export default function ArcPage() {
       <div className="mb-10 space-y-4">
         <div className="inline-flex items-center gap-2 rounded-full border border-slate-400/30 bg-slate-400/10 px-3 py-1 text-xs font-medium text-slate-300">
           <span className="size-1.5 rounded-full bg-slate-400" />
-          Arc · Testnet · USDC-native
+          Arc Network · Testnet · USDC-native
         </div>
         <h1 className="text-4xl font-semibold tracking-tight">
-          AgentKarma scores Arc&apos;s USDC settlements
+          AgentKarma scores USDC settlements on Arc
         </h1>
         <p className="max-w-2xl text-balance text-lg text-muted-foreground">
           Arc is Circle&apos;s USDC-native EVM L1 — gas is paid in USDC, and
@@ -87,6 +91,38 @@ export default function ArcPage() {
           AgentKarma indexes those settlements as Tier-1 receipt-grade signals
           and reads ERC-8004 reputation, publishing one portable karma score any
           8004-aware client can read.
+        </p>
+      </div>
+
+      {/* Arc attribution lockup. Uses Circle's official full logo (white
+          variant, unmodified) at 52px — above the 50px floor in Arc's logo
+          guidelines §3.2. The px-6/py-5 padding clears the required 1x
+          (inner-arch height ≈ 16px at this scale) on all sides. No dimming,
+          recolor, or effects per §3.3. See docs/brand/ARC-BRAND.md. */}
+      <div className="mb-10 inline-flex flex-col gap-3 rounded-lg border border-slate-400/15 bg-[#0f1011] px-6 py-5">
+        <span className="text-[9px] font-medium uppercase tracking-[0.22em] text-[#4f5258]">
+          Built on
+        </span>
+        <a
+          href="https://www.arc.io"
+          target="_blank"
+          rel="noreferrer noopener"
+          aria-label="Arc Network"
+          className="inline-flex"
+        >
+          <Image
+            src="/logos/arc-wordmark.svg"
+            alt="Arc Network"
+            width={500}
+            height={171}
+            className="h-[52px] w-auto"
+            unoptimized
+          />
+        </a>
+        <p className="max-w-md text-[11px] leading-relaxed text-muted-foreground">
+          Arc Network&trade; and the Arc logo are trademarks of Circle Internet
+          Group, Inc. AgentKarma is an independent project built on Arc and is
+          not endorsed by or affiliated with Circle.
         </p>
       </div>
 
@@ -141,7 +177,7 @@ export default function ArcPage() {
           </dl>
           <p className="mt-4 text-sm text-muted-foreground">
             AK is <span className="font-mono text-foreground">agentId {AK_ARC_AGENT_ID}</span> on
-            Arc&apos;s IdentityRegistry (mirroring{' '}
+            the Arc IdentityRegistry (mirroring{' '}
             <span className="font-mono text-foreground">agentId 9058</span> on Celo). Arc is
             testnet-only today, so signal volume builds as agents transact — AK reads ERC-8183
             settlements + ERC-8004 reputation and writes karma back as a validator. Unregistered
@@ -267,7 +303,7 @@ export default function ArcPage() {
         <CardContent className="p-6">
           <h2 className="mb-4 text-xl font-semibold">Reviews can be farmed. Receipts can&apos;t.</h2>
           <p className="mb-4 text-sm text-muted-foreground">
-            Arc&apos;s ERC-8004 IdentityRegistry is farmed-heavy on testnet. Most agents
+            The Arc ERC-8004 IdentityRegistry is farmed-heavy on testnet. Most agents
             carry on-chain feedback — but ungated ERC-8004 reviews and unpaired{' '}
             <span className="font-mono text-foreground">PaymentReleased</span> events
             are not proof. Neither a review count nor a raw settlement count is evidence.
@@ -314,12 +350,12 @@ export default function ArcPage() {
 
       <Card className="mb-8">
         <CardContent className="p-6">
-          <h2 className="mb-4 text-xl font-semibold">A validator on Arc&apos;s ERC-8004 layer</h2>
+          <h2 className="mb-4 text-xl font-semibold">A validator on the Arc ERC-8004 layer</h2>
           <p className="mb-4 text-sm text-muted-foreground">
             The <span className="font-mono text-foreground">0x8004…</span> vanity
             prefix marks the canonical ERC-8004 reference contracts — the same
             contract family AK already reads on Celo, so the Identity and
-            Reputation ABIs port verbatim. AK reuses Arc&apos;s agent identity and
+            Reputation ABIs port verbatim. AK reuses the Arc agent identity and
             discovery, scores the wallet by its settlement history, and writes
             two-faced karma (<span className="font-mono text-foreground">provider</span>{' '}
             / <span className="font-mono text-foreground">consumer</span>) back to
