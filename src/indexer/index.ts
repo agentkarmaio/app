@@ -92,6 +92,57 @@ export function isRpcRateLimited(err: unknown): boolean {
   );
 }
 
+/**
+ * True when the RPC cannot resolve the `until` cursor signature we sent
+ * (JSON-RPC `-32020`, "Transaction <sig> not found").
+ *
+ * Free/standard RPCs keep only shallow signature history, so a stored cursor
+ * ages out and becomes permanently unresolvable ON THAT ENDPOINT. Unlike a
+ * rate limit this never heals by waiting: every subsequent tick re-sends the
+ * same dead cursor, gets the same error, indexes nothing, and — because the
+ * cursor only advances on success — stays wedged forever. That is exactly how
+ * Solana ingest silently stalled for 72h on 2026-07-22.
+ *
+ * Deliberately narrow: rate limits and transport errors must NOT match, since
+ * their recovery is "back off and retry the same cursor", not "drop it".
+ */
+export function isCursorUnresolvable(err: unknown): boolean {
+  if (isRpcRateLimited(err)) return false;
+  if (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === -32020) {
+    return true;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('-32020') || /Transaction\s+\S+\s+not found/.test(msg);
+}
+
+/**
+ * Fetch signatures, self-healing a cursor the RPC can no longer resolve.
+ *
+ * On an unresolvable `until`, retry ONCE without it. The caller then stores the
+ * newest returned signature, so the cursor re-anchors inside the endpoint's
+ * retained history and the next tick is incrementally correct again.
+ *
+ * Takes the fetch as a callback so the recovery policy is testable without an
+ * RPC. Any other error (rate limit, transport) propagates untouched — those are
+ * the circuit breaker's business, and burning a good cursor on them would open
+ * a gap.
+ */
+export async function getSignaturesWithCursorFallback(
+  fetchSignatures: (
+    opts: { limit: number; until?: string; before?: string },
+  ) => Promise<ConfirmedSignatureInfo[]>,
+  opts: { limit: number; until?: string; before?: string },
+): Promise<{ signatures: ConfirmedSignatureInfo[]; cursorReset: boolean }> {
+  try {
+    return { signatures: await fetchSignatures(opts), cursorReset: false };
+  } catch (err) {
+    if (!opts.until || !isCursorUnresolvable(err)) throw err;
+    const { until: _dead, ...withoutCursor } = opts;
+    void _dead;
+    return { signatures: await fetchSignatures(withoutCursor), cursorReset: true };
+  }
+}
+
 // ─── Fetch Pipeline ─────────────────────────────────────────────────────────
 
 /**
@@ -121,7 +172,18 @@ export async function fetchTransactionsForFacilitator(
 
   let signatures: ConfirmedSignatureInfo[];
   try {
-    signatures = await connection.getSignaturesForAddress(pubkey, sigOpts);
+    const fetched = await getSignaturesWithCursorFallback(
+      (o) => connection.getSignaturesForAddress(pubkey, o),
+      sigOpts,
+    );
+    signatures = fetched.signatures;
+    if (fetched.cursorReset) {
+      console.warn(
+        `[indexer] ${address}: stored cursor ${options?.until} is outside this RPC's ` +
+        'history — re-anchored to the newest signatures (a gap is possible; run ' +
+        '`bun run keep-fresh:backfill` to close it)',
+      );
+    }
   } catch (err) {
     const rateLimited = isRpcRateLimited(err);
     if (!rateLimited) console.error(`[indexer] Failed to get signatures for ${address}:`, err);
