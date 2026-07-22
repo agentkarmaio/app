@@ -34,6 +34,7 @@ import {
   upsertWallet,
   insertScoreSnapshot,
   getTransactionsForWallets,
+  DEFAULT_TX_WINDOW,
   getCursor,
   upsertCursor,
   insertSignalEvents,
@@ -387,7 +388,10 @@ export async function runIndexer(
   // so they're filtered out here and scored separately in the operator pass below.
   const operatorSet = new Set(operatorAddresses);
   const affectedWallets = uniqueWallets.filter((a) => !operatorSet.has(a));
-  console.log(`[indexer] Fetching full history for ${affectedWallets.length} affected wallets...`);
+  console.log(
+    `[indexer] Fetching up to ${DEFAULT_TX_WINDOW} recent txs each for ` +
+    `${affectedWallets.length} affected wallets...`,
+  );
   const allTxsForAffected = await getTransactionsForWallets(affectedWallets);
 
   // Fetch 8004 attestations for affected wallets
