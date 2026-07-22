@@ -58,6 +58,18 @@ const DEFAULT_CHAIN: Chain = 'solana';
 // (100 × ~47 ≈ 4.7KB). Chunk EVERY address-keyed `.in()` to this bound.
 export const ADDRESS_IN_CHUNK = 100;
 
+// Recent-transaction rows fed to scoring per wallet. Every history read is
+// bounded by this: an unbounded read of a wallet's full history is what hit
+// `57014 statement timeout` on 2026-07-22 once the table passed ~786k rows.
+// Single source of truth for the window — rescore-dirty's drain and the
+// indexer's scoring pass must agree, or the same wallet scores differently
+// depending on which path reached it first.
+export const DEFAULT_TX_WINDOW = 5000;
+
+// Parallel per-wallet history reads. Bounded so a wide batch cannot saturate
+// the Postgres connection pool (same shape as rescore-dirty's drain loop).
+const WALLET_HISTORY_CONCURRENCY = 5;
+
 // Tighter bound for tx_signature `.in()` lists: base58 Solana signatures are
 // ~88 chars (≈2× an address), so the same 100-row chunk would approach the URI
 // cap. 60 × ~90 ≈ 5.4KB stays safe.
@@ -1027,23 +1039,39 @@ export async function getTransactionCount(walletAddress: string): Promise<number
   return count ?? 0;
 }
 
+/**
+ * Recent transaction history for a set of wallets, bounded PER WALLET.
+ *
+ * The bound is not optional. This previously issued
+ * `.in(wallet_address, chunk).order(timestamp)` with no limit — unbounded full
+ * history for every affected wallet. Once ingest resumed on 2026-07-22 and the
+ * table passed ~786k rows, that reliably hit Postgres `57014 statement
+ * timeout`, aborting runIndexer after transactions were inserted but before
+ * scoring: rows landed, scores silently did not.
+ *
+ * The cap is per wallet rather than one global `.limit()` because a single
+ * high-frequency wallet would otherwise consume the whole budget and leave
+ * every other wallet in the batch scoring off zero transactions.
+ *
+ * Rows come back grouped by wallet, newest-first within each group. Callers
+ * (calculateScores, the indexer's txByWallet map) group by wallet before use,
+ * so cross-wallet ordering carries no meaning.
+ */
 export async function getTransactionsForWallets(
   walletAddresses: string[],
+  txWindow: number = DEFAULT_TX_WINDOW,
 ): Promise<Transaction[]> {
   if (walletAddresses.length === 0) return [];
 
   const all: Transaction[] = [];
-  // Supabase .in() encodes into the URL; chunk to stay under Kong's ~8KB URI cap.
-  for (let i = 0; i < walletAddresses.length; i += ADDRESS_IN_CHUNK) {
-    const chunk = walletAddresses.slice(i, i + ADDRESS_IN_CHUNK);
-    const { data, error } = await supabase
-      .from('transactions')
-      .select('*')
-      .in('wallet_address', chunk)
-      .order('timestamp', { ascending: false });
-
-    if (error) throw error;
-    if (data) all.push(...(data as Transaction[]));
+  // Bounded concurrency — don't saturate Postgres connections (same shape as
+  // rescore-dirty's drain loop).
+  for (let i = 0; i < walletAddresses.length; i += WALLET_HISTORY_CONCURRENCY) {
+    const slice = walletAddresses.slice(i, i + WALLET_HISTORY_CONCURRENCY);
+    const results = await Promise.all(
+      slice.map((address) => getRecentTransactionsForWallet(address, txWindow)),
+    );
+    for (const rows of results) all.push(...rows);
   }
 
   return all;
@@ -1065,7 +1093,7 @@ export async function getAllTransactions(): Promise<Transaction[]> {
 // is enough to reflect automation patterns for whale wallets.
 export async function getRecentTransactionsForWallet(
   address: string,
-  limit = 5000,
+  limit = DEFAULT_TX_WINDOW,
 ): Promise<Transaction[]> {
   const { data, error } = await supabase
     .from('transactions')

@@ -10,6 +10,7 @@ import {
   __setSupabaseForTest, insertTransactions, upsertCursor, getCursor, claimWallet,
   getStellarAgentId, setStellarAgentId, claimDirtyWallets, markWalletsDirty,
   ADDRESS_IN_CHUNK, getStats, getArcDashboardStats, normalizeCounterparty, getAgents,
+  getTransactionsForWallets,
 } from './client';
 import type { Transaction } from './schema';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
@@ -591,5 +592,91 @@ describe('getAgents routes claimed=true for registry chains to wallets', () => {
     expect(fake.__tablesQueried).toContain('erc8004_agents');
     expect(fake.__tablesQueried).not.toContain('wallets');
     expect(wallets.length).toBe(1);
+  });
+});
+
+// ── getTransactionsForWallets: per-wallet bounded reads ──────────────────────
+//
+// Regression for the 2026-07-22 `57014 canceling statement due to statement
+// timeout`. The old shape was `.in(wallet_address, chunk).order(timestamp)`
+// with NO limit — unbounded full history for every affected wallet across a
+// 786k-row table. It aborted runIndexer AFTER insertTransactions but BEFORE
+// scoring, so transactions landed and scores silently didn't.
+//
+// The bound must be PER WALLET (matching the 5000-row TX_WINDOW convention in
+// rescore-dirty / instrumentation), not a single global .limit() — a global cap
+// would let one busy wallet starve every other wallet in the batch.
+describe('getTransactionsForWallets bounds history per wallet', () => {
+  type Query = { table: string; eq: [string, unknown][]; limit: number | null };
+
+  function makeTxFake(rowsFor: (addr: string) => unknown[]) {
+    const queries: Query[] = [];
+    return {
+      queries,
+      from(table: string) {
+        const q: Query = { table, eq: [], limit: null };
+        const builder: Record<string, unknown> = {};
+        builder.select = () => builder;
+        builder.in = () => { throw new Error('unbounded .in() query — must fetch per wallet'); };
+        builder.eq = (col: string, val: unknown) => { q.eq.push([col, val]); return builder; };
+        builder.order = () => builder;
+        builder.limit = (n: number) => {
+          q.limit = n;
+          queries.push(q);
+          const addr = q.eq.find(([c]) => c === 'wallet_address')?.[1] as string;
+          return Promise.resolve({ data: rowsFor(addr), error: null });
+        };
+        return builder;
+      },
+    };
+  }
+
+  afterAll(() => { __setSupabaseForTest(null); });
+
+  test('applies a per-wallet row limit instead of an unbounded scan', async () => {
+    const fake = makeTxFake(() => []);
+    __setSupabaseForTest(fake);
+
+    await getTransactionsForWallets(['walletA', 'walletB']);
+
+    expect(fake.queries).toHaveLength(2); // one bounded query per wallet
+    expect(fake.queries.every((q) => q.limit !== null && q.limit > 0)).toBe(true);
+    expect(fake.queries.map((q) => q.eq).flat()).toEqual([
+      ['wallet_address', 'walletA'],
+      ['wallet_address', 'walletB'],
+    ]);
+  });
+
+  test('honours a caller-supplied window', async () => {
+    const fake = makeTxFake(() => []);
+    __setSupabaseForTest(fake);
+
+    await getTransactionsForWallets(['walletA'], 250);
+
+    expect(fake.queries[0].limit).toBe(250);
+  });
+
+  test('returns every wallet rows, each capped independently', async () => {
+    // walletA is the busy one — under a single global cap it would swallow the
+    // whole budget and walletB would score off zero transactions.
+    const fake = makeTxFake((addr) =>
+      addr === 'walletA'
+        ? Array.from({ length: 3 }, (_, i) => ({ wallet_address: 'walletA', id: `a${i}` }))
+        : [{ wallet_address: 'walletB', id: 'b0' }],
+    );
+    __setSupabaseForTest(fake);
+
+    const rows = await getTransactionsForWallets(['walletA', 'walletB'], 3);
+
+    expect(rows).toHaveLength(4);
+    expect(rows.filter((r) => r.wallet_address === 'walletB')).toHaveLength(1);
+  });
+
+  test('no wallets means no query at all', async () => {
+    const fake = makeTxFake(() => []);
+    __setSupabaseForTest(fake);
+
+    expect(await getTransactionsForWallets([])).toEqual([]);
+    expect(fake.queries).toHaveLength(0);
   });
 });

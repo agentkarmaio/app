@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { drainOnce } from '@/scripts/rescore-dirty';
+import { DEFAULT_TX_WINDOW } from '@/db/client';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -41,7 +42,7 @@ export async function POST(request: NextRequest) {
   }
 
   let limit = 200;
-  let txWindow = 5000;
+  let txWindow = DEFAULT_TX_WINDOW;
   try {
     const body = (await request.json().catch(() => ({}))) as {
       limit?: unknown;
