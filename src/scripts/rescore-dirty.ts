@@ -33,6 +33,7 @@ import {
   getSignalEventsForWallet,
   upsertWallet,
   markWalletsDirty,
+  DEFAULT_TX_WINDOW,
 } from '@/db/client';
 import { calculateScore } from '@/scoring';
 import { buildCadenceSignal, buildAutonomySignal } from '@/scoring/signals';
@@ -41,7 +42,6 @@ import { computeAutonomy } from '@/scoring/autonomy';
 import { readAttestations } from '@/integrations/attestation';
 
 const DEFAULT_BATCH_SIZE = 200;
-const DEFAULT_TX_WINDOW = 5000;
 const CONCURRENCY = 8;
 
 export interface RescoreResult {
