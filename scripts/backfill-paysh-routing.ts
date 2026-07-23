@@ -17,7 +17,7 @@
  *   bun run web/scripts/backfill-paysh-routing.ts            # write mode
  */
 
-import { getAllTransactions, insertSignalEvents, type InsertSignalEventInput } from '../src/db/client';
+import { getAllTransactions, FULL_BACKFILL_TX_BOUND, insertSignalEvents, type InsertSignalEventInput } from '../src/db/client';
 import { parseTransactionsBatch, extractPayshPayment } from '../src/indexer/helius';
 import { buildPayshRoutedSignal } from '../src/scoring/signals';
 import { PAYSH_OPERATORS } from '../src/config/paysh-operators';
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   }
 
   console.log('[paysh-backfill] Loading all transactions from DB…');
-  const txs = await getAllTransactions();
+  const txs = await getAllTransactions(FULL_BACKFILL_TX_BOUND);
   console.log(`[paysh-backfill] ${txs.length} historical transactions`);
 
   const work = limit ? txs.slice(0, limit) : txs;

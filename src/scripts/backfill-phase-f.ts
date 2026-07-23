@@ -11,7 +11,7 @@
  */
 
 import {
-  getAllTransactions, upsertWallet, insertScoreSnapshot, getFeedbackSummary,
+  getAllTransactions, FULL_BACKFILL_TX_BOUND, upsertWallet, insertScoreSnapshot, getFeedbackSummary,
   getLatestSignalValues,
 } from '../db/client';
 import { calculateScore } from '../scoring';
@@ -20,7 +20,7 @@ import { readAttestations } from '../integrations/attestation';
 
 async function main() {
   console.log('[backfill] Loading all transactions…');
-  const allTx = await getAllTransactions();
+  const allTx = await getAllTransactions(FULL_BACKFILL_TX_BOUND);
   const wallets = [...new Set(allTx.map((tx) => tx.wallet_address))];
   console.log(`[backfill] ${allTx.length} tx across ${wallets.length} wallets`);
 

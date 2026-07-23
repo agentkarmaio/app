@@ -7,13 +7,13 @@
  *   bun run src/scripts/backfill-g2-cadence.ts
  */
 
-import { getAllTransactions, insertSignalEvents } from '../db/client';
+import { getAllTransactions, FULL_BACKFILL_TX_BOUND, insertSignalEvents } from '../db/client';
 import { computeCadence, MIN_TX_FOR_CADENCE } from '../scoring/cadence';
 import { buildCadenceSignal } from '../scoring/signals';
 
 async function main() {
   console.log('[backfill-g2] Loading all transactions…');
-  const txs = await getAllTransactions();
+  const txs = await getAllTransactions(FULL_BACKFILL_TX_BOUND);
   console.log(`[backfill-g2] ${txs.length} tx`);
 
   const byWallet = new Map<string, Date[]>();

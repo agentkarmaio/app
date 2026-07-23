@@ -7,12 +7,12 @@
  *   bun run src/scripts/backfill-g1-signals.ts
  */
 
-import { getAllTransactions, insertSignalEvents } from '../db/client';
+import { getAllTransactions, FULL_BACKFILL_TX_BOUND, insertSignalEvents } from '../db/client';
 import { buildX402PaymentSignals } from '../scoring/signals';
 
 async function main() {
   console.log('[backfill-g1] Loading all transactions…');
-  const txs = await getAllTransactions();
+  const txs = await getAllTransactions(FULL_BACKFILL_TX_BOUND);
   console.log(`[backfill-g1] ${txs.length} transactions to emit signals for`);
 
   if (txs.length === 0) return;

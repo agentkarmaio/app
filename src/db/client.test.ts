@@ -11,6 +11,8 @@ import {
   getStellarAgentId, setStellarAgentId, claimDirtyWallets, markWalletsDirty,
   ADDRESS_IN_CHUNK, getStats, getArcDashboardStats, normalizeCounterparty, getAgents,
   getTransactionsForWallets,
+  getAllTransactions,
+  markAllWalletsDirty,
 } from './client';
 import type { Transaction } from './schema';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
@@ -678,5 +680,104 @@ describe('getTransactionsForWallets bounds history per wallet', () => {
 
     expect(await getTransactionsForWallets([])).toEqual([]);
     expect(fake.queries).toHaveLength(0);
+  });
+});
+
+// ── getAllTransactions: no unbounded reads, no silent truncation ─────────────
+//
+// This issued `select('*').order(timestamp)` with no limit at all — a full read
+// of the transactions table (786k rows as of 2026-07-22). Two failure modes,
+// both bad: the query times out (57014), or PostgREST's row cap trims the
+// result and the caller scores off a silently truncated history.
+//
+// A bound is now required at the call site, and hitting it raises instead of
+// returning a short list — a truncated "all transactions" is wrong data, not a
+// smaller answer.
+describe('getAllTransactions refuses unbounded and truncated reads', () => {
+  function makeCapFake(rowCount: number) {
+    const seen: { limit: number | null } = { limit: null };
+    return {
+      seen,
+      from() {
+        const builder: Record<string, unknown> = {};
+        builder.select = () => builder;
+        builder.order = () => builder;
+        builder.limit = (n: number) => {
+          seen.limit = n;
+          return Promise.resolve({
+            data: Array.from({ length: rowCount }, (_, i) => ({ id: `t${i}` })),
+            error: null,
+          });
+        };
+        return builder;
+      },
+    };
+  }
+
+  afterAll(() => { __setSupabaseForTest(null); });
+
+  test('always applies the caller-supplied bound to the query', async () => {
+    const fake = makeCapFake(10);
+    __setSupabaseForTest(fake);
+
+    await getAllTransactions(500);
+
+    expect(fake.seen.limit).toBe(500);
+  });
+
+  test('throws when the result fills the bound — truncation is never silent', async () => {
+    const fake = makeCapFake(500); // exactly the cap → cannot tell if more exist
+    __setSupabaseForTest(fake);
+
+    await expect(getAllTransactions(500)).rejects.toThrow(/truncat/i);
+  });
+
+  test('returns normally when the result is comfortably inside the bound', async () => {
+    const fake = makeCapFake(12);
+    __setSupabaseForTest(fake);
+
+    expect(await getAllTransactions(500)).toHaveLength(12);
+  });
+});
+
+// ── markAllWalletsDirty ─────────────────────────────────────────────────────
+//
+// Backs the /api/score/refresh full-rescore path. Enqueueing is one UPDATE; the
+// existing scoring worker then drains at its own bounded rate. The alternative
+// the route used to take — read 786k txs, then loop ~105k wallets serially —
+// could not complete.
+describe('markAllWalletsDirty enqueues instead of rescoring inline', () => {
+  function makeUpdateFake(count: number) {
+    const calls: { table: string; patch: Record<string, unknown>; filtered: boolean }[] = [];
+    return {
+      calls,
+      from(table: string) {
+        return {
+          update(patch: Record<string, unknown>) {
+            const call = { table, patch, filtered: false };
+            calls.push(call);
+            const chain: Record<string, unknown> = {};
+            // PostgREST refuses an unfiltered UPDATE, so a filter must be present.
+            chain.not = () => { call.filtered = true; return Promise.resolve({ count, error: null }); };
+            return chain;
+          },
+        };
+      },
+    };
+  }
+
+  afterAll(() => { __setSupabaseForTest(null); });
+
+  test('stamps scoring_dirty_at on wallets under a filter, and reports the count', async () => {
+    const fake = makeUpdateFake(105_952);
+    __setSupabaseForTest(fake);
+
+    const queued = await markAllWalletsDirty();
+
+    expect(queued).toBe(105_952);
+    expect(fake.calls).toHaveLength(1); // one statement, not one per wallet
+    expect(fake.calls[0].table).toBe('wallets');
+    expect(fake.calls[0].patch.scoring_dirty_at).toBeTruthy();
+    expect(fake.calls[0].filtered).toBe(true);
   });
 });

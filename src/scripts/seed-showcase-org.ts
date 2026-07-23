@@ -147,8 +147,12 @@ async function main() {
   console.log('[seed-org] Done.');
   console.log(`  Fleet view:      ${origin}/org/${ORG.slug}`);
   console.log(`  Flagship:        ${origin}/agent/${flagship.wallet}`);
-  console.log('  After deploy, trigger a refresh so Tier 3 lands in scores:');
-  console.log(`    curl -X POST ${origin}/api/score/refresh`);
+  console.log('  After deploy, refresh the seeded members so Tier 3 lands in scores.');
+  console.log('  Per wallet (scores immediately) — the bodyless form now only QUEUES');
+  console.log('  a full rescore for the background worker, so prefer these:');
+  for (const m of MEMBERS) {
+    console.log(`    curl -X POST ${origin}/api/score/refresh -d '{"wallet":"${m.wallet}"}'`);
+  }
 }
 
 main().catch((err) => {
