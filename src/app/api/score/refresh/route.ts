@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAllTransactions, getTransactions, upsertWallet, insertScoreSnapshot, getFeedbackSummary, getLatestSignalValues, getSignalEventsForWallet, insertSignalEvents } from '@/db/client';
-import { calculateScore, calculateScores } from '@/scoring/index';
-import { readAttestation, readAttestations } from '@/integrations/attestation';
+import { getTransactions, upsertWallet, insertScoreSnapshot, getFeedbackSummary, getLatestSignalValues, getSignalEventsForWallet, insertSignalEvents, markAllWalletsDirty } from '@/db/client';
+import { calculateScore } from '@/scoring/index';
+import { readAttestation } from '@/integrations/attestation';
 import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy } from '@/scoring/autonomy';
 import { buildCadenceSignal, buildAutonomySignal } from '@/scoring/signals';
@@ -77,88 +77,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ refreshed: 1, wallet: score, feedbackCount: feedback.total });
   }
 
-  const allTx = await getAllTransactions();
-  const walletAddresses = [...new Set(allTx.map((tx) => tx.wallet_address))];
-  const attestations = await readAttestations(walletAddresses);
-
-  // Fetch feedback summaries for all wallets
-  const feedbackMap = new Map<string, { deliveryRate: number; total: number }>();
-  for (const addr of walletAddresses) {
-    try {
-      const fb = await getFeedbackSummary(addr);
-      if (fb.total > 0) feedbackMap.set(addr, fb);
-    } catch { /* skip */ }
-  }
-
-  const [cadenceScores, manifestScores] = await Promise.all([
-    getLatestSignalValues(walletAddresses, 'cadence'),
-    getLatestSignalValues(walletAddresses, 'manifest'),
-  ]);
-  const scores = calculateScores(allTx, attestations, cadenceScores, manifestScores);
-
-  // Group tx by wallet once for autonomy compute + feedback recalc.
-  const txByWallet = new Map<string, typeof allTx>();
-  for (const tx of allTx) {
-    const list = txByWallet.get(tx.wallet_address) ?? [];
-    list.push(tx);
-    txByWallet.set(tx.wallet_address, list);
-  }
-
-  const autonomySignals: ReturnType<typeof buildAutonomySignal>[] = [];
-  const autonomyByWallet = new Map<string, ReturnType<typeof computeAutonomy>>();
-  for (const [address, txs] of txByWallet) {
-    const autonomy = computeAutonomy(
-      txs.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
-    );
-    autonomyByWallet.set(address, autonomy);
-    if (autonomy) autonomySignals.push(buildAutonomySignal(address, autonomy));
-  }
-  if (autonomySignals.length > 0) {
-    await insertSignalEvents(autonomySignals, { overwrite: true });
-  }
-
-  let refreshed = 0;
-  for (const [address, score] of scores) {
-    const fb = feedbackMap.get(address);
-    const finalScore = fb
-      ? calculateScore(
-          txByWallet.get(address) ?? [],
-          attestations.get(address) ?? 0,
-          fb.deliveryRate,
-          fb.total,
-          cadenceScores.get(address) ?? null,
-          manifestScores.get(address) ?? null,
-        )
-      : score;
-
-    const autonomy = autonomyByWallet.get(address);
-    await upsertWallet(address, finalScore.score, finalScore.trustTier, finalScore.txCount, {
-      providerScore: finalScore.providerScore,
-      consumerScore: finalScore.consumerScore,
-      confidenceBadge: finalScore.confidenceBadge,
-      autonomyScore: autonomy?.score ?? null,
-      autonomyLabel: autonomy?.label ?? null,
-      metricSuccessRate: finalScore.metrics.successRate,
-      metricDiversity:   finalScore.metrics.diversity,
-      metricVolume:      finalScore.metrics.volume,
-      metricAge:         finalScore.metrics.age,
-      metricCadence:     finalScore.metrics.cadence,
-    });
-    await insertScoreSnapshot(
-      address,
-      finalScore.score,
-      finalScore.metrics.successRate,
-      finalScore.metrics.diversity,
-      finalScore.metrics.volume,
-      finalScore.metrics.age,
-    );
-    refreshed++;
-  }
+  // No wallet → full rescore. This ENQUEUES rather than scoring inline: the old
+  // inline version read every transaction into memory, then looped feedback +
+  // upsert + snapshot over ~105k wallets one at a time (~315k sequential round
+  // trips), which cannot complete inside a request. Marking every wallet dirty
+  // is one statement; the scoring worker drains the queue at its own bounded
+  // rate with a bounded per-wallet window.
+  const queued = await markAllWalletsDirty();
 
   return NextResponse.json({
-    refreshed,
-    attestationsFound: attestations.size,
-    feedbackWallets: feedbackMap.size,
-    message: `Refreshed ${refreshed} wallet scores (${attestations.size} with 8004, ${feedbackMap.size} with feedback)`,
+    queued,
+    message:
+      `Queued ${queued} wallets for rescoring. Scoring runs in the background ` +
+      '(scoring worker / POST /api/cron/rescore); this endpoint no longer scores inline.',
   });
 }

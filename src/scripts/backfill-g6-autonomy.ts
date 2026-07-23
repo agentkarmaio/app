@@ -6,13 +6,13 @@
  *   bun run src/scripts/backfill-g6-autonomy.ts
  */
 
-import { getAllTransactions, insertSignalEvents, supabase } from '../db/client';
+import { getAllTransactions, FULL_BACKFILL_TX_BOUND, insertSignalEvents, supabase } from '../db/client';
 import { computeAutonomy, MIN_TX_FOR_AUTONOMY } from '../scoring/autonomy';
 import { buildAutonomySignal } from '../scoring/signals';
 
 async function main() {
   console.log('[backfill-g6] Loading all transactions…');
-  const txs = await getAllTransactions();
+  const txs = await getAllTransactions(FULL_BACKFILL_TX_BOUND);
   console.log(`[backfill-g6] ${txs.length} tx`);
 
   const byWallet = new Map<string, Array<{ timestamp: string | Date; counterparty: string | null }>>();

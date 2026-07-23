@@ -66,6 +66,13 @@ export const ADDRESS_IN_CHUNK = 100;
 // depending on which path reached it first.
 export const DEFAULT_TX_WINDOW = 5000;
 
+// Bound the one-off whole-history backfill scripts put on getAllTransactions.
+// Deliberately below the live table size: those scripts predate the table
+// passing ~786k rows and have no paging, so they must fail loudly with
+// getAllTransactions' truncation error rather than quietly backfill from a
+// partial read. Raising this number is not the fix — paging is.
+export const FULL_BACKFILL_TX_BOUND = 200_000;
+
 // Parallel per-wallet history reads. Bounded so a wide batch cannot saturate
 // the Postgres connection pool (same shape as rescore-dirty's drain loop).
 const WALLET_HISTORY_CONCURRENCY = 5;
@@ -1077,14 +1084,39 @@ export async function getTransactionsForWallets(
   return all;
 }
 
-export async function getAllTransactions(): Promise<Transaction[]> {
+/**
+ * Whole-table transaction read, explicitly bounded.
+ *
+ * The bound is a required argument, not a default: this previously ran
+ * `select('*').order(timestamp)` with no limit whatsoever, which at 786k rows
+ * (2026-07-22) either times out or comes back trimmed by PostgREST's row cap.
+ * A trimmed "all transactions" is not a smaller answer, it is wrong data — every
+ * caller derives per-wallet history from it — so filling the bound raises rather
+ * than returning quietly.
+ *
+ * Prefer the per-wallet reads (getRecentTransactionsForWallet /
+ * getTransactionsForWallets) for anything that scores wallets. This exists for
+ * one-off whole-history backfills, and at current table size those need paging.
+ */
+export async function getAllTransactions(limit: number): Promise<Transaction[]> {
   const { data, error } = await supabase
     .from('transactions')
     .select('*')
-    .order('timestamp', { ascending: false });
+    .order('timestamp', { ascending: false })
+    .limit(limit);
 
   if (error) throw error;
-  return (data ?? []) as Transaction[];
+  const rows = (data ?? []) as Transaction[];
+
+  if (rows.length >= limit) {
+    throw new Error(
+      `getAllTransactions filled its ${limit}-row bound — the result is truncated ` +
+      'and any per-wallet history derived from it would be wrong. Page the read, ' +
+      'or use getTransactionsForWallets/getRecentTransactionsForWallet instead.',
+    );
+  }
+
+  return rows;
 }
 
 // Bounded history fetch for a single wallet. Used by the rescore worker so
@@ -1124,6 +1156,30 @@ export async function markWalletsDirty(addresses: string[]): Promise<void> {
       .in('address', chunk);
     if (error) throw error;
   }
+}
+
+/**
+ * Enqueue EVERY wallet for rescoring, in one statement.
+ *
+ * The full-rescore path (`POST /api/score/refresh` with no wallet) used to do
+ * the work inline: read every transaction, then loop feedback + upsert +
+ * snapshot over ~105k wallets serially — roughly 315k sequential round-trips,
+ * which cannot finish inside a request. Marking dirty hands the work to the
+ * scoring worker that already drains this queue at a bounded rate with a
+ * bounded per-wallet window, so the request returns immediately and the rescore
+ * happens under backpressure it was designed for.
+ *
+ * The `.not(address, is, null)` filter is load-bearing: PostgREST rejects an
+ * UPDATE with no filter, and it matches every row.
+ */
+export async function markAllWalletsDirty(): Promise<number> {
+  const { count, error } = await supabase
+    .from('wallets')
+    .update({ scoring_dirty_at: new Date().toISOString() }, { count: 'exact' })
+    .not('address', 'is', null);
+
+  if (error) throw error;
+  return count ?? 0;
 }
 
 /**
