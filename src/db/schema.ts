@@ -183,6 +183,15 @@ export const transactionsTable = pgTable('transactions', {
   index('idx_transactions_facilitator').on(table.facilitator),
   index('idx_transactions_counterparty').on(table.counterparty),
   index('idx_transactions_timestamp').on(table.timestamp),
+  // Serves the per-wallet history read that scoring depends on:
+  // `WHERE wallet_address = ? ORDER BY timestamp DESC LIMIT n`
+  // (getRecentTransactionsForWallet → getTransactionsForWallets, rescore-dirty).
+  // idx_transactions_chain_wallet_address CANNOT serve it — that index leads
+  // with `chain`, which the query does not constrain, so Postgres fell back to
+  // scanning all 786k rows and sorting: ~2s per wallet, which blew the statement
+  // timeout (57014) once a run touched ~60 wallets. With this index the same
+  // read is ~0.3s, now dominated by row serialization rather than the scan.
+  index('idx_transactions_wallet_timestamp').on(table.wallet_address, table.timestamp.desc()),
 ]);
 
 export const scoresTable = pgTable('scores', {
