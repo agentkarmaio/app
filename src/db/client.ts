@@ -93,6 +93,8 @@ let _client: SupabaseClient | null = null;
 let _testClient: SupabaseClient | null = null;
 export function __setSupabaseForTest(client: unknown): void {
   _testClient = client as SupabaseClient;
+  // Stale figures belong to the previous DB identity — drop them.
+  staleStats = {};
 }
 
 function getSupabase(): SupabaseClient {
@@ -1508,22 +1510,39 @@ export async function cleanupOldScoreSnapshots(days = 90): Promise<number> {
 
 // --- Stats Queries -----------------------------------------------------------
 
+// Last successful getStats figures, per block. A transient aggregate-RPC
+// failure (statement timeout under load — the 2026-07-29 incident) must serve
+// these instead of fabricating 0s: a zero with HTTP 200 poisons the CDN cache,
+// fires the external "counters regressed" monitor, and is indistinguishable
+// from real data. Reset when the client is swapped (test seam).
+let staleStats: {
+  tx?: { totalTransactions: number; totalVolumeUsdc: number };
+  agents?: { totalAgents: number; tierDistribution: Record<string, number> };
+  registries?: { chain: string; agents: number; feedbacks: number }[];
+} = {};
+
 export async function getStats() {
   // Every figure comes from a SQL aggregate RPC — NEVER from streaming the full
-  // transactions (~502k) or agent (~103k) tables. The old row-streaming
+  // transactions (~850k) or agent (~103k) tables. The old row-streaming
   // fallbacks (`select amount` / `select trust_tier`) blew the 8s statement
-  // timeout as the tables grew and 500'd /api/stats (the public homepage
-  // counter). Each block degrades independently so one slow query can't take the
-  // whole endpoint down — getStats returns best-effort, never throws.
-  let totalTransactions = 0;
-  let totalVolumeUsdc = 0;
+  // timeout as the tables grew and 500'd /api/stats (2026-06-18). Each block
+  // degrades independently — to its last-known-good figures, never to invented
+  // ones. A cold failure with nothing good to serve THROWS: every caller
+  // already degrades honestly (pages .catch(() => null), /api/stats → 503,
+  // MCP runTool → tool_error).
+  let totalTransactions: number;
+  let totalVolumeUsdc: number;
   const txStatsRes = await supabase.rpc('get_transaction_stats').single();
   if (!txStatsRes.error && txStatsRes.data) {
     const stats = txStatsRes.data as Record<string, unknown>;
     totalTransactions = Number(stats.total_count ?? 0);
     totalVolumeUsdc = Number(stats.total_volume ?? 0);
-  } else if (txStatsRes.error) {
-    console.warn('[db] get_transaction_stats unavailable:', txStatsRes.error.message);
+    staleStats.tx = { totalTransactions, totalVolumeUsdc };
+  } else if (staleStats.tx) {
+    console.warn('[db] get_transaction_stats failed, serving stale figures:', txStatsRes.error?.message);
+    ({ totalTransactions, totalVolumeUsdc } = staleStats.tx);
+  } else {
+    throw new Error(`get_transaction_stats failed with no stale figures to serve: ${txStatsRes.error?.message}`);
   }
 
   // totalAgents + tierDistribution count the canonical agent population — the
@@ -1533,7 +1552,7 @@ export async function getStats() {
   // raw `wallets` instead double-faults: it keeps score=0 noise and represents
   // Celo/Arc as a handful of owner rows rather than their per-agent population.
   let totalAgents = 0;
-  const tierDistribution: Record<string, number> = {};
+  let tierDistribution: Record<string, number> = {};
   const tierRes = await supabase.rpc('get_tier_distribution');
   if (!tierRes.error && Array.isArray(tierRes.data)) {
     for (const row of tierRes.data as { trust_tier: string; count: number }[]) {
@@ -1541,12 +1560,19 @@ export async function getStats() {
       tierDistribution[row.trust_tier] = n;
       totalAgents += n;
     }
+    staleStats.agents = { totalAgents, tierDistribution };
   } else {
     if (tierRes.error) console.warn('[db] get_tier_distribution unavailable:', tierRes.error.message);
     // Cheap degradation: a HEAD count (no row scan) so totalAgents survives —
     // over the same view, so the degraded number stays consistent with Explore.
     const headRes = await supabase.from('explore_agents').select('*', { count: 'exact', head: true });
-    totalAgents = headRes.count ?? 0;
+    if (headRes.count != null) {
+      totalAgents = headRes.count;
+    } else if (staleStats.agents) {
+      ({ totalAgents, tierDistribution } = staleStats.agents);
+    } else {
+      throw new Error(`agent count failed with no stale figures to serve: ${headRes.error?.message}`);
+    }
   }
 
   // Per-chain ERC-8004 registry mirror totals (agents + feedback records) so
@@ -1555,8 +1581,10 @@ export async function getStats() {
   let registries: { chain: string; agents: number; feedbacks: number }[] = [];
   try {
     registries = await getRegistryStats();
+    staleStats.registries = registries;
   } catch (err) {
     console.warn('[db] getRegistryStats unavailable:', err instanceof Error ? err.message : err);
+    registries = staleStats.registries ?? [];
   }
 
   return { totalAgents, totalTransactions, totalVolumeUsdc, tierDistribution, registries };

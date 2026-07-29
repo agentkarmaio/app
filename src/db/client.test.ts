@@ -281,18 +281,21 @@ describe('dirty-queue chunks address .in() lists to avoid URI-too-long', () => {
   });
 });
 
-// Regression: /api/stats 500'd in prod (2026-06-18) because get_transaction_stats
-// was missing from the DB (PGRST202) and getStats fell back to streaming the full
-// transactions table (~502k rows) for a JS SUM — which blew the 8s statement
-// timeout (57014) and THREW, with no try/catch in the route. getStats MUST treat
-// the aggregate RPCs as the only source of truth and degrade to best-effort
-// (never throw, never row-stream a full table) when an RPC is absent.
+// Two prod incidents define getStats's failure contract:
+//   2026-06-18 — get_transaction_stats missing (PGRST202) made getStats fall
+//     back to streaming the full transactions table, blow the 8s statement
+//     timeout (57014), and 500 /api/stats. Invariant: aggregate RPCs are the
+//     only source of truth; NEVER row-stream a full table as a fallback.
+//   2026-07-29 — a transient RPC failure was masked as totalTransactions=0 /
+//     totalVolumeUsdc=0 served with HTTP 200, firing the external
+//     "counters regressed" monitor. Invariant: NEVER fabricate figures — on
+//     RPC failure serve the last-known-good in-process values; with nothing
+//     good to serve (cold start), THROW so callers degrade honestly
+//     (pages already .catch(() => null); /api/stats returns 503).
 //
-// The fake makes every aggregate RPC report PGRST202 and makes any non-HEAD
-// `select` (the old `select('amount')` / `select('trust_tier')` row-streams)
-// resolve with the prod statement-timeout error — so the pre-fix implementation,
-// which threw on that error, fails this test, while the best-effort version passes.
-describe('getStats degrades to best-effort when aggregate RPCs are missing', () => {
+// The fake makes any non-HEAD `select` (the old row-streams) resolve with the
+// prod statement-timeout error, so a row-streaming regression fails loudly.
+describe('getStats failure contract: stale-on-error, throw-on-cold, no row-streams', () => {
   const PGRST202 = { code: 'PGRST202', message: 'function not found in schema cache' };
   const TIMEOUT_57014 = { code: '57014', message: 'canceling statement due to statement timeout' };
 
@@ -333,25 +336,6 @@ describe('getStats degrades to best-effort when aggregate RPCs are missing', () 
     };
   }
 
-  test('returns best-effort numbers without throwing when both RPCs are absent', async () => {
-    const fake = makeStatsFake({ txStats: null, tierRows: null, agentHeadCount: 103478 });
-    __setSupabaseForTest(fake);
-
-    const stats = await getStats(); // must not throw — the prod 500 was an uncaught throw
-
-    expect(stats.totalTransactions).toBe(0);
-    expect(stats.totalVolumeUsdc).toBe(0);
-    expect(stats.tierDistribution).toEqual({});
-    // totalAgents survives via a cheap HEAD count (no row scan) even with the RPC down.
-    expect(stats.totalAgents).toBe(103478);
-    // The HEAD count MUST target the canonical explore population (the same view
-    // the Explore "All" count reads), NOT raw `wallets` — counting all wallet
-    // rows (score=0 noise + owner-keyed celo/arc) is the homepage-vs-explore
-    // mismatch this guards against.
-    expect(fake.__fromTables).toContain('explore_agents');
-    expect(fake.__fromTables).not.toContain('wallets');
-  });
-
   test('reads real figures from the aggregate RPCs when they are deployed', async () => {
     __setSupabaseForTest(makeStatsFake({
       txStats: { total_count: 502474, total_volume: 1234.56 },
@@ -367,6 +351,64 @@ describe('getStats degrades to best-effort when aggregate RPCs are missing', () 
     expect(stats.totalVolumeUsdc).toBe(1234.56);
     expect(stats.tierDistribution).toEqual({ Excellent: 10, Good: 90 });
     expect(stats.totalAgents).toBe(100); // summed from the tier RPC, no HEAD count needed
+  });
+
+  test('throws on a cold tx-stats failure instead of fabricating zeros', async () => {
+    // __setSupabaseForTest resets the stale figures — this IS the cold path.
+    __setSupabaseForTest(makeStatsFake({ txStats: null, tierRows: null, agentHeadCount: 103478 }));
+
+    // 0 tx / 0 volume with HTTP 200 is the 2026-07-29 false alert. With no
+    // last-known-good to serve, the only honest behavior is to throw.
+    await expect(getStats()).rejects.toThrow(/get_transaction_stats/);
+  });
+
+  test('serves last-known-good tx figures when the RPC fails after a prior success', async () => {
+    const fake = makeStatsFake({
+      txStats: { total_count: 838401, total_volume: 273685.73 },
+      tierRows: [{ trust_tier: 'Good', count: 106101 }],
+    });
+    __setSupabaseForTest(fake);
+    await getStats(); // primes the last-known-good figures
+
+    // Same DB identity, transient RPC failure (the 08:01 statement timeout) —
+    // swap the rpc handler in place so the stale state survives.
+    fake.rpc = ((name: string) => {
+      if (name === 'get_transaction_stats') {
+        return { single: async () => ({ data: null, error: TIMEOUT_57014 }) };
+      }
+      if (name === 'get_tier_distribution') {
+        return Promise.resolve({ data: [{ trust_tier: 'Good', count: 106145 }], error: null });
+      }
+      return Promise.resolve({ data: null, error: PGRST202 });
+    }) as typeof fake.rpc;
+
+    const stats = await getStats();
+
+    // Stale tx figures, never 0 — and fresh figures where the RPCs still work.
+    expect(stats.totalTransactions).toBe(838401);
+    expect(stats.totalVolumeUsdc).toBe(273685.73);
+    expect(stats.totalAgents).toBe(106145);
+  });
+
+  test('tier RPC failure degrades to a HEAD count over the canonical explore view', async () => {
+    const fake = makeStatsFake({
+      txStats: { total_count: 100, total_volume: 5 },
+      tierRows: null,
+      agentHeadCount: 103478,
+    });
+    __setSupabaseForTest(fake);
+
+    const stats = await getStats();
+
+    // totalAgents survives via a cheap HEAD count (no row scan) even with the RPC down.
+    expect(stats.totalAgents).toBe(103478);
+    expect(stats.tierDistribution).toEqual({});
+    // The HEAD count MUST target the canonical explore population (the same view
+    // the Explore "All" count reads), NOT raw `wallets` — counting all wallet
+    // rows (score=0 noise + owner-keyed celo/arc) is the homepage-vs-explore
+    // mismatch this guards against.
+    expect(fake.__fromTables).toContain('explore_agents');
+    expect(fake.__fromTables).not.toContain('wallets');
   });
 });
 
