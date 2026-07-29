@@ -753,8 +753,9 @@ function registerTools(server: McpServer): void {
       annotations: readOnly(),
     },
     async ({ chain }) => runTool('get_stats', async () => {
-      // getStats is the hardened, best-effort aggregate helper (SQL RPCs, never a
-      // full-table scan — see the 2026-06-18 schema-cache/timeout incident). It
+      // getStats is the hardened aggregate helper (SQL RPCs, never a full-table
+      // scan; serves last-known-good over transient RPC failures, throws only
+      // cold — runTool turns that into a clean tool_error). It
       // is ecosystem-wide; the optional `chain` lets a caller narrow the
       // per-chain registry block while the global figures stay whole.
       const stats = await getStats();
