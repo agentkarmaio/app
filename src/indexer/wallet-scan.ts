@@ -42,7 +42,7 @@ import {
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
-  upsertWallet as dbUpsertWallet,
+  ensureWalletsExist as dbEnsureWalletsExist,
   getCursor as dbGetCursor,
   upsertCursor as dbUpsertCursor,
   markWalletsDirty as dbMarkWalletsDirty,
@@ -118,7 +118,8 @@ async function defaultGetSignaturesForAddress(
 async function defaultRecordPayshSignal(p: PayshExtractedPayment): Promise<void> {
   // Emit the symmetric pair (consumer for payer, provider for operator) and
   // ensure both wallets exist for the FK on signal_events.agent_wallet.
-  await dbUpsertWallet(p.operatorAddress, 0, 'Unrated', 0);
+  // Insert-if-absent: never zeroes an existing operator's live score.
+  await dbEnsureWalletsExist([p.operatorAddress]);
   const signals = [
     buildPayshRoutedSignal({
       walletAddress: p.wallet,
@@ -313,7 +314,8 @@ export async function runWalletScanWorker(batchSize = 1): Promise<void> {
   await withConcurrency(addresses, 1, async (addr) => {
     try {
       const result = await scanWalletHistory(addr, {
-        ensureWallet: async (a) => { await dbUpsertWallet(a, 0, 'Unrated', 0); },
+        // Insert-if-absent: never zeroes an existing wallet's live score.
+        ensureWallet: async (a) => { await dbEnsureWalletsExist([a]); },
         getCursor: async (key) => {
           const cursor = await dbGetCursor(key);
           return cursor ? { last_signature: cursor.last_signature } : null;
