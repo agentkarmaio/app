@@ -13,6 +13,7 @@ import {
   getTransactionsForWallets,
   getAllTransactions,
   markAllWalletsDirty,
+  ensureWalletsExist,
 } from './client';
 import type { Transaction } from './schema';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
@@ -821,5 +822,44 @@ describe('markAllWalletsDirty enqueues instead of rescoring inline', () => {
     expect(fake.calls[0].table).toBe('wallets');
     expect(fake.calls[0].patch.scoring_dirty_at).toBeTruthy();
     expect(fake.calls[0].filtered).toBe(true);
+  });
+});
+
+// ── ensureWalletsExist ──────────────────────────────────────────────────────
+//
+// Regression: 2026-08-02 totalAgents dips. Every ingest path (Helius webhook,
+// Solana/Stellar indexers, bond projector) "ensured" wallet rows for the
+// transactions/signal_events FK with upsertWallet(addr, 0, 'Unrated', 0) — but
+// a plain upsert is ON CONFLICT DO UPDATE, so each ingest burst overwrote live
+// score/tx_count with zeros, knocking scored wallets out of `explore_agents`
+// (score > 0) until the next rescore and firing the external counter-regression
+// monitor. Ensure MUST be insert-if-absent: ON CONFLICT DO NOTHING.
+describe('ensureWalletsExist is insert-if-absent, never an overwrite', () => {
+  let captured: Captured[];
+  beforeEach(() => { captured = []; __setSupabaseForTest(makeFakeSupabase(captured)); });
+  afterAll(() => { __setSupabaseForTest(null); });
+
+  test('one batched upsert with ignoreDuplicates; rows carry only the identity', async () => {
+    await ensureWalletsExist(['W1', 'W2', 'W1'], 'solana');
+
+    const calls = captured.filter((c) => c.table === 'wallets');
+    expect(calls).toHaveLength(1); // one statement, not one per wallet
+    expect(calls[0].op).toBe('upsert');
+    // ignoreDuplicates → ON CONFLICT DO NOTHING: existing rows stay untouched.
+    expect(calls[0].opts).toEqual({ onConflict: 'chain,address', ignoreDuplicates: true });
+    // Identity only — score/trust_tier/tx_count come from schema defaults on
+    // INSERT and must never appear here, or a conflict update would zero them.
+    expect(calls[0].rows).toEqual([
+      { chain: 'solana', address: 'W1' },
+      { chain: 'solana', address: 'W2' },
+    ]);
+  });
+
+  test('defaults to the solana chain and skips the round-trip on empty input', async () => {
+    await ensureWalletsExist([]);
+    expect(captured).toHaveLength(0);
+
+    await ensureWalletsExist(['W9']);
+    expect((captured[0].rows as Array<Record<string, unknown>>)[0].chain).toBe('solana');
   });
 });

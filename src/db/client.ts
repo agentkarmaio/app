@@ -203,6 +203,36 @@ export async function upsertWallet(
   if (error) throw error;
 }
 
+/**
+ * Ensure wallet rows exist for FK-constrained inserts (transactions,
+ * signal_events, bonds) WITHOUT touching existing rows.
+ *
+ * Insert-if-absent — ON CONFLICT DO NOTHING via `ignoreDuplicates` — is the
+ * load-bearing part: ingest paths used to "ensure" with
+ * `upsertWallet(addr, 0, 'Unrated', 0)`, whose ON CONFLICT DO UPDATE zeroed a
+ * live wallet's score/tx_count on every webhook tick, dropping it out of
+ * `explore_agents` (score > 0) until the next rescore — the 2026-08-02
+ * totalAgents-regression alert. Rows carry ONLY the identity; every other
+ * column comes from schema defaults on INSERT (score 0 / Unrated until the
+ * scorer picks the wallet up) and is never written on conflict.
+ */
+export async function ensureWalletsExist(
+  addresses: string[],
+  chain: Chain = DEFAULT_CHAIN,
+): Promise<void> {
+  const unique = [...new Set(addresses)];
+  if (unique.length === 0) return;
+
+  const { error } = await supabase
+    .from('wallets')
+    .upsert(
+      unique.map((address) => ({ chain, address })),
+      { onConflict: 'chain,address', ignoreDuplicates: true },
+    );
+
+  if (error) throw error;
+}
+
 export interface LeaderboardFilters {
   status?: LivenessStatus;
   tier?: TrustTier;
