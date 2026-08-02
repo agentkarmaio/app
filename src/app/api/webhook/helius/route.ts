@@ -7,7 +7,7 @@ import {
   enqueueWalletScan,
   getWallet,
   insertTransactions,
-  upsertWallet,
+  ensureWalletsExist,
   insertSignalEvents,
   markWalletsDirty,
 } from '@/db/client';
@@ -19,7 +19,7 @@ import { verifyHeliusWebhook } from '@/lib/api-auth';
 
 // Webhook hot path is intentionally O(batch-size), not O(wallet-history):
 // - parse + extract x402 payments
-// - upsert wallet stubs (FK requirement for transactions.wallet_address)
+// - insert missing wallet stubs (FK requirement for transactions.wallet_address)
 // - insert transactions (idempotent via tx_signature unique)
 // - emit Tier-2 x402 payment signals (one row per tx, no history read)
 // - mark affected wallets dirty so the rescore cron recomputes scores
@@ -76,11 +76,11 @@ export async function POST(request: NextRequest) {
   );
   const freshWallets = preExistence.filter((w) => !w.existed).map((w) => w.addr);
 
-  // Create wallet rows before FK-constrained tx inserts. Score/tier stay at
-  // their defaults for brand-new wallets until the rescore cron picks them up.
-  await Promise.all(
-    uniqueWallets.map((addr) => upsertWallet(addr, 0, 'Unrated', 0)),
-  );
+  // Create missing wallet rows before FK-constrained tx inserts. Insert-if-
+  // absent: existing rows (and their live scores) are never touched here —
+  // brand-new wallets sit at schema defaults until the rescore cron picks
+  // them up.
+  await ensureWalletsExist(uniqueWallets);
 
   const inserted = await insertTransactions(parsed);
   await insertSignalEvents(buildX402PaymentSignals(parsed));

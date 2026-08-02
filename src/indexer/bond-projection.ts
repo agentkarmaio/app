@@ -33,7 +33,7 @@ import type { IndexRunResult } from '@/chain-adapters/types';
 import {
   upsertBond as dbUpsertBond,
   upsertBondUnderwriter as dbUpsertBondUnderwriter,
-  upsertWallet as dbUpsertWallet,
+  ensureWalletsExist as dbEnsureWalletsExist,
   insertSignalEvents as dbInsertSignalEvents,
   type InsertSignalEventInput,
   type UpsertBondInput,
@@ -302,8 +302,9 @@ export async function runBondProjector(source: BondEventSource): Promise<IndexRu
     upsertBond: dbUpsertBond,
     upsertBondUnderwriter: dbUpsertBondUnderwriter,
     insertSignalEvents: dbInsertSignalEvents,
+    // Insert-if-absent: never zeroes an existing wallet's live score.
     ensureWallet: async (address, chain) => {
-      await dbUpsertWallet(address, 0, 'Unrated', 0, {}, chain);
+      await dbEnsureWalletsExist([address], chain);
     },
   });
 }

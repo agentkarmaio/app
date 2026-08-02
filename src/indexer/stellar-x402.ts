@@ -33,7 +33,7 @@ import {
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
-  upsertWallet as dbUpsertWallet,
+  ensureWalletsExist as dbEnsureWalletsExist,
   getCursor as dbGetCursor,
   upsertCursor as dbUpsertCursor,
   type InsertSignalEventInput,
@@ -374,7 +374,8 @@ export async function runStellarIndexer(
     },
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
-    ensureWallet: async (a) => { await dbUpsertWallet(a, 0, 'Unrated', 0, {}, 'stellar'); },
+    // Insert-if-absent: never zeroes an existing wallet's live score.
+    ensureWallet: async (a) => { await dbEnsureWalletsExist([a], 'stellar'); },
     getCursor: async (key) => {
       const c = await dbGetCursor(key, 'stellar');
       return c ? { last_signature: c.last_signature, last_slot: c.last_slot } : null;

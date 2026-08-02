@@ -32,6 +32,7 @@ import type { Transaction } from '../db/schema';
 import {
   insertTransactions,
   upsertWallet,
+  ensureWalletsExist,
   insertScoreSnapshot,
   getTransactionsForWallets,
   DEFAULT_TX_WINDOW,
@@ -335,10 +336,10 @@ export async function runIndexer(
     ...paysh.map((p) => p.wallet),
   ])];
   const uniqueWallets = [...new Set([...payerAddresses, ...operatorAddresses])];
-  console.log(`[indexer] Creating ${uniqueWallets.length} wallet records (${operatorAddresses.length} operators)…`);
-  for (const addr of uniqueWallets) {
-    await upsertWallet(addr, 0, 'Unrated', 0);
-  }
+  console.log(`[indexer] Ensuring ${uniqueWallets.length} wallet records (${operatorAddresses.length} operators)…`);
+  // Insert-if-absent, one batched statement: existing rows keep their live
+  // score/tx_count (a plain upsert here used to zero them until re-scoring).
+  await ensureWalletsExist(uniqueWallets);
 
   const inserted = await insertTransactions(transactions);
   console.log(`[indexer] Inserted ${inserted}/${transactions.length} transactions`);
