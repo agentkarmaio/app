@@ -12,9 +12,15 @@
  * Spec: https://github.com/erc-8004/erc-8004-contracts/blob/master/ERC8004SPEC.md
  */
 
-import { AK_VALIDATOR } from '@/config/ak-validator';
+import { AK_VALIDATOR, AK_STELLAR } from '@/config/ak-validator';
+import { IDENTITY_REGISTRY_CELO } from '@/integrations/erc8004-celo';
+import { IDENTITY_REGISTRY_ARC } from '@/integrations/erc8004-arc';
+import { STELLAR_IDENTITY_REGISTRY } from '@/integrations/stellar-config';
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io';
+
+/** AK's Arc controller — owns Arc-testnet ERC-8004 agentId 72077. */
+const AK_ARC_CONTROLLER = '0xeE2a20AEF0f5F9B52FC334806256014F4DDcB8fc';
 
 const AGENT_REGISTRATION = {
   type: 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1',
@@ -60,7 +66,46 @@ const AGENT_REGISTRATION = {
       endpoint: `${APP_URL}/docs`,
     },
   ],
-  registrations: [] as Array<{ agentId: number; agentRegistry: string }>,
+  // On-chain ERC-8004 registrations (CAIP-scoped registry references). The
+  // Stellar entry appears here only once the registration is executed — this
+  // array asserts what IS on-chain, never what is planned.
+  registrations: [
+    { agentId: AK_VALIDATOR.agentId, agentRegistry: `eip155:42220:${IDENTITY_REGISTRY_CELO}` },
+    { agentId: 72077, agentRegistry: `eip155:5042002:${IDENTITY_REGISTRY_ARC}` },
+    ...(AK_STELLAR.agentId != null
+      ? [{ agentId: AK_STELLAR.agentId, agentRegistry: `stellar:pubnet:${STELLAR_IDENTITY_REGISTRY}` }]
+      : []),
+  ],
+  // Every chain identity AK operates, incl. the account that signs there —
+  // lets a verifier bind any AK-authored on-chain action back to this file.
+  // `status: 'pending'` = account is disclosed but not yet registered on that
+  // chain's IdentityRegistry (flips to 'registered' + agentId on execution).
+  identities: [
+    {
+      chain: 'celo',
+      status: 'registered',
+      agentId: AK_VALIDATOR.agentId,
+      address: AK_VALIDATOR.controller,
+      identityRegistry: IDENTITY_REGISTRY_CELO,
+    },
+    {
+      chain: 'arc',
+      network: 'testnet',
+      status: 'registered',
+      agentId: 72077,
+      address: AK_ARC_CONTROLLER,
+      identityRegistry: IDENTITY_REGISTRY_ARC,
+    },
+    {
+      chain: 'stellar',
+      network: 'pubnet',
+      status: AK_STELLAR.agentId != null ? 'registered' : 'pending',
+      agentId: AK_STELLAR.agentId,
+      address: AK_STELLAR.account,
+      identityRegistry: STELLAR_IDENTITY_REGISTRY,
+      scheme: AK_STELLAR.scheme,
+    },
+  ],
   // Disclosed validator role: AK publishes openly-attributed metadata-quality
   // attestations on Celo's ReputationRegistry. These are AK-authored oracle
   // signals, NOT independent third-party reviews. Full disclosure: /validator.

@@ -159,7 +159,9 @@ export interface PublishStellarFeedbackInput {
   agentId: number;
   value: bigint;
   valueDecimals: number;
-  tag1: 'provider' | 'consumer';
+  /** 'provider' | 'consumer' for karma scores; 'agentkarma_metadata' for the
+   *  disclosed metadata-quality scheme (mirrors Celo AK_VALIDATOR.scheme). */
+  tag1: string;
   tag2: string;
   endpoint: string;
   feedbackUri: string;
