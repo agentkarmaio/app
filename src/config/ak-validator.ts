@@ -31,6 +31,25 @@ export const AK_VALIDATOR = {
   keyfile: '.keys/agentkarma-celo-validator.json',
 } as const;
 
+/**
+ * AK's disclosed identity on Stellar (stellar-8004 mainnet). Same transparency
+ * contract as AK_VALIDATOR above; one account plays both controller and
+ * validator roles until write volume justifies splitting them (Celo precedent).
+ * Registry contract IDs stay in src/integrations/stellar-config.ts — importing
+ * them here would pull @stellar/stellar-sdk into every ak-validator consumer.
+ */
+export const AK_STELLAR = {
+  chain: 'stellar',
+  /** AK's Stellar account — owner of AK's stellar-8004 identity, signs metadata attestations. */
+  account: 'GA6OBKNSBCY2I4PQLGNNQQXRXWXRUBRLSKLM7YP7QBBSRW7LCZFLHODV',
+  /** Registered 2026-08-04 via scripts/register-stellar-identity.ts
+   *  (tx 8f7dff2562cc2affa50b67b9086cde83e60520f899d9549bdc357848b4fa31ae, ledger 63793223). */
+  agentId: 66 as number | null,
+  /** Same rubric + version as Celo — the scheme is chain-agnostic by design. */
+  scheme: AK_VALIDATOR.scheme,
+  keyfile: '.keys/agentkarma-stellar.json',
+} as const;
+
 /** Every address AK may sign attestations from — used to dedup AK's own ratings. */
 export const AK_RATER_ADDRESSES: readonly string[] = [
   AK_VALIDATOR.controller.toLowerCase(),
