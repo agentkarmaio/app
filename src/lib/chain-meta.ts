@@ -36,6 +36,20 @@ export function isEvmChain(chain: Chain): boolean {
 }
 
 /**
+ * Chains whose canonical agent population lives in the `erc8004_agents` mirror
+ * (one row per agentId) rather than the address-keyed `wallets` table. On these
+ * registries a single owner controls many agents, so an address-keyed read
+ * undercounts badly — Stellar's 67 agentIds collapse to 11 owner rows.
+ *
+ * Deliberately NOT the same set as isEvmChain: Stellar is a Soroban registry
+ * with no EVM wallet path. Conflating the two would route Stellar down the
+ * EIP-1193 connect flow.
+ */
+export function isRegistryMirrorChain(chain: Chain | null | undefined): chain is Chain {
+  return chain === 'celo' || chain === 'arc' || chain === 'stellar';
+}
+
+/**
  * Detail routes pinned to a single resolved agent. The chain switcher MUST NOT
  * navigate away from these — on an agent page it switches the active-chain
  * context in place (which wallet the Connect button offers) rather than pushing

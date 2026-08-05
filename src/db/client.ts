@@ -21,6 +21,9 @@ import type { ScannedAgent, ScannedFeedback } from '@/indexer/erc8004-registry';
 // Pure tier-from-score helper (scoring/index imports only types from schema, so
 // no runtime cycle). Used to derive trust_tier for registry-mirror rows.
 import { getTrustTier } from '@/scoring/index';
+// Pure predicate (no React/browser deps) — names the chains whose agent
+// population is the erc8004_agents mirror rather than the wallets table.
+import { isRegistryMirrorChain } from '@/lib/chain-meta';
 // Viem-free constants only — keeps the EVM write path's viem deps out of this
 // server DB bundle. Used by getAkConnectedFeedback (the /celo "feedback AK made"
 // list) to scope the mirror read to AK's schemes + rater wallets.
@@ -337,14 +340,34 @@ const TIER_SCORE_BAND: Record<TrustTier, [number, number]> = {
  *  chain-specific agentId column lets the agent page resolve the profile. */
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
-function registryRowToWallet(row: Record<string, unknown>, chain: Chain): Wallet {
+/**
+ * Behavioral metrics for one address, looked up from `wallets`. These are a
+ * property of the ADDRESS, not the agentId, so every registry row sharing an
+ * owner shares them. Absent for addresses with no observed activity.
+ */
+export interface RegistryRowBehavior {
+  autonomy_score: number | null;
+  autonomy_label: AutonomyLabel | null;
+  metric_cadence: number | null;
+}
+
+/** Resolve the display address for a registry row (see registryRowToWallet). */
+function registryRowAddress(row: Record<string, unknown>): string {
+  const aw = row.agent_wallet as string | null;
+  return aw && aw.toLowerCase() !== ZERO_ADDRESS ? aw : (row.owner as string);
+}
+
+function registryRowToWallet(
+  row: Record<string, unknown>,
+  chain: Chain,
+  behavior?: RegistryRowBehavior,
+): Wallet {
   const score = Number(row.metadata_score ?? 0);
   const reg = (row.registration ?? null) as { name?: string; description?: string; image?: string } | null;
-  // getAgentWallet() returns the zero address when an agent never set a custom
-  // wallet — its effective operator IS the owner. Fall back so we never surface
-  // 0x000…000 as the agent's address.
-  const aw = row.agent_wallet as string | null;
-  const address = aw && aw.toLowerCase() !== ZERO_ADDRESS ? aw : (row.owner as string);
+  // EVM getAgentWallet() returns the zero address when an agent never set a
+  // custom wallet; Soroban returns NULL for the same case. Either way the
+  // effective operator IS the owner — fall back so we never surface 0x000…000.
+  const address = registryRowAddress(row);
   const indexedAt = (row.last_indexed_at as string) ?? new Date().toISOString();
   const agentId = Number(row.agent_id);
   return {
@@ -363,11 +386,49 @@ function registryRowToWallet(row: Record<string, unknown>, chain: Chain): Wallet
     provider_score: score,
     consumer_score: null,
     confidence_badge: 'declared',
-    autonomy_score: null,
-    autonomy_label: null,
+    // Orthogonal to the declared metadata score (RFC §5.5) — present only when
+    // a behavioral pass has observed the address's on-chain activity.
+    autonomy_score: behavior?.autonomy_score ?? null,
+    autonomy_label: behavior?.autonomy_label ?? null,
+    metric_cadence: behavior?.metric_cadence ?? null,
     celo_agent_id: chain === 'celo' ? agentId : null,
     arc_agent_id: chain === 'arc' ? agentId : null,
+    stellar_agent_id: chain === 'stellar' ? agentId : null,
   } as Wallet;
+}
+
+/**
+ * Batch-load behavioral metrics for the addresses on one registry page.
+ * Bounded by page size (one `.in()` over ≤ limit addresses), so it never grows
+ * into the full-population join the `explore_agents` view deliberately avoids.
+ * Best-effort: a failed lookup degrades to "no behavioral data", never a 500.
+ */
+async function getBehaviorForAddresses(
+  chain: Chain,
+  addresses: string[],
+): Promise<Map<string, RegistryRowBehavior>> {
+  const out = new Map<string, RegistryRowBehavior>();
+  const unique = [...new Set(addresses)];
+  if (unique.length === 0) return out;
+
+  const { data, error } = await supabase
+    .from('wallets')
+    .select('address,autonomy_score,autonomy_label,metric_cadence')
+    .eq('chain', chain)
+    .in('address', unique);
+  if (error || !data) return out;
+
+  for (const row of data as Array<Record<string, unknown>>) {
+    const autonomyScore = row.autonomy_score;
+    const cadence = row.metric_cadence;
+    if (autonomyScore == null && cadence == null) continue;
+    out.set(row.address as string, {
+      autonomy_score: autonomyScore == null ? null : Number(autonomyScore),
+      autonomy_label: (row.autonomy_label as AutonomyLabel | null) ?? null,
+      metric_cadence: cadence == null ? null : Number(cadence),
+    });
+  }
+  return out;
 }
 
 /**
@@ -429,13 +490,18 @@ async function getRegistryAgentsPage(
     .range(offset, offset + limit - 1);
 
   if (error) throw error;
-  const wallets = ((data ?? []) as Record<string, unknown>[]).map((r) => registryRowToWallet(r, chain));
+  const rows = (data ?? []) as Record<string, unknown>[];
+  // Registry rows carry declared metadata only. Behavioral metrics live on the
+  // owner/agent-wallet row in `wallets` — attach them so agents whose address
+  // has observed activity show their autonomy + cadence instead of blanks.
+  const behavior = await getBehaviorForAddresses(chain, rows.map(registryRowAddress));
+  const wallets = rows.map((r) => registryRowToWallet(r, chain, behavior.get(registryRowAddress(r))));
   return { wallets, total: count ?? 0 };
 }
 
 /**
  * "All chains" leaderboard page — queries the `explore_agents` view, which
- * unions Solana/Stellar `wallets` (score-gated) with the Celo/Arc registry
+ * unions Solana `wallets` (score-gated) with the Celo/Arc/Stellar registry
  * mirror (per-agent). This is what makes the unfiltered explore count include
  * the real 8004 agent population instead of the handful of owner rows. The view
  * bakes in the wallets-side score>0 gate, so no extra gate is applied here.
@@ -488,24 +554,27 @@ export async function getAgents(
   filters: AgentsExploreFilters = {},
   sort: AgentsExploreSort = { field: 'provider_score', direction: 'desc' },
 ): Promise<LeaderboardPage> {
-  // EVM 8004 chains read the registry mirror (per-agent), not the owner-keyed
-  // `wallets` table — see getRegistryAgentsPage. Solana/Stellar fall through.
+  // ERC-8004 registry chains read the registry mirror (per-agent), not the
+  // owner-keyed `wallets` table — see getRegistryAgentsPage. Solana falls
+  // through. Stellar joined this set on 2026-08-05: its 67 registered agentIds
+  // collapse to 11 owner rows in `wallets` (one registrant holds ~10 agents),
+  // so the wallets path hid 56 agents.
   //
   // Exception: claimed=true. Claims land in `wallets` (claimWallet), never in
   // the registry mirror — every registry row maps to claimed:false. Routing a
   // claimed=true query to the registry would ignore the filter and return the
   // entire declared-only population. So claimed=true always reads `wallets`,
-  // even for celo/arc. (claimed=false keeps reading the registry: it is the
+  // even for these chains. (claimed=false keeps reading the registry: it is the
   // full unclaimed population; the handful of claimed rows that also live in
   // wallets are an accepted, marginal overcount there.)
-  if ((filters.chain === 'celo' || filters.chain === 'arc') && filters.claimed !== true) {
+  if (isRegistryMirrorChain(filters.chain) && filters.claimed !== true) {
     return getRegistryAgentsPage(filters.chain, limit, offset, filters, sort);
   }
   // "All chains" (no chain filter) unions wallets + the registry mirror via the
   // `explore_agents` view so the count + list reflect every agent, not just the
   // owner rows. claimed=true is the same exception as above — claims live only
-  // in `wallets`, and the view drops celo/arc wallet rows — so it falls through
-  // to the wallets path below, which spans all chains.
+  // in `wallets`, and the view drops registry-chain wallet rows — so it falls
+  // through to the wallets path below, which spans all chains.
   if (filters.chain == null && filters.claimed !== true) {
     return getUnifiedAgentsPage(limit, offset, filters, sort);
   }

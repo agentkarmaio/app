@@ -635,8 +635,48 @@ describe('getAgents routes claimed=true for registry chains to wallets', () => {
     const { wallets } = await getAgents(25, 0, { chain: 'celo' }, SORT);
 
     expect(fake.__tablesQueried).toContain('erc8004_agents');
-    expect(fake.__tablesQueried).not.toContain('wallets');
+    // The POPULATION must come from the mirror: exactly the registry row, never
+    // the claimed wallet row. (`wallets` is also touched, but only for the
+    // bounded per-page behavioral lookup — see getBehaviorForAddresses.)
     expect(wallets.length).toBe(1);
+    expect(wallets[0].display_name).toBe('Arca');
+    expect(wallets[0].claimed).toBe(false);
+  });
+
+  // Stellar joined the registry-mirror set on 2026-08-05. Its 67 registered
+  // agentIds collapse to 11 owner rows in `wallets` (one registrant holds ~10
+  // agents), so routing it through the wallets path hid 56 agents.
+  test('stellar without claimed=true reads the registry mirror', async () => {
+    const stellarRegistryRow = {
+      agent_id: 66, metadata_score: 90, registration: { name: 'AgentKarma' },
+      owner: 'GA6OBKNS', agent_wallet: 'GA6OBKNS',
+      first_indexed_at: '2026-08-05T00:00:00Z', last_indexed_at: '2026-08-05T00:00:00Z',
+    };
+    const fake = makeAgentsFake({ registryRows: [stellarRegistryRow], walletRows: [claimedWalletRow] });
+    __setSupabaseForTest(fake);
+
+    const { wallets } = await getAgents(25, 0, { chain: 'stellar' }, SORT);
+
+    expect(fake.__tablesQueried).toContain('erc8004_agents');
+    expect(wallets.length).toBe(1);
+    expect(wallets[0].display_name).toBe('AgentKarma');
+    // The agentId must land on the Stellar-specific column so /agent/G… resolves.
+    expect(wallets[0].stellar_agent_id).toBe(66);
+    expect(wallets[0].celo_agent_id).toBeNull();
+  });
+
+  test('claimed=true on stellar reads wallets, not the mirror', async () => {
+    const fake = makeAgentsFake({
+      registryRows: [registryRow],
+      walletRows: [{ ...claimedWalletRow, chain: 'stellar', address: 'GCLAIMED' }],
+    });
+    __setSupabaseForTest(fake);
+
+    const { wallets } = await getAgents(25, 0, { chain: 'stellar', claimed: true }, SORT);
+
+    expect(fake.__tablesQueried).toContain('wallets');
+    expect(fake.__tablesQueried).not.toContain('erc8004_agents');
+    expect(wallets.every((w) => w.claimed === true)).toBe(true);
   });
 });
 
