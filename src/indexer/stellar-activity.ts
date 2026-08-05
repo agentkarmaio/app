@@ -30,6 +30,24 @@ const DEFAULT_HORIZON = 'https://horizon.stellar.org';
 const PAGE_LIMIT = 200;
 const DEFAULT_MAX_PAGES = 5;
 
+/**
+ * Resolve the Horizon base URL, treating a blank override as absent.
+ *
+ * `??` is WRONG here: GitHub Actions substitutes an unset secret as an EMPTY
+ * STRING, so `STELLAR_HORIZON_URL: ${{ secrets.STELLAR_HORIZON_URL }}` arrives
+ * as `''` — which `??` happily accepts, producing paths like
+ * `/accounts/G…/transactions` and "fetch() URL is invalid". That is exactly how
+ * the first scheduled run (2026-08-05) reported success while writing nothing
+ * for 12/12 addresses. `resolveStellarRpcUrl` already uses `||` for the same
+ * reason, which is why the registry step in that run was unaffected.
+ */
+export function resolveHorizonUrl(
+  override?: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  return override?.trim() || env.STELLAR_HORIZON_URL?.trim() || DEFAULT_HORIZON;
+}
+
 /** Injected transport so the reader is testable without network. */
 export type HorizonFetch = (url: string) => Promise<Record<string, unknown>>;
 
@@ -150,7 +168,7 @@ export async function fetchStellarActivity(
 
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const fetchFn = opts.fetchFn ?? ((url: string) => defaultFetch(url, timeoutMs));
-  const base = opts.horizonUrl ?? process.env.STELLAR_HORIZON_URL ?? DEFAULT_HORIZON;
+  const base = resolveHorizonUrl(opts.horizonUrl);
   const maxPages = opts.maxPages ?? DEFAULT_MAX_PAGES;
   const q = `limit=${PAGE_LIMIT}&order=desc`;
 

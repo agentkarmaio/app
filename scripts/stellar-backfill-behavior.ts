@@ -218,4 +218,28 @@ for (const o of outcomes.filter((o) => o.status === 'error').slice(0, 5)) {
   console.log(`  ${o.address}: ${o.error}`);
 }
 
+// Exit non-zero on ANY error. The first scheduled run (2026-08-05) errored on
+// 12/12 real addresses — an empty STELLAR_HORIZON_URL secret broke every fetch —
+// and still exited 0, so the workflow went green having written nothing. That is
+// the 2026-06-23 outage shape reproduced inside its own replacement. A refresh
+// job that cannot write MUST page.
+//
+// `skipped` (synthetic non-StrKey rows) and `insufficient` (below the 10-tx
+// floor) are expected steady-state outcomes, not failures.
+const errorCount = by('error');
+if (errorCount > 0) {
+  console.error(
+    `\n[behavior] FAILED: ${errorCount}/${outcomes.length} addresses errored — see above.`,
+  );
+  process.exit(1);
+}
+
+// Every real address failing to produce a result is also a failure, even with a
+// zero error count: it means the address set or the activity source is broken.
+const eligible = outcomes.filter((o) => o.status !== 'skipped').length;
+if (eligible > 0 && by('written') === 0 && by('simulated') === 0 && by('insufficient') < eligible) {
+  console.error('\n[behavior] FAILED: no address produced a behavioral result.');
+  process.exit(1);
+}
+
 process.exit(0);

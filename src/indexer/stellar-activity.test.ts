@@ -169,6 +169,32 @@ describe('fetchStellarActivity', () => {
     expect(calls.filter((c) => !c.includes('/payments'))).toHaveLength(2);
   });
 
+  // Regression (2026-08-05, caught by the first scheduled run): GitHub Actions
+  // substitutes an UNSET secret as an EMPTY STRING, so STELLAR_HORIZON_URL=''
+  // reached the resolver. `??` only falls back on null/undefined, so the base
+  // became '' and every fetch failed with "fetch() URL is invalid" — 12/12
+  // addresses errored while the job still reported success.
+  test('treats an empty STELLAR_HORIZON_URL env as unset', async () => {
+    const prev = process.env.STELLAR_HORIZON_URL;
+    process.env.STELLAR_HORIZON_URL = '';
+    try {
+      const calls: string[] = [];
+      const fetchFn = fakeFetch({ 'horizon.stellar.org': page([]) }, calls);
+      await fetchStellarActivity(SELF, { fetchFn });
+      expect(calls[0]).toStartWith('https://horizon.stellar.org/accounts/');
+    } finally {
+      if (prev === undefined) delete process.env.STELLAR_HORIZON_URL;
+      else process.env.STELLAR_HORIZON_URL = prev;
+    }
+  });
+
+  test('treats a whitespace-only horizonUrl option as unset', async () => {
+    const calls: string[] = [];
+    const fetchFn = fakeFetch({ 'horizon.stellar.org': page([]) }, calls);
+    await fetchStellarActivity(SELF, { fetchFn, horizonUrl: '   ' });
+    expect(calls[0]).toStartWith('https://horizon.stellar.org/accounts/');
+  });
+
   test('rejects a non-StrKey address instead of interpolating it into the URL', async () => {
     const calls: string[] = [];
     const fetchFn = fakeFetch({ '/': page([]) }, calls);
