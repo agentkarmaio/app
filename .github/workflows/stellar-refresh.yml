@@ -1,0 +1,80 @@
+name: Stellar refresh
+
+# Keeps AgentKarma's Stellar data current: the ERC-8004 registry mirror that
+# /explore?chain=stellar reads, and the Horizon-derived behavioral metrics
+# (Autonomy Confidence + cadence) on those agents' addresses. Before this job
+# both were manual script runs, so the mirror went stale the moment a new agent
+# registered on the trionlabs/stellar-8004 IdentityRegistry.
+#
+# Runs the scripts DIRECTLY via bun with the DB secrets — the same resilient
+# pattern as keep-fresh / registry-scan / heartbeat-drain, NOT by curling an
+# in-app cron route, so it survives the web app being wedged and cannot fail
+# silently on a missing CRON_SECRET. Both scripts call requireEnv at line 1, so
+# absent DB secrets fail the run loudly instead of writing nothing to a green
+# check (the 2026-06-23 outage shape).
+#
+# Cheap by construction: the whole Stellar registry is 67 agents (~50s at
+# concurrency 2 — the public Soroban RPC throttles above that, and the scanner
+# backs off on 429), and the behavioral pass covers ~18 addresses in ~7s. There
+# is no incremental-cursor mode because a full sweep already costs a minute.
+#
+# Order matters: the registry scan runs FIRST so the behavioral pass sees any
+# newly registered agent's owner address in the same run.
+#
+# Required repo secrets:
+#   NEXT_PUBLIC_SUPABASE_URL   DB endpoint
+#   SUPABASE_SERVICE_ROLE_KEY  DB writes
+# Optional repo secrets:
+#   STELLAR_RPC_URL       Soroban RPC override (falls back to the mainnet default)
+#   STELLAR_HORIZON_URL   Horizon override (falls back to horizon.stellar.org)
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_ALERT_CHAT_ID   failure alerts
+
+on:
+  schedule:
+    - cron: '30 */6 * * *' # every 6h, offset 30m from keep-fresh so the two
+                           # jobs don't contend for the same DB connections
+  workflow_dispatch:
+
+concurrency:
+  group: stellar-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Mirror the Stellar ERC-8004 registry
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          STELLAR_RPC_URL: ${{ secrets.STELLAR_RPC_URL }}
+        run: bun run registry:scan:stellar
+
+      # Behavioral metrics are orthogonal to the mirror: a Horizon outage must
+      # not roll back a successful registry refresh, but it must still page.
+      - name: Refresh Autonomy Confidence + cadence from Horizon
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          STELLAR_HORIZON_URL: ${{ secrets.STELLAR_HORIZON_URL }}
+        run: bun run stellar:behavior
+
+      # A stalled refresh must page, not rot silently (2026-06-23 lesson).
+      - name: Page on failure
+        if: failure()
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            🛟 <b>AgentKarma stellar-refresh FAILED</b>
+            The Stellar registry mirror / behavioral refresh crashed — /explore?chain=stellar may stall.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

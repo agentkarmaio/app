@@ -35,6 +35,7 @@ import { computeAutonomy, MIN_TX_FOR_AUTONOMY } from '../src/scoring/autonomy';
 import { buildCadenceSignal, buildAutonomySignal } from '../src/scoring/signals';
 import { insertSignalEvents } from '../src/db/client';
 import { supabase } from '../src/db/client';
+import { requireEnv } from '../src/lib/require-env';
 
 function argVal(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -43,6 +44,12 @@ function argVal(name: string): string | undefined {
 const SIMULATE = process.argv.includes('--simulate');
 const ONLY_ADDRESS = argVal('address');
 const CONCURRENCY = Math.max(1, Math.min(8, Number(argVal('concurrency') ?? '2')));
+
+// Fail loudly at line 1 when the DB secrets are missing. A scheduled job whose
+// credentials silently vanish is the 2026-06-23 outage: the safety net ran to
+// green while writing nothing for weeks. Even --simulate reads the DB for the
+// address set, so both modes need these.
+requireEnv(['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']);
 
 // ─── Address set ─────────────────────────────────────────────────────────────
 

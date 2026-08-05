@@ -20,6 +20,7 @@
     "indexer:celo": "bun run src/indexer/celo-run.ts",
     "registry:scan": "bun run src/indexer/erc8004-registry-run.ts",
     "registry:scan:stellar": "bun run src/indexer/stellar-registry-run.ts",
+    "stellar:behavior": "bun run scripts/stellar-backfill-behavior.ts",
     "registry:scan:incremental": "bun run src/indexer/erc8004-registry-run.ts celo --incremental",
     "feedback:scan": "bun run src/indexer/erc8004-feedback-uri-run.ts",
     "keep-fresh": "bun run src/scripts/keep-fresh.ts",
