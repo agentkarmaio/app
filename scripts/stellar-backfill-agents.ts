@@ -43,6 +43,7 @@ import {
   getStellarTotalAgents,
   getStellarRpc,
 } from '../src/integrations/erc8004-stellar';
+import { withRateLimitRetry } from '../src/indexer/stellar-registry';
 import { scoreMetadataQuality } from '../src/scoring/celo-metadata';
 import { getTrustTier } from '../src/scoring/index';
 import { supabase } from '../src/db/client';
@@ -127,10 +128,23 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
+/**
+ * The public Soroban RPC throttles hard: a 3-worker run 429s after ~15 agents,
+ * and every subsequent id fails instantly. `readStellarAgent` is 3 simulate
+ * round-trips, so the effective request rate is ~3x the agent rate. The retry
+ * policy is shared with the registry-mirror scanner (`withRateLimitRetry`):
+ * back off on 429 only, never on a contract revert.
+ */
+async function readAgentWithBackoff(id: number) {
+  return withRateLimitRetry(
+    () => withTimeout(readStellarAgent(server, id), PER_AGENT_TIMEOUT_MS, `readStellarAgent(${id})`),
+  );
+}
+
 async function processAgent(id: number): Promise<Outcome> {
   let agent: Awaited<ReturnType<typeof readStellarAgent>> = null;
   try {
-    agent = await withTimeout(readStellarAgent(server, id), PER_AGENT_TIMEOUT_MS, `readStellarAgent(${id})`);
+    agent = await readAgentWithBackoff(id);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Soroban returns HostError Contract#2 / "AgentNotFound" on unregistered

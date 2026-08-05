@@ -4,13 +4,21 @@
 --
 -- `explore_agents` unifies the two agent populations behind the "All chains"
 -- leaderboard so its count + list match reality:
---   • Solana/Stellar live in `wallets` (address-keyed, score-gated).
---   • Celo/Arc agents are ERC-8004 NFTs in `erc8004_agents` — one owner controls
---     many, so the address-keyed `wallets` table can't represent them 1:1. The
---     registry mirror is the per-agent source.
--- Celo/Arc `wallets` rows are deliberately EXCLUDED here (the registry mirror
--- supersedes them) so an owner-fleet isn't double-counted against its agents.
+--   • Solana lives in `wallets` (address-keyed, score-gated).
+--   • Celo/Arc/Stellar agents are ERC-8004 registry entries in `erc8004_agents` —
+--     one owner controls many, so the address-keyed `wallets` table can't
+--     represent them 1:1. The registry mirror is the per-agent source.
+-- Celo/Arc/Stellar `wallets` rows are deliberately EXCLUDED here (the registry
+-- mirror supersedes them) so an owner-fleet isn't double-counted against its
+-- agents. Stellar joined that set on 2026-08-05: its 67 registered agentIds
+-- collapsed to 11 owner rows in `wallets`, hiding 56 agents.
 -- Column projection matches the `wallets` shape getAgents() filters/sorts on.
+--
+-- Registry rows project NULL autonomy/Tier-2 metrics. Behavioral data is a
+-- property of the ADDRESS and lives in `wallets`; joining it here would put a
+-- ~85k-row join behind every all-chains count. The per-chain registry page
+-- enriches from `wallets` in a bounded per-page lookup instead
+-- (getRegistryAgentsPage).
 
 -- Agent logo, denormalized onto wallets so list queries reading `wallets`
 -- directly (the homepage leaderboard) can render it. Idempotent + co-located so
@@ -31,12 +39,14 @@ CREATE OR REPLACE VIEW explore_agents AS
     -- end, never inserting mid-list.
     image_url
   FROM wallets
-  WHERE chain IN ('solana', 'stellar') AND score > 0
+  WHERE chain = 'solana' AND score > 0
   UNION ALL
   SELECT
     chain,
-    -- getAgentWallet() returns the zero address when no custom wallet was set —
-    -- the effective operator is the owner, so coalesce zero → owner.
+    -- EVM getAgentWallet() returns the zero address when no custom wallet was
+    -- set — the effective operator is the owner, so coalesce zero → owner.
+    -- Soroban returns Option<Address>, so an unset Stellar wallet is NULL and
+    -- the same COALESCE resolves it to the owner.
     COALESCE(NULLIF(agent_wallet, '0x0000000000000000000000000000000000000000'), owner) AS address,
     registration->>'name'                AS display_name,
     false                                AS claimed,
@@ -60,13 +70,13 @@ CREATE OR REPLACE VIEW explore_agents AS
     NULL::numeric AS metric_volume,
     NULL::numeric AS metric_age,
     NULL::numeric AS metric_cadence,
-    CASE WHEN chain = 'celo' THEN agent_id END AS celo_agent_id,
-    CASE WHEN chain = 'arc'  THEN agent_id END AS arc_agent_id,
-    NULL::bigint                         AS stellar_agent_id,
+    CASE WHEN chain = 'celo'    THEN agent_id END AS celo_agent_id,
+    CASE WHEN chain = 'arc'     THEN agent_id END AS arc_agent_id,
+    CASE WHEN chain = 'stellar' THEN agent_id END AS stellar_agent_id,
     metadata_score::numeric              AS score,
     registration->>'image'               AS image_url
   FROM erc8004_agents
-  WHERE chain IN ('celo', 'arc');
+  WHERE chain IN ('celo', 'arc', 'stellar');
 
 GRANT SELECT ON explore_agents TO anon, authenticated, service_role;
 
