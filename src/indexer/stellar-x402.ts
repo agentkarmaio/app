@@ -39,6 +39,7 @@ import {
   type InsertSignalEventInput,
 } from '../db/client';
 import { buildPayshRoutedSignal } from '../scoring/signals';
+import { resolveHorizonUrl } from './stellar-activity';
 
 // ── Raw RPC event shape (subset of @stellar/stellar-sdk rpc.Api.EventResponse) ─
 export interface RawSorobanEvent {
@@ -395,7 +396,9 @@ export async function backfillFromHorizon(opts: {
   cursor?: string;
   limit?: number;
 }): Promise<{ rows: Omit<Transaction, 'id'>[]; nextCursor: string | null }> {
-  const base = opts.horizonUrl ?? process.env.STELLAR_HORIZON_URL ?? 'https://horizon.stellar.org';
+  // Shared resolver: `??` would accept an empty STELLAR_HORIZON_URL (which is
+  // what an unset GitHub Actions secret expands to) and build an invalid URL.
+  const base = resolveHorizonUrl(opts.horizonUrl);
   const limit = opts.limit ?? 200;
   const url = new URL(`${base}/accounts/${opts.facilitator}/payments`);
   url.searchParams.set('limit', String(limit));
