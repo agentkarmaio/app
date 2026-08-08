@@ -25,6 +25,7 @@
  *
  * Default network: testnet. Add --pubnet for mainnet.
  */
+import { appendFileSync } from 'fs';
 import { rpc, xdr } from '@stellar/stellar-sdk';
 import { USDC_SAC, type StellarNetwork } from '../config/stellar-x402';
 
@@ -136,6 +137,73 @@ async function modeB(network: StellarNetwork, limit: number, ledgerLookback: num
   );
 }
 
+/**
+ * Mode C — scheduled watcher. Same discovery as Mode B, but with CI semantics:
+ * "no x402 traffic yet" is the EXPECTED steady state on Stellar pubnet (measured
+ * 2026-08-08: zero USDC SAC transfer events across 300/800/2000-ledger windows),
+ * so it must exit 0. Only a real RPC failure is a failure.
+ *
+ * On a hit it writes `facilitator=<account>` to $GITHUB_OUTPUT so the workflow
+ * can page — the whole point is that AK learns the moment Stellar x402 goes
+ * live, instead of waiting for someone to remember to re-probe. Discovery still
+ * requires human confirmation before seeding: one sample is not a facilitator.
+ */
+async function modeC(network: StellarNetwork, limit: number, ledgerLookback: number): Promise<void> {
+  const sac = USDC_SAC[network];
+  const server = new rpc.Server(SOROBAN_RPC[network]);
+  const { sequence: latest } = await server.getLatestLedger();
+  const startLedger = Math.max(1, latest - ledgerLookback);
+  const transferTopic = xdr.ScVal.scvSymbol('transfer').toXDR('base64');
+
+  let page: Awaited<ReturnType<typeof server.getEvents>>;
+  try {
+    page = await server.getEvents({
+      startLedger,
+      filters: [{ type: 'contract', contractIds: [sac], topics: [[transferTopic, '*', '*']] }],
+      limit,
+    });
+  } catch (err) {
+    // A dead/throttled RPC IS a failure — it means the watcher is blind, which
+    // is exactly the silent-green shape we refuse to ship.
+    console.error(
+      `[watch] getEvents FAILED (ledgers ${startLedger}..${latest} on ${network}): ` +
+        (err instanceof Error ? err.message : JSON.stringify(err)),
+    );
+    process.exit(1);
+  }
+
+  console.log(`[watch] network=${network} ledgers=${startLedger}..${latest} events=${page.events.length}`);
+
+  const txHashes = [...new Set(page.events.map((e) => e.txHash).filter(Boolean))];
+  const tally = new Map<string, number>();
+  for (const hash of txHashes) {
+    const tx = await fetchTx(network, hash);
+    if (!tx?.successful) continue;
+    const acct = tx.fee_account ?? tx.source_account;
+    tally.set(acct, (tally.get(acct) ?? 0) + 1);
+  }
+
+  const ranked = [...tally.entries()].sort((a, b) => b[1] - a[1]);
+  if (ranked.length === 0) {
+    console.log('[watch] no settled USDC SAC transfers in window — Stellar x402 still dormant (expected).');
+    process.exit(0);
+  }
+
+  console.log('[watch] CANDIDATES FOUND:');
+  for (const [acct, count] of ranked.slice(0, 5)) console.log(`[watch]   ${acct}  x${count}`);
+
+  const out = process.env.GITHUB_OUTPUT;
+  if (out) {
+    appendFileSync(out, `facilitator=${ranked[0][0]}\n`);
+    appendFileSync(out, `facilitator_count=${ranked[0][1]}\n`);
+  }
+  console.log(
+    `\n[watch] → Confirm stability across several payments, then seed STELLAR_FACILITATORS ` +
+      `in src/config/stellar-x402.ts. Do NOT seed from a single observation.`,
+  );
+  process.exit(0);
+}
+
 function numArg(args: string[], flag: string, fallback: number): number {
   const hit = args.find((a) => a.startsWith(`${flag}=`));
   if (!hit) return fallback;
@@ -151,13 +219,17 @@ const txHash = args.find((a) => /^[0-9a-f]{64}$/i.test(a));
 
 if (txHash) {
   await modeA(network, txHash);
+} else if (args.includes('--watch')) {
+  await modeC(network, limit, ledgerLookback);
 } else if (args.includes('--scan')) {
   await modeB(network, limit, ledgerLookback);
 } else {
   console.log(
     'Usage:\n' +
       '  bun run src/scripts/stellar-facilitator-probe.ts <TX_HASH> [--pubnet]\n' +
-      '  bun run src/scripts/stellar-facilitator-probe.ts --scan [--pubnet] [--limit=N] [--ledgers=N]',
+      '  bun run src/scripts/stellar-facilitator-probe.ts --scan  [--pubnet] [--limit=N] [--ledgers=N]\n' +
+      '  bun run src/scripts/stellar-facilitator-probe.ts --watch [--pubnet] [--limit=N] [--ledgers=N]\n' +
+      '      scheduled watcher: exit 0 when still dormant, $GITHUB_OUTPUT facilitator=… on a hit',
   );
   process.exit(1);
 }
