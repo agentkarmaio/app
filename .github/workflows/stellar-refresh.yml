@@ -31,8 +31,12 @@ name: Stellar refresh
 
 on:
   schedule:
-    - cron: '30 */6 * * *' # every 6h, offset 30m from keep-fresh so the two
-                           # jobs don't contend for the same DB connections
+    - cron: '30 * * * *' # hourly, offset 30m from keep-fresh so the two jobs
+                         # don't contend for the same DB connections. Was 6h;
+                         # tightened 2026-08-08 because the full sweep costs
+                         # ~60s and event-based tracking is not available (see
+                         # the facilitator-watch note below), so polling
+                         # frequency IS the freshness knob.
   workflow_dispatch:
 
 concurrency:
@@ -66,6 +70,41 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           STELLAR_HORIZON_URL: ${{ secrets.STELLAR_HORIZON_URL }}
         run: bun run stellar:behavior
+
+      # Watch for Stellar x402 going live. AK's Tier-1 receipt indexer for
+      # Stellar is built and tested but DORMANT: it matches settlements by the
+      # OZ Channels facilitator's G-account, and that account cannot be guessed
+      # — it has to be observed on a settled payment. Measured 2026-08-08 on
+      # pubnet: ZERO USDC SAC `transfer` events across 300/800/2000-ledger
+      # windows, i.e. there is no x402 settlement traffic to learn from yet.
+      #
+      # So instead of leaving a TODO that nobody re-runs, this polls hourly and
+      # pages the moment traffic appears. `--watch` exits 0 while dormant (the
+      # expected steady state) and non-zero only when the RPC itself is broken,
+      # so a blind watcher still fails loudly.
+      #
+      # Lookback is ~2.8h at ~5s/ledger against an hourly cadence — deliberate
+      # overlap, so a slow ledger close can never open a gap.
+      - name: Watch for Stellar x402 facilitator activity
+        id: facilitator_watch
+        env:
+          STELLAR_RPC_URL: ${{ secrets.STELLAR_RPC_URL }}
+        run: bun run src/scripts/stellar-facilitator-probe.ts --watch --pubnet --ledgers=2000
+
+      # Discovery is a milestone, not an error — page on SUCCESS with a hit.
+      # Seeding stays manual on purpose: one observation is not a facilitator,
+      # and a wrong address would silently mis-attribute every receipt.
+      - name: Page on facilitator discovery
+        if: steps.facilitator_watch.outputs.facilitator != ''
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            🛰 <b>Stellar x402 traffic detected</b>
+            Candidate facilitator: <code>${{ steps.facilitator_watch.outputs.facilitator }}</code> (×${{ steps.facilitator_watch.outputs.facilitator_count }})
+            Confirm across several payments, then seed STELLAR_FACILITATORS in src/config/stellar-x402.ts to wake the Tier-1 receipt indexer.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       # A stalled refresh must page, not rot silently (2026-06-23 lesson).
       - name: Page on failure
