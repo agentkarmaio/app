@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { findMissingEnv, requireEnv } from './require-env';
+import { findMissingEnv, optionalEnv, requireEnv } from './require-env';
 
 // Regression guard for the 2026-06-23 floor outage: the keep-fresh /
 // heartbeat-drain GitHub Actions ran with their secrets UNSET, which GitHub
@@ -71,5 +71,35 @@ describe('requireEnv', () => {
         SUPABASE_SERVICE_ROLE_KEY: 'k',
       }),
     ).not.toThrow();
+  });
+});
+
+// ─── optionalEnv ─────────────────────────────────────────────────────────────
+//
+// Regression family (2026-08-08). The SAME defect shipped three times in one
+// day: `opts.x ?? process.env.X ?? DEFAULT` treats an unset GitHub Actions
+// secret — which expands to '' — as a real value, producing empty base URLs and
+// "fetch() URL is invalid". Fixed in stellar-activity.ts, then stellar-x402.ts,
+// then stellar-facilitator-probe.ts, which failed IN CI because the local test
+// only ever exercised the var-set path.
+
+describe('optionalEnv', () => {
+  test('returns the fallback for an unset key', () => {
+    expect(optionalEnv('STELLAR_RPC_URL', 'https://default.example', {})).toBe('https://default.example');
+  });
+
+  test('returns the fallback for an EMPTY key (the unset-CI-secret shape)', () => {
+    expect(optionalEnv('STELLAR_RPC_URL', 'https://default.example', { STELLAR_RPC_URL: '' }))
+      .toBe('https://default.example');
+  });
+
+  test('returns the fallback for a whitespace-only key', () => {
+    expect(optionalEnv('STELLAR_RPC_URL', 'https://default.example', { STELLAR_RPC_URL: '   ' }))
+      .toBe('https://default.example');
+  });
+
+  test('returns a real override, trimmed', () => {
+    expect(optionalEnv('STELLAR_RPC_URL', 'https://default.example', { STELLAR_RPC_URL: ' https://rpc.example ' }))
+      .toBe('https://rpc.example');
   });
 });

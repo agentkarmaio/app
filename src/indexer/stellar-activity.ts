@@ -23,6 +23,9 @@
  * than scoring falsely.
  */
 
+// Pure + dependency-free, same as this module.
+import { optionalEnv } from '@/lib/require-env';
+
 // Stellar StrKey: G… Ed25519 public accounts are 56 chars, base32 (A–Z, 2–7).
 const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/;
 
@@ -43,9 +46,9 @@ const DEFAULT_MAX_PAGES = 5;
  */
 export function resolveHorizonUrl(
   override?: string,
-  env: Readonly<Record<string, string | undefined>> = process.env,
+  env: Record<string, string | undefined> = process.env,
 ): string {
-  return override?.trim() || env.STELLAR_HORIZON_URL?.trim() || DEFAULT_HORIZON;
+  return override?.trim() || optionalEnv('STELLAR_HORIZON_URL', DEFAULT_HORIZON, env);
 }
 
 /** Injected transport so the reader is testable without network. */

@@ -27,6 +27,28 @@ export function findMissingEnv(
 }
 
 /**
+ * Read an OPTIONAL env var that has a default, treating empty/whitespace as
+ * absent. The counterpart to `requireEnv` for the same root cause.
+ *
+ * `process.env.X ?? DEFAULT` is WRONG for anything CI supplies: an unset GitHub
+ * Actions secret expands to an EMPTY STRING, which `??` happily accepts. The
+ * result is a silently broken value — an empty base URL becomes `/accounts/…`
+ * and every request dies with "fetch() URL is invalid".
+ *
+ * This exact defect shipped three times on 2026-08-08 (stellar-activity,
+ * stellar-x402, stellar-facilitator-probe) — the third reached CI and failed
+ * the scheduled run. Route every defaulted env read through here rather than
+ * re-deriving the `||` trick per call site.
+ */
+export function optionalEnv(
+  key: string,
+  fallback: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return env[key]?.trim() || fallback;
+}
+
+/**
  * Throws a single actionable error if any required env var is missing/empty.
  * Defaults to `process.env`; pass an explicit map in tests.
  */

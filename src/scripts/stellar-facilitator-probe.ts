@@ -28,6 +28,7 @@
 import { appendFileSync } from 'fs';
 import { rpc, xdr } from '@stellar/stellar-sdk';
 import { USDC_SAC, type StellarNetwork } from '../config/stellar-x402';
+import { optionalEnv } from '../lib/require-env';
 
 const HORIZON: Record<StellarNetwork, string> = {
   testnet: 'https://horizon-testnet.stellar.org',
@@ -36,7 +37,9 @@ const HORIZON: Record<StellarNetwork, string> = {
 
 const SOROBAN_RPC: Record<StellarNetwork, string> = {
   testnet: 'https://soroban-testnet.stellar.org',
-  pubnet: process.env.STELLAR_RPC_URL ?? 'https://mainnet.sorobanrpc.com',
+  // optionalEnv, NOT `??`: an unset STELLAR_RPC_URL secret arrives as '' in CI,
+  // which `??` accepts — that is what failed run 31276896755's watch step.
+  pubnet: optionalEnv('STELLAR_RPC_URL', 'https://mainnet.sorobanrpc.com'),
 };
 
 interface HorizonTx {
