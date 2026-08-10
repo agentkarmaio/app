@@ -90,6 +90,46 @@ describe('parseTransfer', () => {
   });
 });
 
+describe('arcTransfersIndexer — block-timestamp prefetch', () => {
+  // Timestamps are this indexer's dominant RPC cost: one getBlock per distinct
+  // block, up to 500 per window. Fetching them lazily inside the per-transfer
+  // loop meant ~500 SEQUENTIAL round trips (~13s/window), which held catch-up to
+  // ~18k blocks/day against a chain producing ~166k — it lost ground every day.
+  test('fetches each distinct block ONCE and overlaps the lookups', async () => {
+    // 40 transfers spread over 8 distinct blocks, 5 transfers per block.
+    const transfers = Array.from({ length: 40 }, (_, i) =>
+      transfer({
+        rawAmount: BigInt(1_000_000),
+        block: BigInt(100 + (i % 8)),
+        txHash: `0xtx${i}` as `0x${string}`,
+      }),
+    );
+
+    const seen: string[] = [];
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const { deps } = makeDeps(transfers, {
+      getHead: async () => BigInt(107),
+      blockTimestamp: async (b: bigint) => {
+        seen.push(b.toString());
+        inFlight++;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight--;
+        return TS;
+      },
+    });
+
+    await arcTransfersIndexer(deps);
+
+    // Deduped: 8 distinct blocks, not 40 transfers.
+    expect(seen).toHaveLength(8);
+    expect(new Set(seen).size).toBe(8);
+    // Overlapped rather than awaited one at a time — the whole point.
+    expect(peakInFlight).toBeGreaterThan(1);
+  });
+});
+
 describe('arcTransfersIndexer', () => {
   test('emits a provider + consumer signal pair for a plain transfer', async () => {
     const { deps, state } = makeDeps([transfer({ rawAmount: BigInt(1_000_000) })]);

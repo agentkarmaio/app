@@ -58,11 +58,11 @@ import {
   parseTransactionsBatch,
   extractX402Payment,
   extractPayshPayment,
-  withConcurrency,
   getIndexerRpcUrl,
   type HeliusEnhancedTransaction,
   type PayshExtractedPayment,
 } from './helius';
+import { withConcurrency } from '@/lib/concurrency';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

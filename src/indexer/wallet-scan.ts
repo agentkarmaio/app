@@ -35,10 +35,10 @@ import {
   parseTransactionsBatch as defaultParseTransactionsBatch,
   extractX402PaymentForWallet,
   extractPayshPayment,
-  withConcurrency,
   type HeliusEnhancedTransaction,
   type PayshExtractedPayment,
 } from './helius';
+import { withConcurrency } from '@/lib/concurrency';
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,

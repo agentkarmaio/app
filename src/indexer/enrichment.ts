@@ -5,7 +5,8 @@
  * and flag potential sybil clusters.
  */
 
-import { getHeliusApiKey, withConcurrency } from './helius';
+import { getHeliusApiKey } from './helius';
+import { withConcurrency } from '@/lib/concurrency';
 import { supabase } from '../db/client';
 import type { Wallet } from '../db/schema';
 
