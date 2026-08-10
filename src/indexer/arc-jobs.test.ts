@@ -387,6 +387,39 @@ describe('arcJobsIndexer — DI core', () => {
     for (const [, last] of state.cursors) expect(Number(last)).toBeLessThanOrEqual(4200);
   });
 
+  // Window COUNT is a poor proxy for the work a window costs: a single one can
+  // hold hundreds of settlements, each needing a block-timestamp round trip.
+  // On 2026-08-10 the pair of Arc indexers ran past 20 minutes inside a job
+  // whose steady state was ~2 minutes, so the loop also answers to a clock.
+  test('timeBudgetMs stops the loop and banks the windows already read', async () => {
+    const window: GetLogsWindow = { created: [], released: [] };
+    let clock = 1_000;
+    const { deps, state } = makeDeps(window, {
+      getHead: async () => BigInt(50_000),
+      timeBudgetMs: 5_000,
+      // Each window "costs" 2s; the budget allows two, then expires.
+      now: () => { clock += 2_000; return clock; },
+    });
+
+    await arcJobsIndexer(deps);
+
+    expect(state.getLogsCalls).toBe(2);
+    // Cursor lands on the last window READ, so the next run resumes at 20000.
+    expect(state.cursors[0][1]).toBe('19999');
+  });
+
+  test('no timeBudgetMs means unbounded — the clock never ends a run', async () => {
+    const window: GetLogsWindow = { created: [], released: [] };
+    const { deps, state } = makeDeps(window, {
+      getHead: async () => BigInt(30_000),
+      now: () => Number.MAX_SAFE_INTEGER,
+    });
+
+    await arcJobsIndexer(deps);
+
+    expect(state.getLogsCalls).toBe(4); // [0,9999] [10000,19999] [20000,29999] [30000,30000]
+  });
+
   test('a non-throttle error still fails the run loudly', async () => {
     const window: GetLogsWindow = { created: [], released: [] };
     const { deps } = makeDeps(window, {
