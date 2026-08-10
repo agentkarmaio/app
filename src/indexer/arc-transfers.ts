@@ -37,7 +37,7 @@ import {
   upsertCursor as dbUpsertCursor,
   type InsertSignalEventInput,
 } from '@/db/client';
-import { withRateLimitRetry } from '@/lib/rpc-retry';
+import { INGEST_RETRY, withRateLimitRetry } from '@/lib/rpc-retry';
 import { buildUsdcTransferSignal } from '@/scoring/signals';
 import { ARC_JOBS_CONTRACT, GENESIS_FALLBACK_BLOCK } from './arc-jobs';
 
@@ -270,11 +270,11 @@ export async function runArcTransfersIndexer(
     usdcContract,
     windowSize: opts.windowSize,
     maxWindows: opts.maxWindows ?? ARC_TRANSFERS_DEFAULT_MAX_WINDOWS,
-    getHead: async () => withRateLimitRetry(() => client.getBlockNumber()),
+    getHead: async () => withRateLimitRetry(() => client.getBlockNumber(), INGEST_RETRY),
     getLogs: async (fromBlock, toBlock) => {
       const logs = await withRateLimitRetry(() => client.getLogs({
         address: usdcContract as `0x${string}`, event: TRANSFER_EVENT, fromBlock, toBlock,
-      }));
+      }), INGEST_RETRY);
       const out: ArcTransfer[] = [];
       for (const log of logs) {
         const rec = parseTransfer(log);
@@ -283,7 +283,7 @@ export async function runArcTransfersIndexer(
       return out;
     },
     blockTimestamp: async (blockNumber) => {
-      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }));
+      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }), INGEST_RETRY);
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
     insertTransactions: dbInsertTransactions,

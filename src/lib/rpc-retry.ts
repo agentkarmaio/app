@@ -56,6 +56,18 @@ export function isRateLimitedError(err: unknown): boolean {
 /** Retry knobs, under the name the Stellar/Arc call sites already use. */
 export type RateLimitRetryOpts = RetryOpts;
 
+/**
+ * Budget for a scheduled INGEST run, where wall clock is the scarce resource.
+ *
+ * The defaults (5 retries from 1.5s) can spend ~46s on a single throttled call.
+ * That is right for a weekly alert-only sampler, and wrong for the keep-fresh
+ * floor: Arc's escrow indexer makes 2 getLogs per window across up to 50
+ * windows, so the default budget stretched a 9-minute run past 30 minutes
+ * (2026-08-10). Cursor-based indexers lose nothing by stopping early — the next
+ * scheduled run resumes from the same cursor — so give up fast and come back.
+ */
+export const INGEST_RETRY: RateLimitRetryOpts = { retries: 2, baseMs: 800 };
+
 export { sleep };
 
 /** Run `fn`, retrying ONLY on rate-limit errors with exponential backoff. */
