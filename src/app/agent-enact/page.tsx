@@ -14,6 +14,7 @@
  */
 
 import type { Metadata } from 'next';
+import Image from 'next/image';
 import Link from 'next/link';
 import { ArrowLeft, ArrowRight, ArrowUpRight } from 'lucide-react';
 import { SectionHead, Stat, LiveFact } from '@/components/karma/section-head';
@@ -71,48 +72,70 @@ export default function AgentEnactPage() {
     <div className="space-y-24">
       <Link
         href="/"
-        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+        className="inline-flex min-h-10 items-center gap-1.5 rounded-md text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-[#7170ff] focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
-        <ArrowLeft className="size-4" />
+        <ArrowLeft className="size-4" aria-hidden="true" />
         Back to Home
       </Link>
 
       {/* ─────────── Headline ─────────── */}
-      <section className="max-w-3xl space-y-5">
-        <p className="text-[11px] font-[510] uppercase tracking-[0.16em] text-[#62666d]">
-          AgentEnact · execution layer
-        </p>
-        <h1 className="text-[36px] font-[560] leading-[1.1] tracking-[-1px] text-[#f7f8f8] sm:text-[44px]">
-          Agents are born on-chain here.
-        </h1>
-        <p className="max-w-2xl text-[15px] leading-relaxed text-[#8a8f98]">
-          AgentKarma scores agents that already exist. AgentEnact is how they come
-          to exist: the execution layer you use to create and run an agent on a
-          network. A wallet it controls, an identity the registry can see,
-          capabilities it can act through, rails to charge and pay — and a
-          reputation that starts accruing with its first transaction instead of
-          years later.
-        </p>
-        <p className="max-w-2xl text-[13px] leading-relaxed text-[#62666d]">
-          Concept stage. Agents built this way have been run end-to-end as a
-          prototype on Arc testnet; the packaged stack is scoped, not shipped.
-        </p>
-        <div className="flex flex-wrap items-center gap-5 pt-1">
-          <a
-            href="#proof"
-            className="inline-flex items-center gap-1.5 text-[13px] font-[510] text-[#d0d6e0] transition-colors hover:text-[#f7f8f8]"
-          >
-            See what already ran
-            <ArrowRight className="size-3.5" />
-          </a>
-          <Link
-            href="/protocol"
-            className="inline-flex items-center gap-1.5 text-[13px] font-[510] text-[#8a8f98] transition-colors hover:text-[#d0d6e0]"
-          >
-            Karma Protocol RFC
-            <ArrowUpRight className="size-3.5" />
-          </Link>
+      <section className="space-y-8">
+        <div className="max-w-3xl space-y-5">
+          <p className="text-[11px] font-[510] uppercase tracking-[0.16em] text-[#62666d]">
+            AgentEnact · execution layer
+          </p>
+          <h1 className="text-[36px] font-[560] leading-[1.1] tracking-[-1px] text-[#f7f8f8] sm:text-[44px]">
+            Agents are born on-chain here.
+          </h1>
+          <p className="max-w-2xl text-[15px] leading-relaxed text-[#8a8f98]">
+            AgentKarma scores agents that already exist. AgentEnact is how they come
+            to exist: the execution layer you use to create and run an agent on a
+            network. A wallet it controls, an identity the registry can see,
+            capabilities it can act through, rails to charge and pay — and a
+            reputation that starts accruing with its first transaction instead of
+            years later.
+          </p>
+          <p className="max-w-2xl text-[13px] leading-relaxed text-[#62666d]">
+            Concept stage. Agents built this way have been run end-to-end as a
+            prototype on Arc testnet; the packaged stack is scoped, not shipped.
+          </p>
+          <div className="flex flex-wrap items-center gap-5 pt-1">
+            <a
+              href="#proof"
+              className="inline-flex min-h-10 items-center gap-1.5 rounded-md text-[13px] font-[510] text-[#d0d6e0] transition-colors hover:text-[#f7f8f8] focus-visible:ring-2 focus-visible:ring-[#7170ff] focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            >
+              See what already ran
+              <ArrowRight className="size-3.5" aria-hidden="true" />
+            </a>
+            <Link
+              href="/protocol"
+              className="inline-flex min-h-10 items-center gap-1.5 rounded-md text-[13px] font-[510] text-[#8a8f98] transition-colors hover:text-[#d0d6e0] focus-visible:ring-2 focus-visible:ring-[#7170ff] focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            >
+              Karma Protocol RFC
+              <ArrowUpRight className="size-3.5" aria-hidden="true" />
+            </Link>
+          </div>
         </div>
+
+        <figure className="space-y-3">
+          <div className="relative aspect-[3/2] overflow-hidden rounded-xl border border-[rgb(255_255_255/0.08)] bg-[#08090a] sm:aspect-[16/9]">
+            <Image
+              src="/agent-enact/execution-stack-v2.webp"
+              alt="Four precision-machined systems for wallet custody, identity, capabilities, and payments converging into one illuminated agent core"
+              fill
+              priority
+              sizes="(max-width: 1024px) calc(100vw - 2rem), 1024px"
+              className="object-cover"
+            />
+            <div
+              className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#08090a]/35 via-transparent to-transparent"
+              aria-hidden="true"
+            />
+          </div>
+          <figcaption className="font-mono text-xs leading-relaxed text-[#8a8f98]">
+            Concept architecture · wallet + identity + capabilities + payment rails
+          </figcaption>
+        </figure>
       </section>
 
       {/* ─────────── I · What you get ─────────── */}
@@ -215,6 +238,22 @@ export default function AgentEnactPage() {
           accent="planned"
         />
 
+        <figure className="space-y-3">
+          <div className="relative aspect-[3/2] overflow-hidden rounded-xl border border-[rgb(255_255_255/0.08)] bg-[#08090a] sm:aspect-[16/9]">
+            <Image
+              src="/agent-enact/prototype-economy-v2.webp"
+              alt="One orchestrator agent and two specialist agents connected by direct settlement trails in a three-node economy"
+              fill
+              sizes="(max-width: 1024px) calc(100vw - 2rem), 1024px"
+              className="object-cover"
+            />
+          </div>
+          <figcaption className="font-mono text-xs leading-relaxed text-[#8a8f98]">
+            Verified topology · 1 orchestrator + 2 specialists · direct settlement,
+            no AgentKarma relay
+          </figcaption>
+        </figure>
+
         <div className="grid grid-cols-2 gap-x-8 gap-y-7 border-y border-[rgb(255_255_255/0.06)] py-7 sm:grid-cols-4">
           <Stat
             value={BENCHMARK.agents}
@@ -295,24 +334,24 @@ export default function AgentEnactPage() {
         <div className="flex flex-wrap items-center gap-5">
           <Link
             href="/explore"
-            className="inline-flex items-center gap-1.5 text-[13px] font-[510] text-[#d0d6e0] transition-colors hover:text-[#f7f8f8]"
+            className="inline-flex min-h-10 items-center gap-1.5 rounded-md text-[13px] font-[510] text-[#d0d6e0] transition-colors hover:text-[#f7f8f8] focus-visible:ring-2 focus-visible:ring-[#7170ff] focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
             Explore scored agents
-            <ArrowUpRight className="size-3.5" />
+            <ArrowUpRight className="size-3.5" aria-hidden="true" />
           </Link>
           <Link
             href="/integrate"
-            className="inline-flex items-center gap-1.5 text-[13px] font-[510] text-[#8a8f98] transition-colors hover:text-[#d0d6e0]"
+            className="inline-flex min-h-10 items-center gap-1.5 rounded-md text-[13px] font-[510] text-[#8a8f98] transition-colors hover:text-[#d0d6e0] focus-visible:ring-2 focus-visible:ring-[#7170ff] focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
             SDK quickstart
-            <ArrowUpRight className="size-3.5" />
+            <ArrowUpRight className="size-3.5" aria-hidden="true" />
           </Link>
           <Link
             href="/succession"
-            className="inline-flex items-center gap-1.5 text-[13px] font-[510] text-[#8a8f98] transition-colors hover:text-[#d0d6e0]"
+            className="inline-flex min-h-10 items-center gap-1.5 rounded-md text-[13px] font-[510] text-[#8a8f98] transition-colors hover:text-[#d0d6e0] focus-visible:ring-2 focus-visible:ring-[#7170ff] focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
             Agent succession
-            <ArrowUpRight className="size-3.5" />
+            <ArrowUpRight className="size-3.5" aria-hidden="true" />
           </Link>
         </div>
       </section>
