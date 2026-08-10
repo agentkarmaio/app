@@ -12,8 +12,15 @@
  * the workflow can conditionally page via the existing telegram-alert action.
  * When run locally, just prints the report.
  *
+ * Rate limiting: the public Arc Testnet RPC throttles a sequential loop hard
+ * (`-32005 rate limit exceeded`) — it killed every scheduled run from
+ * 2026-07-27 to 2026-08-10. Each sampled agent costs 4 eth_calls (ownerOf +
+ * tokenURI + getAgentWallet + readAllFeedback), so every read goes through
+ * `withRateLimitRetry` and the sample loop paces itself with PACE_MS.
+ *
  * Usage: bun run scripts/arc-farm-detector.ts
- * Env: ARC_RPC_URL (optional override), ARC_FARM_DETECTOR_WINDOW_BLOCKS (default 10000, capped at 10000 — Arc's eth_getLogs limit)
+ * Env: ARC_RPC_URL (optional override), ARC_FARM_DETECTOR_WINDOW_BLOCKS (default 10000, capped at 10000 — Arc's eth_getLogs limit),
+ *      NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (isTemplatedCounterparty resolves agentIds from the DB)
  */
 
 import { createPublicClient, http } from 'viem';
@@ -28,14 +35,23 @@ import {
   parseJobCreated, parsePaymentReleased, isTemplatedCounterparty,
 } from '../src/indexer/arc-jobs';
 import { evaluateFarmSignals, type FarmSamples } from '../src/scoring/farm-detector';
+import { sleep, withRateLimitRetry } from '../src/lib/rpc-retry';
+import { requireEnv } from '../src/lib/require-env';
 
 const SAMPLE_SIZE = 50;
+/** Pause between sampled agents so backoff is the exception, not the loop. */
+const PACE_MS = Number(process.env.ARC_FARM_DETECTOR_PACE_MS ?? 250);
 const WINDOW_BLOCKS = Math.min(
   ARC_MAX_LOG_WINDOW,
   Number(process.env.ARC_FARM_DETECTOR_WINDOW_BLOCKS ?? ARC_MAX_LOG_WINDOW),
 );
+// isTemplatedCounterparty resolves an address → arc_agent_id via the DB. Fail
+// at line 1 rather than 90% into a 50-agent sample (the 2026-07-13/07-20 runs
+// crashed 8 frames deep on exactly this, with no usable message).
+const REQUIRED_ENV = ['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'] as const;
 
 async function main() {
+  requireEnv(REQUIRED_ENV);
   const config = ERC8004_REGISTRIES.arc;
   const client = createPublicClient({ chain: arcTestnet, transport: http(process.env.ARC_RPC_URL) });
 
@@ -47,12 +63,13 @@ async function main() {
   let feedbackTotal = 0;
   let feedbackAllPositive = 0;
   for (let id = fromId; id <= tip; id++) {
-    const agent = await readAgent(id);
+    if (id > fromId) await sleep(PACE_MS);
+    const agent = await withRateLimitRetry(() => readAgent(id));
     if (!agent) continue;
     bulkMintTotal++;
     if (isTemplatedIdentity(agent.tokenURI)) bulkMintTemplated++;
 
-    const feedback = await readAllFeedback(id);
+    const feedback = await withRateLimitRetry(() => readAllFeedback(id));
     const live = feedback.filter((f) => !f.revoked);
     if (live.length > 0) {
       feedbackTotal++;
@@ -61,12 +78,16 @@ async function main() {
   }
 
   // ── 2. settlement sample: one bounded window near the chain head ──
-  const head = await client.getBlockNumber();
+  const head = await withRateLimitRetry(() => client.getBlockNumber());
   const fromBlock = head > BigInt(WINDOW_BLOCKS) ? head - BigInt(WINDOW_BLOCKS) : BigInt(0);
-  const [createdLogs, releasedLogs] = await Promise.all([
+  // Sequential, not Promise.all — two 10k-block getLogs fired together is the
+  // single most reliable way to trip the limiter on the first try.
+  const createdLogs = await withRateLimitRetry(() =>
     client.getLogs({ address: ARC_JOBS_CONTRACT, event: JOB_CREATED_EVENT, fromBlock, toBlock: head }),
+  );
+  const releasedLogs = await withRateLimitRetry(() =>
     client.getLogs({ address: ARC_JOBS_CONTRACT, event: PAYMENT_RELEASED_EVENT, fromBlock, toBlock: head }),
-  ]);
+  );
   const clientByJob = new Map<string, string>();
   for (const log of createdLogs) {
     const rec = parseJobCreated(log);
@@ -85,7 +106,9 @@ async function main() {
       selfDealt++;
       continue;
     }
-    if (await isTemplatedCounterparty(jobClient)) templatedCounterparty++;
+    // One DB read + up to 3 eth_calls per settlement — the second-heaviest RPC
+    // consumer in this script after the agent sample.
+    if (await withRateLimitRetry(() => isTemplatedCounterparty(jobClient))) templatedCounterparty++;
   }
 
   const samples: FarmSamples = {

@@ -38,44 +38,17 @@ import {
 } from '@/integrations/erc8004-stellar';
 
 // ─── Rate-limit handling ────────────────────────────────────────────────────
+// Lives in `@/lib/rpc-retry` — every chain's public RPC throttles, and Arc's
+// viem client needs the same backoff. Re-exported so existing importers of the
+// Stellar-scoped names keep working.
 
-/**
- * Distinguish an RPC throttle from a contract revert. A revert means "this
- * agentId does not exist" and must NEVER be retried; a 429 means "ask again
- * later" and must never be counted as missing.
- */
-export function isRateLimited(message: string): boolean {
-  return message.includes('429') || message.toLowerCase().includes('too many requests');
-}
+import { withRateLimitRetry, type RateLimitRetryOpts } from '@/lib/rpc-retry';
 
-export interface RateLimitRetryOpts {
-  /** Retries AFTER the initial attempt. Default 5. */
-  retries?: number;
-  /** First backoff step in ms; doubles each retry. Default 1500. */
-  baseMs?: number;
-  /** ±25% jitter so pool workers don't retry in lockstep. Default true. */
-  jitter?: boolean;
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** Run `fn`, retrying ONLY on rate-limit errors with exponential backoff. */
-export async function withRateLimitRetry<T>(
-  fn: () => Promise<T>,
-  opts: RateLimitRetryOpts = {},
-): Promise<T> {
-  const { retries = 5, baseMs = 1500, jitter = true } = opts;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!isRateLimited(msg) || attempt >= retries) throw err;
-      const factor = jitter ? 0.75 + Math.random() * 0.5 : 1;
-      await sleep(baseMs * 2 ** attempt * factor);
-    }
-  }
-}
+export {
+  isRateLimited,
+  withRateLimitRetry,
+  type RateLimitRetryOpts,
+} from '@/lib/rpc-retry';
 
 // ─── Reader abstraction ─────────────────────────────────────────────────────
 
