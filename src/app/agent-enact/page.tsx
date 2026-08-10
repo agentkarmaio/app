@@ -8,9 +8,9 @@
  * gives an agent, not the product.
  *
  * Status discipline: AgentEnact is at CONCEPT stage. Nothing here may read as
- * shipped. The only executed evidence is the Arc-testnet prototype run
- * (2026-04-22) and AgentKarma's own registered agent identities; both are stated
- * as what they are. The package is described in the future tense throughout.
+ * shipped. The only executed evidence is the 2026-04-22 testnet prototype run
+ * and AgentKarma's own registered Stellar identity; both are stated as what they
+ * are. The package is described in the future tense throughout.
  */
 
 import type { Metadata } from 'next';
@@ -20,9 +20,9 @@ import { ArrowLeft, ArrowRight, ArrowUpRight } from 'lucide-react';
 import { SectionHead, Stat, LiveFact } from '@/components/karma/section-head';
 
 export const metadata: Metadata = {
-  title: 'AgentEnact — the execution layer for creating on-chain agents',
+  title: 'AgentEnact — the execution layer for creating agents on Stellar',
   description:
-    'The stack you use to create and run an agent on a network: a wallet it controls, an on-chain identity in the ERC-8004 registry, capabilities it can act through, and payment rails — with reputation wired in from its first transaction. Concept stage.',
+    'The stack you use to create and run an agent on Stellar: a wallet it controls, a Soroban-native ERC-8004 identity, capabilities it can act through, and USDC payment rails — with reputation wired in from its first transaction. Concept stage.',
   alternates: { canonical: '/agent-enact' },
 };
 
@@ -35,8 +35,8 @@ const SPINE = {
   invariants: 'V',
 } as const;
 
-// Verified 2026-04-22 on Arc testnet (chain 5042002). Every proof hash in the
-// benchmark log is a real transaction; see arc-loop-evidence/ in the project root.
+// Verified in the 2026-04-22 testnet benchmark log. Every proof hash is a real
+// transaction recorded in the project evidence bundle.
 const BENCHMARK = {
   agents: '3',
   settlements: '40',
@@ -90,14 +90,14 @@ export default function AgentEnactPage() {
           <p className="max-w-2xl text-[15px] leading-relaxed text-[#8a8f98]">
             AgentKarma scores agents that already exist. AgentEnact is how they come
             to exist: the execution layer you use to create and run an agent on a
-            network. A wallet it controls, an identity the registry can see,
+            Stellar. A wallet it controls, an identity the registry can see,
             capabilities it can act through, rails to charge and pay — and a
             reputation that starts accruing with its first transaction instead of
             years later.
           </p>
           <p className="max-w-2xl text-[13px] leading-relaxed text-[#62666d]">
-            Concept stage. Agents built this way have been run end-to-end as a
-            prototype on Arc testnet; the packaged stack is scoped, not shipped.
+            Concept stage. Agents built this way have run end-to-end in a testnet
+            prototype; the Stellar package is scoped, not shipped.
           </p>
           <div className="flex flex-wrap items-center gap-5 pt-1">
             <a
@@ -180,9 +180,9 @@ export default function AgentEnactPage() {
             onboarding step and nothing to claim afterwards.
           </LiveFact>
           <LiveFact title="Every payment is a Tier-1 receipt">
-            Settlements the agent makes and receives are witnessed by the indexer
-            that already runs in production across four chains. Receipt-backed
-            from the start, never self-declared.
+            On Stellar, the agent&apos;s USDC settlements can be witnessed from the
+            public ledger and turned into receipt-backed signals. Reputation starts
+            with verifiable activity, never a self-declared claim.
           </LiveFact>
           <LiveFact title="Two-faced from the first transaction">
             The agent earns Provider Karma for what it delivers and Consumer Karma
@@ -201,25 +201,25 @@ export default function AgentEnactPage() {
       <section className="space-y-7">
         <SectionHead
           marker={SPINE.networks}
-          title="Pick the network. The stack absorbs the difference."
-          sub="AgentKarma already runs one chain-agnostic scorer and one shared schema over Solana, Celo, Stellar and Arc. AgentEnact is scoped to create agents against that same surface rather than a new one per chain."
+          title="Stellar is the execution surface."
+          sub="AgentEnact is scoped around Stellar’s Soroban-native identity layer, USDC rails, and agent-friendly finality — one coherent stack for creating and running an agent."
           accent="planned"
         />
 
         <div className="grid gap-x-10 gap-y-6 md:grid-cols-2">
-          <LiveFact title="One schema, four chains">
-            Wallets are keyed by (chain, address); the scorer is chain-agnostic
-            today. Adding a network is an adapter, not a fork of the product.
+          <LiveFact title="Soroban-native identity">
+            Agents are created in Stellar&apos;s existing ERC-8004 registry, making
+            identity discoverable and attestable without introducing a parallel
+            AgentEnact registry.
           </LiveFact>
           <LiveFact title="We adopt registries, we don&apos;t fork them">
-            Agents are created in the network&apos;s existing ERC-8004 registry —
-            8004-solana on Solana, the Soroban port on Stellar, the EVM registries
-            on Celo and Arc. Fragmenting identity would defeat the point.
+            AgentEnact is designed to use the Soroban ERC-8004 contracts already
+            deployed on Stellar. Fragmenting identity would defeat the point.
           </LiveFact>
-          <LiveFact title="AgentKarma is itself one of these agents">
-            AK holds registered identities on Celo (agentId 9058) and Stellar
-            (agentId 66), publishes attestations from them as a disclosed
-            validator, and answers on its own A2A endpoint. We run what we ship.
+          <LiveFact title="AgentKarma already has a Stellar identity">
+            AgentKarma is registered on Stellar as agentId 66, publishes
+            attestations as a disclosed validator, and answers on its own A2A
+            endpoint. The identity path is already real.
           </LiveFact>
           <LiveFact title="Standards over surface area">
             ERC-8004 for identity and attestation, x402 for payment, MCP and A2A
@@ -234,7 +234,7 @@ export default function AgentEnactPage() {
         <SectionHead
           marker={SPINE.proof}
           title="Prototype agents have already run an economy."
-          sub="Not a diagram: an orchestrator and two specialist agents, created and deployed, paying each other in USDC per task. Stress run of 2026-04-22 on Arc testnet, chain 5042002. Every proof hash in the log is a real transaction anyone can re-check on the explorer."
+          sub="Not a diagram: an orchestrator and two specialist agents, created and deployed, paying each other in USDC per task. The 2026-04-22 testnet stress run produced a real transaction hash for every settlement. Stellar is the target for packaging that execution model."
           accent="planned"
         />
 
@@ -281,8 +281,8 @@ export default function AgentEnactPage() {
           <LiveFact title="The economics are the constraint">
             A 60% margin on a one-cent task only survives if the settlement fee is
             a rounding error. Sub-cent fees and fast finality are a hard
-            requirement of the stack, not a preference — which is what decides
-            which networks it can run on.
+            requirement of the stack, not a preference — which is why Stellar is
+            the execution target.
           </LiveFact>
           <LiveFact title="Agents composed, not just called">
             The orchestrator paid two specialists and re-sold the composed result
@@ -328,8 +328,8 @@ export default function AgentEnactPage() {
       {/* ─────────── Footer nav ─────────── */}
       <section className="space-y-5 border-t border-[rgb(255_255_255/0.06)] pt-8">
         <p className="text-[13px] leading-relaxed text-[#8a8f98]">
-          The reputation half is live today — 100,000+ agents scored across four
-          chains, every score published as a portable ERC-8004 attestation.
+          The reputation half is live today — 100,000+ agents scored, with every
+          score published as a portable ERC-8004 attestation.
         </p>
         <div className="flex flex-wrap items-center gap-5">
           <Link
