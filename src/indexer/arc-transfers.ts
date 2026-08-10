@@ -32,11 +32,12 @@ import { arcTestnet } from '@/config/arc-chain';
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
-  upsertWallet as dbUpsertWallet,
+  makeEnsureWallet as dbMakeEnsureWallet,
   getCursor as dbGetCursor,
   upsertCursor as dbUpsertCursor,
   type InsertSignalEventInput,
 } from '@/db/client';
+import { withRateLimitRetry } from '@/lib/rpc-retry';
 import { buildUsdcTransferSignal } from '@/scoring/signals';
 import { ARC_JOBS_CONTRACT, GENESIS_FALLBACK_BLOCK } from './arc-jobs';
 
@@ -269,11 +270,11 @@ export async function runArcTransfersIndexer(
     usdcContract,
     windowSize: opts.windowSize,
     maxWindows: opts.maxWindows ?? ARC_TRANSFERS_DEFAULT_MAX_WINDOWS,
-    getHead: async () => client.getBlockNumber(),
+    getHead: async () => withRateLimitRetry(() => client.getBlockNumber()),
     getLogs: async (fromBlock, toBlock) => {
-      const logs = await client.getLogs({
+      const logs = await withRateLimitRetry(() => client.getLogs({
         address: usdcContract as `0x${string}`, event: TRANSFER_EVENT, fromBlock, toBlock,
-      });
+      }));
       const out: ArcTransfer[] = [];
       for (const log of logs) {
         const rec = parseTransfer(log);
@@ -282,12 +283,13 @@ export async function runArcTransfersIndexer(
       return out;
     },
     blockTimestamp: async (blockNumber) => {
-      const block = await client.getBlock({ blockNumber });
+      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }));
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
-    ensureWallet: async (a) => { await dbUpsertWallet(a, 0, 'Unrated', 0, {}, ARC_CHAIN); },
+    // Insert-if-absent: never zeroes an existing wallet's live score.
+    ensureWallet: dbMakeEnsureWallet(ARC_CHAIN),
     getCursor: async (key) => {
       const c = await dbGetCursor(key, ARC_CHAIN);
       if (c) return { last_signature: c.last_signature, last_slot: c.last_slot };
