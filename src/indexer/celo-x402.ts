@@ -48,11 +48,12 @@ import {
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
-  upsertWallet as dbUpsertWallet,
+  makeEnsureWallet as dbMakeEnsureWallet,
   getCursor as dbGetCursor,
   upsertCursor as dbUpsertCursor,
   type InsertSignalEventInput,
 } from '@/db/client';
+import { withRateLimitRetry } from '@/lib/rpc-retry';
 import { buildPayshRoutedSignal } from '@/scoring/signals';
 
 const CELO_CHAIN: Chain = 'celo';
@@ -401,15 +402,17 @@ export async function runCeloX402Indexer(
       envStart != null
         ? BigInt(envStart)
         : (await client.getBlockNumber()) - BigInt(CELO_DEFAULT_LOOKBACK_BLOCKS),
-    getHead: async () => client.getBlockNumber(),
-    getLogs: (fromBlock, toBlock) => rpcGetLogs(client, facilitatorList, facilitatorSet, fromBlock, toBlock),
+    getHead: async () => withRateLimitRetry(() => client.getBlockNumber()),
+    getLogs: (fromBlock, toBlock) =>
+      withRateLimitRetry(() => rpcGetLogs(client, facilitatorList, facilitatorSet, fromBlock, toBlock)),
     blockTimestamp: async (blockNumber) => {
-      const block = await client.getBlock({ blockNumber });
+      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }));
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
-    ensureWallet: async (a) => { await dbUpsertWallet(a, 0, 'Unrated', 0, {}, CELO_CHAIN); },
+    // Insert-if-absent: never zeroes an existing wallet's live score.
+    ensureWallet: dbMakeEnsureWallet(CELO_CHAIN),
     getCursor: async (key) => {
       const c = await dbGetCursor(key, CELO_CHAIN);
       return c ? { last_signature: c.last_signature, last_slot: c.last_slot } : null;

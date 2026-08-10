@@ -14,6 +14,7 @@ import {
   getAllTransactions,
   markAllWalletsDirty,
   ensureWalletsExist,
+  makeEnsureWallet,
   withTransientDbRetry,
 } from './client';
 import type { Transaction } from './schema';
@@ -902,6 +903,20 @@ describe('ensureWalletsExist is insert-if-absent, never an overwrite', () => {
 
     await ensureWalletsExist(['W9']);
     expect((captured[0].rows as Array<Record<string, unknown>>)[0].chain).toBe('solana');
+  });
+
+  // Every indexer takes an injected single-address `ensureWallet` dep. When each
+  // wired its own closure, the 2026-08-02 fix migrated the Solana/Stellar sites
+  // to insert-if-absent and MISSED arc-jobs, arc-transfers and celo-x402, which
+  // kept calling upsertWallet(addr, 0, 'Unrated', 0) — the score-zeroing shape.
+  // One canonical factory means there is no second place to drift.
+  test('makeEnsureWallet produces an insert-if-absent dep bound to its chain', async () => {
+    await makeEnsureWallet('arc')('0xABC');
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].op).toBe('upsert');
+    expect(captured[0].opts).toEqual({ onConflict: 'chain,address', ignoreDuplicates: true });
+    expect(captured[0].rows).toEqual([{ chain: 'arc', address: '0xABC' }]);
   });
 });
 

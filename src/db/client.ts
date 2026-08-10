@@ -240,6 +240,21 @@ export async function ensureWalletsExist(
 }
 
 /**
+ * The single-address `ensureWallet` dependency every chain indexer injects.
+ *
+ * Exists so there is exactly one implementation of "make sure this wallet row
+ * is there" across all chains. Each indexer used to wire its own closure, and
+ * when the 2026-08-02 score-clobber fix swept the call sites it migrated the
+ * Solana and Stellar ones but missed arc-jobs, arc-transfers and celo-x402 —
+ * those kept calling `upsertWallet(addr, 0, 'Unrated', 0)`, whose ON CONFLICT
+ * DO UPDATE zeroes a live wallet's score on every ingest tick. A shared factory
+ * removes the place that drift can hide.
+ */
+export function makeEnsureWallet(chain: Chain): (address: string) => Promise<void> {
+  return async (address: string) => { await ensureWalletsExist([address], chain); };
+}
+
+/**
  * Postgres errors that mean "the server was busy, ask again" rather than "this
  * statement is wrong": query cancelled by statement_timeout, serialization
  * failure, deadlock victim. Everything else (FK violations, bad columns) is a

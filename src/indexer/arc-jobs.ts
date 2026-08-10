@@ -36,12 +36,13 @@ import { arcTestnet } from "@/config/arc-chain";
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
-  upsertWallet as dbUpsertWallet,
+  makeEnsureWallet as dbMakeEnsureWallet,
   getCursor as dbGetCursor,
   upsertCursor as dbUpsertCursor,
   getWallet as dbGetWallet,
   type InsertSignalEventInput,
 } from "@/db/client";
+import { withRateLimitRetry } from "@/lib/rpc-retry";
 import { buildJobSettledSignal } from "@/scoring/signals";
 import { readAgent } from "@/integrations/erc8004-arc";
 import { isTemplatedIdentity } from "@/scoring/identity-fingerprint";
@@ -491,22 +492,28 @@ export async function runArcJobsIndexer(
     jobsContract,
     windowSize: opts.windowSize,
     maxWindows: opts.maxWindows ?? ARC_DEFAULT_MAX_WINDOWS,
-    getHead: async () => client.getBlockNumber(),
+    getHead: async () => withRateLimitRetry(() => client.getBlockNumber()),
     getLogs: async (fromBlock, toBlock) => {
-      const [createdLogs, releasedLogs] = await Promise.all([
+      // Sequential, not Promise.all: the public Arc RPC answers -32005 to two
+      // concurrent 10k-block getLogs, and keep-fresh swallowed that error in its
+      // try/catch — Arc ingest silently no-oped on every green run until
+      // 2026-08-10.
+      const createdLogs = await withRateLimitRetry(() =>
         client.getLogs({
           address: jobsContract as `0x${string}`,
           event: JOB_CREATED_EVENT,
           fromBlock,
           toBlock,
         }),
+      );
+      const releasedLogs = await withRateLimitRetry(() =>
         client.getLogs({
           address: jobsContract as `0x${string}`,
           event: PAYMENT_RELEASED_EVENT,
           fromBlock,
           toBlock,
         }),
-      ]);
+      );
       const created: ArcJobCreated[] = [];
       for (const log of createdLogs) {
         const rec = parseJobCreated(log);
@@ -524,14 +531,13 @@ export async function runArcJobsIndexer(
     // skip rather than read storage (the escrow exposes no public client
     // getter by jobId in the canonical ABI). Left undefined → core SKIPs.
     blockTimestamp: async (blockNumber) => {
-      const block = await client.getBlock({ blockNumber });
+      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }));
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
-    ensureWallet: async (a) => {
-      await dbUpsertWallet(a, 0, "Unrated", 0, {}, ARC_CHAIN);
-    },
+    // Insert-if-absent: never zeroes an existing wallet's live score.
+    ensureWallet: dbMakeEnsureWallet(ARC_CHAIN),
     getCursor: async (key) => {
       const c = await dbGetCursor(key, ARC_CHAIN);
       if (c)
