@@ -42,7 +42,7 @@ import {
   getWallet as dbGetWallet,
   type InsertSignalEventInput,
 } from "@/db/client";
-import { withRateLimitRetry } from "@/lib/rpc-retry";
+import { INGEST_RETRY, withRateLimitRetry } from "@/lib/rpc-retry";
 import { buildJobSettledSignal } from "@/scoring/signals";
 import { readAgent } from "@/integrations/erc8004-arc";
 import { isTemplatedIdentity } from "@/scoring/identity-fingerprint";
@@ -492,7 +492,7 @@ export async function runArcJobsIndexer(
     jobsContract,
     windowSize: opts.windowSize,
     maxWindows: opts.maxWindows ?? ARC_DEFAULT_MAX_WINDOWS,
-    getHead: async () => withRateLimitRetry(() => client.getBlockNumber()),
+    getHead: async () => withRateLimitRetry(() => client.getBlockNumber(), INGEST_RETRY),
     getLogs: async (fromBlock, toBlock) => {
       // Sequential, not Promise.all: the public Arc RPC answers -32005 to two
       // concurrent 10k-block getLogs, and keep-fresh swallowed that error in its
@@ -505,6 +505,7 @@ export async function runArcJobsIndexer(
           fromBlock,
           toBlock,
         }),
+        INGEST_RETRY,
       );
       const releasedLogs = await withRateLimitRetry(() =>
         client.getLogs({
@@ -513,6 +514,7 @@ export async function runArcJobsIndexer(
           fromBlock,
           toBlock,
         }),
+        INGEST_RETRY,
       );
       const created: ArcJobCreated[] = [];
       for (const log of createdLogs) {
@@ -531,7 +533,7 @@ export async function runArcJobsIndexer(
     // skip rather than read storage (the escrow exposes no public client
     // getter by jobId in the canonical ABI). Left undefined → core SKIPs.
     blockTimestamp: async (blockNumber) => {
-      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }));
+      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }), INGEST_RETRY);
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
     insertTransactions: dbInsertTransactions,

@@ -53,7 +53,7 @@ import {
   upsertCursor as dbUpsertCursor,
   type InsertSignalEventInput,
 } from '@/db/client';
-import { withRateLimitRetry } from '@/lib/rpc-retry';
+import { INGEST_RETRY, withRateLimitRetry } from '@/lib/rpc-retry';
 import { buildPayshRoutedSignal } from '@/scoring/signals';
 
 const CELO_CHAIN: Chain = 'celo';
@@ -402,11 +402,11 @@ export async function runCeloX402Indexer(
       envStart != null
         ? BigInt(envStart)
         : (await client.getBlockNumber()) - BigInt(CELO_DEFAULT_LOOKBACK_BLOCKS),
-    getHead: async () => withRateLimitRetry(() => client.getBlockNumber()),
+    getHead: async () => withRateLimitRetry(() => client.getBlockNumber(), INGEST_RETRY),
     getLogs: (fromBlock, toBlock) =>
-      withRateLimitRetry(() => rpcGetLogs(client, facilitatorList, facilitatorSet, fromBlock, toBlock)),
+      withRateLimitRetry(() => rpcGetLogs(client, facilitatorList, facilitatorSet, fromBlock, toBlock), INGEST_RETRY),
     blockTimestamp: async (blockNumber) => {
-      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }));
+      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }), INGEST_RETRY);
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
     insertTransactions: dbInsertTransactions,
