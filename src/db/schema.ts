@@ -192,6 +192,15 @@ export const transactionsTable = pgTable('transactions', {
   // timeout (57014) once a run touched ~60 wallets. With this index the same
   // read is ~0.3s, now dominated by row serialization rather than the scan.
   index('idx_transactions_wallet_timestamp').on(table.wallet_address, table.timestamp.desc()),
+  // Serves BOTH /api/stats aggregates as index-only scans, so neither touches
+  // the heap: get_transaction_stats (COUNT + SUM(amount)) and
+  // get_facilitator_stats (GROUP BY facilitator, COUNT DISTINCT wallet_address,
+  // SUM, MAX). Leading with facilitator gives the GROUP BY its ordering for
+  // free, and wallet_address next makes the DISTINCT a sorted-group walk.
+  // Measured 2026-08-10 at 948,939 rows: 1.3s / 3.8s on the heap, against a
+  // statement timeout that get_transaction_stats had already started tripping.
+  index('idx_transactions_stats_covering')
+    .on(table.facilitator, table.wallet_address, table.amount, table.timestamp),
 ]);
 
 export const scoresTable = pgTable('scores', {
