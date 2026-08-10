@@ -234,7 +234,26 @@ export interface ArcJobsIndexerDeps {
    * resumes from there. Defaults to unbounded (scan the whole range to head).
    */
   maxWindows?: number;
+  /**
+   * Wall-clock ceiling for the window loop, in ms. On expiry the run stops and
+   * banks the cursor for the windows it completed, exactly like the maxWindows
+   * cap — window COUNT is a poor proxy for the work a window actually costs.
+   * Omit for unbounded (the default the DI tests rely on).
+   */
+  timeBudgetMs?: number;
+  /** Injected clock so the budget is testable without real waiting. */
+  now?: () => number;
 }
+
+/**
+ * Wall-clock slice a scheduled run may spend inside ONE Arc indexer.
+ *
+ * keep-fresh runs the jobs and transfers indexers back to back inside a
+ * 6-hourly job whose steady-state total was ~2 minutes. Both are cursor-based,
+ * so a slice is not a loss — it is how much catch-up each cycle buys. Sized so
+ * the pair adds at most ~4 minutes to a run.
+ */
+export const ARC_RUN_TIME_BUDGET_MS = 120_000;
 
 /** Arc eth_getLogs range cap. Windows must be <= this many blocks. */
 export const ARC_MAX_LOG_WINDOW = 10_000;
@@ -312,9 +331,15 @@ export async function arcJobsIndexer(
   let maxBlock = startBlock - BigInt(1);
   let windowsProcessed = 0;
 
+  const now = deps.now ?? Date.now;
+  const deadline = deps.timeBudgetMs != null ? now() + deps.timeBudgetMs : Number.POSITIVE_INFINITY;
+
   // Paginate in <=windowSize windows. `from`/`to` are inclusive; step is
   // windowSize blocks so [from, from+windowSize-1] never exceeds the cap.
   for (let from = startBlock; from <= head; from += BigInt(windowSize)) {
+    // Checked before the window, so a window is never half-processed.
+    if (now() >= deadline) break;
+
     let to = from + BigInt(windowSize) - BigInt(1);
     if (to > head) to = head;
 
@@ -508,6 +533,7 @@ export async function runArcJobsIndexer(
     jobsContract,
     windowSize: opts.windowSize,
     maxWindows: opts.maxWindows ?? ARC_DEFAULT_MAX_WINDOWS,
+    timeBudgetMs: ARC_RUN_TIME_BUDGET_MS,
     getHead: async () => withRateLimitRetry(() => client.getBlockNumber(), INGEST_RETRY),
     getLogs: async (fromBlock, toBlock) => {
       // Sequential, not Promise.all: the public Arc RPC answers -32005 to two

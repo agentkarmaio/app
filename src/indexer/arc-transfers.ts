@@ -39,7 +39,7 @@ import {
 } from '@/db/client';
 import { INGEST_RETRY, isRateLimitedError, withRateLimitRetry } from '@/lib/rpc-retry';
 import { buildUsdcTransferSignal } from '@/scoring/signals';
-import { ARC_JOBS_CONTRACT, GENESIS_FALLBACK_BLOCK } from './arc-jobs';
+import { ARC_JOBS_CONTRACT, ARC_RUN_TIME_BUDGET_MS, GENESIS_FALLBACK_BLOCK } from './arc-jobs';
 
 /**
  * Plain USDC Transfer log density on Arc Testnet is far higher than the
@@ -136,6 +136,17 @@ export interface ArcTransfersIndexerDeps {
   upsertCursor: (key: string, lastSignature: string, lastSlot?: number) => Promise<void>;
   windowSize?: number;
   maxWindows?: number;
+  /**
+   * Wall-clock ceiling for the window loop, in ms. On expiry the run stops and
+   * banks the cursor for the windows it completed, exactly like the maxWindows
+   * cap. Needed because window COUNT is a poor proxy for work here: each window
+   * can hold hundreds of transfers, each needing a block-timestamp round trip,
+   * so 200 windows ran past 20 minutes inside a 6-hourly job on 2026-08-10.
+   * Omit for unbounded (the default the DI tests rely on).
+   */
+  timeBudgetMs?: number;
+  /** Injected clock so the budget is testable without real waiting. */
+  now?: () => number;
 }
 
 /** Cursor key namespaced by the USDC contract, distinct from arc-jobs's key. */
@@ -182,7 +193,14 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
   let windowsProcessed = 0;
   let fetched = 0;
 
+  const now = deps.now ?? Date.now;
+  const deadline = deps.timeBudgetMs != null ? now() + deps.timeBudgetMs : Number.POSITIVE_INFINITY;
+
   for (let from = startBlock; from <= head; from += BigInt(windowSize)) {
+    // Checked before the window, so a window is never half-processed: whatever
+    // is already read gets banked and the next run picks up from the cursor.
+    if (now() >= deadline) break;
+
     let to = from + BigInt(windowSize) - BigInt(1);
     if (to > head) to = head;
 
@@ -282,6 +300,7 @@ export async function runArcTransfersIndexer(
     usdcContract,
     windowSize: opts.windowSize,
     maxWindows: opts.maxWindows ?? ARC_TRANSFERS_DEFAULT_MAX_WINDOWS,
+    timeBudgetMs: ARC_RUN_TIME_BUDGET_MS,
     getHead: async () => withRateLimitRetry(() => client.getBlockNumber(), INGEST_RETRY),
     getLogs: async (fromBlock, toBlock) => {
       const logs = await withRateLimitRetry(() => client.getLogs({
