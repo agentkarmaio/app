@@ -42,7 +42,7 @@ import {
   getWallet as dbGetWallet,
   type InsertSignalEventInput,
 } from "@/db/client";
-import { INGEST_RETRY, withRateLimitRetry } from "@/lib/rpc-retry";
+import { INGEST_RETRY, isRateLimitedError, withRateLimitRetry } from "@/lib/rpc-retry";
 import { buildJobSettledSignal } from "@/scoring/signals";
 import { readAgent } from "@/integrations/erc8004-arc";
 import { isTemplatedIdentity } from "@/scoring/identity-fingerprint";
@@ -317,9 +317,25 @@ export async function arcJobsIndexer(
   for (let from = startBlock; from <= head; from += BigInt(windowSize)) {
     let to = from + BigInt(windowSize) - BigInt(1);
     if (to > head) to = head;
-    if (to > maxBlock) maxBlock = to;
 
-    const { created, released } = await deps.getLogs(from, to);
+    // Arc's public RPC enforces a getLogs QUOTA, not a per-second rate: it
+    // serves a handful of windows and then refuses for a long stretch, so no
+    // amount of pacing or backoff carries a whole run (measured 2026-08-10).
+    // Treat exhaustion as "that is all for now": keep the windows already read,
+    // stop, and resume from the cursor next run. Letting it throw discarded the
+    // entire run's work — Arc ingest logged nothing new for 25 days.
+    let window: GetLogsWindow;
+    try {
+      window = await deps.getLogs(from, to);
+    } catch (err) {
+      if (!isRateLimitedError(err)) throw err; // a real bug must still fail loudly
+      break;
+    }
+    const { created, released } = window;
+
+    // ONLY after a successful read — maxBlock drives the cursor, so advancing it
+    // for a window we failed to read would silently skip those blocks forever.
+    if (to > maxBlock) maxBlock = to;
 
     // jobId → client (consumer face) recovered from JobCreated in this window.
     const clientByJob = new Map<string, string>();

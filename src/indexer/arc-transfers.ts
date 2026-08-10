@@ -37,7 +37,7 @@ import {
   upsertCursor as dbUpsertCursor,
   type InsertSignalEventInput,
 } from '@/db/client';
-import { INGEST_RETRY, withRateLimitRetry } from '@/lib/rpc-retry';
+import { INGEST_RETRY, isRateLimitedError, withRateLimitRetry } from '@/lib/rpc-retry';
 import { buildUsdcTransferSignal } from '@/scoring/signals';
 import { ARC_JOBS_CONTRACT, GENESIS_FALLBACK_BLOCK } from './arc-jobs';
 
@@ -185,9 +185,21 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
   for (let from = startBlock; from <= head; from += BigInt(windowSize)) {
     let to = from + BigInt(windowSize) - BigInt(1);
     if (to > head) to = head;
-    if (to > maxBlock) maxBlock = to;
 
-    const transfers = await deps.getLogs(from, to);
+    // Same quota behaviour as arc-jobs.ts: keep the windows already read and
+    // resume next run, rather than throwing the whole run's work away. This
+    // cursor had not moved since 2026-07-11 for exactly that reason.
+    let transfers: ArcTransfer[];
+    try {
+      transfers = await deps.getLogs(from, to);
+    } catch (err) {
+      if (!isRateLimitedError(err)) throw err;
+      break;
+    }
+
+    // ONLY after a successful read — see arc-jobs.ts for why advancing maxBlock
+    // past an unread window silently drops those blocks.
+    if (to > maxBlock) maxBlock = to;
 
     for (const transfer of transfers) {
       if (isEscrowInternal(transfer)) continue; // covered by arc-jobs.ts already

@@ -344,6 +344,59 @@ describe('arcJobsIndexer — DI core', () => {
     expect(state.cursors[0][1]).toBe('19999');
   });
 
+  // Arc's public RPC hands out a small getLogs QUOTA, not a per-second rate:
+  // measured 2026-08-10, it serves ~4 windows and then refuses everything for a
+  // long while, so neither pacing nor backoff gets a run through. Letting that
+  // throw out of the loop discarded EVERY window the run had already read —
+  // keep-fresh burned 6 minutes on Arc each cycle and the cursor stayed put, so
+  // Arc ingest recorded nothing between 2026-07-16 and 2026-08-10. Absorb the
+  // throttle, keep what was read, resume next run.
+  test('a mid-run throttle keeps the windows already read and stops cleanly', async () => {
+    const window: GetLogsWindow = { created: [], released: [] };
+    let calls = 0;
+    const { deps, state } = makeDeps(window, {
+      getHead: async () => BigInt(50_000),
+      getLogs: async (from: bigint, to: bigint) => {
+        calls++;
+        if (calls > 2) throw Object.assign(new Error('Request exceeds defined limit.'), { code: -32005 });
+        state.windows.push([from, to]);
+        return window;
+      },
+    });
+
+    await arcJobsIndexer(deps); // must NOT reject
+
+    // Two windows were read ([0,9999] and [10000,19999]); the third throttled.
+    // The cursor must land on the last window actually READ, never on the one we
+    // failed to read — advancing past it would silently drop those blocks.
+    expect(state.cursors[0][1]).toBe('19999');
+  });
+
+  test('a throttle on the very first window advances no cursor at all', async () => {
+    const window: GetLogsWindow = { created: [], released: [] };
+    const { deps, state } = makeDeps(window, {
+      getHead: async () => BigInt(50_000),
+      getCursor: async () => ({ last_signature: '4200', last_slot: 4200 }),
+      getLogs: async () => { throw Object.assign(new Error('throttled'), { code: -32005 }); },
+    });
+
+    await arcJobsIndexer(deps);
+
+    // Nothing was read, so the cursor must stay where it was — writing 4200 back
+    // is harmless, but anything beyond it would skip unread blocks.
+    for (const [, last] of state.cursors) expect(Number(last)).toBeLessThanOrEqual(4200);
+  });
+
+  test('a non-throttle error still fails the run loudly', async () => {
+    const window: GetLogsWindow = { created: [], released: [] };
+    const { deps } = makeDeps(window, {
+      getHead: async () => BigInt(50_000),
+      getLogs: async () => { throw new Error('malformed ABI'); },
+    });
+
+    await expect(arcJobsIndexer(deps)).rejects.toThrow('malformed ABI');
+  });
+
   test('startBlock = cursor.last_slot + 1 when a cursor exists', async () => {
     const window: GetLogsWindow = { created: [], released: [] };
     const { deps, state } = makeDeps(window, {
