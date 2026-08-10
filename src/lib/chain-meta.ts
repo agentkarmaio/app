@@ -2,6 +2,14 @@ import { CHAINS, type Chain } from '@/db/schema';
 
 export const DEFAULT_CHAIN: Chain = 'solana';
 
+/**
+ * Chain the header switcher shows on pages that aren't pinned to a chain
+ * (`/`, `/explore`, `/protocol`, …). Display-only — deliberately NOT
+ * `DEFAULT_CHAIN`, which is the data-layer default behind ~25 `db/client.ts`
+ * signatures and must stay `solana` for back-compat.
+ */
+export const UI_DEFAULT_CHAIN: Chain = 'stellar';
+
 export interface ChainMeta {
   label: string;
   /** Public path to the chain's brand mark (SVG, brand color baked in). */
@@ -12,11 +20,12 @@ export interface ChainMeta {
 
 /**
  * Display metadata for every supported chain. Keyed by Chain so adding a chain
- * to CHAINS is a compile error here until metadata exists. Solana has no
- * dedicated context page → links home ('/'); Celo → /celo; Stellar → /stellar.
+ * to CHAINS is a compile error here until metadata exists. Every chain owns a
+ * dedicated context page — Solana → /solana, Celo → /celo, Stellar → /stellar,
+ * Arc → /arc. None maps to '/', which is the chain-neutral home.
  */
 export const CHAIN_META: Record<Chain, ChainMeta> = {
-  solana: { label: 'Solana', logo: '/logos/solana-mark.svg', href: '/' },
+  solana: { label: 'Solana', logo: '/logos/solana-mark.svg', href: '/solana' },
   celo: { label: 'Celo', logo: '/logos/celo.svg', href: '/celo' },
   stellar: { label: 'Stellar', logo: '/logos/stellar.svg', href: '/stellar' },
   // Arc network icon per Arc brand guidelines §3.4 — that asset is the one
@@ -25,7 +34,9 @@ export const CHAIN_META: Record<Chain, ChainMeta> = {
   arc: { label: 'Arc', logo: '/logos/arc-network.svg', href: '/arc' },
 };
 
-/** Solana first, then remaining chains in CHAINS declaration order. */
+/** Solana first, then remaining chains in CHAINS declaration order.
+ *  Ordering is independent of UI_DEFAULT_CHAIN — the default is which chain a
+ *  chain-neutral page reads as, not which one heads the dropdown. */
 export function chainOptions(): Chain[] {
   return [...CHAINS];
 }
@@ -67,26 +78,29 @@ export function isAgentPath(pathname: string): boolean {
  * are format-unique; an EVM 0x address is Celo/Arc-ambiguous, so we seed Celo
  * (both EVM chains share one wallet button) and the navbar refines the label
  * from a `?chain=` query param when present.
+ *
+ * The base58 fallback is address-class inference, not a display preference — it
+ * is pinned to 'solana' and must never follow UI_DEFAULT_CHAIN.
  */
 export function agentChainFromPath(pathname: string): Chain {
   const seg = pathname.startsWith('/agent/') ? pathname.slice('/agent/'.length).split('/')[0] : '';
   const address = decodeURIComponent(seg);
   if (/^0x[a-fA-F0-9]{40}$/.test(address)) return 'celo';  // EVM (Celo/Arc) — seed Celo
   if (/^G[A-Z2-7]{55}$/.test(address)) return 'stellar';   // Stellar StrKey public key
-  return DEFAULT_CHAIN;                                     // base58 / anything else → Solana
+  return 'solana';                                          // base58 / anything else → Solana
 }
 
 /**
- * Derive the active chain from the pathname via longest-prefix match. Solana is
- * the fallback (its href is '/', which is not treated as a prefix). Shared by
- * the navbar (which connect button to show) and the chain switcher.
+ * Derive the active chain from the pathname via longest-prefix match. Every
+ * chain owns a context page, so '/' matches nothing and falls back to
+ * UI_DEFAULT_CHAIN. Shared by the navbar (which connect button to show) and the
+ * chain switcher.
  */
 export function activeChainFromPath(pathname: string): Chain {
-  let best: Chain = DEFAULT_CHAIN;
+  let best: Chain = UI_DEFAULT_CHAIN;
   let bestLen = -1;
   for (const c of chainOptions()) {
     const href = CHAIN_META[c].href;
-    if (href === '/') continue; // solana is the fallback, not a prefix
     if ((pathname === href || pathname.startsWith(href + '/')) && href.length > bestLen) {
       best = c;
       bestLen = href.length;

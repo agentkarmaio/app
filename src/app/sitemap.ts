@@ -12,6 +12,7 @@ const MAX_AGENTS_IN_SITEMAP = 5000;
 const STATIC_ROUTES: { path: string; changeFrequency: MetadataRoute.Sitemap[number]['changeFrequency']; priority: number }[] = [
   { path: '/',           changeFrequency: 'hourly',  priority: 1.0 },
   { path: '/explore',    changeFrequency: 'hourly',  priority: 0.9 },
+  { path: '/solana',     changeFrequency: 'weekly',  priority: 0.8 },
   { path: '/succession', changeFrequency: 'weekly',  priority: 0.8 },
   { path: '/paysh',      changeFrequency: 'hourly',  priority: 0.9 },
   { path: '/protocol',   changeFrequency: 'weekly',  priority: 0.8 },

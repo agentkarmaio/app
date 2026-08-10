@@ -20,17 +20,16 @@ function ConnectButton() {
 }
 
 const PRIMARY_ITEMS = [
-  { href: '/', label: 'Leaderboard' },
+  { href: '/', label: 'Home' },
   { href: '/explore', label: 'Explore' },
-  { href: '/succession', label: 'Succession' },
   { href: '/protocol', label: 'Protocol' },
 ];
 
 const MORE_ITEMS = [
+  { href: '/succession', label: 'Agent Enact' },
   { href: '/bonding', label: 'Bonding' },
   { href: '/estates', label: 'Estates' },
   { href: '/sureties', label: 'Sureties' },
-  { href: '/celo', label: 'Celo' },
   { href: '/widget', label: 'Widget' },
   { href: '/paysh', label: 'pay.sh' },
   { href: '/docs/mcp', label: 'MCP' },
