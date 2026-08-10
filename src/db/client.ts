@@ -255,6 +255,21 @@ export function makeEnsureWallet(chain: Chain): (address: string) => Promise<voi
 }
 
 /**
+ * Batch counterpart of {@link makeEnsureWallet}, for indexer cores that already
+ * hold the whole wallet set before writing.
+ *
+ * Both exist because the cores differ, not because the concern does: cores that
+ * discover wallets one at a time take the single-address dep, while the Arc
+ * indexers accumulate a Set across the whole run. Feeding that Set through the
+ * single-address dep meant one round trip per wallet — a dense Arc transfer
+ * window carries ~1,650 transfers, so ~3,300 sequential round trips, and two
+ * windows exhausted a 2-minute run budget (2026-08-10).
+ */
+export function makeEnsureWallets(chain: Chain): (addresses: string[]) => Promise<void> {
+  return async (addresses: string[]) => { await ensureWalletsExist(addresses, chain); };
+}
+
+/**
  * Postgres errors that mean "the server was busy, ask again" rather than "this
  * statement is wrong": query cancelled by statement_timeout, serialization
  * failure, deadlock victim. Everything else (FK violations, bad columns) is a

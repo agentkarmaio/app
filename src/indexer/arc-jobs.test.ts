@@ -95,7 +95,7 @@ function makeDeps(
     blockTimestamp: async () => TS,
     insertTransactions: async (rows: Omit<Transaction, 'id'>[]) => { inserted.push(...rows); return rows.length; },
     insertSignalEvents: async (s: unknown[]) => { signals.push(...s); return s.length; },
-    ensureWallet: async (a: string) => { ensured.push(a); },
+    ensureWallets: async (addresses: string[]) => { ensured.push(...addresses); },
     getCursor: async () => null,
     upsertCursor: async (key: string, last: string, slot?: number) => { cursors.push([key, last, slot]); },
     ...overrides,
@@ -385,6 +385,31 @@ describe('arcJobsIndexer — DI core', () => {
     // Nothing was read, so the cursor must stay where it was — writing 4200 back
     // is harmless, but anything beyond it would skip unread blocks.
     for (const [, last] of state.cursors) expect(Number(last)).toBeLessThanOrEqual(4200);
+  });
+
+  // A dense Arc window carries ~1,650 transfers → ~3,300 wallets. Ensuring them
+  // one round trip at a time is what kept arc-transfers to 1,000 blocks per run
+  // against a 5M-block backlog (2026-08-10). The whole set goes in one call.
+  test('wallets are ensured in ONE batched call, not one per wallet', async () => {
+    const window: GetLogsWindow = {
+      created: [
+        created({ jobId: BigInt(1), client: '0xc1', provider: '0xp1' }),
+        created({ jobId: BigInt(2), client: '0xc2', provider: '0xp2' }),
+      ],
+      released: [
+        released({ jobId: BigInt(1), provider: '0xp1', rawAmount: BigInt(1_000_000) }),
+        released({ jobId: BigInt(2), provider: '0xp2', rawAmount: BigInt(2_000_000) }),
+      ],
+    };
+    const batches: string[][] = [];
+    const { deps } = makeDeps(window, {
+      ensureWallets: async (addresses: string[]) => { batches.push(addresses); },
+    });
+
+    await arcJobsIndexer(deps);
+
+    expect(batches).toHaveLength(1);
+    expect([...batches[0]].sort()).toEqual(['0xc1', '0xc2', '0xp1', '0xp2']);
   });
 
   // Window COUNT is a poor proxy for the work a window costs: a single one can

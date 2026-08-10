@@ -36,7 +36,7 @@ import { arcTestnet } from "@/config/arc-chain";
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
-  makeEnsureWallet as dbMakeEnsureWallet,
+  makeEnsureWallets as dbMakeEnsureWallets,
   getCursor as dbGetCursor,
   upsertCursor as dbUpsertCursor,
   getWallet as dbGetWallet,
@@ -216,7 +216,9 @@ export interface ArcJobsIndexerDeps {
   blockTimestamp: (blockNumber: bigint) => Promise<string>;
   insertTransactions: (rows: Omit<Transaction, "id">[]) => Promise<number>;
   insertSignalEvents: (inputs: InsertSignalEventInput[]) => Promise<number>;
-  ensureWallet: (address: string) => Promise<void>;
+  /** Ensure every wallet row exists before the FK-bearing inserts. Batched:
+   *  the core holds the whole set, so this is ONE round trip, not one per wallet. */
+  ensureWallets: (addresses: string[]) => Promise<void>;
   getCursor: (
     key: string,
   ) => Promise<{ last_signature: string; last_slot: number | null } | null>;
@@ -452,7 +454,7 @@ export async function arcJobsIndexer(
   }
 
   // FK pre-create both faces before inserting transactions / signal_events.
-  for (const w of wallets) await deps.ensureWallet(w);
+  await deps.ensureWallets([...wallets]);
 
   const inserted = await deps.insertTransactions(rows);
   await deps.insertSignalEvents(signals);
@@ -581,7 +583,7 @@ export async function runArcJobsIndexer(
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
     // Insert-if-absent: never zeroes an existing wallet's live score.
-    ensureWallet: dbMakeEnsureWallet(ARC_CHAIN),
+    ensureWallets: dbMakeEnsureWallets(ARC_CHAIN),
     getCursor: async (key) => {
       const c = await dbGetCursor(key, ARC_CHAIN);
       if (c)
