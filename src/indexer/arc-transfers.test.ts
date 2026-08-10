@@ -58,7 +58,7 @@ function makeDeps(
     blockTimestamp: async () => TS,
     insertTransactions: async (rows: unknown[]) => { inserted.push(...rows); return rows.length; },
     insertSignalEvents: async (s: unknown[]) => { signals.push(...s); return s.length; },
-    ensureWallet: async (a: string) => { ensured.push(a); },
+    ensureWallets: async (addresses: string[]) => { ensured.push(...addresses); },
     getCursor: async () => null,
     upsertCursor: async (key: string, last: string, slot?: number) => { cursors.push([key, last, slot]); },
     ...overrides,

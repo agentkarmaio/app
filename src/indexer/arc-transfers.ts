@@ -32,7 +32,7 @@ import { arcTestnet } from '@/config/arc-chain';
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
-  makeEnsureWallet as dbMakeEnsureWallet,
+  makeEnsureWallets as dbMakeEnsureWallets,
   getCursor as dbGetCursor,
   upsertCursor as dbUpsertCursor,
   type InsertSignalEventInput,
@@ -131,7 +131,8 @@ export interface ArcTransfersIndexerDeps {
   blockTimestamp: (blockNumber: bigint) => Promise<string>;
   insertTransactions: (rows: Omit<Transaction, 'id'>[]) => Promise<number>;
   insertSignalEvents: (inputs: InsertSignalEventInput[]) => Promise<number>;
-  ensureWallet: (address: string) => Promise<void>;
+  /** Batched — see arc-jobs.ts. One round trip for the whole run's wallet set. */
+  ensureWallets: (addresses: string[]) => Promise<void>;
   getCursor: (key: string) => Promise<{ last_signature: string; last_slot: number | null } | null>;
   upsertCursor: (key: string, lastSignature: string, lastSlot?: number) => Promise<void>;
   windowSize?: number;
@@ -253,7 +254,7 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
     return { fetched: 0, inserted: 0, cursors };
   }
 
-  for (const w of wallets) await deps.ensureWallet(w);
+  await deps.ensureWallets([...wallets]);
   await deps.insertTransactions(rows);
   const inserted = await deps.insertSignalEvents(signals);
 
@@ -320,7 +321,7 @@ export async function runArcTransfersIndexer(
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
     // Insert-if-absent: never zeroes an existing wallet's live score.
-    ensureWallet: dbMakeEnsureWallet(ARC_CHAIN),
+    ensureWallets: dbMakeEnsureWallets(ARC_CHAIN),
     getCursor: async (key) => {
       const c = await dbGetCursor(key, ARC_CHAIN);
       if (c) return { last_signature: c.last_signature, last_slot: c.last_slot };
