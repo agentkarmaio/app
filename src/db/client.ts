@@ -46,6 +46,7 @@ import {
   type ArcTxAggRow,
 } from '@/lib/arc-dashboard-stats';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
+import { withRetry, type RetryOpts } from '@/lib/retry';
 
 // Every DB helper that takes a wallet address optionally takes a chain. The
 // default is 'solana' for back-compat with all pre-existing callers — Solana
@@ -226,14 +227,53 @@ export async function ensureWalletsExist(
   const unique = [...new Set(addresses)];
   if (unique.length === 0) return;
 
-  const { error } = await supabase
-    .from('wallets')
-    .upsert(
-      unique.map((address) => ({ chain, address })),
-      { onConflict: 'chain,address', ignoreDuplicates: true },
-    );
+  await withTransientDbRetry(async () => {
+    const { error } = await supabase
+      .from('wallets')
+      .upsert(
+        unique.map((address) => ({ chain, address })),
+        { onConflict: 'chain,address', ignoreDuplicates: true },
+      );
 
-  if (error) throw error;
+    if (error) throw error;
+  });
+}
+
+/**
+ * Postgres errors that mean "the server was busy, ask again" rather than "this
+ * statement is wrong": query cancelled by statement_timeout, serialization
+ * failure, deadlock victim. Everything else (FK violations, bad columns) is a
+ * real bug and must surface on the first attempt.
+ */
+const TRANSIENT_PG_CODES = new Set(['57014', '40001', '40P01']);
+
+function isTransientDbError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && TRANSIENT_PG_CODES.has(code);
+}
+
+/**
+ * Retry a DB statement that momentary contention cancelled.
+ *
+ * Only for statements that are safe to run twice. `ensureWalletsExist` is —
+ * ON CONFLICT DO NOTHING makes it idempotent — which is why the retry lives at
+ * that call site rather than wrapping every write. The 2026-08-09 keep-fresh
+ * failure was a single 57014 on a 141-row upsert that took down the entire
+ * out-of-process ingest floor; a floor built to survive outages cannot exit 1
+ * on one transient cancel. A persistent stall still throws after the budget, so
+ * a real regression continues to page.
+ */
+export function withTransientDbRetry<T>(fn: () => Promise<T>, opts: RetryOpts = {}): Promise<T> {
+  const retries = opts.retries ?? 3;
+  return withRetry(fn, isTransientDbError, {
+    baseMs: 1000,
+    ...opts,
+    retries,
+    onRetry: (err, attempt, delayMs) =>
+      console.warn(
+        `[db] transient ${(err as { code?: string }).code} — retry ${attempt}/${retries} in ${Math.round(delayMs)}ms`,
+      ),
+  });
 }
 
 export interface LeaderboardFilters {

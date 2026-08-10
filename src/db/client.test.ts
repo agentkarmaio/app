@@ -14,6 +14,7 @@ import {
   getAllTransactions,
   markAllWalletsDirty,
   ensureWalletsExist,
+  withTransientDbRetry,
 } from './client';
 import type { Transaction } from './schema';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
@@ -901,5 +902,90 @@ describe('ensureWalletsExist is insert-if-absent, never an overwrite', () => {
 
     await ensureWalletsExist(['W9']);
     expect((captured[0].rows as Array<Record<string, unknown>>)[0].chain).toBe('solana');
+  });
+});
+
+// ── ensureWalletsExist: transient-timeout resilience ────────────────────────
+//
+// Regression: 2026-08-09 keep-fresh FLOOR FAILED. A 141-row insert-if-absent —
+// trivially small — came back `57014 canceling statement due to statement
+// timeout` under momentary DB contention, and the unretried throw killed the
+// whole out-of-process ingest floor (exit 1, Telegram page). The next three
+// scheduled runs were green, so the query is not the problem; a floor whose job
+// is surviving outages must not die on one transient cancel. Retry is safe here
+// precisely because ON CONFLICT DO NOTHING makes the statement idempotent.
+describe('ensureWalletsExist survives a transient statement timeout', () => {
+  afterAll(() => { __setSupabaseForTest(null); });
+
+  /** Fails the first `failures` upserts with `error`, then succeeds. */
+  function makeFlakySupabase(failures: number, error: { code: string; message?: string }) {
+    let attempts = 0;
+    const state = { attempts: 0 };
+    __setSupabaseForTest({
+      from() {
+        return {
+          upsert: async () => {
+            attempts++;
+            state.attempts = attempts;
+            return attempts <= failures ? { error } : { error: null };
+          },
+        };
+      },
+    });
+    return state;
+  }
+
+  test('retries a 57014 statement timeout instead of failing the run', async () => {
+    const state = makeFlakySupabase(1, {
+      code: '57014',
+      message: 'canceling statement due to statement timeout',
+    });
+    await ensureWalletsExist(['W1', 'W2'], 'solana'); // one real ~1s backoff
+    expect(state.attempts).toBe(2); // cancelled once, then through
+  }, 15_000);
+
+  test('a non-transient error is rethrown immediately, without burning retries', async () => {
+    const state = makeFlakySupabase(99, { code: '23503', message: 'foreign key violation' });
+    await expect(ensureWalletsExist(['W1'])).rejects.toMatchObject({ code: '23503' });
+    expect(state.attempts).toBe(1);
+  });
+});
+
+// The retry budget and classifier themselves, with the backoff wound down so
+// the give-up path is testable without a 7-second wait.
+describe('withTransientDbRetry', () => {
+  const fast = { baseMs: 1, jitter: false };
+
+  test('gives up after the budget so a persistent stall still pages', async () => {
+    let calls = 0;
+    await expect(
+      withTransientDbRetry(async () => {
+        calls++;
+        throw { code: '57014', message: 'canceling statement' };
+      }, { ...fast, retries: 3 }),
+    ).rejects.toMatchObject({ code: '57014' });
+    expect(calls).toBe(4); // initial + 3 retries
+  });
+
+  test('retries serialization failures and deadlock victims too', async () => {
+    for (const code of ['40001', '40P01']) {
+      let calls = 0;
+      await withTransientDbRetry(async () => {
+        calls++;
+        if (calls === 1) throw { code };
+      }, fast);
+      expect(calls).toBe(2);
+    }
+  });
+
+  test('never retries a schema or constraint error', async () => {
+    let calls = 0;
+    await expect(
+      withTransientDbRetry(async () => {
+        calls++;
+        throw { code: '42703', message: 'column does not exist' };
+      }, fast),
+    ).rejects.toMatchObject({ code: '42703' });
+    expect(calls).toBe(1);
   });
 });
