@@ -8,10 +8,17 @@ name: Arc farm detector
 # a repeatable, scheduled check. See
 # docs/superpowers/specs/2026-07-11-arc-farm-detector-design.md.
 #
-# Required repo secrets (optional — no-ops with a warning if unset):
+# Required repo secrets:
+#   NEXT_PUBLIC_SUPABASE_URL   \ isTemplatedCounterparty resolves an address to
+#   SUPABASE_SERVICE_ROLE_KEY  / its arc_agent_id via the DB. The require-env
+#                                preflight fails the run loudly at line 1 if
+#                                unset — the 2026-07-13/07-20 runs died on this
+#                                8 frames deep with no usable message.
+# Alerting secrets (optional — no-ops with a warning if unset):
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_ALERT_CHAT_ID
 # Optional repo secret:
-#   ARC_RPC_URL   RPC override; falls back to the public Arc Testnet RPC.
+#   ARC_RPC_URL   RPC override; falls back to the public Arc Testnet RPC, which
+#                 throttles hard — the script paces + backs off either way.
 
 on:
   schedule:
@@ -38,6 +45,8 @@ jobs:
         id: detect
         env:
           ARC_RPC_URL: ${{ secrets.ARC_RPC_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: bun run scripts/arc-farm-detector.ts
 
       - name: Alert on flagged ratios

@@ -28,6 +28,7 @@ import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
 import type { Erc8004RegistrationStatus } from '@/db/schema';
 import { scoreMetadataQuality } from '@/scoring/celo-metadata';
 import { safeFetchJson, type DnsLookup } from '@/lib/ssrf-guard';
+import { isRateLimitedError, withRateLimitRetry } from '@/lib/rpc-retry';
 
 const ONE = BigInt(1);
 const TWO = BigInt(2);
@@ -247,11 +248,18 @@ export async function findRegistryTip(
   client: Pick<PublicClient, 'readContract'>,
   identityRegistry: `0x${string}`,
 ): Promise<number> {
+  // A throttled probe must NOT read as "no such agent": swallowing a rate limit
+  // silently converges the binary search on a wrong tip, and every caller then
+  // samples garbage ids with no signal that anything went wrong. Retry
+  // throttles; treat only real errors (reverts) as non-existence.
   const exists = async (id: bigint): Promise<boolean> => {
     try {
-      await client.readContract({ address: identityRegistry, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [id] });
+      await withRateLimitRetry(() =>
+        client.readContract({ address: identityRegistry, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [id] }),
+      );
       return true;
-    } catch {
+    } catch (err) {
+      if (isRateLimitedError(err)) throw err; // budget exhausted — fail loud, don't guess a tip
       return false;
     }
   };
