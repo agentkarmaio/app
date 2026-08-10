@@ -1,15 +1,16 @@
 /* Hallmark · macrostructure: Stat-Led · tone: technical-austere · anchor hue: indigo
- * theme: AK system (inherited from DESIGN.md) · anchor metaphor: the LOOP
- * audience: builders + grant reviewers · use: AgentEnact execution-layer explainer
+ * theme: AK system (inherited from DESIGN.md) · anchor metaphor: the BIRTH of an agent
+ * audience: builders shipping agents · use: AgentEnact execution-layer explainer
+ *
+ * Thesis (Kerem, 2026-08-10): AgentEnact is an execution layer in the Celina
+ * (usecelina.xyz) sense — the stack you use to CREATE and RUN an agent on a
+ * network. It is NOT a hiring marketplace. Payments are one capability the stack
+ * gives an agent, not the product.
  *
  * Status discipline: AgentEnact is at CONCEPT stage. Nothing here may read as
- * shipped. The only thing that exists is the Arc-testnet prototype benchmark
- * (2026-04-22) — every number on this page comes from that run or from the
- * production reputation layer that already serves it. `@agentkarma/enact` is
- * unpublished and is described in the future tense throughout.
- *
- * Canonical source: ../../scf-technical-architecture.md §4.1,
- * ../../scf-application-draft.md §4, ../../arc-loop-evidence/README.md
+ * shipped. The only executed evidence is the Arc-testnet prototype run
+ * (2026-04-22) and AgentKarma's own registered agent identities; both are stated
+ * as what they are. The package is described in the future tense throughout.
  */
 
 import type { Metadata } from 'next';
@@ -18,50 +19,50 @@ import { ArrowLeft, ArrowRight, ArrowUpRight } from 'lucide-react';
 import { SectionHead, Stat, LiveFact } from '@/components/karma/section-head';
 
 export const metadata: Metadata = {
-  title: 'AgentEnact — the execution layer where agents hire agents',
+  title: 'AgentEnact — the execution layer for creating on-chain agents',
   description:
-    'Agents answer unpaid requests with HTTP 402, get paid in USDC on-chain, and verify settlement before serving. Execution generates reputation; reputation wins execution. Concept stage — benchmarked on Arc testnet, 40 real settlements.',
+    'The stack you use to create and run an agent on a network: a wallet it controls, an on-chain identity in the ERC-8004 registry, capabilities it can act through, and payment rails — with reputation wired in from its first transaction. Concept stage.',
   alternates: { canonical: '/agent-enact' },
 };
 
 // Roman-numeral spine — quiet orientation marks, never "01/FEATURES" eyebrows.
 const SPINE = {
-  loop: 'I',
-  flywheel: 'II',
-  proof: 'III',
-  package: 'IV',
+  what: 'I',
+  reputation: 'II',
+  networks: 'III',
+  proof: 'IV',
   invariants: 'V',
 } as const;
 
 // Verified 2026-04-22 on Arc testnet (chain 5042002). Every proof hash in the
 // benchmark log is a real transaction; see arc-loop-evidence/ in the project root.
 const BENCHMARK = {
-  requests: '20',
+  agents: '3',
   settlements: '40',
-  margin: '60%',
   feePerSettlement: '$0.00045',
+  margin: '60%',
 } as const;
 
-const LOOP_STEPS = [
+const PARTS = [
   {
     n: '1',
-    title: 'A worker prices the job',
-    body: 'A hiring agent calls a worker endpoint with no payment attached. The worker answers HTTP 402 Payment Required and quotes a price in USDC — a machine-readable offer, not a signup flow.',
+    title: 'A wallet it controls',
+    body: 'An agent that cannot hold or move value is a chatbot. The stack gives it a key of its own — generated and held by the operator, never by us — so it can pay, be paid, and sign for itself.',
   },
   {
     n: '2',
-    title: 'The hiring agent picks by karma',
-    body: 'Several workers can answer the same request. The hiring module ranks candidates by their published AgentKarma score — settlement-backed reputation is the tie-breaker, not marketing copy on a landing page.',
+    title: 'An identity the network can see',
+    body: 'The agent is registered in its network’s ERC-8004 identity registry at creation. It is discoverable, attestable, and addressable by other agents from the moment it exists — not after someone remembers to list it.',
   },
   {
     n: '3',
-    title: 'Payment settles on-chain',
-    body: 'The hiring agent pays USDC and retries the request with the payment as proof. The settlement is a public ledger fact from the moment it lands — no invoice, no trust in either party.',
+    title: 'Capabilities it can act through',
+    body: 'Reading chain state and executing transactions, exposed as tools an LLM can actually call. The agent is wired to the chain through one catalog rather than a pile of bespoke integrations.',
   },
   {
     n: '4',
-    title: 'The worker verifies, then serves',
-    body: 'Before doing the work, the worker confirms the settlement on-ledger itself. Result served. That completed payment is now a Tier-1 receipt the reputation layer already knows how to score.',
+    title: 'Rails to charge and pay',
+    body: 'x402 in both directions: the agent can price its own work and settle for work it consumes. Payments are a capability the stack hands it, not a marketplace it has to join.',
   },
 ] as const;
 
@@ -82,25 +83,26 @@ export default function AgentEnactPage() {
           AgentEnact · execution layer
         </p>
         <h1 className="text-[36px] font-[560] leading-[1.1] tracking-[-1px] text-[#f7f8f8] sm:text-[44px]">
-          Where agents hire agents.
+          Agents are born on-chain here.
         </h1>
         <p className="max-w-2xl text-[15px] leading-relaxed text-[#8a8f98]">
-          AgentKarma answers who to trust. AgentEnact is the other half: the
-          machine-to-machine commerce loop where that answer gets spent. A worker
-          quotes a price over HTTP 402, a hiring agent pays in USDC, the worker
-          verifies the settlement on-ledger before serving. Every payment lands on
-          a public chain — which is exactly what the reputation layer witnesses.
+          AgentKarma scores agents that already exist. AgentEnact is how they come
+          to exist: the execution layer you use to create and run an agent on a
+          network. A wallet it controls, an identity the registry can see,
+          capabilities it can act through, rails to charge and pay — and a
+          reputation that starts accruing with its first transaction instead of
+          years later.
         </p>
         <p className="max-w-2xl text-[13px] leading-relaxed text-[#62666d]">
-          Concept stage. The loop below has been run end-to-end as a prototype on
-          Arc testnet; the packaged product is scoped, not shipped.
+          Concept stage. Agents built this way have been run end-to-end as a
+          prototype on Arc testnet; the packaged stack is scoped, not shipped.
         </p>
         <div className="flex flex-wrap items-center gap-5 pt-1">
           <a
             href="#proof"
             className="inline-flex items-center gap-1.5 text-[13px] font-[510] text-[#d0d6e0] transition-colors hover:text-[#f7f8f8]"
           >
-            See the benchmark
+            See what already ran
             <ArrowRight className="size-3.5" />
           </a>
           <Link
@@ -113,141 +115,140 @@ export default function AgentEnactPage() {
         </div>
       </section>
 
-      {/* ─────────── I · The loop ─────────── */}
+      {/* ─────────── I · What you get ─────────── */}
       <section className="space-y-7">
         <SectionHead
-          marker={SPINE.loop}
-          title="Four steps, no intermediary."
-          sub="The whole protocol is an HTTP status code and a ledger. No marketplace to list on, no escrow to trust, no platform sitting between the two agents."
+          marker={SPINE.what}
+          title="Four things an agent needs to exist on a network."
+          sub="Every team shipping an agent rebuilds the same four pieces, badly, in a different order. AgentEnact is that floor, assembled once."
           accent="planned"
         />
 
         <div className="grid gap-x-10 gap-y-7 md:grid-cols-2">
-          {LOOP_STEPS.map((step) => (
-            <div key={step.n} className="space-y-1.5">
+          {PARTS.map((part) => (
+            <div key={part.n} className="space-y-1.5">
               <p className="text-[13px] font-[590] text-[#f7f8f8]">
                 <span className="mr-2 font-mono text-[11px] text-[#4f5258]">
-                  {step.n}
+                  {part.n}
                 </span>
-                {step.title}
+                {part.title}
               </p>
               <p className="text-[12.5px] leading-relaxed text-[#8a8f98]">
-                {step.body}
+                {part.body}
               </p>
             </div>
           ))}
         </div>
       </section>
 
-      {/* ─────────── II · The flywheel ─────────── */}
+      {/* ─────────── II · Reputation from birth ─────────── */}
       <section className="space-y-7">
         <SectionHead
-          marker={SPINE.flywheel}
-          title="Execution generates reputation. Reputation wins execution."
-          sub="This is why the two halves belong to one stack. Each job settled is a receipt the scorer already reads; each score published is an input the hiring module already ranks by."
+          marker={SPINE.reputation}
+          title="Reputation is not a thing you apply for later."
+          sub="An agent created through AgentEnact is registered and indexed on day zero, so its very first settlement is already a scored signal. This is the half of the stack nobody else has."
           accent="planned"
         />
 
         <div className="grid gap-x-10 gap-y-6 md:grid-cols-2">
-          <LiveFact title="Every job is a Tier-1 receipt">
-            A completed settlement is the strongest signal AgentKarma accepts —
-            receipt-backed, not self-declared. AgentEnact traffic feeds the same
-            pipeline that already indexes x402 payments across four chains.
+          <LiveFact title="Registered, therefore indexed">
+            Creation writes the agent into its network&apos;s ERC-8004 registry —
+            the same registries AgentKarma already mirrors. There is no separate
+            onboarding step and nothing to claim afterwards.
           </LiveFact>
-          <LiveFact title="Reputation is the routing input">
-            Workers with higher settlement-backed karma win the next job. A score
-            stops being a badge and becomes a market position — and one that can
-            only be earned by getting paid, never bought.
+          <LiveFact title="Every payment is a Tier-1 receipt">
+            Settlements the agent makes and receives are witnessed by the indexer
+            that already runs in production across four chains. Receipt-backed
+            from the start, never self-declared.
           </LiveFact>
-          <LiveFact title="Two-faced, both directions">
-            The loop exercises both scores at once: a worker earns Provider Karma
-            for what it delivers, a hiring agent earns Consumer Karma for how it
-            pays. Same wallet, two independent reputations.
+          <LiveFact title="Two-faced from the first transaction">
+            The agent earns Provider Karma for what it delivers and Consumer Karma
+            for how it pays. One wallet, two independent reputations, both portable
+            as ERC-8004 attestations.
           </LiveFact>
-          <LiveFact title="Our own agents are disclosed">
-            The reference orchestrator and workers we run are openly attributed and
-            their traffic is excluded from third-party scores. Bootstrapping a
-            reputation network with your own volume, undisclosed, would poison the
-            signal we sell.
+          <LiveFact title="Portable, not platform-bound">
+            The reputation lives on-chain, not in our database. An agent created
+            here keeps its score if it never touches another AgentKarma surface
+            again.
           </LiveFact>
         </div>
       </section>
 
-      {/* ─────────── III · The benchmark ─────────── */}
+      {/* ─────────── III · Networks ─────────── */}
+      <section className="space-y-7">
+        <SectionHead
+          marker={SPINE.networks}
+          title="Pick the network. The stack absorbs the difference."
+          sub="AgentKarma already runs one chain-agnostic scorer and one shared schema over Solana, Celo, Stellar and Arc. AgentEnact is scoped to create agents against that same surface rather than a new one per chain."
+          accent="planned"
+        />
+
+        <div className="grid gap-x-10 gap-y-6 md:grid-cols-2">
+          <LiveFact title="One schema, four chains">
+            Wallets are keyed by (chain, address); the scorer is chain-agnostic
+            today. Adding a network is an adapter, not a fork of the product.
+          </LiveFact>
+          <LiveFact title="We adopt registries, we don&apos;t fork them">
+            Agents are created in the network&apos;s existing ERC-8004 registry —
+            8004-solana on Solana, the Soroban port on Stellar, the EVM registries
+            on Celo and Arc. Fragmenting identity would defeat the point.
+          </LiveFact>
+          <LiveFact title="AgentKarma is itself one of these agents">
+            AK holds registered identities on Celo (agentId 9058) and Stellar
+            (agentId 66), publishes attestations from them as a disclosed
+            validator, and answers on its own A2A endpoint. We run what we ship.
+          </LiveFact>
+          <LiveFact title="Standards over surface area">
+            ERC-8004 for identity and attestation, x402 for payment, MCP and A2A
+            for interaction. AgentEnact assembles existing standards; it does not
+            publish a competing one.
+          </LiveFact>
+        </div>
+      </section>
+
+      {/* ─────────── IV · What already ran ─────────── */}
       <section id="proof" className="scroll-mt-24 space-y-7">
         <SectionHead
           marker={SPINE.proof}
-          title="Already run end-to-end on Arc testnet."
-          sub="A 3-hop topology — client → orchestrator → two specialist workers — with a real USDC settlement per task. Stress run of 2026-04-22, chain 5042002. Every proof hash in the log is a real transaction anyone can re-check on the explorer."
+          title="Prototype agents have already run an economy."
+          sub="Not a diagram: an orchestrator and two specialist agents, created and deployed, paying each other in USDC per task. Stress run of 2026-04-22 on Arc testnet, chain 5042002. Every proof hash in the log is a real transaction anyone can re-check on the explorer."
           accent="planned"
         />
 
         <div className="grid grid-cols-2 gap-x-8 gap-y-7 border-y border-[rgb(255_255_255/0.06)] py-7 sm:grid-cols-4">
           <Stat
-            value={BENCHMARK.requests}
-            label="Orchestrated requests"
-            sub="3 hops each"
+            value={BENCHMARK.agents}
+            label="Agents deployed"
+            sub="orchestrator + 2 workers"
           />
           <Stat
             value={BENCHMARK.settlements}
             label="On-chain settlements"
-            sub="one per worker task"
-          />
-          <Stat
-            value={BENCHMARK.margin}
-            label="Gross margin"
-            sub="$0.01 revenue / $0.004 cost"
+            sub="one per task, tx-hashed"
           />
           <Stat
             value={BENCHMARK.feePerSettlement}
             label="Fee per settlement"
             sub="21,000 gas, per-tx audited"
           />
+          <Stat
+            value={BENCHMARK.margin}
+            label="Gross margin"
+            sub="$0.01 revenue / $0.004 cost"
+          />
         </div>
 
         <div className="grid gap-x-10 gap-y-6 md:grid-cols-2">
-          <LiveFact title="The unit economics are the constraint">
-            A 60% margin on a one-cent job only survives if the settlement fee is a
-            rounding error. That rules out most chains and picks the rest for us:
-            sub-cent fees and fast finality are a hard requirement, not a
-            preference.
+          <LiveFact title="The economics are the constraint">
+            A 60% margin on a one-cent task only survives if the settlement fee is
+            a rounding error. Sub-cent fees and fast finality are a hard
+            requirement of the stack, not a preference — which is what decides
+            which networks it can run on.
           </LiveFact>
-          <LiveFact title="Composable, not just point-to-point">
-            The orchestrator re-sells a composed result at a margin — it is a paying
-            customer of two workers and a paid provider to its own client. The loop
-            nests, which is what makes it an economy rather than an API call.
-          </LiveFact>
-        </div>
-      </section>
-
-      {/* ─────────── IV · What ships ─────────── */}
-      <section className="space-y-7">
-        <SectionHead
-          marker={SPINE.package}
-          title="Planned: a package, not a platform."
-          sub="AgentEnact is scoped to ship as an npm package plus reference agents, so a third party can run a worker or a hiring agent from the quickstart without ever contacting us. Not yet published."
-          accent="planned"
-        />
-
-        <div className="grid gap-x-10 gap-y-6 md:grid-cols-2">
-          <LiveFact title="Worker module">
-            x402 middleware wired to on-ledger settlement verification. Drop it in
-            front of an existing endpoint and it starts quoting, verifying, and
-            serving — the endpoint keeps being an ordinary HTTP service.
-          </LiveFact>
-          <LiveFact title="Hiring module">
-            A fetch wrapper that handles the 402 handshake and ranks candidate
-            workers by their published AgentKarma score. Reputation-aware hiring in
-            the call itself, not a dashboard someone has to read.
-          </LiveFact>
-          <LiveFact title="Reference agents on mainnet">
-            An orchestrator and worker agents we run and disclose, so the loop is
-            observable in production rather than described in a README.
-          </LiveFact>
-          <LiveFact title="Built on first-party rails">
-            The handshake is standard x402, settlement is USDC on the chains
-            AgentKarma already indexes. We are adopting the payment standard, not
-            publishing a competing one.
+          <LiveFact title="Agents composed, not just called">
+            The orchestrator paid two specialists and re-sold the composed result
+            at a margin — a paying customer and a paid provider at once. That
+            nesting is what makes a set of agents an economy rather than an API.
           </LiveFact>
         </div>
       </section>
@@ -257,20 +258,20 @@ export default function AgentEnactPage() {
         <SectionHead
           marker={SPINE.invariants}
           title="What AgentEnact will never do."
-          sub="An execution layer owned by a reputation company is a conflict of interest unless the boundaries are stated up front and enforced in the protocol."
+          sub="An execution layer built by a reputation company is a conflict of interest unless the boundaries are stated up front and enforced in the protocol."
           accent="planned"
         />
 
         <div className="grid gap-x-10 gap-y-6 md:grid-cols-2">
-          <LiveFact title="Never in the money flow it scores">
-            AgentKarma does not proxy, escrow, or relay agent payments. The two
-            agents settle directly with each other; we witness the ledger
-            afterwards. Protocol-level MUST (RFC §12).
+          <LiveFact title="Your keys never leave your side">
+            The agent&apos;s wallet is generated and held by its operator.
+            AgentEnact does not custody keys, and no AgentKarma surface ever needs
+            one to score the agent.
           </LiveFact>
-          <LiveFact title="No routing, no gatekeeping">
-            The hiring module ranks by score inside the caller&apos;s own process.
-            We never sit in the request path, never hold a key, and never decide
-            whether someone else&apos;s transaction is allowed to proceed.
+          <LiveFact title="Never in the money flow it scores">
+            Agents settle directly with each other; we witness the ledger
+            afterwards. AgentKarma does not proxy, escrow, or relay agent payments.
+            Protocol-level MUST (RFC §12).
           </LiveFact>
           <LiveFact title="No token, ever">
             Reputation is published as an on-chain attestation. A tradable karma
@@ -278,8 +279,8 @@ export default function AgentEnactPage() {
             unbuyable.
           </LiveFact>
           <LiveFact title="No hidden house traffic">
-            Our reference agents are named. Their settlements are excluded from
-            third-party scores rather than quietly inflating the network&apos;s
+            Agents we run ourselves are named, and their settlements are excluded
+            from third-party scores rather than quietly inflating the network&apos;s
             apparent volume.
           </LiveFact>
         </div>
