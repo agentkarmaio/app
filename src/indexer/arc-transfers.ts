@@ -38,6 +38,7 @@ import {
   type InsertSignalEventInput,
 } from '@/db/client';
 import { INGEST_RETRY, isRateLimitedError, withRateLimitRetry } from '@/lib/rpc-retry';
+import { withConcurrency } from '@/lib/concurrency';
 import { buildUsdcTransferSignal } from '@/scoring/signals';
 import { ARC_JOBS_CONTRACT, ARC_RUN_TIME_BUDGET_MS, GENESIS_FALLBACK_BLOCK } from './arc-jobs';
 
@@ -52,6 +53,14 @@ export const ARC_TRANSFERS_MAX_LOG_WINDOW = 500;
 
 /** Smaller window → more windows needed to cover the same block range as arc-jobs. */
 export const ARC_TRANSFERS_DEFAULT_MAX_WINDOWS = 200;
+
+/**
+ * Parallel block-timestamp lookups per window. Timestamps are the indexer's
+ * dominant RPC cost (one `getBlock` per distinct block, up to 500 per window),
+ * so this sets the catch-up rate. Kept modest: dRPC served this comfortably,
+ * and a throttled lookup still falls back to the bounded retry.
+ */
+export const BLOCK_TS_CONCURRENCY = 20;
 
 /** Arc Testnet USDC ERC-20 token — same contract used as the ERC-8183 payment token. */
 export const ARC_USDC_CONTRACT = '0x3600000000000000000000000000000000000000' as const;
@@ -219,6 +228,28 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
     // ONLY after a successful read — see arc-jobs.ts for why advancing maxBlock
     // past an unread window silently drops those blocks.
     if (to > maxBlock) maxBlock = to;
+
+    // Warm every block timestamp this window needs, in parallel, BEFORE the
+    // per-transfer loop reads them one at a time.
+    //
+    // This is the difference between keeping pace and not. Arc produces ~166k
+    // blocks/day; a 500-block window here carries ~2,700 USDC transfers spread
+    // over up to 500 distinct blocks, and fetching those timestamps lazily made
+    // ~500 sequential round trips — ~13s per window, so a 2-minute run covered
+    // 4,500 blocks/day×4 = 18k, falling ~148k blocks/day further behind every
+    // day (measured 2026-08-10). Prefetching collapses that to ~500/CONCURRENCY
+    // batches and lets a run cover its full maxWindows budget instead.
+    const needed = [
+      ...new Set(
+        transfers
+          .filter((t) => !isEscrowInternal(t))
+          .map((t) => t.blockNumber.toString())
+          .filter((b) => !tsCache.has(b)),
+      ),
+    ];
+    await withConcurrency(needed, BLOCK_TS_CONCURRENCY, async (b) => {
+      tsCache.set(b, await deps.blockTimestamp(BigInt(b)));
+    });
 
     for (const transfer of transfers) {
       if (isEscrowInternal(transfer)) continue; // covered by arc-jobs.ts already

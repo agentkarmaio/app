@@ -1,6 +1,7 @@
 import { Connection, type ParsedTransactionWithMeta } from '@solana/web3.js';
 import { USDC_MINT } from '../config/facilitators';
 import { detectPayshRouted } from './paysh-fingerprint';
+import { withConcurrency } from '@/lib/concurrency';
 import type { Transaction } from '../db/schema';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -433,25 +434,3 @@ export function extractPayshPayment(
   };
 }
 
-// ─── Concurrency Pool ────────────────────────────────────────────────────────
-
-export async function withConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let nextIndex = 0;
-
-  async function worker(): Promise<void> {
-    while (nextIndex < items.length) {
-      const index = nextIndex++;
-      results[index] = await fn(items[index]);
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
-  await Promise.all(workers);
-
-  return results;
-}
