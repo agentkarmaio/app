@@ -21,12 +21,13 @@ function ConnectButton() {
 
 const PRIMARY_ITEMS = [
   { href: '/', label: 'Home' },
+  { href: '/agent-enact', label: 'Agent Enact' },
   { href: '/explore', label: 'Explore' },
   { href: '/protocol', label: 'Protocol' },
 ];
 
 const MORE_ITEMS = [
-  { href: '/succession', label: 'Agent Enact' },
+  { href: '/succession', label: 'Succession' },
   { href: '/bonding', label: 'Bonding' },
   { href: '/estates', label: 'Estates' },
   { href: '/sureties', label: 'Sureties' },

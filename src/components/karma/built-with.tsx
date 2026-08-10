@@ -172,6 +172,9 @@ export function BuiltWith() {
           </a>
         ))}
       </div>
+      {/* The one chain caveat, kept next to the chain marks rather than as an
+          asterisk on a separate legend line in the hero. */}
+      <span className="text-[10px] text-[#4f5258]">Arc on testnet</span>
     </div>
   );
 }

@@ -5,11 +5,14 @@ import { LiveFlow } from '@/components/karma/live-flow';
 import { TrustGraphMini } from '@/components/karma/trust-graph-mini';
 import { cachedStats } from '@/db/cached';
 
+// Protocols only. The chains used to live here too, which duplicated the "Built
+// on" row directly below and forced a wrapped second line plus an asterisk
+// footnote. Chains — and the Arc-is-testnet caveat — now sit with the chain
+// marks, where they read without a legend.
 const PROTOCOLS = [
   { label: 'x402', role: 'payments' },
   { label: '8004', role: 'identity' },
   { label: 'SAS', role: 'attestation' },
-  { label: 'Solana · Celo · Stellar · Arc*', role: 'settlement' },
 ];
 
 function LegendDiamond({ color }: { color: string }) {
@@ -282,7 +285,6 @@ export async function Hero() {
             ))}
           </div>
 
-          <p className="mt-1.5 text-[10px] text-[#4f5258]">* Arc on testnet</p>
 
           <div className="mt-7 space-y-3">
             <div className="w-full max-w-md">

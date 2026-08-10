@@ -8,7 +8,7 @@ const NAV_GROUPS: {
   {
     heading: "Product",
     links: [
-      { label: "Leaderboard", href: "/" },
+      { label: "Home", href: "/" },
       { label: "Explore agents", href: "/explore" },
       { label: "pay.sh providers", href: "/paysh" },
       { label: "Enterprise", href: "/enterprise" },
