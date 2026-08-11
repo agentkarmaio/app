@@ -79,7 +79,7 @@ export default function AgentEnactPage() {
       </Link>
 
       {/* ─────────── Headline ─────────── */}
-      <section className="space-y-8">
+      <section>
         <div className="max-w-3xl space-y-5">
           <p className="text-[11px] font-[510] uppercase tracking-[0.16em] text-[#62666d]">
             AgentEnact · execution layer
@@ -89,7 +89,7 @@ export default function AgentEnactPage() {
           </h1>
           <p className="max-w-2xl text-[15px] leading-relaxed text-[#8a8f98]">
             AgentKarma scores agents that already exist. AgentEnact is how they come
-            to exist: the execution layer you use to create and run an agent on a
+            to exist: the execution layer you use to create and run an agent on
             Stellar. A wallet it controls, an identity the registry can see,
             capabilities it can act through, rails to charge and pay — and a
             reputation that starts accruing with its first transaction instead of
@@ -116,51 +116,49 @@ export default function AgentEnactPage() {
             </Link>
           </div>
         </div>
-
-        <figure className="space-y-3">
-          <div className="relative aspect-[3/2] overflow-hidden rounded-xl border border-[rgb(255_255_255/0.08)] bg-[#08090a] sm:aspect-[16/9]">
-            <Image
-              src="/agent-enact/execution-stack-v2.webp"
-              alt="Four precision-machined systems for wallet custody, identity, capabilities, and payments converging into one illuminated agent core"
-              fill
-              priority
-              sizes="(max-width: 1024px) calc(100vw - 2rem), 1024px"
-              className="object-cover"
-            />
-            <div
-              className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#08090a]/35 via-transparent to-transparent"
-              aria-hidden="true"
-            />
-          </div>
-          <figcaption className="font-mono text-xs leading-relaxed text-[#8a8f98]">
-            Concept architecture · wallet + identity + capabilities + payment rails
-          </figcaption>
-        </figure>
       </section>
 
       {/* ─────────── I · What you get ─────────── */}
-      <section className="space-y-7">
-        <SectionHead
-          marker={SPINE.what}
-          title="Four things an agent needs to exist on a network."
-          sub="Every team shipping an agent rebuilds the same four pieces, badly, in a different order. AgentEnact is that floor, assembled once."
-          accent="planned"
-        />
+      <section className="relative isolate overflow-hidden py-4">
+        <div
+          className="pointer-events-none absolute inset-y-0 right-[-42%] -z-10 w-[105%] opacity-45 sm:right-[-24%] sm:w-[82%] sm:opacity-55 lg:right-[-10%] lg:w-[66%] lg:opacity-65"
+          aria-hidden="true"
+        >
+          <Image
+            src="/agent-enact/execution-stack-v2.webp"
+            alt=""
+            fill
+            priority
+            sizes="(max-width: 640px) 105vw, (max-width: 1024px) 82vw, 66vw"
+            className="object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-r from-[#08090a] via-[#08090a]/80 to-[#08090a]/10" />
+          <div className="absolute inset-0 bg-gradient-to-y from-[#08090a] via-transparent to-[#08090a]" />
+        </div>
 
-        <div className="grid gap-x-10 gap-y-7 md:grid-cols-2">
-          {PARTS.map((part) => (
-            <div key={part.n} className="space-y-1.5">
-              <p className="text-[13px] font-[590] text-[#f7f8f8]">
-                <span className="mr-2 font-mono text-[11px] text-[#4f5258]">
-                  {part.n}
-                </span>
-                {part.title}
-              </p>
-              <p className="text-[12.5px] leading-relaxed text-[#8a8f98]">
-                {part.body}
-              </p>
-            </div>
-          ))}
+        <div className="space-y-7 lg:max-w-[72%]">
+          <SectionHead
+            marker={SPINE.what}
+            title="Four things an agent needs to exist on a network."
+            sub="Every team shipping an agent rebuilds the same four pieces, badly, in a different order. AgentEnact is that floor, assembled once."
+            accent="planned"
+          />
+
+          <div className="grid gap-x-10 gap-y-7 md:grid-cols-2">
+            {PARTS.map((part) => (
+              <div key={part.n} className="space-y-1.5">
+                <p className="text-[13px] font-[590] text-[#f7f8f8]">
+                  <span className="mr-2 font-mono text-[11px] text-[#62666d]">
+                    {part.n}
+                  </span>
+                  {part.title}
+                </p>
+                <p className="text-[12.5px] leading-relaxed text-[#a1a6ad]">
+                  {part.body}
+                </p>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -230,65 +228,66 @@ export default function AgentEnactPage() {
       </section>
 
       {/* ─────────── IV · What already ran ─────────── */}
-      <section id="proof" className="scroll-mt-24 space-y-7">
-        <SectionHead
-          marker={SPINE.proof}
-          title="Prototype agents have already run an economy."
-          sub="Not a diagram: an orchestrator and two specialist agents, created and deployed, paying each other in USDC per task. The 2026-04-22 testnet stress run produced a real transaction hash for every settlement. Stellar is the target for packaging that execution model."
-          accent="planned"
-        />
-
-        <figure className="space-y-3">
-          <div className="relative aspect-[3/2] overflow-hidden rounded-xl border border-[rgb(255_255_255/0.08)] bg-[#08090a] sm:aspect-[16/9]">
-            <Image
-              src="/agent-enact/prototype-economy-v2.webp"
-              alt="One orchestrator agent and two specialist agents connected by direct settlement trails in a three-node economy"
-              fill
-              sizes="(max-width: 1024px) calc(100vw - 2rem), 1024px"
-              className="object-cover"
-            />
-          </div>
-          <figcaption className="font-mono text-xs leading-relaxed text-[#8a8f98]">
-            Verified topology · 1 orchestrator + 2 specialists · direct settlement,
-            no AgentKarma relay
-          </figcaption>
-        </figure>
-
-        <div className="grid grid-cols-2 gap-x-8 gap-y-7 border-y border-[rgb(255_255_255/0.06)] py-7 sm:grid-cols-4">
-          <Stat
-            value={BENCHMARK.agents}
-            label="Agents deployed"
-            sub="orchestrator + 2 workers"
+      <section id="proof" className="relative isolate scroll-mt-24 overflow-hidden py-4">
+        <div
+          className="pointer-events-none absolute inset-y-0 right-[-48%] -z-10 w-[112%] opacity-40 sm:right-[-30%] sm:w-[88%] sm:opacity-50 lg:right-[-12%] lg:w-[68%] lg:opacity-60"
+          aria-hidden="true"
+        >
+          <Image
+            src="/agent-enact/prototype-economy-v2.webp"
+            alt=""
+            fill
+            sizes="(max-width: 640px) 112vw, (max-width: 1024px) 88vw, 68vw"
+            className="object-cover"
           />
-          <Stat
-            value={BENCHMARK.settlements}
-            label="On-chain settlements"
-            sub="one per task, tx-hashed"
-          />
-          <Stat
-            value={BENCHMARK.feePerSettlement}
-            label="Fee per settlement"
-            sub="21,000 gas, per-tx audited"
-          />
-          <Stat
-            value={BENCHMARK.margin}
-            label="Gross margin"
-            sub="$0.01 revenue / $0.004 cost"
-          />
+          <div className="absolute inset-0 bg-gradient-to-r from-[#08090a] via-[#08090a]/75 to-[#08090a]/5" />
+          <div className="absolute inset-0 bg-gradient-to-y from-[#08090a] via-transparent to-[#08090a]" />
         </div>
 
-        <div className="grid gap-x-10 gap-y-6 md:grid-cols-2">
-          <LiveFact title="The economics are the constraint">
-            A 60% margin on a one-cent task only survives if the settlement fee is
-            a rounding error. Sub-cent fees and fast finality are a hard
-            requirement of the stack, not a preference — which is why Stellar is
-            the execution target.
-          </LiveFact>
-          <LiveFact title="Agents composed, not just called">
-            The orchestrator paid two specialists and re-sold the composed result
-            at a margin — a paying customer and a paid provider at once. That
-            nesting is what makes a set of agents an economy rather than an API.
-          </LiveFact>
+        <div className="space-y-7 lg:max-w-[76%]">
+          <SectionHead
+            marker={SPINE.proof}
+            title="Prototype agents have already run an economy."
+            sub="Not a diagram: an orchestrator and two specialist agents, created and deployed, paying each other in USDC per task. The 2026-04-22 testnet stress run produced a real transaction hash for every settlement. Stellar is the target for packaging that execution model."
+            accent="planned"
+          />
+
+          <div className="grid grid-cols-2 gap-x-8 gap-y-7 border-y border-[rgb(255_255_255/0.08)] py-7 sm:grid-cols-4">
+            <Stat
+              value={BENCHMARK.agents}
+              label="Agents deployed"
+              sub="orchestrator + 2 workers"
+            />
+            <Stat
+              value={BENCHMARK.settlements}
+              label="On-chain settlements"
+              sub="one per task, tx-hashed"
+            />
+            <Stat
+              value={BENCHMARK.feePerSettlement}
+              label="Fee per settlement"
+              sub="21,000 gas, per-tx audited"
+            />
+            <Stat
+              value={BENCHMARK.margin}
+              label="Gross margin"
+              sub="$0.01 revenue / $0.004 cost"
+            />
+          </div>
+
+          <div className="grid gap-x-10 gap-y-6 md:grid-cols-2">
+            <LiveFact title="The economics are the constraint">
+              A 60% margin on a one-cent task only survives if the settlement fee is
+              a rounding error. Sub-cent fees and fast finality are a hard
+              requirement of the stack, not a preference — which is why Stellar is
+              the execution target.
+            </LiveFact>
+            <LiveFact title="Agents composed, not just called">
+              The orchestrator paid two specialists and re-sold the composed result
+              at a margin — a paying customer and a paid provider at once. That
+              nesting is what makes a set of agents an economy rather than an API.
+            </LiveFact>
+          </div>
         </div>
       </section>
 
