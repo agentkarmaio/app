@@ -11,7 +11,7 @@ export function FacilitatorList() {
           Tracked x402 Facilitators
         </h2>
         <Link
-          href="/explore"
+          href="/explore?chain=all"
           className="text-[12px] font-[510] text-[#5e6ad2] hover:text-[#828fff] transition-colors"
         >
           Explore all
