@@ -17,6 +17,7 @@ import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
 import { agentHref } from '@/lib/agent-href';
+import { UI_DEFAULT_CHAIN } from '@/lib/chain-meta';
 import type { TrustTier, ConfidenceBadge, AutonomyLabel, Chain } from '@/db/schema';
 import { isChain } from '@/db/schema';
 
@@ -107,8 +108,14 @@ export function AgentsExplorer() {
   const [isPending, startTransition] = useTransition();
 
   const filters = useMemo(() => {
+    // No `?chain=` lands on UI_DEFAULT_CHAIN, not every chain — the explorer
+    // opens on one chain's population instead of a mixed list. 'All' is an
+    // explicit opt-out and must be encoded (`chain=all`), since an absent param
+    // now means the default chain.
     const chainRaw = searchParams.get('chain');
-    const chain: ChainFilter = isChain(chainRaw) ? (chainRaw as Chain) : 'All';
+    const chain: ChainFilter = chainRaw === 'all' ? 'All'
+      : isChain(chainRaw) ? (chainRaw as Chain)
+      : UI_DEFAULT_CHAIN;
     return {
       tiers:            parseArr(searchParams, 'tier', TIER_OPTIONS),
       confidenceBadges: parseArr(searchParams, 'confidence', BADGE_OPTIONS),
@@ -225,7 +232,8 @@ export function AgentsExplorer() {
 
   const setChain = useCallback((v: ChainFilter) => {
     updateParams((p) => {
-      if (v === 'All') p.delete('chain');
+      if (v === 'All') p.set('chain', 'all');
+      else if (v === UI_DEFAULT_CHAIN) p.delete('chain');
       else p.set('chain', v);
     });
   }, [updateParams]);
