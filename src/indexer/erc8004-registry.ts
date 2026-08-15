@@ -57,6 +57,13 @@ export interface ScannedAgent {
   agentId: number;
   owner: string;
   agentWallet: string | null;
+  /**
+   * Chain-native identity-object address, when the chain has one distinct from
+   * the agentId. Solana's ERC-8004 identity is the asset NFT pubkey, and
+   * `giveFeedback` cannot be built without it. Undefined on EVM/Stellar, where
+   * the agentId alone identifies the agent.
+   */
+  assetAddress?: string | null;
   tokenURI: string | null;
   registration: AgentRegistrationFile | null;
   registrationStatus: Erc8004RegistrationStatus;

@@ -481,6 +481,11 @@ export const erc8004AgentsTable = pgTable('erc8004_agents', {
   agent_id:            bigint('agent_id', { mode: 'number' }).notNull(),
   owner:               text('owner').notNull(),
   agent_wallet:        text('agent_wallet'),
+  // Chain-native identity-object address, where the chain has one distinct from
+  // agent_id. Solana's ERC-8004 identity is the asset NFT pubkey and
+  // `giveFeedback` cannot be built without it. NULL on Celo/Arc/Stellar, where
+  // agent_id alone identifies the agent. See drizzle/0015.
+  asset_address:       text('asset_address'),
   token_uri:           text('token_uri'),
   registration:        jsonb('registration'),
   // inline | fetched | empty | unreachable | invalid | pending
@@ -499,6 +504,7 @@ export const erc8004AgentsTable = pgTable('erc8004_agents', {
   index('idx_erc8004_agents_chain').on(table.chain),
   index('idx_erc8004_agents_owner').on(table.owner),
   index('idx_erc8004_agents_agent_wallet').on(table.agent_wallet),
+  index('idx_erc8004_agents_asset_address').on(table.asset_address),
   index('idx_erc8004_agents_metadata').on(table.metadata_score),
 ]);
 

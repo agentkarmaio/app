@@ -3048,6 +3048,11 @@ export async function upsertErc8004Agents(chain: string, agents: ScannedAgent[])
       metadata_score: a.metadataScore,
       last_indexed_at: nowIso,
     };
+    // Only chains that HAVE a distinct identity object (Solana's asset NFT) set
+    // this. Writing it unconditionally would blank the column on every
+    // Celo/Arc/Stellar re-scan, which is why it is conditional rather than
+    // `a.assetAddress ?? null`.
+    if (a.assetAddress != null) row.asset_address = a.assetAddress;
     if (withFeedback) {
       row.feedback_count = a.feedback!.count;
       row.feedback_sum = a.feedback!.sum;
