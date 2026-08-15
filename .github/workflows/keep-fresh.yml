@@ -85,6 +85,21 @@ jobs:
             bun run keep-fresh
           fi
 
+      # Ping IndexNow (Bing/Yandex/Naver/…) with the agent + org pages whose
+      # data this run just refreshed, so answer engines re-crawl fresh scores
+      # in minutes. Reads the same sitemap the app serves; submits only URLs
+      # changed in the overlap window (> the 6h cron). Bonus, not floor:
+      # continue-on-error so a transient IndexNow 5xx never fails the job or
+      # pages. Runs even after a keep-fresh failure (always) — whatever DID
+      # change still gets announced.
+      - name: Notify IndexNow of changed URLs
+        if: always()
+        continue-on-error: true
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: bun run indexnow --since 12
+
       # A broken floor must page, not rot silently — the exact gap that let the
       # 2026-06-23 outage (secrets unset → 100% failure for weeks) go unnoticed.
       - name: Page on failure
