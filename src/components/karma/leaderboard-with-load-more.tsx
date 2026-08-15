@@ -267,9 +267,12 @@ export function LeaderboardWithLoadMore({
           {isPending ? 'Loading\u2026' : '\u00a0'}
         </div>
       )}
+      {/* chain=all: this link is labelled with the cross-chain total, and
+          /explore now defaults to a single chain — bare /explore would show far
+          fewer agents than the number the user just clicked. */}
       {isPreview && entries.length > 0 && (
         <a
-          href="/explore"
+          href="/explore?chain=all"
           className="group flex items-center justify-center gap-1.5 border-t border-[rgb(255_255_255/0.05)] px-4 py-3 text-[12px] font-[510] text-[#8a8f98] transition-colors hover:bg-[rgb(255_255_255/0.02)] hover:text-[#a9b0ff]"
         >
           <span>
