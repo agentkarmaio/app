@@ -1,0 +1,91 @@
+name: Solana registry mirror
+
+# Mirrors the 8004-solana IdentityRegistry into `erc8004_agents` — the last
+# chain whose mirror had no schedule. The scanner shipped 2026-08-14 and then
+# only ever ran by hand, so the mirror sat 3.1 days stale and drifting while
+# Celo (keep-fresh registry-scan) and Stellar (stellar-refresh) stayed hourly.
+#
+# Runs the script DIRECTLY via bun with the DB secrets — the same resilient
+# pattern as keep-fresh / stellar-refresh / heartbeat-drain, NOT by curling an
+# in-app cron route, so it survives the web app being wedged and cannot fail
+# silently on a missing CRON_SECRET. The runner calls requireEnv at line 1, so
+# absent DB secrets fail the run loudly instead of writing nothing to a green
+# check (the 2026-06-23 outage shape).
+#
+# Cadence is daily, not hourly, because the sweep is not cheap and the mirror is
+# SUPPLEMENTARY: Solana's canonical agent population stays the `wallets` table
+# (~119k indexed x402 wallets), so this feeds registry-specific surfaces, not
+# the headline counts. Measured 2026-08-17: ~1,470 agents at ~250 per page with
+# per-agent registration fetches ≈ 10 min end to end. There is no incremental
+# mode, and the registry grows slowly enough that a daily full sweep is the
+# simplest thing that stays correct.
+#
+# Scope note: this pass mirrors AGENTS only. Per-rater rows in
+# `erc8004_feedback` need a separate searchFeedback sweep that does not exist
+# yet — `feedback_count`/`avg` arrive denormalized on the agent row.
+#
+# Required repo secrets:
+#   NEXT_PUBLIC_SUPABASE_URL   DB endpoint
+#   SUPABASE_SERVICE_ROLE_KEY  DB writes
+# Optional repo secrets:
+#   SOLANA_RPC_URL   RPC override (the 8004 indexer API itself is keyless)
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_ALERT_CHAT_ID   failure alerts
+
+on:
+  schedule:
+    - cron: '15 3 * * *' # daily 03:15 UTC — off the 6h keep-fresh slots and the
+                         # :30 stellar-refresh, so the jobs don't contend for
+                         # the same DB connections.
+  workflow_dispatch:
+    inputs:
+      from-offset:
+        description: 'Resume a partial sweep from this row offset'
+        type: string
+        default: '0'
+
+concurrency:
+  group: solana-registry
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    # The sweep is ~10 min; cap well above it so a slow upstream fails loudly
+    # instead of burning the default 6h runner budget.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Mirror the Solana ERC-8004 registry
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
+          # Pass the input via env (never interpolate ${{ }} into the shell).
+          FROM_OFFSET: ${{ inputs.from-offset }}
+        run: |
+          # Digits only — the value reaches a CLI flag, and a typo silently
+          # parsing to 0 would re-sweep from the top instead of resuming.
+          offset="${FROM_OFFSET:-0}"
+          case "$offset" in
+            ''|*[!0-9]*) echo "::error::from-offset must be a non-negative integer, got '$offset'"; exit 1 ;;
+          esac
+          bun run registry:scan:solana --from-offset "$offset"
+
+      # A stalled mirror must page, not rot silently (2026-06-23 lesson).
+      - name: Page on failure
+        if: failure()
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            🛟 <b>AgentKarma solana-registry FAILED</b>
+            The Solana ERC-8004 mirror crashed — erc8004_agents will drift for Solana.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

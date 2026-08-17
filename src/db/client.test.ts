@@ -16,6 +16,8 @@ import {
   ensureWalletsExist,
   makeEnsureWallet,
   withTransientDbRetry,
+  insertSignalEvents,
+  getRecentTransactionsForWallet,
 } from './client';
 import type { Transaction } from './schema';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
@@ -963,6 +965,98 @@ describe('ensureWalletsExist survives a transient statement timeout', () => {
     const state = makeFlakySupabase(99, { code: '23503', message: 'foreign key violation' });
     await expect(ensureWalletsExist(['W1'])).rejects.toMatchObject({ code: '23503' });
     expect(state.attempts).toBe(1);
+  });
+});
+
+// ── the rest of runIndexer's hot path: same 57014, one statement further ─────
+//
+// The 2026-08-09 fix hardened `ensureWalletsExist` and stopped there. It was the
+// statement that happened to lose the race, not the only one exposed: every
+// keep-fresh run writes ensure → insertTransactions → insertSignalEvents into a
+// ~1.06M-row append-only table while the Helius webhook writes the same tables,
+// then reads per-wallet history back out. Measured 2026-08-17 over 30 scheduled
+// runs: 6 failures, ALL `57014`, and — with zero `[db] transient` retry warnings
+// in any of them — none of them from the one call site that retries. Five died
+// between "Ensuring…" and "Inserted…" (insertTransactions), one in the
+// per-wallet history read. Retrying only the first statement in a chain of
+// equally exposed ones is whack-a-mole; every idempotent statement on this path
+// gets the same budget.
+describe('the rest of the ingest hot path survives a transient statement timeout', () => {
+  afterAll(() => { __setSupabaseForTest(null); });
+
+  /**
+   * Flaky client with the chain shapes these three call sites actually use:
+   *   .upsert(rows, opts).select('id')     insertTransactions / insertSignalEvents
+   *   .select().eq().order().limit()       getRecentTransactionsForWallet
+   */
+  function makeFlakyChainSupabase(failures: number, error: { code: string; message?: string }) {
+    const state = { attempts: 0 };
+    const settle = () => {
+      state.attempts++;
+      return state.attempts <= failures
+        ? { data: null, error }
+        : { data: [{ id: 'row-1' }], error: null };
+    };
+    __setSupabaseForTest({
+      from() {
+        const builder: Record<string, unknown> = {};
+        builder.upsert = () => ({ select: async () => settle() });
+        builder.select = () => builder;
+        builder.eq = () => builder;
+        builder.order = () => builder;
+        builder.limit = async () => settle();
+        return builder;
+      },
+    });
+    return state;
+  }
+
+  const TIMEOUT = { code: '57014', message: 'canceling statement due to statement timeout' };
+  const tx: Omit<Transaction, 'id'> = {
+    chain: 'solana',
+    wallet_address: 'W1',
+    facilitator: 'F1',
+    counterparty: null,
+    amount: 1.5,
+    timestamp: '2026-08-17T07:05:00.000Z',
+    success: true,
+    tx_signature: 'SIG1',
+  };
+
+  test('insertTransactions retries a cancelled batch instead of killing the run', async () => {
+    const state = makeFlakyChainSupabase(1, TIMEOUT);
+    // The count must survive the retry: 57014 cancels + rolls back the whole
+    // statement, so the second attempt inserts the same rows, not a remainder.
+    expect(await insertTransactions([tx])).toBe(1);
+    expect(state.attempts).toBe(2);
+  }, 15_000);
+
+  test('insertSignalEvents retries a cancelled batch', async () => {
+    const state = makeFlakyChainSupabase(1, TIMEOUT);
+    const inserted = await insertSignalEvents([{
+      agentWallet: 'W1', tier: 2, kind: 'x402_payment', face: 'provider', txRef: 'SIG1',
+    }]);
+    expect(inserted).toBe(1);
+    expect(state.attempts).toBe(2);
+  }, 15_000);
+
+  test('the per-wallet history read retries a cancelled scan', async () => {
+    const state = makeFlakyChainSupabase(1, TIMEOUT);
+    await getRecentTransactionsForWallet('W1', 10);
+    expect(state.attempts).toBe(2);
+  }, 15_000);
+
+  test('a real schema error on any of them still surfaces on the first attempt', async () => {
+    const bad = { code: '42703', message: 'column does not exist' };
+    for (const call of [
+      () => insertTransactions([tx]),
+      () => insertSignalEvents([{ agentWallet: 'W1', tier: 2, kind: 'k', face: 'provider' }]),
+      () => getRecentTransactionsForWallet('W1', 10),
+    ]) {
+      const state = makeFlakyChainSupabase(99, bad);
+      await expect(call()).rejects.toMatchObject({ code: '42703' });
+      expect(state.attempts).toBe(1);
+    }
   });
 });
 

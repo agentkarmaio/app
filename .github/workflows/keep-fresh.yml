@@ -109,8 +109,10 @@ jobs:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           text: |
-            🛟 <b>AgentKarma keep-fresh FLOOR FAILED</b>
-            The out-of-process ingest floor crashed — Solana ingestion may stall.
+            🛟 <b>AgentKarma keep-fresh FLOOR DEGRADED</b>
+            One or more floor steps failed, or ingest is critically stale.
+            The remaining steps still ran — open the log and read the
+            "[keep-fresh] FAILED steps: …" line for which one broke.
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
   # Incremental ERC-8004 Celo registry-mirror refresh — the /celo disclosure's
