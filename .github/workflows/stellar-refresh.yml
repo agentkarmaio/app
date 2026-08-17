@@ -49,11 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - run: bun install --frozen-lockfile
+      - uses: ./.github/actions/bun-setup
 
       - name: Mirror the Stellar ERC-8004 registry
         env:
