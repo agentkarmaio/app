@@ -13,9 +13,17 @@
  * percentage.
  *
  * ORTHOGONAL AXIS — like Autonomy and Surety, Settlement Quality is DISPLAYED
- * ALONGSIDE the karma score, never folded into it (settlements already feed karma
- * as Tier-1 receipts via aggregateSignalEvents; a second blended term would
- * double-count and would re-weight every existing score). See RFC §5.5.
+ * ALONGSIDE the karma score, never folded into it (where karma IS computed,
+ * settlements already feed it as Tier-1 receipts via aggregateSignalEvents; a
+ * second blended term would double-count and would re-weight every existing
+ * score). See RFC §5.5.
+ *
+ * On Arc that "where karma is computed" caveat is load-bearing: Arc karma is
+ * deliberately NOT persisted (decision 2026-08-17 — the full reasoning lives in
+ * the EVM-snapshot header of lib/karma-resolver.ts). So on Arc today this axis
+ * is not a companion to a karma score, it is the ONLY reading of delivery — and
+ * it works precisely because it reads receipts straight from `signal_events`
+ * and needs no rescore pass.
  *
  * Heuristics are deliberately the SAME as the shipped machinery so the whole
  * product speaks one anti-Sybil language:
