@@ -302,14 +302,47 @@ export async function searchAgents(query: string, limit = 8): Promise<KarmaSearc
 
 // --- EVM (Celo / Arc) snapshot ----------------------------------------------
 //
-// Celo and Arc carry ~zero indexed tx volume, so the Solana receipt-based score
-// (`resolveKarma`) doesn't apply. The web renders these agents from a different
-// data shape: the declared `wallets` row (provider_score / trust_tier /
-// confidence_badge) PLUS the live on-chain ERC-8004 IdentityRegistry +
-// ReputationRegistry read keyed by the agentId stored on the row. This mirrors
+// The Solana receipt-based score (`resolveKarma`) does not apply here. The web
+// renders these agents from a different data shape: the declared `wallets` row
+// (provider_score / trust_tier / confidence_badge) PLUS the live on-chain
+// ERC-8004 IdentityRegistry + ReputationRegistry read keyed by the agentId
+// stored on the row. This mirrors
 // `CeloAgentProfile` / `ArcAgentProfile` for the MCP surface so a caller can
 // look up an EVM agent BY ADDRESS — the capability `get_celo_agent` (agentId
 // only) couldn't offer.
+//
+// WHY ARC KARMA IS NOT PERSISTED (decision 2026-08-17 — do not re-litigate
+// without reading this). The original reason written here was "Celo and Arc
+// carry ~zero indexed tx volume". That is still true for Celo (0 x402 txs) but
+// FALSE for Arc since the ERC-8183 work: 64k transactions and 136k
+// signal_events. Measured with the real scorer against live Arc data, three
+// independent blockers stand:
+//
+//  1. MECHANICAL. The rescore path is payer-face-only —
+//     `rescoreOne` → `getRecentTransactionsForWallet` filters
+//     `wallet_address = addr`. 4,543 of Arc's 5,449 settlement providers (83%)
+//     have no payer-side row at all, so they are silently skipped; the rest get
+//     scored off their consumer-side rows. Arc's provider face — the entire
+//     point of ERC-8183 — is structurally unreachable. Persisting Arc karma is
+//     not "call markWalletsDirty"; it needs a chain-aware AND dual-face queue
+//     (today `markWalletsDirty` / `claimDirtyWallets` / `upsertWallet` /
+//     `insertScoreSnapshot` all take a bare address and default to solana, and
+//     celo+arc can share one EVM address).
+//  2. DATA. Arc testnet activity is farmed (bulk-minted identities, self-issued
+//     feedback, wash-traded settlements). The dry run confirms the anti-Sybil
+//     machinery already refuses to reward it — a wallet with 2,524 wash
+//     settlements reads Fair / behavior-inferred with diversity at the 0.10
+//     floor and Settlement Quality `unproven` (1 distinct counterparty).
+//  3. PRODUCT. The ~900 scoreable payer-face wallets would enter
+//     `explore_agents` (score > 0) and move public counters for a testnet whose
+//     mainnet is not expected before summer 2026.
+//
+// The RFC-consistent alternative already ships: Settlement Quality
+// (scoring/settlement-quality.ts) reads the Tier-1 receipts straight from
+// `signal_events` and renders on /arc with no persistence at all.
+//
+// WHAT FLIPS THIS: Arc mainnet with non-farmed settlement traffic, or the
+// dual-face rescore queue landing for another reason. Revisit then, not before.
 
 export interface EvmKarmaSnapshot {
   found: true;
