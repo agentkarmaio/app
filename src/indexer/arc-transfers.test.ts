@@ -88,6 +88,61 @@ describe('parseTransfer', () => {
     } as unknown as Log<bigint, number, false, typeof TRANSFER_EVENT>;
     expect(parseTransfer(log)).toBeNull();
   });
+
+  // Regression: 2026-08-17. viem hands back EIP-55 CHECKSUMMED addresses and
+  // this parser passed them through, so ingest wrote `wallets` /
+  // `transactions` / `signal_events` rows in a casing no read path uses (the
+  // profile route, claims and the Arc adapter's normalizeAddress all
+  // lowercase). 83,887 of 84,024 arc wallet rows became unreachable orphans.
+  // Normalizing in the parser fixes all three tables at once, and stays
+  // EVM-scoped — the shared `ensureWalletsExist` must never lowercase, since
+  // Solana base58 is case-SENSITIVE.
+  describe('addresses are lowercased at the decode boundary', () => {
+    const MIXED_FROM = '0xAbCdEf0123456789AbCdEf0123456789AbCdEf01' as const;
+    const MIXED_TO = '0xFeDcBa9876543210FeDcBa9876543210FeDcBa98' as const;
+
+    test('parseTransfer lowercases from and to', () => {
+      const log = {
+        args: { from: MIXED_FROM, to: MIXED_TO, value: BigInt(500_000) },
+        blockNumber: BigInt(10), transactionHash: '0xabc',
+      } as unknown as Log<bigint, number, false, typeof TRANSFER_EVENT>;
+
+      const rec = parseTransfer(log)!;
+      expect(rec.from).toBe(MIXED_FROM.toLowerCase() as `0x${string}`);
+      expect(rec.to).toBe(MIXED_TO.toLowerCase() as `0x${string}`);
+    });
+
+    test('a run writes lowercase into transactions, signals and the wallet set', async () => {
+      const { deps, state } = makeDeps([
+        transfer({ from: MIXED_FROM, to: MIXED_TO, rawAmount: BigInt(1_000_000) }),
+      ]);
+
+      await arcTransfersIndexer(deps);
+
+      const row = state.inserted[0] as { wallet_address: string; counterparty: string };
+      expect(row.wallet_address).toBe(MIXED_FROM.toLowerCase());
+      expect(row.counterparty).toBe(MIXED_TO.toLowerCase());
+      for (const addr of state.ensured) expect(addr).toBe(addr.toLowerCase());
+      for (const s of state.signals as Array<{ agentWallet: string }>) {
+        expect(s.agentWallet).toBe(s.agentWallet.toLowerCase());
+      }
+    });
+
+    // The escrow filter already lowercased both operands; a checksummed escrow
+    // address in a log must still be recognised as arc-jobs' territory.
+    test('escrow-internal transfers are still filtered when the log is checksummed', async () => {
+      const checksummedEscrow = (ARC_JOBS_CONTRACT.slice(0, 2)
+        + ARC_JOBS_CONTRACT.slice(2).toUpperCase()) as `0x${string}`;
+      const { deps, state } = makeDeps([
+        transfer({ from: checksummedEscrow, to: MIXED_TO, rawAmount: BigInt(1_000_000) }),
+      ]);
+
+      const res = await arcTransfersIndexer(deps);
+
+      expect(res.fetched).toBe(0);
+      expect(state.inserted).toHaveLength(0);
+    });
+  });
 });
 
 describe('arcTransfersIndexer — block-timestamp prefetch', () => {

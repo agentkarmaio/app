@@ -106,6 +106,19 @@ export interface ArcPaymentReleased {
 /**
  * Pure: decode a raw JobCreated log. Returns null when args are incomplete
  * (a malformed/partial log never crashes the scan).
+ *
+ * Addresses are LOWERCASED here. viem returns EIP-55 checksummed addresses, and
+ * every AK read path lowercases EVM addresses (the profile route, claims, the
+ * Arc chain adapter's `normalizeAddress`, and this file's own
+ * `dbGetWallet(address.toLowerCase())`). Passing the checksummed form through
+ * created `wallets` rows nothing could resolve — 83,887 of 84,024 arc rows were
+ * unreachable orphans by 2026-08-17, with the same agent present twice in two
+ * casings. The two parsers are the choke point every address in this file flows
+ * through, so normalizing once here keeps `wallets`, `transactions` and
+ * `signal_events` consistent with no second place to drift.
+ *
+ * EVM-scoped deliberately: the shared `ensureWalletsExist` must NOT lowercase,
+ * because Solana base58 addresses are case-sensitive.
  */
 export function parseJobCreated(
   log: Log<bigint, number, false, typeof JOB_CREATED_EVENT>,
@@ -114,10 +127,10 @@ export function parseJobCreated(
   if (jobId === undefined || !client || !provider) return null;
   return {
     jobId,
-    client,
-    provider,
-    evaluator: (evaluator ??
-      "0x0000000000000000000000000000000000000000") as `0x${string}`,
+    client: client.toLowerCase() as `0x${string}`,
+    provider: provider.toLowerCase() as `0x${string}`,
+    evaluator: ((evaluator ??
+      "0x0000000000000000000000000000000000000000").toLowerCase()) as `0x${string}`,
     expiredAt: expiredAt ?? BigInt(0),
     blockNumber: log.blockNumber,
     txHash: log.transactionHash,
@@ -127,6 +140,8 @@ export function parseJobCreated(
 /**
  * Pure: decode a raw PaymentReleased log into a settlement record. Amount is
  * scaled by 10^6 (USDC token units). Returns null on incomplete args.
+ *
+ * `provider` is lowercased for the reason documented on `parseJobCreated`.
  */
 export function parsePaymentReleased(
   log: Log<bigint, number, false, typeof PAYMENT_RELEASED_EVENT>,
@@ -135,7 +150,7 @@ export function parsePaymentReleased(
   if (jobId === undefined || !provider || amount === undefined) return null;
   return {
     jobId,
-    provider,
+    provider: provider.toLowerCase() as `0x${string}`,
     rawAmount: amount,
     amount: Number(amount) / USDC_SCALE,
     blockNumber: log.blockNumber,
@@ -172,7 +187,10 @@ export function toTransactionRow(
     // paid — recorded distinctly from `facilitator` (the ERC-8183 escrow, the
     // matched router). Mirrors buildJobSettledSignal's `counterparty: provider`
     // on the consumer face. Powers counterparty-aware loyalty + diversity.
-    counterparty: settled.provider,
+    // Lowercased for the same reason the parsers are: `settled` can reach here
+    // from an injected getLogs that skipped parsePaymentReleased, and this row
+    // carries the FK into `wallets`.
+    counterparty: settled.provider.toLowerCase(),
     amount: settled.amount,
     timestamp: observedAt,
     success: true,
@@ -377,9 +395,18 @@ export async function arcJobsIndexer(
       }
       // Unmatched settlement → skip (cannot attribute the consumer face).
       if (client === null) continue;
+      // `resolveJobClient` is injected, so its return value has not been
+      // through parseJobCreated's normalization. Lowercase it here too, or an
+      // unmatched-window settlement would reintroduce a checksummed wallet row.
+      client = client.toLowerCase();
 
       const observedAt = await tsFor(settled.blockNumber);
-      const provider = settled.provider;
+      // Normalized here as well as in parsePaymentReleased: `getLogs` is an
+      // injected dep, so a decoded record can reach this loop without passing
+      // through the parser — and it is THIS loop that decides what lands in
+      // wallets / transactions / signal_events. One un-normalized entry point
+      // is all it takes to start minting orphan rows again (2026-08-17).
+      const provider = settled.provider.toLowerCase();
 
       // Self-dealt job (client === provider) → skip. A wallet funding and
       // paying itself proves nothing about independent delivery, so it must

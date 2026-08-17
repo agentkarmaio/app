@@ -154,6 +154,81 @@ describe('parseJobCreated / parsePaymentReleased', () => {
     } as unknown as Log<bigint, number, false, typeof PAYMENT_RELEASED_EVENT>;
     expect(parsePaymentReleased(log)).toBeNull();
   });
+
+  // Regression: 2026-08-17. viem returns EIP-55 CHECKSUMMED addresses, and both
+  // parsers passed them through untouched — so ingest created `wallets` rows
+  // like `0xafe6DD95…` while every read path (the profile route, claims, this
+  // file's own dbGetWallet(address.toLowerCase()), the chain adapter's
+  // normalizeAddress) looks up `0xafe6dd95…`. 83,887 of 84,024 arc wallet rows
+  // ended up unreachable orphans, growing ~300 every 6h run, with the same agent
+  // present twice in two casings. The parsers are the choke point: every address
+  // reaching wallets / transactions / signal_events flows through them, so
+  // normalizing here fixes all three at once with no fourth place to drift.
+  //
+  // EVM-scoped ON PURPOSE — `ensureWalletsExist` must never lowercase, because
+  // it is shared with Solana, whose base58 addresses are case-SENSITIVE.
+  describe('addresses are lowercased at the decode boundary', () => {
+    const MIXED_CLIENT = '0xAbCdEf0123456789AbCdEf0123456789AbCdEf01' as const;
+    const MIXED_PROVIDER = '0xFeDcBa9876543210FeDcBa9876543210FeDcBa98' as const;
+    const MIXED_EVALUATOR = '0xAAaaBBbbCCccDDddEEeeFFff0011223344556677' as const;
+
+    test('parseJobCreated lowercases client, provider and evaluator', () => {
+      const log = {
+        args: {
+          jobId: BigInt(7), client: MIXED_CLIENT, provider: MIXED_PROVIDER,
+          evaluator: MIXED_EVALUATOR, expiredAt: BigInt(0),
+        },
+        blockNumber: BigInt(50), transactionHash: '0xabc',
+      } as unknown as Log<bigint, number, false, typeof JOB_CREATED_EVENT>;
+
+      const rec = parseJobCreated(log)!;
+      expect(rec.client).toBe(MIXED_CLIENT.toLowerCase() as `0x${string}`);
+      expect(rec.provider).toBe(MIXED_PROVIDER.toLowerCase() as `0x${string}`);
+      expect(rec.evaluator).toBe(MIXED_EVALUATOR.toLowerCase() as `0x${string}`);
+    });
+
+    test('parsePaymentReleased lowercases provider', () => {
+      const log = {
+        args: { jobId: BigInt(7), provider: MIXED_PROVIDER, amount: BigInt(1_000_000) },
+        blockNumber: BigInt(60), transactionHash: '0xdef',
+      } as unknown as Log<bigint, number, false, typeof PAYMENT_RELEASED_EVENT>;
+
+      expect(parsePaymentReleased(log)!.provider).toBe(MIXED_PROVIDER.toLowerCase() as `0x${string}`);
+    });
+
+    test('a run writes lowercase into transactions, signals and the wallet set', async () => {
+      const { deps, state } = makeDeps({
+        created: [created({ jobId: BigInt(1), client: MIXED_CLIENT, provider: MIXED_PROVIDER })],
+        released: [released({ jobId: BigInt(1), provider: MIXED_PROVIDER, rawAmount: BigInt(1_000_000) })],
+      });
+
+      await arcJobsIndexer(deps);
+
+      expect(state.inserted[0].wallet_address).toBe(MIXED_CLIENT.toLowerCase());
+      expect(state.inserted[0].counterparty).toBe(MIXED_PROVIDER.toLowerCase());
+      for (const addr of state.ensured) expect(addr).toBe(addr.toLowerCase());
+      for (const s of state.signals as Array<{ agentWallet: string }>) {
+        expect(s.agentWallet).toBe(s.agentWallet.toLowerCase());
+      }
+    });
+
+    // The self-dealing skip already lowercased both operands, so a client and
+    // provider differing ONLY in case was — and stays — a skipped self-deal.
+    test('self-dealing detection still fires when the two sides differ only in case', async () => {
+      const { deps, state } = makeDeps({
+        created: [created({
+          jobId: BigInt(1),
+          client: MIXED_PROVIDER,
+          provider: MIXED_PROVIDER.toLowerCase() as `0x${string}`,
+        })],
+        released: [released({ jobId: BigInt(1), provider: MIXED_PROVIDER, rawAmount: BigInt(1_000_000) })],
+      });
+
+      await arcJobsIndexer(deps);
+
+      expect(state.inserted).toHaveLength(0);
+    });
+  });
 });
 
 describe('event ABI matches the deployed ERC-8183 contract, not the EIP-8183 draft text', () => {
