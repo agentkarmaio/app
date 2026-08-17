@@ -285,13 +285,26 @@ function isTransientDbError(err: unknown): boolean {
 /**
  * Retry a DB statement that momentary contention cancelled.
  *
- * Only for statements that are safe to run twice. `ensureWalletsExist` is —
- * ON CONFLICT DO NOTHING makes it idempotent — which is why the retry lives at
- * that call site rather than wrapping every write. The 2026-08-09 keep-fresh
- * failure was a single 57014 on a 141-row upsert that took down the entire
- * out-of-process ingest floor; a floor built to survive outages cannot exit 1
- * on one transient cancel. A persistent stall still throws after the budget, so
- * a real regression continues to page.
+ * Only for statements that are safe to run twice — never a blanket wrapper.
+ * Applied to the four statements on runIndexer's hot path, each idempotent for
+ * its own reason: `ensureWalletsExist` / `insertTransactions` /
+ * `insertSignalEvents` are ON CONFLICT DO NOTHING upserts, and
+ * `getRecentTransactionsForWallet` is a read. 57014 cancels and rolls back the
+ * whole statement, so a retry repeats it rather than resuming it, and the
+ * returned counts stay true.
+ *
+ * The 2026-08-09 keep-fresh failure was a single 57014 on a 141-row upsert that
+ * took down the entire out-of-process ingest floor; a floor built to survive
+ * outages cannot exit 1 on one transient cancel. Hardening only that statement
+ * left the rest of the same chain exposed: over the following week 6 of 30
+ * scheduled runs died, every one on 57014, and none at the hardened site (5 in
+ * `insertTransactions`, 1 in the per-wallet history read). A persistent stall
+ * still throws after the budget, so a real regression continues to page.
+ *
+ * This buys headroom, it does not remove the cause: `transactions` is a ~1.06M
+ * row append-only table whose insert path contends with the Helius webhook. The
+ * durable fix is DB-side (autovacuum insert-scale-factor + index bloat, the
+ * 2026-08-10 stats-index shape), not more retries.
  */
 export function withTransientDbRetry<T>(fn: () => Promise<T>, opts: RetryOpts = {}): Promise<T> {
   const retries = opts.retries ?? 3;
@@ -1182,13 +1195,19 @@ export async function insertTransactions(
     tx_signature: tx.tx_signature,
   }));
 
-  const { data, error } = await supabase
-    .from('transactions')
-    .upsert(rows, { onConflict: 'tx_signature', ignoreDuplicates: true })
-    .select('id');
+  // Retried: `ignoreDuplicates` makes the statement idempotent, and 57014
+  // cancels + rolls the whole statement back, so a retry re-inserts the same
+  // rows rather than a remainder — the returned count stays true. See the
+  // withTransientDbRetry header for why the ingest hot path needs this.
+  return withTransientDbRetry(async () => {
+    const { data, error } = await supabase
+      .from('transactions')
+      .upsert(rows, { onConflict: 'tx_signature', ignoreDuplicates: true })
+      .select('id');
 
-  if (error) throw error;
-  return data?.length ?? 0;
+    if (error) throw error;
+    return data?.length ?? 0;
+  });
 }
 
 export async function getTransactions(
@@ -1298,15 +1317,20 @@ export async function getRecentTransactionsForWallet(
   address: string,
   limit = DEFAULT_TX_WINDOW,
 ): Promise<Transaction[]> {
-  const { data, error } = await supabase
-    .from('transactions')
-    .select('*')
-    .eq('wallet_address', address)
-    .order('timestamp', { ascending: false })
-    .limit(limit);
+  // Reads are idempotent by construction, and this one runs once per affected
+  // wallet against the largest table in the schema — the 2026-08-11 keep-fresh
+  // failure was cancelled here, after the writes had already landed.
+  return withTransientDbRetry(async () => {
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('wallet_address', address)
+      .order('timestamp', { ascending: false })
+      .limit(limit);
 
-  if (error) throw error;
-  return (data ?? []) as Transaction[];
+    if (error) throw error;
+    return (data ?? []) as Transaction[];
+  });
 }
 
 // --- Deferred Scoring Queue --------------------------------------------------
@@ -2113,15 +2137,20 @@ export async function insertSignalEvents(
   let total = 0;
   for (let i = 0; i < inputs.length; i += 500) {
     const rows = inputs.slice(i, i + 500).map(toSignalRow);
-    const { data, error } = await supabase
-      .from('signal_events')
-      .upsert(rows, {
-        onConflict: 'chain,agent_wallet,kind,tx_ref',
-        ignoreDuplicates: !opts.overwrite,
-      })
-      .select('id');
-    if (error) throw error;
-    total += data?.length ?? 0;
+    // Retried per chunk — same idempotent-upsert reasoning as
+    // insertTransactions, and this is the statement that runs immediately
+    // after it on the same contended tables.
+    total += await withTransientDbRetry(async () => {
+      const { data, error } = await supabase
+        .from('signal_events')
+        .upsert(rows, {
+          onConflict: 'chain,agent_wallet,kind,tx_ref',
+          ignoreDuplicates: !opts.overwrite,
+        })
+        .select('id');
+      if (error) throw error;
+      return data?.length ?? 0;
+    });
   }
   return total;
 }
