@@ -85,15 +85,29 @@ export interface ArcTransfer {
   txHash: `0x${string}`;
 }
 
-/** Pure: decode a raw Transfer log. Returns null on incomplete args. */
+/**
+ * Pure: decode a raw Transfer log. Returns null on incomplete args.
+ *
+ * Addresses are LOWERCASED here. viem returns EIP-55 checksummed addresses,
+ * and every AK read path lowercases EVM addresses (the profile route, claims,
+ * the Arc chain adapter's `normalizeAddress`, this indexer's own wallet
+ * lookups). Passing the checksummed form through created `wallets` rows nothing
+ * could resolve — 83,887 of 84,024 arc rows were unreachable orphans by
+ * 2026-08-17. This parser is the choke point every address in this file flows
+ * through, so normalizing once here keeps `wallets`, `transactions` and
+ * `signal_events` consistent with no second place to drift.
+ *
+ * EVM-scoped deliberately: the shared `ensureWalletsExist` must NOT lowercase,
+ * because Solana base58 addresses are case-sensitive.
+ */
 export function parseTransfer(
   log: Log<bigint, number, false, typeof TRANSFER_EVENT>,
 ): ArcTransfer | null {
   const { from, to, value } = log.args;
   if (!from || !to || value === undefined) return null;
   return {
-    from,
-    to,
+    from: from.toLowerCase() as `0x${string}`,
+    to: to.toLowerCase() as `0x${string}`,
     rawAmount: value,
     amount: Number(value) / USDC_SCALE,
     blockNumber: log.blockNumber,
@@ -251,9 +265,20 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
       tsCache.set(b, await deps.blockTimestamp(BigInt(b)));
     });
 
-    for (const transfer of transfers) {
-      if (isEscrowInternal(transfer)) continue; // covered by arc-jobs.ts already
+    for (const raw of transfers) {
+      if (isEscrowInternal(raw)) continue; // covered by arc-jobs.ts already
       fetched++;
+
+      // Normalize at the DB boundary as well as in parseTransfer. `getLogs` is
+      // an injected dep, so decoded records can reach this loop without passing
+      // through the parser — and it is THIS loop that decides what lands in
+      // wallets / transactions / signal_events. One un-normalized entry point
+      // is all it takes to start minting orphan rows again (2026-08-17).
+      const transfer: ArcTransfer = {
+        ...raw,
+        from: raw.from.toLowerCase() as `0x${string}`,
+        to: raw.to.toLowerCase() as `0x${string}`,
+      };
 
       const observedAt = await tsFor(transfer.blockNumber);
       wallets.add(transfer.from);
