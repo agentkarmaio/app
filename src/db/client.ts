@@ -368,7 +368,14 @@ export async function getLeaderboard(
   }
 
   const { data, error, count } = await q
-    .order('score', { ascending: false })
+    // `rank_score`, not `score` — the raw score mixes signal tiers, and the
+    // Tier-3 declared checklist outranks observed behavior on it. See
+    // RANK_ORDER_COLUMN and the spec it points at.
+    .order(RANK_ORDER_COLUMN, { ascending: false })
+    // Weighting creates large exact ties (every declared 100 collapses to 70).
+    // Without a deterministic tie-break, offset pagination inside a tie block
+    // can repeat or skip rows between "load more" pages.
+    .order('address', { ascending: true })
     .range(offset, offset + limit - 1);
 
   if (error) throw error;
@@ -381,10 +388,35 @@ export async function getLeaderboard(
 // multi-field sort + pagination on denormalized Tier-2 metrics. All sortable
 // columns are indexed (see schema.ts) so large-fleet queries stay cheap.
 
+/**
+ * Evidence-weighted ranking key. Every Karma-ordered list sorts on this
+ * generated column instead of the raw score.
+ *
+ * The raw `score` mixes signal tiers on one 0-100 scale: Tier-3 declared
+ * metadata quality (a deterministic registration checklist with NO activity
+ * input) reaches 100 with zero observed behavior, while the behavioral score
+ * tops out around 80. Sorting on it ranked declarations above evidence — the
+ * "All chains" leaderboard opened with a block of 0-tx Celo/Arc agents.
+ * `rank_score` = score × 0.7 for declared-only rows; the weight lives in SQL
+ * (drizzle/0017_evidence_weighted_rank.sql + src/db/sql/explore-agents-view.sql).
+ *
+ * Spec: docs/superpowers/specs/2026-08-25-evidence-weighted-leaderboard-ranking.md
+ */
+const RANK_ORDER_COLUMN = 'rank_score';
+
 export type AgentSortField =
   | 'provider_score' | 'consumer_score' | 'tx_count' | 'last_seen'
   | 'autonomy_score' | 'metric_cadence' | 'metric_success_rate'
   | 'metric_diversity' | 'metric_volume' | 'metric_age';
+
+/**
+ * Karma-column sorts (either direction) rank on the weighted key; every other
+ * sortable column — tx_count, last_seen, autonomy, Tier-2 metrics — stays
+ * literal, because weighting only makes sense for the score itself.
+ */
+function rankingOrderColumn(field: AgentSortField): string {
+  return field === 'provider_score' ? RANK_ORDER_COLUMN : field;
+}
 
 export interface AgentsExploreFilters {
   tiers?: TrustTier[];
@@ -623,7 +655,7 @@ async function getUnifiedAgentsPage(
   }
 
   const { data, error, count } = await q
-    .order(sort.field, { ascending: sort.direction === 'asc', nullsFirst: false })
+    .order(rankingOrderColumn(sort.field), { ascending: sort.direction === 'asc', nullsFirst: false })
     .order('address', { ascending: true })
     .range(offset, offset + limit - 1);
 
@@ -706,7 +738,7 @@ export async function getAgents(
 
   // Sort with a stable tiebreaker on address so pagination is deterministic.
   const { data, error, count } = await q
-    .order(sort.field, { ascending: sort.direction === 'asc', nullsFirst: false })
+    .order(rankingOrderColumn(sort.field), { ascending: sort.direction === 'asc', nullsFirst: false })
     .order('address', { ascending: true })
     .range(offset, offset + limit - 1);
 

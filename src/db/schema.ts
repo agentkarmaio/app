@@ -5,6 +5,7 @@
  * TypeScript types -> used at runtime by Supabase client queries
  */
 
+import { sql } from 'drizzle-orm';
 import {
   pgTable, text, timestamp, integer, numeric, boolean, uuid, index, uniqueIndex, jsonb,
   primaryKey, foreignKey, bigint,
@@ -72,6 +73,20 @@ export const walletsTable = pgTable('wallets', {
   provider_score:  numeric('provider_score', { precision: 6, scale: 2 }).notNull().default('0'),
   consumer_score:  numeric('consumer_score', { precision: 6, scale: 2 }),
   confidence_badge: text('confidence_badge').notNull().default('declared'),
+  // Evidence-weighted ranking key — what every Karma-ordered list sorts on.
+  // The raw `score` mixes signal tiers: Tier-3 declared metadata quality
+  // (a registration checklist with NO activity input) reaches 100 with zero
+  // observed behavior, while the behavioral score tops out around 80 — so an
+  // unweighted sort ranked declarations above evidence. GENERATED, never
+  // written by the app: PostgREST's schema cache is stale on this cluster, so a
+  // new column is readable but not writable until the `rest` container
+  // restarts; a generated column sidesteps that and can never drift from
+  // `score`. Derived from `score` because the scorer sets `providerScore` to
+  // the same value (src/scoring/index.ts) — revisit if those ever diverge.
+  // Spec: docs/superpowers/specs/2026-08-25-evidence-weighted-leaderboard-ranking.md
+  rank_score: numeric('rank_score', { precision: 6, scale: 2 }).generatedAlwaysAs(
+    sql`score * CASE WHEN confidence_badge = 'declared' THEN 0.7 ELSE 1.0 END`,
+  ),
   // Autonomy Confidence (RFC v0.3 §5.5) — orthogonal to karma
   autonomy_score:  numeric('autonomy_score', { precision: 6, scale: 2 }),
   autonomy_label:  text('autonomy_label'),
@@ -147,6 +162,7 @@ export const walletsTable = pgTable('wallets', {
   index('idx_wallets_score').on(table.score),
   index('idx_wallets_provider_score').on(table.provider_score),
   index('idx_wallets_confidence_badge').on(table.confidence_badge),
+  index('idx_wallets_rank_score').on(table.rank_score).where(sql`score > 0`),
   index('idx_wallets_autonomy_score').on(table.autonomy_score),
   index('idx_wallets_metric_cadence').on(table.metric_cadence),
   index('idx_wallets_metric_success_rate').on(table.metric_success_rate),
@@ -679,6 +695,8 @@ export interface Wallet {
   provider_score: number;
   consumer_score: number | null;
   confidence_badge: ConfidenceBadge;
+  // Generated: score × declared-weight. Read-only — never send it in a write.
+  rank_score?: number | null;
   autonomy_score?: number | null;
   autonomy_label?: AutonomyLabel | null;
   // Denormalized Tier-2 metrics (0–1, nullable until first score recompute)

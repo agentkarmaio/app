@@ -25,6 +25,17 @@
 -- it runs before the view that projects the column, regardless of apply order.
 ALTER TABLE wallets ADD COLUMN IF NOT EXISTS image_url text;
 
+-- Evidence-weighted ranking key. The raw `score` mixes signal tiers: Tier-3
+-- declared metadata quality reaches 100 with zero observed activity, while the
+-- behavioral score tops out around 80 — so an unweighted sort put 0-tx declared
+-- registrations above every observed agent. GENERATED, never written by the app
+-- (PostgREST's write cache is stale on this cluster; see
+-- docs/superpowers/specs/2026-08-25-evidence-weighted-leaderboard-ranking.md).
+-- Keep the weight in sync with drizzle/0017_evidence_weighted_rank.sql and with
+-- the registry branch of the view below.
+ALTER TABLE wallets ADD COLUMN IF NOT EXISTS rank_score numeric(6,2)
+  GENERATED ALWAYS AS (score * CASE WHEN confidence_badge = 'declared' THEN 0.7 ELSE 1.0 END) STORED;
+
 CREATE OR REPLACE VIEW explore_agents AS
   SELECT
     chain, address, display_name, claimed,
@@ -37,7 +48,8 @@ CREATE OR REPLACE VIEW explore_agents AS
     score,
     -- Appended last: CREATE OR REPLACE VIEW only permits adding columns at the
     -- end, never inserting mid-list.
-    image_url
+    image_url,
+    rank_score
   FROM wallets
   WHERE chain = 'solana' AND score > 0
   UNION ALL
@@ -74,7 +86,9 @@ CREATE OR REPLACE VIEW explore_agents AS
     CASE WHEN chain = 'arc'     THEN agent_id END AS arc_agent_id,
     CASE WHEN chain = 'stellar' THEN agent_id END AS stellar_agent_id,
     metadata_score::numeric              AS score,
-    registration->>'image'               AS image_url
+    registration->>'image'               AS image_url,
+    -- Registry rows are 100% declared, so the weight applies unconditionally.
+    (metadata_score::numeric * 0.7)      AS rank_score
   FROM erc8004_agents
   WHERE chain IN ('celo', 'arc', 'stellar');
 

@@ -10,6 +10,7 @@ import {
   __setSupabaseForTest, insertTransactions, upsertCursor, getCursor, claimWallet,
   getStellarAgentId, setStellarAgentId, claimDirtyWallets, markWalletsDirty,
   ADDRESS_IN_CHUNK, getStats, getArcDashboardStats, normalizeCounterparty, getAgents,
+  getLeaderboard,
   getTransactionsForWallets,
   getAllTransactions,
   markAllWalletsDirty,
@@ -1096,5 +1097,110 @@ describe('withTransientDbRetry', () => {
       }, fast),
     ).rejects.toMatchObject({ code: '42703' });
     expect(calls).toBe(1);
+  });
+});
+
+// ── Evidence-weighted ranking ────────────────────────────────────────────────
+//
+// The raw `score` mixes signal tiers: the Tier-3 declared metadata checklist
+// reaches 100 with zero observed activity, while Solana's behavioral score tops
+// out at 80.05 across 95k wallets — so EVERY row above 80.05 was declared-only
+// and the "All chains" leaderboard opened with a block of 0-tx Celo agents.
+// Ranking now reads `rank_score` (= score × 0.7 for declared rows), a generated
+// column, so a declaration can no longer outrank observed behavior.
+// See docs/superpowers/specs/2026-08-25-evidence-weighted-leaderboard-ranking.md
+describe('leaderboard ranks by evidence-weighted score', () => {
+  type Order = { column: string; ascending: boolean | undefined };
+
+  function makeOrderRecordingFake(rows: unknown[] = []) {
+    const orders: Order[] = [];
+    return {
+      __orders: orders,
+      from() {
+        const b: Record<string, unknown> = {};
+        for (const m of ['select', 'eq', 'gt', 'gte', 'lt', 'in', 'or', 'not', 'limit']) {
+          b[m] = () => b;
+        }
+        b.order = (column: string, opts?: { ascending?: boolean }) => {
+          orders.push({ column, ascending: opts?.ascending });
+          return b;
+        };
+        b.range = async () => ({ data: rows, error: null, count: rows.length });
+        return b;
+      },
+    };
+  }
+
+  test('getLeaderboard orders by rank_score, never the raw score', async () => {
+    const fake = makeOrderRecordingFake();
+    __setSupabaseForTest(fake);
+
+    await getLeaderboard(25, 0);
+
+    expect(fake.__orders[0]).toEqual({ column: 'rank_score', ascending: false });
+    expect(fake.__orders.map((o) => o.column)).not.toContain('score');
+    // Weighting collapses every declared 100 to an exact 70.00 tie — without a
+    // deterministic second key, load-more pages can repeat or skip rows.
+    expect(fake.__orders[1]).toEqual({ column: 'address', ascending: true });
+  });
+
+  test('all-chains explore maps the Karma sort onto rank_score', async () => {
+    const fake = makeOrderRecordingFake();
+    __setSupabaseForTest(fake);
+
+    // No chain filter → the unified `explore_agents` path.
+    await getAgents(25, 0, {}, { field: 'provider_score', direction: 'desc' });
+
+    expect(fake.__orders[0]).toEqual({ column: 'rank_score', ascending: false });
+  });
+
+  test('the Karma sort stays weighted when reversed', async () => {
+    const fake = makeOrderRecordingFake();
+    __setSupabaseForTest(fake);
+
+    await getAgents(25, 0, {}, { field: 'provider_score', direction: 'asc' });
+
+    expect(fake.__orders[0]).toEqual({ column: 'rank_score', ascending: true });
+  });
+
+  test('non-Karma sort columns stay literal', async () => {
+    const fake = makeOrderRecordingFake();
+    __setSupabaseForTest(fake);
+
+    await getAgents(25, 0, {}, { field: 'tx_count', direction: 'desc' });
+
+    expect(fake.__orders[0]).toEqual({ column: 'tx_count', ascending: false });
+  });
+
+  test('single-chain wallets path is weighted too (solana mixes badges)', async () => {
+    const fake = makeOrderRecordingFake();
+    __setSupabaseForTest(fake);
+
+    await getAgents(25, 0, { chain: 'solana' }, { field: 'provider_score', direction: 'desc' });
+
+    expect(fake.__orders[0]).toEqual({ column: 'rank_score', ascending: false });
+  });
+});
+
+// The declared weight is written in TWO SQL files (the migration that creates the
+// generated column, and the view that re-derives it for registry rows). They MUST
+// agree — a silent drift would rank the `wallets` and `erc8004_agents` halves of
+// the same list on different scales.
+describe('declared rank weight is consistent across SQL definitions', () => {
+  const WEIGHT = '0.7';
+
+  test('migration and explore view use the same declared weight', async () => {
+    const migration = await Bun.file('drizzle/0017_evidence_weighted_rank.sql').text();
+    const view = await Bun.file('src/db/sql/explore-agents-view.sql').text();
+
+    // Both spellings of the weight: `THEN 0.7` in the generated-column CASE and
+    // `* 0.7` in the view's registry branch. Anchoring on those two tokens keeps
+    // version strings in comments (e.g. "v0.2") out of the match.
+    const weightsIn = (sql: string) =>
+      [...sql.matchAll(/(?:\*\s*|THEN\s+)(0\.\d+)/g)].map((m) => m[1]);
+
+    const found = [...weightsIn(migration), ...weightsIn(view)];
+    expect(found.length).toBeGreaterThan(0);
+    expect(new Set(found)).toEqual(new Set([WEIGHT]));
   });
 });
