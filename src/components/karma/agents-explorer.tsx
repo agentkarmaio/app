@@ -385,7 +385,7 @@ export function AgentsExplorer() {
                 <tr className="border-b border-[rgb(255_255_255/0.06)] bg-[rgb(255_255_255/0.015)]">
                   <Th className="w-10">#</Th>
                   <Th>Agent</Th>
-                  <ThSort field="provider_score" filters={filters} onSort={setSort} align="right">Karma</ThSort>
+                  <ThSort field="provider_score" filters={filters} onSort={setSort} align="right" title="Ranked by evidence weight: declared-only scores count x0.7, so a declared 100 ranks below an observed 80.">Karma</ThSort>
                   <Th align="left">Tier</Th>
                   <Th align="left">Confidence</Th>
                   <ThSort field="autonomy_score" filters={filters} onSort={setSort} align="left">Autonomy</ThSort>
@@ -780,13 +780,14 @@ function Th({
 }
 
 function ThSort({
-  field, filters, onSort, align = 'left', className, children,
+  field, filters, onSort, align = 'left', className, title, children,
 }: {
   field: AgentSortField;
   filters: { sortBy: AgentSortField; sortDir: 'asc' | 'desc' };
   onSort: (f: AgentSortField) => void;
   align?: 'left' | 'right';
   className?: string;
+  title?: string;
   children: React.ReactNode;
 }) {
   const active = filters.sortBy === field;
@@ -794,6 +795,7 @@ function ThSort({
   return (
     <th
       onClick={() => onSort(field)}
+      title={title}
       className={cn(
         "group px-3 py-2.5 text-[10px] font-[590] uppercase tracking-[0.08em] cursor-pointer select-none transition-colors",
         active ? "text-[#f7f8f8]" : "text-[#62666d] hover:text-[#d0d6e0]",

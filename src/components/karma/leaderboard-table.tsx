@@ -54,7 +54,7 @@ export function LeaderboardTable({
         <TableRow className="hover:bg-transparent">
           <TableHead className="w-12 text-center">#</TableHead>
           <TableHead>Agent Wallet</TableHead>
-          <TableHead className="text-center">Score</TableHead>
+          <TableHead className="text-center" title="Ranked by evidence weight: declared-only scores count x0.7, so a declared 100 ranks below an observed 80.">Score</TableHead>
           <TableHead className="text-center hidden md:table-cell">Trend</TableHead>
           <TableHead className="text-center">Tier</TableHead>
           <TableHead className="text-center hidden lg:table-cell">Confidence</TableHead>
