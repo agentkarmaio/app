@@ -29,7 +29,7 @@
  *   bun run scripts/stellar-backfill-behavior.ts --address G... --simulate
  */
 
-import { fetchStellarActivity } from '../src/indexer/stellar-activity';
+import { fetchStellarActivity, isHorizonNotFound } from '../src/indexer/stellar-activity';
 import { computeCadence, MIN_TX_FOR_CADENCE } from '../src/scoring/cadence';
 import { computeAutonomy, MIN_TX_FOR_AUTONOMY } from '../src/scoring/autonomy';
 import { buildCadenceSignal, buildAutonomySignal } from '../src/scoring/signals';
@@ -82,7 +82,7 @@ async function collectAddresses(): Promise<string[]> {
 
 // ─── Per-address work ────────────────────────────────────────────────────────
 
-type Status = 'written' | 'simulated' | 'insufficient' | 'skipped' | 'error';
+type Status = 'written' | 'simulated' | 'insufficient' | 'skipped' | 'absent' | 'error';
 
 interface Outcome {
   address: string;
@@ -112,6 +112,12 @@ async function processAddress(address: string): Promise<Outcome> {
   try {
     activity = await fetchStellarActivity(address, { onPageCap: () => { capped = true; } });
   } catch (err) {
+    // A Horizon 404 means the account was never funded on this network — a
+    // permanent state for registry entries minted on testnet, not an outage.
+    // Reporting it as an error paged the on-call every 6h forever (2026-08-26).
+    if (isHorizonNotFound(err)) {
+      return { address, status: 'absent', txCount: 0, error: 'no such account on this network' };
+    }
     return { address, status: 'error', txCount: 0, error: err instanceof Error ? err.message : String(err) };
   }
 
@@ -181,8 +187,8 @@ async function worker() {
     if (i >= addresses.length) return;
     const o = await processAddress(addresses[i]);
     outcomes.push(o);
-    const tag = o.status === 'error' ? 'ERR ' : o.status === 'skipped' ? 'SKIP' : o.status === 'insufficient' ? '----' : 'OK  ';
-    const detail = o.status === 'error' || o.status === 'skipped'
+    const tag = o.status === 'error' ? 'ERR ' : o.status === 'skipped' ? 'SKIP' : o.status === 'absent' ? 'GONE' : o.status === 'insufficient' ? '----' : 'OK  ';
+    const detail = o.status === 'error' || o.status === 'skipped' || o.status === 'absent'
       ? ` ${o.error?.slice(0, 60)}`
       : o.status === 'insufficient'
         ? ` (${o.txCount} tx — below floor)`
@@ -201,6 +207,7 @@ console.log(`addresses:      ${outcomes.length}`);
 console.log(`${SIMULATE ? 'would write' : 'written    '}:    ${SIMULATE ? by('simulated') : by('written')}`);
 console.log(`below floor:    ${by('insufficient')}`);
 console.log(`skipped:        ${by('skipped')} (synthetic / non-StrKey rows)`);
+console.log(`absent:         ${by('absent')} (account not funded on this network)`);
 console.log(`errors:         ${by('error')}`);
 const capped = outcomes.filter((o) => o.capped).length;
 if (capped > 0) {
@@ -224,8 +231,10 @@ for (const o of outcomes.filter((o) => o.status === 'error').slice(0, 5)) {
 // the 2026-06-23 outage shape reproduced inside its own replacement. A refresh
 // job that cannot write MUST page.
 //
-// `skipped` (synthetic non-StrKey rows) and `insufficient` (below the 10-tx
-// floor) are expected steady-state outcomes, not failures.
+// `skipped` (synthetic non-StrKey rows), `insufficient` (below the 10-tx floor)
+// and `absent` (Horizon 404 — never funded on this network) are expected
+// steady-state outcomes, not failures. A wrong Horizon base URL would 404 every
+// address, so the all-absent case below still pages.
 const errorCount = by('error');
 if (errorCount > 0) {
   console.error(
@@ -237,7 +246,18 @@ if (errorCount > 0) {
 // Every real address failing to produce a result is also a failure, even with a
 // zero error count: it means the address set or the activity source is broken.
 const eligible = outcomes.filter((o) => o.status !== 'skipped').length;
-if (eligible > 0 && by('written') === 0 && by('simulated') === 0 && by('insufficient') < eligible) {
+
+// Every single account absent is not a steady state — it is the wrong Horizon
+// base URL (a testnet/mainnet mismatch 404s the whole address set).
+if (eligible > 0 && by('absent') === eligible) {
+  console.error(
+    `\n[behavior] FAILED: all ${eligible} accounts 404'd — check the Horizon base URL.`,
+  );
+  process.exit(1);
+}
+
+const accountedFor = by('insufficient') + by('absent');
+if (eligible > 0 && by('written') === 0 && by('simulated') === 0 && accountedFor < eligible) {
   console.error('\n[behavior] FAILED: no address produced a behavioral result.');
   process.exit(1);
 }

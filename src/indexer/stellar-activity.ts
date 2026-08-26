@@ -114,12 +114,31 @@ export interface FetchActivityOpts {
   onPageCap?: () => void;
 }
 
+/**
+ * A Horizon failure carrying its HTTP status, so callers can tell "this account
+ * does not exist on this network" (404 — a permanent, expected state for a
+ * registry entry that was never funded on mainnet) apart from a genuine
+ * outage. Callers MUST branch on the status, never on the message text.
+ */
+export interface HorizonHttpError extends Error {
+  status: number;
+}
+
+/** True only for a status-tagged Horizon 404 — the account is absent. */
+export function isHorizonNotFound(err: unknown): err is HorizonHttpError {
+  return err instanceof Error && (err as Partial<HorizonHttpError>).status === 404;
+}
+
 async function defaultFetch(url: string, timeoutMs: number): Promise<Record<string, unknown>> {
   const res = await fetch(url, {
     headers: { accept: 'application/json' },
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!res.ok) throw new Error(`Horizon ${res.status} ${res.statusText} for ${url}`);
+  if (!res.ok) {
+    throw Object.assign(new Error(`Horizon ${res.status} ${res.statusText} for ${url}`), {
+      status: res.status,
+    });
+  }
   return (await res.json()) as Record<string, unknown>;
 }
 

@@ -13,6 +13,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   extractCounterparty,
   fetchStellarActivity,
+  isHorizonNotFound,
   type HorizonFetch,
 } from './stellar-activity';
 
@@ -212,5 +213,31 @@ describe('fetchStellarActivity', () => {
 
     expect(acts).toHaveLength(1);
     expect(acts[0].counterparty).toBeNull();
+  });
+});
+
+describe('isHorizonNotFound', () => {
+  async function catchErr(status: number, statusText: string): Promise<unknown> {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response('{}', { status, statusText })) as unknown as typeof fetch;
+    try {
+      return await fetchStellarActivity(SELF).catch((e: unknown) => e);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  test('tags a Horizon 404 as an absent account, not a generic failure', async () => {
+    expect(isHorizonNotFound(await catchErr(404, 'Not Found'))).toBe(true);
+  });
+
+  test('does not tag a 503 as absent — a real Horizon failure must still page', async () => {
+    expect(isHorizonNotFound(await catchErr(503, 'Service Unavailable'))).toBe(false);
+  });
+
+  test('does not tag an untagged error as absent', () => {
+    expect(isHorizonNotFound(new Error('Horizon 404 Not Found for https://x/'))).toBe(false);
+    expect(isHorizonNotFound('nope')).toBe(false);
   });
 });
