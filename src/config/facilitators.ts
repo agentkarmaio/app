@@ -19,10 +19,15 @@ export const SOLANA_FACILITATORS: Record<string, string[]> = {
     'D6ZhtNQ5nT9ZnTHUbqXZsTx5MH2rPFiBBggX4hY1WePM',
     'GVJJ7rdGiXr5xaYbRwRbjfaJL7fmwRygFi1H6aGqDveb',
     'Hc3sdEAsCGQcpgfivywog9uwtk8gUBUZgsxdME1EJy88',
+    '92QcYJZpkwYyacR3G69QNR2JfjadQxd16cp5d7x5GEzU',
   ],
   corbits: ['AepWpq3GQwL8CeKMtZyKtKPa7W91Coygh3ropAJapVdU'],
   daydreams: ['DuQ4jFMmVABWGxabYHFkGzdyeJgS1hp4wrRuCtsJgT9a'],
-  dexter: ['DEXVS3su4dZQWTvvPnLDJLRK1CeeKG6K3QqdzthgAkNV'],
+  dexter: [
+    'DeXterR2kQm8AvRHnNPatWkE46TfAcMeBDjb6FySoAb8',
+    'DEXVS3su4dZQWTvvPnLDJLRK1CeeKG6K3QqdzthgAkNV',
+  ],
+  figment-facilitator: ['93syNmtT1tTd5ZtPwHqzGf6CM7fKhMmArpv4AM4FtyNX'],
   openfacilitator: ['Hbe1vdFs4EQVVAzcV12muHhr6DEKwrT9roMXGPLxLBLP'],
   openx402: ['5xvht4fYDs99yprfm4UeuHSLxMBRpotfBtUCQqM3oDNG'],
   payAI: [
@@ -31,16 +36,15 @@ export const SOLANA_FACILITATORS: Record<string, string[]> = {
     '8B5UKhwfAyFW67h58cBkQj1Ur6QXRgwWJJcQp8ZBsDPa',
   ],
   relai: ['4x4ZhcqiT1FnirM8Ne97iVupkN4NcQgc2YYbE2jDZbZn'],
+  three-ws: [
+    'WwwuGbqHrwF5RG89KhUbmRWEvjnRH9k5kVM5p7T3WwW',
+    'GGf9qBhJDCe1UUz4s4Vxq1uPPvcv7UW7sJTuj2Yo5XQj',
+  ],
   ultravioletadao: ['F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq'],
   x402jobs: ['561oabzy81vXYYbs1ZHR1bvpiEr6Nbfd6PGTxPshoz4p'],
 };
 
 export const ALL_FACILITATOR_ADDRESSES = Object.values(SOLANA_FACILITATORS).flat();
-/**
- * Set view of `ALL_FACILITATOR_ADDRESSES` for O(1) membership tests on the
- * wallet-side regressive scan hot path.
- */
-export const ALL_FACILITATOR_ADDRESSES_SET: ReadonlySet<string> = new Set(ALL_FACILITATOR_ADDRESSES);
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 export function isX402Payment(recipient: string): boolean {
