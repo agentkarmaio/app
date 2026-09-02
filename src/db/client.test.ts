@@ -1204,3 +1204,71 @@ describe('declared rank weight is consistent across SQL definitions', () => {
     expect(new Set(found)).toEqual(new Set([WEIGHT]));
   });
 });
+
+// ── Registry-mirror search must cover the declared agent name ────────────────
+//
+// Regression for 2026-09-02: `/explore?chain=celo&q=agentkarma` returned 0
+// agents while the same query on "All chains" returned AgentKarma on both Celo
+// and Stellar. The two paths search different things — the all-chains
+// `explore_agents` view exposes `display_name`, but the per-chain registry path
+// queries `erc8004_agents` directly, where the name lives in the `registration`
+// JSONB and the filter only matched `owner`/`agent_wallet`. Searching a
+// registry chain by name was therefore address-only.
+describe('registry-chain search matches the declared name, not just addresses', () => {
+  const SORT = { field: 'provider_score' as const, direction: 'desc' as const };
+
+  function makeSearchFake(rows: unknown[]) {
+    const orFilters: string[] = [];
+    return {
+      __orFilters: orFilters,
+      from(table: string) {
+        const b: Record<string, unknown> = {};
+        for (const m of ['select', 'eq', 'gt', 'gte', 'lt', 'in', 'order', 'not', 'limit']) {
+          b[m] = () => b;
+        }
+        b.or = (f: string) => { if (table === 'erc8004_agents') orFilters.push(f); return b; };
+        b.range = async () => ({ data: table === 'wallets' ? [] : rows, error: null, count: rows.length });
+        return b;
+      },
+    };
+  }
+
+  const akCelo = {
+    agent_id: 9058, metadata_score: 85,
+    registration: { name: 'AgentKarma' },
+    owner: '0xcfc0a11c75519faf85b7872e27733cfaa4295b96',
+    agent_wallet: '0xcfc0a11c75519faf85b7872e27733cfaa4295b96',
+    first_indexed_at: '2026-06-20T00:00:00Z', last_indexed_at: '2026-09-01T00:00:00Z',
+  };
+
+  test('a name search on celo filters on registration->>name', async () => {
+    const fake = makeSearchFake([akCelo]);
+    __setSupabaseForTest(fake);
+
+    await getAgents(25, 0, { chain: 'celo', search: 'agentkarma' }, SORT);
+
+    const searchFilter = fake.__orFilters.find((f) => f.includes('ilike'));
+    expect(searchFilter).toBeDefined();
+    expect(searchFilter).toContain('registration->>name.ilike.%agentkarma%');
+    // Address matching must survive — searching by owner address still works.
+    expect(searchFilter).toContain('owner.ilike.%agentkarma%');
+  });
+
+  test('the same holds for the other registry chains', async () => {
+    for (const chain of ['arc', 'stellar'] as const) {
+      const fake = makeSearchFake([akCelo]);
+      __setSupabaseForTest(fake);
+      await getAgents(25, 0, { chain, search: 'AgentKarma' }, SORT);
+      expect(fake.__orFilters.some((f) => f.includes('registration->>name.ilike.'))).toBe(true);
+    }
+  });
+
+  test('an escaped-to-empty search term adds no filter', async () => {
+    const fake = makeSearchFake([akCelo]);
+    __setSupabaseForTest(fake);
+
+    await getAgents(25, 0, { chain: 'celo', search: '%%%' }, SORT);
+
+    expect(fake.__orFilters.some((f) => f.includes('ilike'))).toBe(false);
+  });
+});

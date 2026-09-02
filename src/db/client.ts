@@ -590,7 +590,15 @@ async function getRegistryAgentsPage(
 
   if (filters.search) {
     const term = escapeSearchTerm(filters.search);
-    if (term) q = q.or(`owner.ilike.%${term}%,agent_wallet.ilike.%${term}%`);
+    // The declared name lives in the `registration` JSONB, not a column — the
+    // all-chains `explore_agents` view projects it as `display_name`, so
+    // omitting it here made a name search on a registry chain address-only
+    // (searching "agentkarma" on Celo returned 0 while "All" returned it).
+    if (term) {
+      q = q.or(
+        `owner.ilike.%${term}%,agent_wallet.ilike.%${term}%,registration->>name.ilike.%${term}%`,
+      );
+    }
   }
 
   // Sort: map the wallet-oriented sort fields onto registry columns. Unmappable
