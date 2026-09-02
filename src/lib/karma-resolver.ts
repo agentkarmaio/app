@@ -22,6 +22,25 @@ import { hasProviderSignal, storedProviderHasSignal, storedConsumerHasSignal } f
 import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy } from '@/scoring/autonomy';
 import { readAttestation } from '@/integrations/attestation';
+import { canonicalAddress } from '@/lib/chain-detect';
+import {
+  getRegistryAgentsForAddress,
+  getRegistryFeedbackForAgents,
+  getX402PayeesForAddress,
+} from '@/db/enrichment-queries';
+import {
+  buildRegistryBlock,
+  buildDeclaredBlock,
+  buildFeedbackBlock,
+  buildDiscoveryBlock,
+  buildExplain,
+  pickPrimaryAgent,
+  type KarmaEnrichment,
+  type RegistryBlock,
+  type DeclaredBlock,
+  type FeedbackBlock,
+  type DiscoveryBlock,
+} from '@/lib/karma-enrichment';
 import type {
   Chain,
   ConfidenceBadge,
@@ -81,7 +100,10 @@ export const SNAPSHOT_NOT_FOUND = Symbol('karma_not_found');
  * Returns `null` when the wallet has neither a `wallets` row NOR any indexed
  * transactions. Callers should treat that as 404.
  */
-export async function resolveKarma(wallet: string): Promise<KarmaSnapshot | null> {
+export async function resolveKarma(rawWallet: string): Promise<KarmaSnapshot | null> {
+  // Public entry point: normalize once so MCP / A2A callers get the same row
+  // the v2 route does for a checksummed EVM input (rows are stored lowercase).
+  const wallet = canonicalAddress(rawWallet);
   const [walletRow, transactions, signalEvents] = await Promise.all([
     getWallet(wallet),
     getTransactions(wallet, 1000),
@@ -202,6 +224,92 @@ export async function resolveKarma(wallet: string): Promise<KarmaSnapshot | null
   };
 }
 
+
+// --- Enrichment (registry / declared / feedback / discovery / rank / explain) -
+//
+// Additive, best-effort blocks every karma read surface attaches on top of the
+// stable score shape: the v2 score route, MCP `get_karma` and the A2A agent
+// (the latter two via `resolveForChain`). One orchestrator so the three never
+// drift. Each DB read is isolated — a failed read omits ITS block only; the
+// core-derived `rankScore` and `explain` always ship. Nothing here opens a
+// connection to a declared endpoint (non-routing mandate): the registry JSON is
+// read from the mirror and the rubric recompute is pure.
+
+/** The core facts `explain` narrates — filled by the caller from the face it already resolved. */
+export interface EnrichmentCore {
+  provider: { score: number; trustTier: string; confidenceBadge: ConfidenceBadge | string };
+  consumerHasSignal: boolean;
+  txCount: number;
+  claimed: boolean;
+}
+
+export async function resolveKarmaEnrichment(args: {
+  address: string;
+  chain: Chain;
+  walletRow: Wallet | null;
+  core: EnrichmentCore;
+}): Promise<KarmaEnrichment> {
+  const { chain, walletRow, core } = args;
+  const address = canonicalAddress(args.address, chain);
+  const walletAgentId =
+    chain === 'celo' ? walletRow?.celo_agent_id ?? null
+    : chain === 'arc' ? walletRow?.arc_agent_id ?? null
+    : null;
+
+  const [agentsRes, payeesRes] = await Promise.allSettled([
+    getRegistryAgentsForAddress(chain, address),
+    getX402PayeesForAddress(chain, address),
+  ]);
+
+  // undefined = read failed (explain says nothing); null = read succeeded, nothing owned.
+  let registry: RegistryBlock | null | undefined;
+  let declared: DeclaredBlock | undefined;
+  let feedback: FeedbackBlock | undefined;
+  if (agentsRes.status === 'fulfilled') {
+    const { rows, total } = agentsRes.value;
+    if (rows.length === 0) {
+      registry = null;
+    } else {
+      registry = buildRegistryBlock(rows, total, chain);
+      declared = buildDeclaredBlock(pickPrimaryAgent(rows, walletAgentId)) ?? undefined;
+      try {
+        const fbRows = await getRegistryFeedbackForAgents(chain, rows.map((r) => Number(r.agent_id)));
+        feedback = buildFeedbackBlock(rows, fbRows);
+      } catch { /* additive — omit on failure */ }
+    }
+  }
+
+  const discovery: DiscoveryBlock | undefined =
+    payeesRes.status === 'fulfilled' && payeesRes.value.length > 0
+      ? buildDiscoveryBlock(payeesRes.value)
+      : undefined;
+
+  const rankScore = walletRow?.rank_score != null ? Number(walletRow.rank_score) : null;
+
+  const explain = buildExplain({
+    chain,
+    provider: core.provider,
+    consumerHasSignal: core.consumerHasSignal,
+    txCount: core.txCount,
+    claimed: core.claimed,
+    rankScore,
+    registry,
+    declared,
+    feedback,
+    discovery,
+  });
+
+  return {
+    ...(registry ? { registry } : {}),
+    ...(declared ? { declared } : {}),
+    ...(feedback ? { feedback } : {}),
+    ...(discovery ? { discovery } : {}),
+    rankScore,
+    explain,
+  };
+}
+
+export type { KarmaEnrichment };
 
 function toIsoOrNull(v: string | Date | null | undefined): string | null {
   if (!v) return null;
@@ -393,11 +501,12 @@ export interface EvmKarmaSnapshot {
  * declared, nothing to show).
  */
 export async function resolveEvmKarma(
-  address: string,
+  rawAddress: string,
   chain: 'celo' | 'arc',
   walletRow: Wallet | null,
 ): Promise<EvmKarmaSnapshot | null> {
   if (!walletRow) return null;
+  const address = canonicalAddress(rawAddress, chain);
 
   const agentId =
     chain === 'celo' ? walletRow.celo_agent_id ?? null : walletRow.arc_agent_id ?? null;
