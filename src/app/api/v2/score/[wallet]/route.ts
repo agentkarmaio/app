@@ -4,7 +4,7 @@ import {
   getLatestSignalValues, getSignalEventsForWallet,
   getSuccession, getBondsForAgent, getUnderwriterPositions,
 } from '@/db/client';
-import { detectChain } from '@/lib/chain-detect';
+import { detectChain, resolveChainParam } from '@/lib/chain-detect';
 import type { SignalEvent } from '@/db/schema';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
@@ -13,7 +13,7 @@ import { computeSurety } from '@/scoring/surety';
 import { deriveSuccessionLiveness } from '@/scoring/succession';
 import { readAttestation } from '@/integrations/attestation';
 import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
-import type { Chain } from '@/db/schema';
+import type { Chain, Wallet } from '@/db/schema';
 import {
   buildSuccessionView, buildBondView, buildSuretyView, isBondSettled, toSuretyPosition,
 } from '@/lib/succession-view';
@@ -52,22 +52,24 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
   }
 
-  // Chain-aware resolution. getWallet defaults to solana, so a celo/arc/stellar
-  // wallet would miss. When the solana lookup misses, fall back to ANY-chain
-  // resolution: detectChain narrows solana/stellar by format; EVM addresses are
-  // ambiguous (celo vs arc) and detectChain returns null, so we pick the real
-  // row from getWalletsByAddressAnyChain. We NEVER auto-pick an EVM chain — we
-  // read whichever row(s) the DB holds and prefer the format-detected chain.
-  let walletRow = await getWallet(wallet);
-  if (!walletRow) {
-    const rows = await getWalletsByAddressAnyChain(wallet);
-    if (rows.length === 1) {
-      walletRow = rows[0];
-    } else if (rows.length > 1) {
-      const detected = detectChain(wallet);
-      walletRow = (detected && rows.find((r) => r.chain === detected)) ?? rows[0];
-    }
+  // `?chain=` pins the lookup. An EVM address can hold rows on BOTH celo and
+  // arc (same key format), so without a pin the route can only guess. A pin
+  // that mismatches the address format is rejected, never silently downgraded.
+  const chainParam = new URL(request.url).searchParams.get('chain');
+  const pinned = chainParam ? resolveChainParam(chainParam, wallet) : null;
+  if (chainParam && !pinned) {
+    return NextResponse.json(
+      { error: `chain must be one of solana, celo, stellar, arc and match the address format` },
+      { status: 400 },
+    );
   }
+
+  // Unpinned: getWallet defaults to solana; when that misses, read whichever
+  // row(s) the DB holds and prefer the format-detected chain. Pinned: only the
+  // pinned chain's row counts.
+  const walletRow = pinned
+    ? await getWallet(wallet, pinned)
+    : (await getWallet(wallet)) ?? pickWalletRow(await getWalletsByAddressAnyChain(wallet), wallet, null);
 
   const transactions = await getTransactions(wallet, 1000);
 
@@ -117,6 +119,7 @@ export async function GET(
 
   const response: Record<string, unknown> = {
     address: wallet,
+    chain: walletRow?.chain ?? pinned ?? detectChain(wallet) ?? null,
     face,
     identity,
     txCount: live?.txCount ?? walletRow?.tx_count ?? 0,
@@ -185,7 +188,7 @@ export async function GET(
   // CEILING DISCIPLINE: these blocks are descriptive only. A bond/will lifts the
   // confidence badge + Tier-presence in the SCORING layer, never the trust
   // ceiling here — this route surfaces state, it does not re-grade.
-  const blockChain: Chain = walletRow?.chain ?? 'solana';
+  const blockChain: Chain = walletRow?.chain ?? pinned ?? 'solana';
   await Promise.all([
     attachSuccessionBlock(response, wallet, blockChain, transactions[0]?.timestamp ?? null),
     attachBondBlocks(response, wallet, blockChain),
@@ -197,6 +200,20 @@ export async function GET(
       'Cache-Control': 'public, max-age=60',
     },
   });
+}
+
+/**
+ * Choose the wallet row for an address that may exist on several chains.
+ * Pinned → only that chain's row (null if absent, NEVER another chain).
+ * Unpinned → the single row, else the format-detected chain's row, else the
+ * first row (EVM ambiguity: celo vs arc cannot be told apart by format).
+ */
+export function pickWalletRow(rows: Wallet[], wallet: string, pinned: Chain | null): Wallet | null {
+  if (pinned) return rows.find((r) => r.chain === pinned) ?? null;
+  if (rows.length === 0) return null;
+  if (rows.length === 1) return rows[0];
+  const detected = detectChain(wallet);
+  return (detected && rows.find((r) => r.chain === detected)) ?? rows[0];
 }
 
 /**
