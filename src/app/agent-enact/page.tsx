@@ -7,6 +7,11 @@
  * network. It is NOT a hiring marketplace. Payments are one capability the stack
  * gives an agent, not the product.
  *
+ * Fifth pillar (Kerem, 2026-09-02): every output an agent produces is PROVABLE —
+ * a signed Enactment Record binding input hash, output hash, the settlement that
+ * paid for it, and the agent's identity, verifiable from public data on any
+ * chain. Provenance is AgentEnact's claim; correctness stays AgentKarma's.
+ *
  * Status discipline: AgentEnact is at CONCEPT stage. Nothing here may read as
  * shipped. The only executed evidence is the 2026-04-22 testnet prototype run
  * and AgentKarma's own registered Stellar identity; both are stated as what they
@@ -22,7 +27,7 @@ import { SectionHead, Stat, LiveFact } from '@/components/karma/section-head';
 export const metadata: Metadata = {
   title: 'AgentEnact — the execution layer for creating agents on Stellar',
   description:
-    'The stack you use to create and run an agent on Stellar: a wallet it controls, a Soroban-native ERC-8004 identity, capabilities it can act through, and USDC payment rails — with reputation wired in from its first transaction. Concept stage.',
+    'The stack you use to create and run an agent on Stellar: a wallet it controls, a Soroban-native ERC-8004 identity, capabilities it can act through, USDC payment rails, and a signed proof of every output it delivers — with reputation wired in from its first transaction. Concept stage.',
   alternates: { canonical: '/agent-enact' },
 };
 
@@ -65,6 +70,11 @@ const PARTS = [
     title: 'Rails to charge and pay',
     body: 'x402 in both directions: the agent can price its own work and settle for work it consumes. Payments are a capability the stack hands it, not a marketplace it has to join.',
   },
+  {
+    n: '5',
+    title: 'Proof of what it did',
+    body: 'Every paid output ships with a signed Enactment Record: the input hash, the output hash, the settlement that paid for it, and the agent’s identity. Anyone verifies it from public data on any chain. It proves who delivered what for which payment — not that the output was good; that is what reputation measures.',
+  },
 ] as const;
 
 export default function AgentEnactPage() {
@@ -91,9 +101,9 @@ export default function AgentEnactPage() {
             AgentKarma scores agents that already exist. AgentEnact is how they come
             to exist: the execution layer you use to create and run an agent on
             Stellar. A wallet it controls, an identity the registry can see,
-            capabilities it can act through, rails to charge and pay — and a
-            reputation that starts accruing with its first transaction instead of
-            years later.
+            capabilities it can act through, rails to charge and pay, a signed
+            proof of every output it delivers — and a reputation that starts
+            accruing with its first transaction instead of years later.
           </p>
           <p className="max-w-2xl text-[13px] leading-relaxed text-[#62666d]">
             Concept stage. Agents built this way have run end-to-end in a testnet
@@ -139,8 +149,8 @@ export default function AgentEnactPage() {
         <div className="space-y-7 lg:max-w-[72%]">
           <SectionHead
             marker={SPINE.what}
-            title="Four things an agent needs to exist on a network."
-            sub="Every team shipping an agent rebuilds the same four pieces, badly, in a different order. AgentEnact is that floor, assembled once."
+            title="Five things an agent needs to exist on a network."
+            sub="Every team shipping an agent rebuilds the same pieces, badly, in a different order — and skips the proof entirely. AgentEnact is that floor, assembled once."
             accent="planned"
           />
 
