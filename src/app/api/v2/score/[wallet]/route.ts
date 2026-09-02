@@ -4,7 +4,7 @@ import {
   getLatestSignalValues, getSignalEventsForWallet,
   getSuccession, getBondsForAgent, getUnderwriterPositions,
 } from '@/db/client';
-import { detectChain, resolveChainParam } from '@/lib/chain-detect';
+import { canonicalAddress, detectChain, resolveChainParam } from '@/lib/chain-detect';
 import { hasProviderSignal, storedProviderHasSignal, storedConsumerHasSignal } from '@/lib/face-signal';
 import type { SignalEvent } from '@/db/schema';
 import { calculateScore } from '@/scoring/index';
@@ -14,6 +14,7 @@ import { computeSurety } from '@/scoring/surety';
 import { deriveSuccessionLiveness } from '@/scoring/succession';
 import { readAttestation } from '@/integrations/attestation';
 import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
+import { resolveKarmaEnrichment, type EnrichmentCore } from '@/lib/karma-resolver';
 import type { Chain, Wallet } from '@/db/schema';
 import {
   buildSuccessionView, buildBondView, buildSuretyView, isBondSettled, toSuretyPosition,
@@ -45,7 +46,10 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ wallet: string }> },
 ) {
-  const { wallet } = await params;
+  // Boundary normalization: EVM rows are stored lowercase, so a checksummed
+  // 0x… input must resolve to the same row as its lowercase form.
+  const { wallet: rawWallet } = await params;
+  const wallet = canonicalAddress(rawWallet);
   const faceParam = (new URL(request.url).searchParams.get('face') ?? 'both').toLowerCase();
   const face: Face = faceParam === 'provider' || faceParam === 'consumer' ? faceParam : 'both';
 
@@ -127,23 +131,24 @@ export async function GET(
     lastActive: live?.lastActive ?? walletRow?.last_seen ?? null,
   };
 
-  if (face === 'provider' || face === 'both') {
-    response.provider = live ? {
-      score: live.providerScore,
-      trustTier: live.trustTier,
-      confidenceBadge: live.confidenceBadge,
-      metrics: live.metrics,
-      tierAggregates: live.tierAggregates,
-      hasSignal: hasProviderSignal(live.tierAggregates),
-    } : {
-      score: walletRow?.provider_score != null ? Number(walletRow.provider_score) : 0,
-      trustTier: walletRow?.trust_tier ?? 'Unrated',
-      confidenceBadge: walletRow?.confidence_badge ?? 'declared',
-      metrics: null,
-      tierAggregates: null,
-      hasSignal: storedProviderHasSignal(walletRow),
-    };
-  }
+  // Provider face is computed regardless of `?face` — `explain` narrates it
+  // even on a consumer-only read; it is only ATTACHED when the face was asked for.
+  const providerBlock = live ? {
+    score: live.providerScore,
+    trustTier: live.trustTier,
+    confidenceBadge: live.confidenceBadge,
+    metrics: live.metrics,
+    tierAggregates: live.tierAggregates,
+    hasSignal: hasProviderSignal(live.tierAggregates),
+  } : {
+    score: walletRow?.provider_score != null ? Number(walletRow.provider_score) : 0,
+    trustTier: walletRow?.trust_tier ?? 'Unrated',
+    confidenceBadge: walletRow?.confidence_badge ?? 'declared',
+    metrics: null,
+    tierAggregates: null,
+    hasSignal: storedProviderHasSignal(walletRow),
+  };
+  if (face === 'provider' || face === 'both') response.provider = providerBlock;
 
   // Autonomy Confidence (RFC v0.3 §5.5) — MUST appear alongside karma on every
   // response, independent of which face was requested.
@@ -193,6 +198,12 @@ export async function GET(
   await Promise.all([
     attachSuccessionBlock(response, wallet, blockChain, transactions[0]?.timestamp ?? null),
     attachBondBlocks(response, wallet, blockChain),
+    attachEnrichmentBlocks(response, wallet, blockChain, walletRow, {
+      provider: providerBlock,
+      consumerHasSignal: live?.consumerFace ? true : storedConsumerHasSignal(walletRow),
+      txCount: Number(response.txCount ?? 0),
+      claimed: walletRow?.claimed ?? false,
+    }),
   ]);
 
   return NextResponse.json(response, {
@@ -215,6 +226,25 @@ export function pickWalletRow(rows: Wallet[], wallet: string, pinned: Chain | nu
   if (rows.length === 1) return rows[0];
   const detected = detectChain(wallet);
   return (detected && rows.find((r) => r.chain === detected)) ?? rows[0];
+}
+
+/**
+ * Attach the enriched-score blocks (`registry` / `declared` / `feedback` /
+ * `discovery` / `rankScore` / `explain`) via the SHARED orchestrator the MCP
+ * `get_karma` tool and the A2A agent use — one implementation, three surfaces.
+ * Best-effort: a failed read inside omits its own block; a failure here omits
+ * them all and never sinks the core score.
+ */
+async function attachEnrichmentBlocks(
+  response: Record<string, unknown>,
+  wallet: string,
+  chain: Chain,
+  walletRow: Wallet | null,
+  core: EnrichmentCore,
+): Promise<void> {
+  try {
+    Object.assign(response, await resolveKarmaEnrichment({ address: wallet, chain, walletRow, core }));
+  } catch { /* additive — omit on failure */ }
 }
 
 /**

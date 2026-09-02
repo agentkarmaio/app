@@ -23,6 +23,8 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { z } from 'zod';
 import {
   resolveKarma,
+  resolveKarmaEnrichment,
+  type KarmaEnrichment,
   resolveAttestations,
   resolveEvmKarma,
   searchAgents,
@@ -32,6 +34,7 @@ import {
 import { readAgent, aggregateFeedback } from '@/integrations/erc8004-celo';
 import { getAdapter } from '@/chain-adapters/registry';
 import { resolveAgentChain } from '@/app/agent/[wallet]/resolve-chain';
+import { canonicalAddress } from '@/lib/chain-detect';
 import {
   getScoreHistory,
   getLeaderboard,
@@ -51,7 +54,7 @@ import {
   isBondSettled,
   toSuretyPosition,
 } from '@/lib/succession-view';
-import type { Chain } from '@/db/schema';
+import type { Chain, Wallet } from '@/db/schema';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -155,15 +158,36 @@ function readOnly() {
 // Exported so the A2A agent endpoint (src/app/a2a/route.ts) resolves + projects
 // karma through the EXACT same path as get_karma — byte-identical answers, one
 // source of truth. These are inert exports (no behavior change to /mcp).
+// `enrichment` = the additive registry / declared / feedback / discovery /
+// rankScore / explain blocks (lib/karma-enrichment.ts), resolved best-effort by
+// the shared orchestrator so MCP and A2A carry exactly what the v2 route does.
 export type ResolvedKarma =
-  | { kind: 'solana'; snap: KarmaSnapshot }
-  | { kind: 'stellar'; snap: KarmaSnapshot; onChainAttestation: number }
-  | { kind: 'evm'; snap: EvmKarmaSnapshot };
+  | { kind: 'solana'; snap: KarmaSnapshot; enrichment?: KarmaEnrichment }
+  | { kind: 'stellar'; snap: KarmaSnapshot; onChainAttestation: number; enrichment?: KarmaEnrichment }
+  | { kind: 'evm'; snap: EvmKarmaSnapshot; enrichment?: KarmaEnrichment };
+
+/** Best-effort enrichment for a Solana/Stellar-shaped snapshot; never throws. */
+function enrichSnapshot(snap: KarmaSnapshot, chain: Chain, walletRow: Wallet | null) {
+  return resolveKarmaEnrichment({
+    address: snap.address,
+    chain,
+    walletRow,
+    core: {
+      provider: snap.provider,
+      consumerHasSignal: snap.consumer.hasSignal,
+      txCount: snap.txCount,
+      claimed: snap.identity.claimed,
+    },
+  }).catch(() => undefined);
+}
 
 export async function resolveForChain(
-  addr: string,
+  rawAddr: string,
   chainHint: Chain | undefined,
 ): Promise<ResolvedKarma | null> {
+  // Boundary normalization for MCP get_karma + A2A: a checksummed EVM address
+  // must hit the same lowercase (chain,address) row the v2 route resolves.
+  const addr = canonicalAddress(rawAddr, chainHint ?? null);
   const resolved = await resolveAgentChain(addr, chainHint);
 
   // An EVM address (0x…) with an explicit Celo/Arc hint that matched NO DB row
@@ -181,7 +205,18 @@ export async function resolveForChain(
   if (evmChain) {
     const snap = await resolveEvmKarma(addr, evmChain, resolved.wallet);
     if (!snap) return null;
-    return { kind: 'evm', snap };
+    const enrichment = await resolveKarmaEnrichment({
+      address: addr,
+      chain: evmChain,
+      walletRow: resolved.wallet,
+      core: {
+        provider: snap.provider,
+        consumerHasSignal: false,
+        txCount: 0,
+        claimed: snap.claimed,
+      },
+    }).catch(() => undefined);
+    return { kind: 'evm', snap, enrichment };
   }
 
   // Stellar — Solana-style snapshot + on-chain attestation via the adapter.
@@ -192,19 +227,21 @@ export async function resolveForChain(
       resolveKarma(addr),
     ]);
     if (!snap) return null;
-    return { kind: 'stellar', snap, onChainAttestation };
+    const enrichment = await enrichSnapshot(snap, 'stellar', resolved.wallet);
+    return { kind: 'stellar', snap, onChainAttestation, enrichment };
   }
 
   // Solana (or an unmatched EVM/unknown address that still has Solana tx/rows).
   // resolveKarma defaults to the Solana composite-PK row, the original behavior.
   const snap = await resolveKarma(addr);
   if (!snap) return null;
-  return { kind: 'solana', snap };
+  const enrichment = await enrichSnapshot(snap, 'solana', resolved.wallet);
+  return { kind: 'solana', snap, enrichment };
 }
 
 /** Project a resolved karma into the full two-faced JSON `get_karma` returns. */
 export function fullKarmaJson(r: ResolvedKarma, addr: string) {
-  if (r.kind === 'evm') return evmKarmaJson(r.snap);
+  if (r.kind === 'evm') return { ...evmKarmaJson(r.snap), ...(r.enrichment ?? {}) };
   const { snap } = r;
   const base = {
     chain: r.kind === 'stellar' ? ('stellar' as const) : ('solana' as const),
@@ -217,6 +254,7 @@ export function fullKarmaJson(r: ResolvedKarma, addr: string) {
     txCount: snap.txCount,
     lastActive: snap.lastActive,
     profileUrl: profileUrl(addr),
+    ...(r.enrichment ?? {}),
   };
   if (r.kind === 'stellar') {
     const stellar = getAdapter('stellar');
