@@ -50,3 +50,18 @@ export function resolveChainParam(
   }
   return detectChain(address);
 }
+
+/**
+ * Canonical storage form of an address for DB lookups. EVM rows are stored
+ * lowercase (celo + arc), Solana/Stellar are case-sensitive and stored as-is.
+ * With `chain` pinned, that adapter decides; otherwise the first adapter that
+ * recognizes the format does (celo/arc agree on lowercase, so EVM ambiguity is
+ * harmless here). Unrecognized input passes through — validation is the
+ * caller's job, this only normalizes.
+ */
+export function canonicalAddress(address: string, chain?: Chain | null): string {
+  if (!address) return address;
+  if (chain) return getAdapter(chain).normalizeAddress(address);
+  const adapter = getAllAdapters().find((a) => a.validateAddress(address));
+  return adapter ? adapter.normalizeAddress(address) : address;
+}

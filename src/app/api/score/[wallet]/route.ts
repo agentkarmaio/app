@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { resolveChainParam, isRecognizedAddress } from '@/lib/chain-detect';
+import { resolveChainParam, isRecognizedAddress, canonicalAddress } from '@/lib/chain-detect';
 import { DEFAULT_CHAIN } from '@/db/schema';
 import { getWallet, getTransactions, getLatestSignalValues, enqueueWalletScan } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
@@ -15,7 +15,8 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ wallet: string }> }
 ) {
-  const { wallet } = await params;
+  const { wallet: rawWallet } = await params;
+  const wallet = canonicalAddress(rawWallet);
 
   // Validate wallet format BEFORE rate limiting — invalid input shouldn't
   // consume rate budget. Chain-dispatched: each ChainAdapter.validateAddress

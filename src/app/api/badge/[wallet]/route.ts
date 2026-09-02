@@ -7,6 +7,7 @@ import { computeAutonomy } from '@/scoring/autonomy';
 import { getLivenessStatus } from '@/db/schema';
 import type { TrustTier, LivenessStatus, ConfidenceBadge } from '@/db/schema';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
+import { canonicalAddress } from '@/lib/chain-detect';
 
 export async function OPTIONS() {
   return corsPreflight();
@@ -26,7 +27,8 @@ export async function GET(
   const gate = await enforceRateLimit('badge', request);
   if (!gate.ok) return gate.response;
 
-  const { wallet } = await params;
+  const { wallet: rawWallet } = await params;
+  const wallet = canonicalAddress(rawWallet);
   const { searchParams } = new URL(request.url);
   const format = searchParams.get('format') ?? 'svg';
 

@@ -21,7 +21,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getBondsForAgent, getUnderwriterPositions } from '@/db/client';
 import { computeSurety } from '@/scoring/surety';
-import { resolveChainParam } from '@/lib/chain-detect';
+import { resolveChainParam, canonicalAddress } from '@/lib/chain-detect';
 import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
 import {
   buildBondView, buildSuretyView, isBondSettled, toSuretyPosition,
@@ -50,7 +50,8 @@ export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ chain: string; wallet: string }> },
 ) {
-  const { chain: chainParam, wallet } = await params;
+  const { chain: chainParam, wallet: rawWallet } = await params;
+  const wallet = canonicalAddress(rawWallet);
 
   const chain = resolveChainParam(chainParam, wallet);
   if (!chain) {
