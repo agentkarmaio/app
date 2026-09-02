@@ -18,6 +18,7 @@ import {
   getSignalEventsForWallet,
 } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
+import { hasProviderSignal, storedProviderHasSignal, storedConsumerHasSignal } from '@/lib/face-signal';
 import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy } from '@/scoring/autonomy';
 import { readAttestation } from '@/integrations/attestation';
@@ -145,7 +146,7 @@ export async function resolveKarma(wallet: string): Promise<KarmaSnapshot | null
         score: walletRow?.provider_score != null ? Number(walletRow.provider_score) : 0,
         trustTier: walletRow?.trust_tier ?? 'Unrated',
         confidenceBadge: (walletRow?.confidence_badge as ConfidenceBadge) ?? 'declared',
-        hasSignal: false,
+        hasSignal: storedProviderHasSignal(walletRow),
         metrics: null,
         tierAggregates: null,
       };
@@ -165,7 +166,7 @@ export async function resolveKarma(wallet: string): Promise<KarmaSnapshot | null
         score: walletRow?.consumer_score != null ? Number(walletRow.consumer_score) : 0,
         trustTier: 'Unrated',
         confidenceBadge: (walletRow?.confidence_badge as ConfidenceBadge) ?? 'declared',
-        hasSignal: false,
+        hasSignal: storedConsumerHasSignal(walletRow),
         metrics: null,
         tierAggregates: null,
       };
@@ -201,14 +202,6 @@ export async function resolveKarma(wallet: string): Promise<KarmaSnapshot | null
   };
 }
 
-/**
- * Provider has real signal when Tier 1 or Tier 3 is present. Tier 2 alone is
- * ambiguous (could be consumer behavior mislabelled as provider). Mirrors the
- * gate used by `api/v2/score/[wallet]/route.ts`.
- */
-function hasProviderSignal(t: { tier1?: number | null; tier3?: number | null }): boolean {
-  return (t.tier1 != null && t.tier1 >= 0) || (t.tier3 != null && t.tier3 >= 0);
-}
 
 function toIsoOrNull(v: string | Date | null | undefined): string | null {
   if (!v) return null;
