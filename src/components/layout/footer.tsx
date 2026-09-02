@@ -202,6 +202,18 @@ export function Footer() {
                 <span>noras.tech</span>
               </a>
             </span>
+            <span aria-hidden>·</span>
+            <span>
+              Every AgentKarma service runs on{" "}
+              <a
+                href="https://servel.dev"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[#62666d] transition-colors hover:text-[#d0d6e0]"
+              >
+                servel.dev
+              </a>
+            </span>
           </p>
         </div>
       </div>
