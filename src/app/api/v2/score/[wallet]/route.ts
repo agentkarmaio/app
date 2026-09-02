@@ -218,14 +218,21 @@ export async function GET(
  * Choose the wallet row for an address that may exist on several chains.
  * Pinned → only that chain's row (null if absent, NEVER another chain).
  * Unpinned → the single row, else the format-detected chain's row, else the
- * first row (EVM ambiguity: celo vs arc cannot be told apart by format).
+ * row with the most evidence (EVM ambiguity: celo vs arc cannot be told apart
+ * by format, so tx_count then rank_score break the tie).
  */
 export function pickWalletRow(rows: Wallet[], wallet: string, pinned: Chain | null): Wallet | null {
   if (pinned) return rows.find((r) => r.chain === pinned) ?? null;
   if (rows.length === 0) return null;
   if (rows.length === 1) return rows[0];
   const detected = detectChain(wallet);
-  return (detected && rows.find((r) => r.chain === detected)) ?? rows[0];
+  const byFormat = detected && rows.find((r) => r.chain === detected);
+  if (byFormat) return byFormat;
+  // EVM ambiguity with no pin (older SDKs): prefer the row with real evidence —
+  // observed transactions first, then evidence-weighted rank — over row order.
+  return [...rows].sort(
+    (a, b) => (b.tx_count ?? 0) - (a.tx_count ?? 0) || Number(b.rank_score ?? 0) - Number(a.rank_score ?? 0),
+  )[0];
 }
 
 /**
