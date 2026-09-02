@@ -5,6 +5,7 @@ import {
   getSuccession, getBondsForAgent, getUnderwriterPositions,
 } from '@/db/client';
 import { detectChain, resolveChainParam } from '@/lib/chain-detect';
+import { hasProviderSignal, storedProviderHasSignal, storedConsumerHasSignal } from '@/lib/face-signal';
 import type { SignalEvent } from '@/db/schema';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
@@ -140,7 +141,7 @@ export async function GET(
       confidenceBadge: walletRow?.confidence_badge ?? 'declared',
       metrics: null,
       tierAggregates: null,
-      hasSignal: false,
+      hasSignal: storedProviderHasSignal(walletRow),
     };
   }
 
@@ -176,7 +177,7 @@ export async function GET(
       confidenceBadge: null,
       metrics: null,
       tierAggregates: null,
-      hasSignal: false,
+      hasSignal: storedConsumerHasSignal(walletRow),
     };
   }
 
@@ -269,13 +270,4 @@ async function attachBondBlocks(
     const surety = computeSurety(positions.map(toSuretyPosition));
     if (surety) response.surety = buildSuretyView(surety);
   } catch { /* additive — omit on failure */ }
-}
-
-/**
- * A provider face has real signal when Tier 1 or Tier 3 is present. Tier 2
- * alone is ambiguous — could be consumer behavior mislabelled as provider.
- * Phase G1b (recipient extraction) will tighten this.
- */
-function hasProviderSignal(t: { tier1?: number | null; tier3?: number | null }): boolean {
-  return (t.tier1 != null && t.tier1 >= 0) || (t.tier3 != null && t.tier3 >= 0);
 }
