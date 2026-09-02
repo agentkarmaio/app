@@ -12,7 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSuccession, getRecentTransactionsForWallet } from '@/db/client';
 import { deriveSuccessionLiveness } from '@/scoring/succession';
-import { resolveChainParam } from '@/lib/chain-detect';
+import { resolveChainParam, canonicalAddress } from '@/lib/chain-detect';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 import { buildSuccessionView, type SuccessionView } from '@/lib/succession-view';
 
@@ -27,7 +27,8 @@ export async function GET(
   const gate = await enforceRateLimit('succession-get', request);
   if (!gate.ok) return gate.response;
 
-  const { chain: chainParam, wallet } = await params;
+  const { chain: chainParam, wallet: rawWallet } = await params;
+  const wallet = canonicalAddress(rawWallet);
 
   const chain = resolveChainParam(chainParam, wallet);
   if (!chain) {

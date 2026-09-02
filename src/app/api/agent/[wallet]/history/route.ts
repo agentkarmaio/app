@@ -5,6 +5,7 @@ import {
   getFeedbackRatingsForSignatures,
 } from '@/db/client';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
+import { canonicalAddress } from '@/lib/chain-detect';
 
 export async function OPTIONS() {
   return corsPreflight();
@@ -17,7 +18,8 @@ export async function GET(
   const gate = await enforceRateLimit('agent-history', request);
   if (!gate.ok) return gate.response;
 
-  const { wallet } = await params;
+  const { wallet: rawWallet } = await params;
+  const wallet = canonicalAddress(rawWallet);
 
   if (!wallet || wallet.length < 32) {
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });

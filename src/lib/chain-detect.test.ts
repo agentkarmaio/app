@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { detectChain, resolveChainParam, isRecognizedAddress } from './chain-detect';
+import { detectChain, resolveChainParam, isRecognizedAddress, canonicalAddress } from './chain-detect';
 
 // Real addresses, format-valid for each chain's validateAddress.
 const SOLANA = '3rGu9hPHdgwR8KeZTpPkN4Z5VRBeR3LBs9CAnqJ7yDjZ'; // base58, 44 chars
@@ -73,5 +73,23 @@ describe('resolveChainParam', () => {
     expect(resolveChainParam('arc', EVM)).toBe('arc');
     expect(resolveChainParam('celo', EVM)).toBe('celo');
     expect(resolveChainParam(null, EVM)).toBeNull();
+  });
+});
+
+describe('canonicalAddress', () => {
+  const CHECKSUMMED = '0x68961aC3376fa6c2aa20689307Be57f107031B31';
+  const SOL = '4VRzfgGq8VkUH8PFiwzD3dDYkGNijvA1MCkP6Zwn8eYn';
+
+  test('lowercases an EVM address even without a chain pin (celo/arc both store lowercase)', () => {
+    expect(canonicalAddress(CHECKSUMMED)).toBe(CHECKSUMMED.toLowerCase());
+  });
+  test('pinned chain uses that adapter', () => {
+    expect(canonicalAddress(CHECKSUMMED, 'celo')).toBe(CHECKSUMMED.toLowerCase());
+  });
+  test('Solana is case-sensitive and passes through untouched', () => {
+    expect(canonicalAddress(SOL)).toBe(SOL);
+  });
+  test('unrecognized input passes through untouched (validation happens elsewhere)', () => {
+    expect(canonicalAddress('nonsense')).toBe('nonsense');
   });
 });
