@@ -7,8 +7,7 @@ import { cachedStats } from '@/db/cached';
 
 // Protocols only. The chains used to live here too, which duplicated the "Built
 // on" row directly below and forced a wrapped second line plus an asterisk
-// footnote. Chains — and the Arc-is-testnet caveat — now sit with the chain
-// marks, where they read without a legend.
+// footnote. Chains now sit with the chain marks, where they read without a legend.
 const PROTOCOLS = [
   { label: 'x402', role: 'payments' },
   { label: '8004', role: 'identity' },
