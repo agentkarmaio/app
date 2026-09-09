@@ -26,6 +26,7 @@ export type RateLimitName =
   | 'score-refresh'
   | 'wallet-scan-enqueue'
   | 'deck-identify'
+  | 'collaboration'
   | 'manifest-refresh'
   | 'succession-get';
 
@@ -44,6 +45,7 @@ const LIMITS: Record<RateLimitName, LimitSpec> = {
   'score-refresh': { limit: 5, window: '1 m' },
   'wallet-scan-enqueue': { limit: 3, window: '1 m' },
   'deck-identify': { limit: 10, window: '1 m' },
+  collaboration: { limit: 3, window: '10 m' },
   // Triggers an outbound server-side fetch (SSRF-guarded). Keep tight.
   'manifest-refresh': { limit: 5, window: '1 m' },
   // Read-only public projection, but per-IP cap to blunt scrapers.

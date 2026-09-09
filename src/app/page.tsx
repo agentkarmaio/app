@@ -5,6 +5,7 @@ import { LeaderboardWithLoadMore } from '@/components/karma/leaderboard-with-loa
 import { Hero } from '@/components/karma/hero';
 import { FacilitatorList } from '@/components/karma/facilitator-list';
 import { BuiltWith } from '@/components/karma/built-with';
+import { Partners } from '@/components/karma/partners';
 import { Tour } from '@/components/karma/tour';
 import { KarmaCatchingUp } from '@/components/karma/karma-catching-up';
 import { SignalsBand } from '@/components/karma/signals-band';
@@ -21,6 +22,7 @@ export default function HomePage() {
         <StatsSection />
       </Suspense>
       <BuiltWith />
+      <Partners />
       <Suspense fallback={<LeaderboardSkeleton />}>
         <LeaderboardSection />
       </Suspense>
