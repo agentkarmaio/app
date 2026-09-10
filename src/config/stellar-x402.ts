@@ -19,8 +19,63 @@ export const USDC_SAC: Record<StellarNetwork, string> = {
   testnet: 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA',
 };
 
+/**
+ * Circle's USDC *issuing* `G…` accounts — the classic-asset half of the same
+ * asset the SAC above wraps.
+ *
+ * Needed because Horizon reports assets as `code` + `issuer`, not as a contract
+ * id. Matching on `asset_code === 'USDC'` alone is spoofable: anyone can issue a
+ * token coded `USDC`, and a bare-code filter would score a stranger's token as
+ * Circle's. Every asset comparison MUST pin `CODE:ISSUER`.
+ *
+ * These are not independent constants — `Asset(code, issuer).contractId(network)`
+ * derives the SAC — and `stellar-transfers.test.ts` asserts exactly that for both
+ * networks, so a wrong issuer fails at test time instead of silently matching
+ * nothing in production.
+ */
+export const USDC_ISSUER: Record<StellarNetwork, string> = {
+  pubnet:  'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+  testnet: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+};
+
 /** Stellar USDC base-unit precision. 1 USDC = 10^7 stroops-equivalent. */
 export const STELLAR_USDC_DECIMALS = 7;
+
+/**
+ * Addresses that must NEVER enter the Stellar transfer indexer's seed set, even
+ * though they legitimately appear in `wallets`.
+ *
+ * `wallets` is an open-membership table — a row can be minted by anything that
+ * resolves an address, including a profile-page visit. Circle's USDC issuer is
+ * in there today (score 0, Unrated, no registry row behind it), and a probe of
+ * its first 200 operations returned 145 USDC operations: every issuance and
+ * redemption of USDC on Stellar touches the issuing account.
+ *
+ * Left in the seed set it would pull a large share of Circle's issuance traffic
+ * into `transactions` and record it as agent-to-agent payment reputation — the
+ * firehose the seed set exists to prevent (see arc-transfers.ts, paused for
+ * exactly this reason). It also means an unprivileged party could aim the
+ * indexer at an arbitrary high-volume account just by causing a `wallets` row.
+ *
+ * Both entries are asset infrastructure, never a payment counterparty:
+ * the issuing account (the mint) and the SAC (the token contract itself).
+ */
+export const STELLAR_SEED_EXCLUSIONS: ReadonlySet<string> = new Set<string>([
+  USDC_ISSUER.pubnet,
+  USDC_ISSUER.testnet,
+  USDC_SAC.pubnet,
+  USDC_SAC.testnet,
+]);
+
+/**
+ * Extension point: partner agents to index that are not (yet) discoverable from
+ * `erc8004_agents` or `wallets`.
+ *
+ * Add a `G…` account here to bring it into scope without touching indexer code.
+ * Entries are shape-gated and exclusion-filtered like every other seed source,
+ * so a typo drops out rather than widening the scan.
+ */
+export const STELLAR_SEED_EXTRA: readonly string[] = [];
 
 /**
  * OZ Channels facilitator `G...` accounts (the `tx.source_account` of settled

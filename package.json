@@ -17,6 +17,7 @@
     "indexer:full": "bun run src/indexer/run.ts 200",
     "indexer:backfill": "bun run src/indexer/run.ts 200 --backfill",
     "indexer:stellar": "bun run src/indexer/stellar-run.ts",
+    "indexer:stellar-transfers": "bun run src/indexer/stellar-transfers-run.ts",
     "indexer:celo": "bun run src/indexer/celo-run.ts",
     "registry:scan": "bun run src/indexer/erc8004-registry-run.ts",
     "registry:scan:stellar": "bun run src/indexer/stellar-registry-run.ts",
