@@ -29,12 +29,18 @@ import type { Chain } from '@/db/schema';
  * reciprocity read is trustworthy. Below it the verdict is `insufficient-data`.
  *
  * This gate is the whole safety story. 503k Solana rows carry `counterparty =
- * NULL` (payee underivable), and a payment recorded that way never matches the
- * inbound lookup — it is invisible. If a circular payer's rows are NULL, the
- * wallet looks MORE independent than it is, which for an underwriter is the
- * worst possible failure: a confident "clean" verdict on self-dealt revenue.
- * So we measure how well the indexer sees payees for this wallet at all, and
- * decline to answer when it doesn't.
+ * NULL` — written before the column existed (pre-2026-06-20), not yet
+ * backfilled — and a payment recorded that way never matches the inbound
+ * lookup, so it is invisible. If a circular payer's rows are NULL, the wallet
+ * looks MORE independent than it is, which for an underwriter is the worst
+ * possible failure: a confident "clean" verdict on self-dealt revenue. So we
+ * measure how well the indexer sees payees for this wallet at all, and decline
+ * to answer when it doesn't.
+ *
+ * The gate stands regardless of backfill progress. Coverage is a per-wallet
+ * property of the evidence in hand; it does not become safe to assume a payee
+ * just because most rows elsewhere have one. See
+ * (design notes, kept out of this repo).
  */
 export const COVERAGE_FLOOR = 0.5;
 
