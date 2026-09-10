@@ -20,6 +20,7 @@
  * focused on declared identity. No tx list, no score trend, no consumer
  * feedback form (those wire to Solana data shapes).
  */
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, ExternalLink, Globe, Verified } from 'lucide-react';
 import {
@@ -27,6 +28,7 @@ import {
   readStellarAgent,
   type StellarAgent,
 } from '@/integrations/erc8004-stellar';
+import { CardSkeleton } from '@/components/karma/card-skeleton';
 import { ScoreRing } from '@/components/karma/score-ring';
 import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { TierBadge } from '@/components/karma/tier-badge';
@@ -56,7 +58,7 @@ function shortAddr(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-export async function StellarAgentProfile({
+export function StellarAgentProfile({
   wallet,
   walletRow,
   agentId,
@@ -68,20 +70,20 @@ export async function StellarAgentProfile({
   /** Observe-only Succession + Bonding grid, loaded chain-aware in the page. */
   deadMansSwitch?: React.ReactNode;
 }) {
-  // Read on-chain identity directly. If the chain call fails (Soroban RPC blip,
-  // contract upgrade, etc.), fall back to the DB row alone — we still want to
-  // show something useful. readStellarAgent takes (server, agentId:number).
-  const server = getStellarRpc();
-  const agent = await readStellarAgent(server, agentId).catch(() => null as StellarAgent | null);
-
-  const registrationName = agent?.registration?.name ?? null;
-  const registrationDescription = agent?.registration?.description ?? null;
-  const services = agent?.registration?.services ?? [];
-
-  const displayName = walletRow.display_name ?? registrationName ?? `Agent ${shortAddr(wallet)}`;
-  const description = walletRow.description ?? registrationDescription;
-  // Sanitize: registration.website is attacker-controlled. Reject anything
-  // that isn't http(s) so a malicious agent can't ship `javascript:` URIs.
+  // SHELL — synchronous by design. Every value below comes from the `wallets`
+  // row the page already holds, so identity paints in the first flush instead
+  // of waiting on Soroban RPC. The chain read lives in StellarOnchainSections,
+  // behind the Suspense boundary below.
+  //
+  // Consequence: name/description fall back to the short address rather than to
+  // the on-chain registration, which is not loaded yet. We do NOT swap the <h1>
+  // in afterwards — a heading that changes after paint reads worse than a
+  // stable neutral one. The mirrored registration name still reaches unfurls
+  // and search via generateMetadata's cachedAgentCardFields.
+  const displayName = walletRow.display_name ?? `Agent ${shortAddr(wallet)}`;
+  const description = walletRow.description;
+  // Sanitize: website is attacker-controlled. Reject anything that isn't
+  // http(s) so a malicious agent can't ship `javascript:` URIs.
   const website = safeHref(walletRow.website);
   const category = walletRow.category ?? null;
   const score = Number(walletRow.provider_score ?? walletRow.score ?? 0);
@@ -91,7 +93,6 @@ export async function StellarAgentProfile({
 
   // Stellar mainnet explorer (stellar.expert — confirmed in src/chain-adapters/stellar.ts).
   const explorerUrl = `https://stellar.expert/explorer/public/account/${wallet}`;
-  const eightthousandfourUrl = `https://8004scan.io/agent/${agentId}`;
 
   return (
     <div className="space-y-6">
@@ -105,7 +106,7 @@ export async function StellarAgentProfile({
 
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-start gap-4">
-          <AgentAvatar src={walletRow.image_url ?? agent?.registration?.image} name={displayName} />
+          <AgentAvatar src={walletRow.image_url} name={displayName} />
           <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
@@ -178,6 +179,70 @@ export async function StellarAgentProfile({
 
       <Separator />
 
+      <Suspense fallback={<StellarOnchainSectionsSkeleton />}>
+        <StellarOnchainSections walletRow={walletRow} agentId={agentId} />
+      </Suspense>
+
+      {isClaimed && !walletRow.claim_signature && (
+        <ProveOwnership chain="stellar" address={walletRow.address} />
+      )}
+
+      {isClaimed && (
+        <EditProfile
+          chain="stellar"
+          address={walletRow.address}
+          current={{
+            displayName: walletRow.display_name ?? '',
+            description: walletRow.description ?? '',
+            website: walletRow.website ?? '',
+            category: walletRow.category ?? '',
+            imageUrl: walletRow.image_url ?? '',
+            tempoAddress: walletRow.tempo_address ?? '',
+          }}
+        />
+      )}
+
+      {isClaimed && walletRow.claim_signature && walletRow.claim_message && (
+        <ClaimProof
+          chain="stellar"
+          address={walletRow.address}
+          message={walletRow.claim_message}
+          signature={walletRow.claim_signature}
+        />
+      )}
+
+      {deadMansSwitch}
+    </div>
+  );
+}
+
+/**
+ * TAIL — everything that needs the Stellar IdentityRegistry. Streamed behind
+ * Suspense so a Soroban RPC round-trip never delays the identity header above.
+ */
+async function StellarOnchainSections({
+  walletRow,
+  agentId,
+}: {
+  walletRow: Wallet;
+  agentId: number;
+}) {
+  // Read on-chain identity directly. If the chain call fails (Soroban RPC blip,
+  // contract upgrade, etc.), fall back to the DB row alone — we still want to
+  // show something useful. readStellarAgent takes (server, agentId:number).
+  const server = getStellarRpc();
+  const agent = await readStellarAgent(server, agentId).catch(() => null as StellarAgent | null);
+
+  const registrationName = agent?.registration?.name ?? null;
+  const services = agent?.registration?.services ?? [];
+
+  const score = Number(walletRow.provider_score ?? walletRow.score ?? 0);
+  const tier = (walletRow.trust_tier ?? 'Unrated') as TrustTier;
+  const confidenceBadge: ConfidenceBadgeValue = walletRow.confidence_badge ?? 'declared';
+  const eightthousandfourUrl = `https://8004scan.io/agent/${agentId}`;
+
+  return (
+    <>
       <div className="grid gap-6 md:grid-cols-2">
         <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
           <CardHeader className="pb-4">
@@ -195,7 +260,7 @@ export async function StellarAgentProfile({
               label="Owner"
               value={
                 <span className="font-mono text-[12px] break-all">
-                  {agent?.owner ?? wallet}
+                  {agent?.owner ?? walletRow.address}
                 </span>
               }
             />
@@ -320,36 +385,16 @@ export async function StellarAgentProfile({
           </CardContent>
         </Card>
       )}
+    </>
+  );
+}
 
-      {isClaimed && !walletRow.claim_signature && (
-        <ProveOwnership chain="stellar" address={walletRow.address} />
-      )}
-
-      {isClaimed && (
-        <EditProfile
-          chain="stellar"
-          address={walletRow.address}
-          current={{
-            displayName: walletRow.display_name ?? '',
-            description: walletRow.description ?? '',
-            website: walletRow.website ?? '',
-            category: walletRow.category ?? '',
-            imageUrl: walletRow.image_url ?? '',
-            tempoAddress: walletRow.tempo_address ?? '',
-          }}
-        />
-      )}
-
-      {isClaimed && walletRow.claim_signature && walletRow.claim_message && (
-        <ClaimProof
-          chain="stellar"
-          address={walletRow.address}
-          message={walletRow.claim_message}
-          signature={walletRow.claim_signature}
-        />
-      )}
-
-      {deadMansSwitch}
+/** Card-shaped placeholder matching the layout StellarOnchainSections fills in. */
+function StellarOnchainSectionsSkeleton() {
+  return (
+    <div className="grid gap-6 md:grid-cols-2">
+      <CardSkeleton title="ERC-8004 identity" rows={5} />
+      <CardSkeleton title="Summary" rows={5} />
     </div>
   );
 }

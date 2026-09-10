@@ -916,22 +916,32 @@ export async function resolveRaters(
   if (unique.length === 0) return out;
 
   // Chunk to stay under Kong's ~8KB URI cap on .in() filters (ADDRESS_IN_CHUNK).
+  // The chunks are independent, so they go out together — a heavily-rated agent
+  // (700 raters = 7 chunks) was paying ~7 sequential round-trips before this,
+  // which is the single slowest read on an EVM profile.
+  const chunks: string[][] = [];
   for (let i = 0; i < unique.length; i += ADDRESS_IN_CHUNK) {
-    const chunk = unique.slice(i, i + ADDRESS_IN_CHUNK);
+    chunks.push(unique.slice(i, i + ADDRESS_IN_CHUNK));
+  }
 
-    const [agentsRes, walletsRes] = await Promise.all([
-      supabase
-        .from('erc8004_agents')
-        .select('agent_id, agent_wallet, registration')
-        .eq('chain', chain)
-        .in('agent_wallet', chunk),
-      supabase
-        .from('wallets')
-        .select('address, display_name')
-        .eq('chain', chain)
-        .in('address', chunk),
-    ]);
+  const pages = await Promise.all(
+    chunks.map((chunk) =>
+      Promise.all([
+        supabase
+          .from('erc8004_agents')
+          .select('agent_id, agent_wallet, registration')
+          .eq('chain', chain)
+          .in('agent_wallet', chunk),
+        supabase
+          .from('wallets')
+          .select('address, display_name')
+          .eq('chain', chain)
+          .in('address', chunk),
+      ]),
+    ),
+  );
 
+  for (const [agentsRes, walletsRes] of pages) {
     if (agentsRes.error) throw agentsRes.error;
     if (walletsRes.error) throw walletsRes.error;
 

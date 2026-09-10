@@ -12,9 +12,11 @@
  * focused on declared identity + ERC-8004 feedback aggregate. No tx list, no
  * score trend, no consumer feedback form (those wire to Solana data shapes).
  */
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, ExternalLink, Globe, Verified } from 'lucide-react';
 import { getCachedEvmAgentOnchain } from '@/db/cached';
+import { CardSkeleton } from '@/components/karma/card-skeleton';
 import { ScoreRing } from '@/components/karma/score-ring';
 import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { TierBadge } from '@/components/karma/tier-badge';
@@ -49,7 +51,7 @@ function shortAddr(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-export async function ArcAgentProfile({
+export function ArcAgentProfile({
   wallet,
   walletRow,
   agentId,
@@ -61,44 +63,20 @@ export async function ArcAgentProfile({
   /** Observe-only Succession + Bonding grid, loaded chain-aware in the page. */
   deadMansSwitch?: React.ReactNode;
 }) {
-  // On-chain identity + aggregate feedback, read through the per-agent cache
-  // (120s) so repeat profile views don't re-hit the Arc testnet RPC.
-  // includeRevoked: retracted records surface struck-through; count/average
-  // still exclude them. If the chain call fails, fall back to the DB row.
-  const { agent, feedback } = await getCachedEvmAgentOnchain('arc', agentId);
-
-  // Resolve rater addresses to names + AK profile links (best-effort, one DB
-  // round-trip). Depends on the feedback list, so it follows the parallel read.
-  const raters = feedback?.records.length
-    ? await resolveRaters(feedback.records.map((r) => r.client), 'arc').catch(
-        () => new Map<string, RaterInfo>(),
-      )
-    : new Map<string, RaterInfo>();
-
-  // Free-text reviews inlined on-chain (feedbackURI), backfilled by the
-  // feedback-URI scanner. Keyed by `${lowercasedClient}-${index}`.
-  const comments = feedback?.records.length
-    ? await getFeedbackComments('arc', Number(agentId)).catch(
-        () => new Map<string, { comment: string; verified: boolean }>(),
-      )
-    : new Map<string, { comment: string; verified: boolean }>();
-
-  const registrationName = agent?.registration?.name ?? null;
-  const registrationDescription = agent?.registration?.description ?? null;
-  const services = agent?.registration?.services ?? [];
-
-  // AK's CURRENT (v0.2) metadata-quality assessment of THIS agent, recomputed
-  // deterministically from the already-loaded registration JSON (pure, no extra
-  // RPC). Drives the per-record "Why" breakdown on AK-metadata feedback rows. No
-  // registration mirrored → no breakdown (FeedbackRecordsCard renders as before).
-  const metadataAssessment = agent?.registration
-    ? { result: scoreMetadataQuality(agent), schemeVersion: METADATA_SCHEME_VERSION }
-    : null;
-
-  const displayName = walletRow.display_name ?? registrationName ?? `Agent ${shortAddr(wallet)}`;
-  const description = walletRow.description ?? registrationDescription;
-  // Sanitize: registration.website is attacker-controlled. Reject anything
-  // that isn't http(s) so a malicious agent can't ship `javascript:` URIs.
+  // SHELL — synchronous by design. Every value below comes from the `wallets`
+  // row the page already holds, so identity paints in the first flush instead
+  // of waiting on the Arc testnet RPC. The chain reads live in
+  // ArcOnchainSections, behind the Suspense boundary at the bottom.
+  //
+  // Consequence: name/description fall back to the short address rather than to
+  // the on-chain registration, which is not loaded yet. We do NOT swap the <h1>
+  // in afterwards — a heading that changes after paint reads worse than a
+  // stable neutral one. The mirrored registration name still reaches unfurls
+  // and search via generateMetadata's cachedAgentCardFields.
+  const displayName = walletRow.display_name ?? `Agent ${shortAddr(wallet)}`;
+  const description = walletRow.description;
+  // Sanitize: website is attacker-controlled. Reject anything that isn't
+  // http(s) so a malicious agent can't ship `javascript:` URIs.
   const website = safeHref(walletRow.website);
   const category = walletRow.category ?? null;
   const score = Number(walletRow.provider_score ?? walletRow.score ?? 0);
@@ -108,7 +86,6 @@ export async function ArcAgentProfile({
 
   // Arc Testnet explorer (arcscan.app — confirmed in src/config/arc-chain.ts).
   const explorerUrl = `https://testnet.arcscan.app/address/${wallet}`;
-  const eightthousandfourUrl = `https://8004scan.io/agent/${agentId}`;
 
   return (
     <div className="space-y-6">
@@ -122,7 +99,7 @@ export async function ArcAgentProfile({
 
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-start gap-4">
-          <AgentAvatar src={walletRow.image_url ?? agent?.registration?.image} name={displayName} />
+          <AgentAvatar src={walletRow.image_url} name={displayName} />
           <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
@@ -223,6 +200,77 @@ export async function ArcAgentProfile({
         />
       )}
 
+      {isClaimed && walletRow.claim_signature && walletRow.claim_message && (
+        <ClaimProof
+          chain="arc"
+          address={walletRow.address}
+          message={walletRow.claim_message}
+          signature={walletRow.claim_signature}
+        />
+      )}
+
+      <Suspense fallback={<ArcOnchainSectionsSkeleton />}>
+        <ArcOnchainSections wallet={wallet} walletRow={walletRow} agentId={agentId} />
+      </Suspense>
+
+      {deadMansSwitch}
+    </div>
+  );
+}
+
+/**
+ * TAIL — everything that needs the Arc IdentityRegistry / ReputationRegistry.
+ * Streamed behind Suspense so an RPC round-trip (or a cold 120s cache) never
+ * delays the identity header above it.
+ */
+async function ArcOnchainSections({
+  wallet,
+  walletRow,
+  agentId,
+}: {
+  wallet: string;
+  walletRow: Wallet;
+  agentId: number;
+}) {
+  // On-chain identity + aggregate feedback, read through the per-agent cache
+  // (120s) so repeat profile views don't re-hit the Arc testnet RPC.
+  // includeRevoked: retracted records surface struck-through; count/average
+  // still exclude them. If the chain call fails, fall back to the DB row.
+  const { agent, feedback } = await getCachedEvmAgentOnchain('arc', agentId);
+
+  // Rater names + comments both depend on the feedback list, so they follow
+  // the chain read — but run against each other in parallel.
+  const [raters, comments] = await Promise.all([
+    feedback?.records.length
+      ? resolveRaters(feedback.records.map((r) => r.client), 'arc').catch(
+          () => new Map<string, RaterInfo>(),
+        )
+      : new Map<string, RaterInfo>(),
+    feedback?.records.length
+      ? getFeedbackComments('arc', Number(agentId)).catch(
+          () => new Map<string, { comment: string; verified: boolean }>(),
+        )
+      : new Map<string, { comment: string; verified: boolean }>(),
+  ]);
+
+  const registrationName = agent?.registration?.name ?? null;
+  const services = agent?.registration?.services ?? [];
+
+  // AK's CURRENT (v0.2) metadata-quality assessment of THIS agent, recomputed
+  // deterministically from the already-loaded registration JSON (pure, no extra
+  // RPC). Drives the per-record "Why" breakdown on AK-metadata feedback rows. No
+  // registration mirrored → no breakdown (FeedbackRecordsCard renders as before).
+  const metadataAssessment = agent?.registration
+    ? { result: scoreMetadataQuality(agent), schemeVersion: METADATA_SCHEME_VERSION }
+    : null;
+
+  const score = Number(walletRow.provider_score ?? walletRow.score ?? 0);
+  const tier = (walletRow.trust_tier ?? 'Unrated') as TrustTier;
+  const confidenceBadge: ConfidenceBadgeValue = walletRow.confidence_badge ?? 'declared';
+  const eightthousandfourUrl = `https://8004scan.io/agent/${agentId}`;
+
+  return (
+    <>
       <div className="grid gap-6 md:grid-cols-2">
         <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
           <CardHeader className="pb-4">
@@ -388,17 +436,16 @@ export async function ArcAgentProfile({
           </CardContent>
         </Card>
       )}
+    </>
+  );
+}
 
-      {isClaimed && walletRow.claim_signature && walletRow.claim_message && (
-        <ClaimProof
-          chain="arc"
-          address={walletRow.address}
-          message={walletRow.claim_message}
-          signature={walletRow.claim_signature}
-        />
-      )}
-
-      {deadMansSwitch}
+/** Card-shaped placeholder matching the layout ArcOnchainSections fills in. */
+function ArcOnchainSectionsSkeleton() {
+  return (
+    <div className="grid gap-6 md:grid-cols-2">
+      <CardSkeleton title="ERC-8004 identity" rows={5} />
+      <CardSkeleton title="Summary" rows={5} />
     </div>
   );
 }

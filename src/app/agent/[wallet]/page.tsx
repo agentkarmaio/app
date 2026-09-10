@@ -62,6 +62,7 @@ import { CeloAgentProfile } from '@/components/karma/celo-agent-profile';
 import { ArcAgentProfile } from '@/components/karma/arc-agent-profile';
 import { StellarAgentProfile } from '@/components/karma/stellar-agent-profile';
 import { AgentAvatar } from '@/components/karma/agent-avatar';
+import { CardSkeleton } from '@/components/karma/card-skeleton';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
@@ -82,7 +83,12 @@ async function synthesizeRegistryWalletRow(
 ): Promise<Wallet> {
   const row = await getErc8004Agent(chain, agentId).catch(() => null);
   const score = row ? Number(row.metadata_score ?? 0) : 0;
-  const reg = (row?.registration ?? null) as { name?: string; description?: string } | null;
+  // `image` rides along with name/description: the EVM profile shells now paint
+  // the avatar from walletRow alone (the on-chain read is streamed), so without
+  // it every registry-only agent would fall back to a monogram.
+  const reg = (row?.registration ?? null) as
+    | { name?: string; description?: string; image?: string }
+    | null;
   const nowIso = new Date().toISOString();
   return {
     chain,
@@ -96,6 +102,7 @@ async function synthesizeRegistryWalletRow(
     claimed: false,
     display_name: reg?.name ?? null,
     description: reg?.description ?? null,
+    image_url: reg?.image ?? null,
     provider_score: score,
     consumer_score: null,
     confidence_badge: 'declared',
@@ -387,27 +394,6 @@ export async function generateMetadata(
   };
 }
 
-function CardSkeleton({ title, rows = 5 }: { title: string; rows?: number }) {
-  return (
-    <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
-      <CardHeader className="pb-4">
-        <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
-          {title}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {Array.from({ length: rows }).map((_, i) => (
-          <div
-            key={i}
-            className="h-3 rounded bg-[rgb(255_255_255/0.04)] animate-pulse"
-            style={{ width: `${100 - i * 8}%` }}
-          />
-        ))}
-      </CardContent>
-    </Card>
-  );
-}
-
 // Full-history live score used by every tier-bearing surface on this page so
 // the ring, header badge, summary, and breakdown bars can never disagree.
 // Matches what /api/score/refresh computes (cap 10000 txs, same tier gating).
@@ -486,6 +472,28 @@ async function loadDeadMansSwitchBlocks(
   }
 
   return { succession, bond, surety };
+}
+
+/**
+ * Request-scoped memo of the DMS blocks. The header chips (Solana) and the
+ * streamed section below both need them; `cache()` collapses that to a single
+ * set of DB reads per request, which is what lets us drop the pre-await that
+ * used to gate the shell on EVERY chain.
+ */
+const getDeadMansSwitchBlocks = cache(
+  (wallet: string, chain: Chain) =>
+    loadDeadMansSwitchBlocks(wallet, chain).catch(() => null),
+);
+
+/**
+ * Observe-only Succession + Bonding grid, streamed. Rendered by the Celo/Arc/
+ * Stellar branches, which have no other use for the blocks — the Solana branch
+ * inlines the same data into its own body instead.
+ */
+async function DeadMansSwitchSection({ wallet, chain }: { wallet: string; chain: Chain }) {
+  const blocks = await getDeadMansSwitchBlocks(wallet, chain);
+  if (!blocks || (!blocks.succession && !blocks.bond)) return null;
+  return <DeadMansSwitchBlock succession={blocks.succession} bond={blocks.bond} />;
 }
 
 function ScoreBreakdownCard({
@@ -719,17 +727,19 @@ export default async function AgentProfilePage({
 
   if (resolved.addressClass === 'unknown') notFound();
 
-  // Observe-only Dead Man's Switch + Bonding blocks. Loaded ABOVE the per-chain
+  // Observe-only Dead Man's Switch + Bonding blocks. Built ABOVE the per-chain
   // render branch so Succession (real, liveness-derived) + Bonds (demo this
-  // round) render on Celo/Arc/Stellar profiles too, not just Solana. Loaded
-  // chain-aware off the resolved chain; null chain (unmatched EVM stub) skips.
-  const dmsBlocks = resolved.chain
-    ? await loadDeadMansSwitchBlocks(wallet, resolved.chain).catch(() => null)
-    : null;
-  const deadMansSwitch =
-    dmsBlocks && (dmsBlocks.succession || dmsBlocks.bond) ? (
-      <DeadMansSwitchBlock succession={dmsBlocks.succession} bond={dmsBlocks.bond} />
-    ) : null;
+  // round) render on Celo/Arc/Stellar profiles too, not just Solana. Chain-aware
+  // off the resolved chain; null chain (unmatched EVM stub) skips.
+  //
+  // NOT awaited here: these blocks are additive and must never gate first paint
+  // (3-4 DB reads). The element below is a Suspense boundary the chain profiles
+  // drop in at the bottom of their layout, so it resolves after the shell ships.
+  const deadMansSwitch = resolved.chain ? (
+    <Suspense fallback={null}>
+      <DeadMansSwitchSection wallet={wallet} chain={resolved.chain} />
+    </Suspense>
+  ) : null;
 
   // ── EVM branch ─────────────────────────────────────────────────────────────
   // Celo (and Arc, once richer integration lands) take a separate render path
@@ -833,13 +843,10 @@ export default async function AgentProfilePage({
   }
 
   // Observe-only Dead Man's Switch + Bonding blocks (additive — never gate the
-  // core profile). Loaded once above (chain-aware) and reused here; the
-  // succession + bond grid renders via `deadMansSwitch`, while the header chips
-  // and summary rows read these directly. Surety is the wallet's underwriter
-  // axis (orthogonal).
-  const succession = dmsBlocks?.succession ?? null;
-  const bond = dmsBlocks?.bond ?? null;
-  const surety = dmsBlocks?.surety ?? null;
+  // core profile). Read inside the streamed boundaries below (header chips and
+  // body), deduped per request by getDeadMansSwitchBlocks, so the shell ships
+  // without waiting on them. Surety is the wallet's underwriter axis
+  // (orthogonal).
 
   const isClaimed = walletRow?.claimed ?? false;
   const displayName = walletRow?.display_name;
@@ -893,8 +900,9 @@ export default async function AgentProfilePage({
             <Suspense fallback={<HeaderChipsSkeleton />}>
               <LiveHeaderChips wallet={wallet} walletRow={walletRow} />
             </Suspense>
-            <SuccessionChip status={succession?.status ?? null} size="sm" />
-            <SuretyChip score={surety?.score ?? null} label={surety?.label ?? null} size="sm" />
+            <Suspense fallback={null}>
+              <DmsHeaderChips wallet={wallet} chain={chain} />
+            </Suspense>
             {isClaimed && (
               <Badge variant="outline" className="bg-[rgb(94_106_210/0.08)] text-[#828fff] border-[rgb(94_106_210/0.15)] text-[10px] px-1.5 py-0 font-[510]">
                 <Verified className="size-3 mr-0.5" />
@@ -986,9 +994,6 @@ export default async function AgentProfilePage({
           wallet={wallet}
           walletRow={walletRow}
           chain={chain}
-          succession={succession}
-          bond={bond}
-          deadMansSwitch={deadMansSwitch}
         />
       </Suspense>
     </div>
@@ -1003,6 +1008,24 @@ async function LiveHeaderChips({ wallet, walletRow }: { wallet: string; walletRo
       <TierBadge tier={v.tier} />
       <ConfidenceBadge badge={v.confidenceBadge} size="sm" />
       <AutonomyChip score={v.autonomyScore} label={v.autonomyLabel} size="sm" />
+    </>
+  );
+}
+
+/**
+ * Succession + Surety chips — their own boundary, deliberately NOT bundled with
+ * LiveHeaderChips. Three cheap DB reads have no business waiting on the 10k-tx
+ * score recompute next door; a shared `Promise.all` would make both chips as
+ * slow as the slowest sibling. Both chips render null when their value is null,
+ * so an unresolved boundary costs no layout.
+ */
+async function DmsHeaderChips({ wallet, chain }: { wallet: string; chain: Chain }) {
+  const dms = await getDeadMansSwitchBlocks(wallet, chain);
+  if (!dms) return null;
+  return (
+    <>
+      <SuccessionChip status={dms.succession?.status ?? null} size="sm" />
+      <SuretyChip score={dms.surety?.score ?? null} label={dms.surety?.label ?? null} size="sm" />
     </>
   );
 }
@@ -1043,21 +1066,18 @@ async function SolanaProfileBody({
   wallet,
   walletRow,
   chain,
-  succession,
-  bond,
-  deadMansSwitch,
 }: {
   wallet: string;
   walletRow?: Wallet;
   chain: Chain;
-  succession: SuccessionView | null;
-  bond: BondBlock | null;
-  deadMansSwitch: React.ReactNode;
 }) {
-  const [bundle, manifests] = await Promise.all([
+  const [bundle, manifests, dms] = await Promise.all([
     getAgentLiveBundle(wallet),
     getAgentManifestsForWallet(wallet).catch(() => []),
+    getDeadMansSwitchBlocks(wallet, chain),
   ]);
+  const succession = dms?.succession ?? null;
+  const bond = dms?.bond ?? null;
   const { live, manifestValue, feedback: feedbackSummary } = bundle;
   const v = deriveLiveView(bundle, walletRow);
   const { providerScore, consumerScore, tier, confidenceBadge, autonomyScore, autonomyLabel, txCount } = v;
@@ -1205,7 +1225,7 @@ async function SolanaProfileBody({
 
       {agentTempoAddress && <TempoCard tempoAddress={agentTempoAddress} />}
 
-      {deadMansSwitch}
+      {(succession || bond) && <DeadMansSwitchBlock succession={succession} bond={bond} />}
 
       <Suspense fallback={<CardSkeleton title="Score Trend" rows={3} />}>
         <ScoreTrendCard wallet={wallet} tier={tier} />
