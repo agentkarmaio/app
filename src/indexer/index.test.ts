@@ -22,6 +22,7 @@ import {
   isCursorUnresolvable,
   getSignaturesWithCursorFallback,
   computeSafeCursor,
+  describeCursorReset,
 } from './index';
 
 describe('isRpcRateLimited', () => {
@@ -174,5 +175,37 @@ describe('computeSafeCursor', () => {
 
   test('returns null for an empty batch', () => {
     expect(computeSafeCursor([], new Set())).toBeNull();
+  });
+});
+
+// The re-anchor warning fired identically whether the retry found 500 signatures
+// or zero, and told the operator to run `keep-fresh:backfill` — measured on
+// 2026-09-10 to be incapable of recovering ANY of it (every affected gap is
+// 59-81 days old; the indexer RPC retains ~2 days). All 16 re-anchoring
+// facilitators are in the zero-signature case.
+// Spec: (design notes, kept out of this repo) §3
+describe('describeCursorReset', () => {
+  const ADDR = 'BfqzVwCcNf1TcVyYaZr6zjjeZKFt57fMDMcRKGjTqQCm';
+
+  test('zero signatures → info, and says the cursor is kept on purpose', async () => {
+    const r = describeCursorReset(ADDR, 'dead-cursor', 0);
+    expect(r.kind).toBe('zero-signatures');
+    expect(r.level).toBe('info');
+    expect(r.message).toContain('cursor kept as the gap anchor');
+    expect(r.message).toContain(ADDR);
+  });
+
+  test('never prescribes keep-fresh:backfill — it cannot reach these gaps', async () => {
+    for (const count of [0, 1, 500]) {
+      expect(describeCursorReset(ADDR, 'dead-cursor', count).message).not.toContain('keep-fresh:backfill');
+    }
+  });
+
+  test('a real re-anchor stays a warning and names the count', async () => {
+    const r = describeCursorReset(ADDR, 'dead-cursor', 500);
+    expect(r.kind).toBe('re-anchored');
+    expect(r.level).toBe('warn');
+    expect(r.message).toContain('500 signature(s)');
+    expect(r.message).toContain('backfill-facilitator-gap');
   });
 });

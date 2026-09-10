@@ -149,6 +149,50 @@ export async function getSignaturesWithCursorFallback(
 }
 
 /**
+ * What a cursor re-anchor actually means for THIS address, given how many
+ * signatures the cursor-less retry returned.
+ *
+ * The old message fired identically in both cases and prescribed
+ * `keep-fresh:backfill` — which was measured on 2026-09-10 to be incapable of
+ * recovering any of it: every affected gap is 59-81 days old and the indexer RPC
+ * retains ~2 days. An alert that names an impossible remedy is worse than none.
+ *
+ * `zero-signatures` is the common case here: all 16 re-anchoring facilitators
+ * have been quiet longer than the endpoint's retention, so the retry returns
+ * nothing, no cursor is stored, and the identical -32020 repeats next run. The
+ * dead cursor is KEPT on purpose — it is the only record of where the gap
+ * begins, and `backfill-facilitator-gap` needs it to page back to.
+ *
+ * Spec: (design notes, kept out of this repo) §3
+ */
+export function describeCursorReset(
+  address: string,
+  deadCursor: string | undefined,
+  signatureCount: number,
+): { level: 'info' | 'warn'; kind: 'zero-signatures' | 're-anchored'; message: string } {
+  if (signatureCount === 0) {
+    return {
+      level: 'info',
+      kind: 'zero-signatures',
+      message:
+        `[indexer] ${address}: no signatures within this RPC's retention window — ` +
+        'nothing ingested, cursor kept as the gap anchor. Run ' +
+        '`bun run scripts/backfill-facilitator-gap.ts --address ' + address + '` ' +
+        'to measure what is behind it.',
+    };
+  }
+  return {
+    level: 'warn',
+    kind: 're-anchored',
+    message:
+      `[indexer] ${address}: stored cursor ${deadCursor} is outside this RPC's history — ` +
+      `re-anchored to the newest ${signatureCount} signature(s). Anything between the two ` +
+      'is now unreachable incrementally; recover it with ' +
+      '`bun run scripts/backfill-facilitator-gap.ts --address ' + address + ' --write`.',
+  };
+}
+
+/**
  * Next cursor for a fetched signature batch, given the signatures this run could
  * not obtain from any RPC.
  *
@@ -228,11 +272,12 @@ export async function fetchTransactionsForFacilitator(
     );
     signatures = fetched.signatures;
     if (fetched.cursorReset) {
-      console.warn(
-        `[indexer] ${address}: stored cursor ${options?.until} is outside this RPC's ` +
-        'history — re-anchored to the newest signatures (a gap is possible; run ' +
-        '`bun run keep-fresh:backfill` to close it)',
-      );
+      // Classified only now that the retry's size is known: "re-anchored" and
+      // "this endpoint has nothing for this address" are different events with
+      // different remedies, and the old message conflated them.
+      const reset = describeCursorReset(address, options?.until, fetched.signatures.length);
+      if (reset.level === 'warn') console.warn(reset.message);
+      else console.log(reset.message);
     }
   } catch (err) {
     const rateLimited = isRpcRateLimited(err);
