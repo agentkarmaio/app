@@ -35,6 +35,7 @@ import {
   buildFeedbackBlock,
   buildDiscoveryBlock,
   buildIndependenceBlock,
+  type IndependenceBlock,
   buildExplain,
   pickPrimaryAgent,
   type KarmaEnrichment,
@@ -43,6 +44,7 @@ import {
   type FeedbackBlock,
   type DiscoveryBlock,
 } from '@/lib/karma-enrichment';
+import { fetchStellarFlows } from '@/integrations/stellar-flows';
 import type {
   Chain,
   ConfidenceBadge,
@@ -288,10 +290,29 @@ export async function resolveKarmaEnrichment(args: {
       : undefined;
 
   // Additive: a failed flow read omits the block rather than degrading the score.
-  const independence =
-    flowsRes.status === 'fulfilled'
-      ? buildIndependenceBlock({ ...flowsRes.value, chain }) ?? undefined
-      : undefined;
+  let independence: IndependenceBlock | undefined;
+  const dbFlows = flowsRes.status === 'fulfilled' ? flowsRes.value : null;
+  const dbHasFlows = dbFlows != null && (dbFlows.outbound.length > 0 || dbFlows.inbound.length > 0);
+
+  if (dbHasFlows) {
+    independence = buildIndependenceBlock({ ...dbFlows, chain }) ?? undefined;
+  } else if (chain === 'stellar') {
+    // `transactions` holds no Stellar rows: the receipt indexer keys on an OZ
+    // Channels facilitator, and real Soroban agents pay their own fees, so
+    // nothing ever matches. Read this one account's flows from Horizon instead.
+    // Evidence only — nothing is written, and the block carries the network it
+    // came from so a testnet reading can never pass as mainnet.
+    try {
+      const live = await fetchStellarFlows(address);
+      if (live) {
+        independence =
+          buildIndependenceBlock({ ...live.flows, saturated: live.saturated, network: live.network }) ??
+          undefined;
+      }
+    } catch {
+      /* additive — omit on failure */
+    }
+  }
 
   const rankScore = walletRow?.rank_score != null ? Number(walletRow.rank_score) : null;
 

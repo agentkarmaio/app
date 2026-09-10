@@ -170,8 +170,17 @@ export interface IndependenceBlock {
   reciprocalPayerCount: number;
   /** Share of this wallet's outbound rows that carry a payee. Drives the verdict gate. */
   coverage: number;
-  /** True when a read hit ENRICH_FLOW_WINDOW — the figures are a recent sample, not all history. */
+  /** True when a read hit its window — the figures are a recent sample, not all history. */
   windowed: boolean;
+  /**
+   * Which Stellar network the figures came from, when they were read live from
+   * Horizon rather than from indexed rows. Present ONLY for that path.
+   *
+   * Load-bearing: a caller asking for `chain=stellar` would otherwise assume
+   * mainnet, and a lender acting on testnet play money believing it real is the
+   * exact failure this signal exists to prevent.
+   */
+  network?: 'pubnet' | 'testnet';
 }
 
 export interface KarmaEnrichment {
@@ -390,11 +399,12 @@ export function buildDiscoveryBlock(rows: EnrichmentPayeeRow[]): DiscoveryBlock 
  * so an inactive wallet doesn't carry an empty block.
  */
 export function buildIndependenceBlock(
-  flows: ReciprocityInput & { saturated: boolean },
+  flows: ReciprocityInput & { saturated: boolean; network?: 'pubnet' | 'testnet' },
 ): IndependenceBlock | null {
   if (flows.outbound.length === 0 && flows.inbound.length === 0) return null;
   const r = computeReciprocity(flows);
   return {
+    ...(flows.network ? { network: flows.network } : {}),
     reciprocalShare: r.reciprocalShare,
     independentShare: r.independentShare,
     verdict: r.verdict,

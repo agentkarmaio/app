@@ -15,6 +15,8 @@ import { deriveSuccessionLiveness } from '@/scoring/succession';
 import { readAttestation } from '@/integrations/attestation';
 import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
 import { resolveKarmaEnrichment, type EnrichmentCore } from '@/lib/karma-resolver';
+import { stellarAccountExists } from '@/integrations/stellar-flows';
+import { isStellarAccount } from '@/config/stellar-x402';
 import type { Chain, Wallet } from '@/db/schema';
 import {
   buildSuccessionView, buildBondView, buildSuretyView, isBondSettled, toSuretyPosition,
@@ -79,7 +81,17 @@ export async function GET(
   const transactions = await getTransactions(wallet, 1000);
 
   if (!walletRow && transactions.length === 0) {
-    return NextResponse.json({ error: 'Wallet not found' }, { status: 404 });
+    // We hold no rows for this address — but for Stellar that is expected even
+    // for active agents: the receipt indexer keys on an OZ Channels facilitator
+    // and real Soroban agents pay their own fees, so nothing gets indexed. If
+    // the account is real on-chain we can still answer with live evidence
+    // (enrichment reads its flows from Horizon), so answer instead of 404ing.
+    // Karma itself stays honestly Unrated — no indexed transactions, no score.
+    const stellarShaped = (!pinned || pinned === 'stellar') && isStellarAccount(wallet);
+    const realOnChain = stellarShaped && (await stellarAccountExists(wallet).catch(() => false));
+    if (!realOnChain) {
+      return NextResponse.json({ error: 'Wallet not found' }, { status: 404 });
+    }
   }
 
   let feedback = { deliveryRate: 0, total: 0 };
