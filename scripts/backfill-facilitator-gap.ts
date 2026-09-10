@@ -17,6 +17,10 @@
  *   bun run scripts/backfill-facilitator-gap.ts --write            # actually ingest
  *   bun run scripts/backfill-facilitator-gap.ts --max 5000         # cap the walk
  *
+ * A --write run is RESUMABLE: the cursor climbs behind the contiguous ingested
+ * prefix as batches land, so a run killed by a timeout resumes where it stopped
+ * rather than re-walking from the dead cursor.
+ *
  * Dry run is the DEFAULT: it reports each true gap size for ~3-5 RPC calls per
  * address and writes nothing.
  *
@@ -107,13 +111,16 @@ for (const address of addresses) {
     `[gap] ${address}: gap=${result.gap}${result.capped ? ' (CAPPED — more remains)' : ''}` +
     (write
       ? ` scanned=${result.scanned} extracted=${result.extracted} inserted=${result.inserted}` +
-        ` unresolved=${result.unresolved} cursorAdvanced=${result.cursorAdvanced}`
+        ` unresolved=${result.unresolved} complete=${result.complete}`
       : ' (dry run)'),
   );
-  if (write && !result.cursorAdvanced) {
+  if (write && !result.complete) {
     console.warn(
-      `[gap] ${address.slice(0, 10)}… cursor deliberately NOT advanced ` +
-      `(${result.capped ? 'walk capped' : `${result.unresolved} unresolved`}) — re-run to finish`,
+      `[gap] ${address.slice(0, 10)}… NOT closed ` +
+      `(${result.capped ? 'walk capped' : `${result.unresolved} unresolved`}) — ` +
+      (result.cursorAdvanced
+        ? 'cursor moved up behind what did land; re-run to continue from there'
+        : 'cursor untouched; re-run walks the same range again'),
     );
   }
 }

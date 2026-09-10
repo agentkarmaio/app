@@ -91,9 +91,12 @@ export interface GapRecoveryResult {
   /** Signatures no RPC could serve — the gap is NOT closed while this is > 0. */
   unresolved: number;
   cursorAdvanced: boolean;
+  /** True only when the whole gap was walked AND every signature resolved. */
+  complete: boolean;
 }
 
-/** Parse batch size. Kept small: the archive endpoint rate-limits hard. */
+/** Parse batch size. Kept small: the archive endpoint rate-limits hard, and the
+ *  cursor advances once per batch, so smaller batches lose less to a kill. */
 const RECOVERY_BATCH = 25;
 
 /**
@@ -111,7 +114,7 @@ export async function recoverFacilitatorGap(
   address: string,
   cursor: string | undefined,
   deps: GapRecoveryDeps,
-  opts: { pageSize?: number; maxSignatures?: number; dryRun?: boolean } = {},
+  opts: { pageSize?: number; maxSignatures?: number; dryRun?: boolean; batchSize?: number } = {},
 ): Promise<GapRecoveryResult> {
   const { signatures, capped } = await pageSignaturesUntil(deps.fetchSignatures, {
     cursor,
@@ -121,7 +124,8 @@ export async function recoverFacilitatorGap(
 
   const result: GapRecoveryResult = {
     address, gap: signatures.length, capped,
-    scanned: 0, extracted: 0, inserted: 0, unresolved: 0, cursorAdvanced: false,
+    scanned: 0, extracted: 0, inserted: 0, unresolved: 0,
+    cursorAdvanced: false, complete: false,
   };
   if (signatures.length === 0 || opts.dryRun) return result;
 
@@ -130,8 +134,19 @@ export async function recoverFacilitatorGap(
   // hole in the middle that nothing records.
   const ordered = [...signatures].reverse().map((s) => s.signature);
 
-  for (let i = 0; i < ordered.length; i += RECOVERY_BATCH) {
-    const batch = ordered.slice(i, i + RECOVERY_BATCH);
+  // The cursor climbs behind the contiguous, fully-resolved prefix, one batch at
+  // a time — 14,019 signatures against a rate-limited endpoint will outlive a CI
+  // job's timeout, and a kill must not cost the whole walk.
+  //
+  // A CAPPED walk never advances: capping stops before reaching the cursor, so
+  // the signatures in hand are the TOP of the gap, not adjacent to it. Moving
+  // the cursor up would skip the hole underneath them — the original bug, in a
+  // new place.
+  const batchSize = opts.batchSize ?? RECOVERY_BATCH;
+  let prefixIntact = !capped;
+
+  for (let i = 0; i < ordered.length; i += batchSize) {
+    const batch = ordered.slice(i, i + batchSize);
     const parsed = await deps.parseBatch(batch);
     result.scanned += batch.length;
     result.unresolved += parsed.unresolved.length;
@@ -143,12 +158,17 @@ export async function recoverFacilitatorGap(
     }
     result.extracted += rows.length;
     if (rows.length > 0) result.inserted += await deps.persist(rows);
-  }
 
-  // Complete AND fully resolved, or the cursor stays put.
-  if (!capped && result.unresolved === 0 && deps.advanceCursor) {
-    await deps.advanceCursor(address, signatures[0].signature);
+    // One unresolved signature ends the prefix: everything above it is no longer
+    // contiguous with the cursor.
+    if (parsed.unresolved.length > 0) prefixIntact = false;
+    if (!prefixIntact || !deps.advanceCursor) continue;
+
+    // `ordered` is oldest-first, so the batch's last entry is its newest.
+    await deps.advanceCursor(address, batch[batch.length - 1]);
     result.cursorAdvanced = true;
   }
+
+  result.complete = !capped && result.unresolved === 0;
   return result;
 }

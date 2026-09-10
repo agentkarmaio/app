@@ -1,0 +1,60 @@
+# Recover facilitator history stranded behind a dead cursor.
+#
+# Sixteen facilitators sit behind a cursor SOLANA_RPC_URL can no longer resolve.
+# Eleven are dormant; five hold 14,019 un-ingested signatures, 59-81 days old
+# (measured 2026-09-10). keep-fresh:backfill cannot reach any of it — it runs on
+# SOLANA_RPC_URL, which retains ~2 days.
+#
+# Manual only. This walks a rate-limited full-history endpoint for a long time,
+# so it is an operator decision, not a floor step — keep-fresh stays untouched.
+#
+# Repo secrets:
+#   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY   required (DB writes)
+#   SOLANA_ARCHIVE_RPC_URL                                optional; unset falls
+#     back to https://api.mainnet-beta.solana.com. A paid full-history endpoint
+#     makes this far faster — mainnet-beta serves ~0.6 req/s and 429s in bursts.
+#
+# Runs are RESUMABLE: the cursor climbs behind the contiguous ingested prefix, so
+# a timeout kill resumes rather than restarting. Re-dispatch until complete=true.
+name: Facilitator gap recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      address:
+        description: 'Single facilitator address (blank = every known address)'
+        type: string
+        required: false
+      write:
+        description: 'Actually ingest (unchecked = dry run, measures only)'
+        type: boolean
+        default: false
+      max:
+        description: 'Max signatures to walk per address'
+        type: string
+        default: '20000'
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    # Well under the 6h ceiling: a killed run resumes, so a shorter leash just
+    # means more dispatches, never lost work.
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+
+      - name: Recover
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SOLANA_ARCHIVE_RPC_URL: ${{ secrets.SOLANA_ARCHIVE_RPC_URL }}
+        run: |
+          ARGS="--max ${{ inputs.max }}"
+          if [ -n "${{ inputs.address }}" ]; then ARGS="$ARGS --address ${{ inputs.address }}"; fi
+          if [ "${{ inputs.write }}" = "true" ]; then ARGS="$ARGS --write"; fi
+          echo "bun run indexer:gap $ARGS"
+          bun run indexer:gap $ARGS

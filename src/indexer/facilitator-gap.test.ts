@@ -202,3 +202,76 @@ describe('recoverFacilitatorGap', () => {
     expect(advanced).toEqual([]);
   });
 });
+
+// 14,019 signatures against a rate-limited endpoint will outlive a CI job's
+// timeout. Progress therefore has to survive the kill: the cursor moves up
+// behind the contiguous clean prefix as batches land, so a re-run pages only
+// what is left instead of re-walking from the dead cursor every time.
+describe('recoverFacilitatorGap resumability', () => {
+  const ADDR = 'Faci1itator22222222222222222222222222222222';
+
+  test('advances the cursor per batch, following the ingested prefix upward', async () => {
+    const history = ['s1', 's2', 's3', 's4', CURSOR]; // newest-first
+    const advanced: string[] = [];
+    await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
+      parseBatch: async (sigs) => ({
+        transactions: sigs.map((signature) => ({ signature }) as never),
+        requested: sigs.length, unresolved: [], undecodable: 0, recoveredFromArchive: 0,
+      }),
+      extract: (tx) => ({ tx_signature: (tx as { signature: string }).signature }) as never,
+      persist: async (rows) => rows.length,
+      advanceCursor: async (_a, s) => { advanced.push(s); },
+    }, { batchSize: 2 });
+
+    // Ingest order is oldest-first (s4, s3, s2, s1), so the cursor climbs.
+    expect(advanced).toEqual(['s3', 's1']);
+  });
+
+  test('stops advancing at the first batch with an unresolved signature', async () => {
+    // Everything above the break is NOT contiguous with the cursor; moving past
+    // it would strand the unresolved signature exactly like the original bug.
+    const history = ['s1', 's2', 's3', 's4', CURSOR];
+    const advanced: string[] = [];
+    let batchNo = 0;
+    const r = await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
+      parseBatch: async (sigs) => {
+        batchNo++;
+        return {
+          transactions: [], requested: sigs.length,
+          unresolved: batchNo === 2 ? [sigs[0]] : [],
+          undecodable: 0, recoveredFromArchive: 0,
+        };
+      },
+      extract: () => null,
+      persist: async () => 0,
+      advanceCursor: async (_a, s) => { advanced.push(s); },
+    }, { batchSize: 2 });
+
+    expect(advanced).toEqual(['s3']); // first batch only
+    expect(r.cursorAdvanced).toBe(true);
+    expect(r.complete).toBe(false);
+  });
+
+  test('a CAPPED walk never advances, even per batch', async () => {
+    // Capping stops the walk before it reaches the cursor, so the signatures in
+    // hand are the TOP of the gap — not adjacent to the cursor. Advancing would
+    // skip the hole underneath them.
+    const history = ['s1', 's2', 's3', 's4', 's5', 's6', CURSOR];
+    const advanced: string[] = [];
+    const r = await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 2).fetchSignatures,
+      parseBatch: async (sigs) => ({
+        transactions: [], requested: sigs.length, unresolved: [], undecodable: 0, recoveredFromArchive: 0,
+      }),
+      extract: () => null,
+      persist: async () => 0,
+      advanceCursor: async (_a, s) => { advanced.push(s); },
+    }, { pageSize: 2, maxSignatures: 2, batchSize: 1 });
+
+    expect(r.capped).toBe(true);
+    expect(advanced).toEqual([]);
+    expect(r.cursorAdvanced).toBe(false);
+  });
+});
