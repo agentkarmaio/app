@@ -45,7 +45,7 @@ export function Partners() {
 
   return (
     <section aria-label="Partners" className="flex flex-wrap items-center gap-x-8 gap-y-2 border-y border-border py-3">
-      <h2 className="text-xs text-muted-foreground">Powered by</h2>
+      <h2 className="text-xs text-muted-foreground">Working with</h2>
       <ul className="flex flex-1 flex-wrap items-center gap-x-6 gap-y-2">
         {PARTNERS.map((partner) => (
           <li key={partner.name}>
