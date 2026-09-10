@@ -21,6 +21,12 @@ import {
 } from '@/scoring/celo-metadata';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
 import type { Chain, ConfidenceBadge } from '@/db/schema';
+import {
+  computeReciprocity,
+  explainReciprocity,
+  type ReciprocityInput,
+  type ReciprocityVerdict,
+} from '@/scoring/reciprocity';
 
 // --- Caps (response size is bounded by construction) ------------------------
 
@@ -33,6 +39,8 @@ export const ENRICH_MAX_NOTES = 20;
 export const ENRICH_MAX_EXPLAIN = 10;
 /** Feedback rows read per call (newest first) — the window distinctClients is computed over. */
 export const ENRICH_FEEDBACK_WINDOW = 1000;
+/** Payment rows read per direction (newest first) — the window reciprocity is computed over. */
+export const ENRICH_FLOW_WINDOW = 1000;
 
 const NAME_MAX = 80;
 const DESC_MAX = 280;
@@ -144,11 +152,34 @@ export interface DiscoveryBlock {
   }>;
 }
 
+/**
+ * Revenue independence — how much inbound value came from addresses this wallet
+ * also pays. Reported alongside karma, never folded into it: the score stays
+ * comparable across wallets, and a lender decides its own tolerance.
+ *
+ * `verdict: 'insufficient-data'` means the payee data is too thin to tell. It
+ * does NOT mean independent, and consumers must not treat it as a pass.
+ */
+export interface IndependenceBlock {
+  /** Share of inbound value from addresses this wallet also pays. Null when undecidable. */
+  reciprocalShare: number | null;
+  /** `1 - reciprocalShare`. Null when undecidable. */
+  independentShare: number | null;
+  verdict: ReciprocityVerdict;
+  payerCount: number;
+  reciprocalPayerCount: number;
+  /** Share of this wallet's outbound rows that carry a payee. Drives the verdict gate. */
+  coverage: number;
+  /** True when a read hit ENRICH_FLOW_WINDOW — the figures are a recent sample, not all history. */
+  windowed: boolean;
+}
+
 export interface KarmaEnrichment {
   registry?: RegistryBlock;
   declared?: DeclaredBlock;
   feedback?: FeedbackBlock;
   discovery?: DiscoveryBlock;
+  independence?: IndependenceBlock;
   rankScore: number | null;
   explain: string[];
 }
@@ -351,6 +382,29 @@ export function buildDiscoveryBlock(rows: EnrichmentPayeeRow[]): DiscoveryBlock 
 
 // --- explain ----------------------------------------------------------------
 
+// --- independence ------------------------------------------------------------
+
+/**
+ * Build the revenue-independence block from the two payment-flow directions.
+ * Returns null when there is nothing to say at all (no flows on either side),
+ * so an inactive wallet doesn't carry an empty block.
+ */
+export function buildIndependenceBlock(
+  flows: ReciprocityInput & { saturated: boolean },
+): IndependenceBlock | null {
+  if (flows.outbound.length === 0 && flows.inbound.length === 0) return null;
+  const r = computeReciprocity(flows);
+  return {
+    reciprocalShare: r.reciprocalShare,
+    independentShare: r.independentShare,
+    verdict: r.verdict,
+    payerCount: r.payerCount,
+    reciprocalPayerCount: r.reciprocalPayerCount,
+    coverage: r.coverage,
+    windowed: flows.saturated,
+  };
+}
+
 export interface ExplainInput {
   chain: Chain | string;
   provider: { score: number; trustTier: string; confidenceBadge: ConfidenceBadge | string };
@@ -363,6 +417,7 @@ export interface ExplainInput {
   declared?: DeclaredBlock | null;
   feedback?: FeedbackBlock | null;
   discovery?: DiscoveryBlock | null;
+  independence?: IndependenceBlock | null;
 }
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
@@ -371,7 +426,8 @@ const fmt1 = (n: number) => (Math.round(n * 10) / 10).toString();
 /**
  * Plain, factual sentences derived only from the data. Deterministic: no LLM,
  * no clock, no randomness. Ordered provider → identity → registry → declared →
- * feedback → discovery → rank → consumer. Capped at ENRICH_MAX_EXPLAIN lines.
+ * feedback → discovery → independence → rank → consumer. Capped at
+ * ENRICH_MAX_EXPLAIN lines.
  */
 export function buildExplain(input: ExplainInput): string[] {
   const out: string[] = [];
@@ -433,6 +489,11 @@ export function buildExplain(input: ExplainInput): string[] {
         `${eps.length} unverified x402 payee ${plural(eps.length, 'declaration points', 'declarations point')} at this address from another agent (not attributed to this wallet).`,
       );
     }
+  }
+
+  if (input.independence) {
+    const line = explainReciprocity(input.independence);
+    if (line) out.push(`${line.charAt(0).toUpperCase()}${line.slice(1)}.`);
   }
 
   if (input.rankScore != null && provider.confidenceBadge === 'declared') {

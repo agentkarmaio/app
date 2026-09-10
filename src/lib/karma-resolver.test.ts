@@ -103,8 +103,11 @@ describe('resolveKarmaEnrichment', () => {
     expect(e.explain[0]).toStartWith('Provider score 100 (Excellent), declared;');
     expect(e.explain).toContain('Owns 1 ERC-8004 agent on celo: "Toppa".');
     expect(e.explain).toContain('Ranks on Explore at 70 (declared evidence is weighted ×0.7).');
-    // Read-only: exactly the three enrichment tables, nothing else, no fetches.
-    expect(new Set(calls)).toEqual(new Set(['erc8004_agents', 'erc8004_feedback', 'celo_x402_payees']));
+    // Read-only: exactly the four enrichment tables, nothing else, no fetches.
+    // `transactions` is read in both directions for the independence block.
+    expect(new Set(calls)).toEqual(
+      new Set(['erc8004_agents', 'erc8004_feedback', 'celo_x402_payees', 'transactions']),
+    );
   });
 
   test('feedback table throws → feedback omitted, registry/declared/rankScore/explain still ship', async () => {
@@ -205,5 +208,86 @@ describe('resolveKarma boundary normalization', () => {
     expect(snap?.address).toBe(lower);
     expect(filters).toContain(`wallets.address=${lower}`);
     expect(filters.some((f) => f.includes(CHECKSUMMED))).toBe(false);
+  });
+});
+
+describe('resolveKarmaEnrichment — independence block', () => {
+  /** The fake is keyed by table, so one row serves BOTH flow directions: read as
+   *  outbound it yields `counterparty`, read as inbound it yields `wallet_address`.
+   *  Making those the same address is the circular case in its smallest form. */
+  const SELF = '0xcccccccccccccccccccccccccccccccccccccccc';
+
+  afterEach(() => __setSupabaseForTest(null));
+
+  test('reports a circular verdict and explains it in words', async () => {
+    __setSupabaseForTest(
+      makeFakeSupabase({
+        transactions: {
+          rows: [
+            { wallet_address: SELF, counterparty: SELF, amount: '10' },
+            { wallet_address: SELF, counterparty: SELF, amount: '5' },
+          ],
+        },
+      }) as never,
+    );
+
+    const e = await resolveKarmaEnrichment({
+      address: OWNER,
+      chain: 'celo',
+      walletRow: null,
+      core: {
+        provider: { score: 40, trustTier: 'Poor', confidenceBadge: 'behavior-inferred' },
+        consumerHasSignal: false,
+        txCount: 2,
+        claimed: false,
+      },
+    });
+
+    expect(e.independence?.verdict).toBe('circular');
+    expect(e.independence?.reciprocalShare).toBe(1);
+    expect(e.independence?.independentShare).toBe(0);
+    expect(e.independence?.coverage).toBe(1);
+    expect(e.independence?.windowed).toBe(false);
+    expect(e.explain.some((l) => l.includes('this wallet also pays'))).toBe(true);
+  });
+
+  test('a failing transactions read omits only the independence block', async () => {
+    __setSupabaseForTest(
+      makeFakeSupabase({ transactions: { error: { message: 'statement timeout' } } }) as never,
+    );
+
+    const e = await resolveKarmaEnrichment({
+      address: OWNER,
+      chain: 'celo',
+      walletRow: null,
+      core: {
+        provider: { score: 40, trustTier: 'Poor', confidenceBadge: 'behavior-inferred' },
+        consumerHasSignal: false,
+        txCount: 2,
+        claimed: false,
+      },
+    });
+
+    expect(e.independence).toBeUndefined();
+    expect(Array.isArray(e.explain)).toBe(true);
+    expect(e.rankScore).toBeNull();
+  });
+
+  test('a wallet with no payment rows carries no block at all', async () => {
+    __setSupabaseForTest(makeFakeSupabase({ transactions: { rows: [] } }) as never);
+
+    const e = await resolveKarmaEnrichment({
+      address: OWNER,
+      chain: 'celo',
+      walletRow: null,
+      core: {
+        provider: { score: 0, trustTier: 'Unrated', confidenceBadge: 'declared' },
+        consumerHasSignal: false,
+        txCount: 0,
+        claimed: false,
+      },
+    });
+
+    expect(e.independence).toBeUndefined();
   });
 });

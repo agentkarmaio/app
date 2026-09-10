@@ -27,12 +27,14 @@ import {
   getRegistryAgentsForAddress,
   getRegistryFeedbackForAgents,
   getX402PayeesForAddress,
+  getPaymentFlowsForAddress,
 } from '@/db/enrichment-queries';
 import {
   buildRegistryBlock,
   buildDeclaredBlock,
   buildFeedbackBlock,
   buildDiscoveryBlock,
+  buildIndependenceBlock,
   buildExplain,
   pickPrimaryAgent,
   type KarmaEnrichment,
@@ -256,9 +258,10 @@ export async function resolveKarmaEnrichment(args: {
     : chain === 'arc' ? walletRow?.arc_agent_id ?? null
     : null;
 
-  const [agentsRes, payeesRes] = await Promise.allSettled([
+  const [agentsRes, payeesRes, flowsRes] = await Promise.allSettled([
     getRegistryAgentsForAddress(chain, address),
     getX402PayeesForAddress(chain, address),
+    getPaymentFlowsForAddress(chain, address),
   ]);
 
   // undefined = read failed (explain says nothing); null = read succeeded, nothing owned.
@@ -284,6 +287,12 @@ export async function resolveKarmaEnrichment(args: {
       ? buildDiscoveryBlock(payeesRes.value)
       : undefined;
 
+  // Additive: a failed flow read omits the block rather than degrading the score.
+  const independence =
+    flowsRes.status === 'fulfilled'
+      ? buildIndependenceBlock({ ...flowsRes.value, chain }) ?? undefined
+      : undefined;
+
   const rankScore = walletRow?.rank_score != null ? Number(walletRow.rank_score) : null;
 
   const explain = buildExplain({
@@ -297,6 +306,7 @@ export async function resolveKarmaEnrichment(args: {
     declared,
     feedback,
     discovery,
+    independence,
   });
 
   return {
@@ -304,6 +314,7 @@ export async function resolveKarmaEnrichment(args: {
     ...(declared ? { declared } : {}),
     ...(feedback ? { feedback } : {}),
     ...(discovery ? { discovery } : {}),
+    ...(independence ? { independence } : {}),
     rankScore,
     explain,
   };
