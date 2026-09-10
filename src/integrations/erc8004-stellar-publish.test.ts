@@ -257,6 +257,31 @@ describe('publishStellarFeedback', () => {
     expect(res.state).toBeUndefined();
   });
 
+  // A dry run that hides the fee cannot warn that the cadence went unaffordable.
+  test('simulate reports the assembled fee', async () => {
+    const res = await publishStellarFeedback(baseInput, 'simulate', {
+      server: makeFakeRpc(),
+      caller: CALLER,
+    });
+    expect(res.dryRun).toBe(true);
+    expect(typeof res.feeStroops).toBe('number');
+    expect(res.feeStroops).toBeGreaterThan(0);
+  });
+
+  test('the fee ceiling applies to simulate too, so the canary is honest', async () => {
+    let caught: unknown;
+    try {
+      await publishStellarFeedback(baseInput, 'simulate', {
+        server: makeFakeRpc(),
+        caller: CALLER,
+        maxFeeStroops: 1,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isFeeCeilingError(caught)).toBe(true);
+  });
+
   test('execute resolves to a confirmation state, not a bare hash', async () => {
     const res = await publishStellarFeedback(baseInput, 'execute', {
       server: makeFakeRpc({ sendHash: 'ABC' }),

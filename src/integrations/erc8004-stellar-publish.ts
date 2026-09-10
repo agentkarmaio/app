@@ -191,6 +191,13 @@ export interface PublishStellarFeedbackResult {
   dryRun: boolean;
   agentId: number;
   txId?: string;
+  /**
+   * Assembled fee in stroops — the simulated resource fee plus inclusion fee.
+   * Present in BOTH modes: a dry run that does not report the fee cannot tell
+   * you the cadence has become unaffordable, which is the failure mode a daily
+   * canary exists to catch.
+   */
+  feeStroops?: number;
   /** Absent in simulate mode; always present after an execute attempt. */
   state?: StellarPublishState;
   /** Human-readable reason for a non-confirmed state. */
@@ -307,21 +314,17 @@ export async function publishStellarFeedback(
     throw new Error(`give_feedback simulate failed (agent ${input.agentId}): ${sim.error}`);
   }
 
-  if (mode === 'simulate') {
-    return { dryRun: true, agentId: input.agentId };
-  }
-  if (!keypair) {
-    throw new Error('execute mode requires a keypair (STELLAR_PRIVATE_KEY or .keys/agentkarma-stellar.json)');
-  }
-
+  // Assemble in BOTH modes: assembly needs no key and is what turns the
+  // simulation into the fee the network would actually charge. A dry run that
+  // skips it cannot see an unaffordable cadence.
   const prepared = rpc
     .assembleTransaction(tx, sim as rpc.Api.SimulateTransactionSuccessResponse)
     .build();
-
-  // Last gate before a signature. The resource fee is a property of network
-  // state, not of our payload, so it can move by orders of magnitude between
-  // runs — refuse rather than sign whatever the simulation came back with.
   const fee = Number(prepared.fee);
+
+  // The gate applies to a dry run too — otherwise the daily unarmed canary
+  // reports green while a real run would be refused, which is precisely the
+  // silent failure the preflight exists to prevent.
   if (deps.maxFeeStroops !== undefined && fee > deps.maxFeeStroops) {
     throw Object.assign(
       new Error(
@@ -330,6 +333,13 @@ export async function publishStellarFeedback(
       ),
       { code: 'fee_ceiling' as const, feeStroops: fee, ceilingStroops: deps.maxFeeStroops },
     );
+  }
+
+  if (mode === 'simulate') {
+    return { dryRun: true, agentId: input.agentId, feeStroops: fee };
+  }
+  if (!keypair) {
+    throw new Error('execute mode requires a keypair (STELLAR_PRIVATE_KEY or .keys/agentkarma-stellar.json)');
   }
 
   prepared.sign(keypair);
@@ -349,7 +359,7 @@ export async function publishStellarFeedback(
     timeoutMs: deps.confirmTimeoutMs ?? DEFAULT_CONFIRM_TIMEOUT_MS,
   });
 
-  return { dryRun: false, agentId: input.agentId, txId: sent.hash, ...settled };
+  return { dryRun: false, agentId: input.agentId, txId: sent.hash, feeStroops: fee, ...settled };
 }
 
 interface InclusionArgs {

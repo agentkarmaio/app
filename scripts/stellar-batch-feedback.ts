@@ -265,7 +265,8 @@ for (let t = 0; t < targets.length; t++) {
     );
 
     if (result.dryRun) {
-      console.log(`score ${quality!.score} → would rate (simulate OK)`);
+      const feeXlm = result.feeStroops !== undefined ? `${(result.feeStroops / 1e7).toFixed(4)} XLM` : 'unknown fee';
+      console.log(`score ${quality!.score} → would rate (fee ${feeXlm})`);
       outcomes.push({ agentId: id, decision: 'publish', score: quality!.score, state: 'simulated' });
     } else {
       const tag = result.state === 'confirmed' ? '✔' : '⚠';
