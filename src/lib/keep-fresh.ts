@@ -28,6 +28,13 @@ export interface IndexerSummary {
   scored: number;
   payshSignals: number;
   operatorsScored: number;
+  /**
+   * Signatures no RPC could serve this run. REQUIRED, and deliberately so: this
+   * is a structural interface, so an optional field would be silently satisfied
+   * by a producer that never sets it — and the whole point is that a run which
+   * lost transactions cannot report clean. Non-zero ⇒ not ok.
+   */
+  unresolved: number;
 }
 
 export interface KeepFreshDeps {
@@ -117,8 +124,18 @@ export async function runKeepFresh(
     console.log(
       `[keep-fresh] indexer: fetched=${indexer.fetched} inserted=${indexer.inserted} ` +
       `scored=${indexer.scored} payshSignals=${indexer.payshSignals} ` +
-      `operatorsScored=${indexer.operatorsScored}`,
+      `operatorsScored=${indexer.operatorsScored} unresolved=${indexer.unresolved}`,
     );
+    if (indexer.unresolved > 0) {
+      // Cursors were held, so nothing is lost YET — but the hold only survives
+      // while those signatures stay inside the fetched window. Page now, while
+      // an archive re-parse can still recover them (the indexer logged the
+      // signatures). Silent degradation here is how ingest died for 17 days.
+      console.error(
+        `[keep-fresh] DEGRADED: ${indexer.unresolved} signature(s) served by NO RPC ` +
+        '— cursors held, see the [indexer] warnings for the signature list',
+      );
+    }
   }
 
   // 2b. Arc — job-escrow settlements + plain USDC transfers. Runs regardless of
@@ -169,6 +186,9 @@ export async function runKeepFresh(
     drained,
     drainBatchesRun,
     freshness,
-    ok: failedSteps.length === 0 && freshness?.severity !== 'critical',
+    ok:
+      failedSteps.length === 0 &&
+      freshness?.severity !== 'critical' &&
+      (indexer?.unresolved ?? 0) === 0,
   };
 }

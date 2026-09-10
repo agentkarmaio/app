@@ -21,6 +21,7 @@ import {
   isRpcRateLimited,
   isCursorUnresolvable,
   getSignaturesWithCursorFallback,
+  computeSafeCursor,
 } from './index';
 
 describe('isRpcRateLimited', () => {
@@ -129,5 +130,49 @@ describe('getSignaturesWithCursorFallback', () => {
       ),
     ).rejects.toThrow('429');
     expect(calls).toBe(1); // circuit breaker owns this case, not the fallback
+  });
+});
+
+// ─── Cursor hold on unresolvable signatures ──────────────────────────────────
+// THE BUG (2026-09-10): parseTransactionsBatch dropped any signature whose
+// getParsedTransaction returned null (`if (!tx) continue;`) while the cursor was
+// computed from the signature LIST — `signatures[0]` — before parsing. So a
+// signature the RPC could not serve was skipped AND passed by the cursor, and
+// `until` never looks back: that transaction is gone.
+//
+// publicnode prunes `getSignaturesForAddress` and the tx store at the same ~2-day
+// horizon (measured 2026-09-10), so the nulls land on the OLDEST signatures in a
+// batch — exactly the ones a jump to signatures[0] skips.
+describe('computeSafeCursor', () => {
+  // Newest-first, as getSignaturesForAddress returns them.
+  const BATCH = ['sig-0-newest', 'sig-1', 'sig-2', 'sig-3', 'sig-4-oldest'];
+
+  test('advances to the newest signature when everything resolved', () => {
+    expect(computeSafeCursor(BATCH, new Set())).toBe('sig-0-newest');
+  });
+
+  test('holds the cursor when the OLDEST signature is unresolved', () => {
+    // No signature in this batch is older than the unresolved one, so there is
+    // nothing safe to anchor to: the cursor must not move at all.
+    expect(computeSafeCursor(BATCH, new Set(['sig-4-oldest']))).toBeNull();
+  });
+
+  test('anchors to the next-older resolved signature on a mid-batch null', () => {
+    // Unresolved at index 2 → cursor must sit at index 3 so the next run
+    // re-fetches 0..2. Re-processing is free (inserts upsert on tx_signature).
+    expect(computeSafeCursor(BATCH, new Set(['sig-2']))).toBe('sig-3');
+  });
+
+  test('anchors below the OLDEST unresolved when several are unresolved', () => {
+    expect(computeSafeCursor(BATCH, new Set(['sig-1', 'sig-3']))).toBe('sig-4-oldest');
+  });
+
+  test('ignores unresolved signatures that are not in this batch', () => {
+    expect(computeSafeCursor(BATCH, new Set(['sig-from-another-facilitator'])))
+      .toBe('sig-0-newest');
+  });
+
+  test('returns null for an empty batch', () => {
+    expect(computeSafeCursor([], new Set())).toBeNull();
   });
 });

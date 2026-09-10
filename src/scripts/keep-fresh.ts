@@ -89,6 +89,12 @@ async function main() {
     console.error('[keep-fresh] STILL CRITICAL after run — ingest did not recover');
     process.exit(1);
   }
+  if ((outcome.indexer?.unresolved ?? 0) > 0) {
+    console.error(
+      `[keep-fresh] DEGRADED — ${outcome.indexer?.unresolved} signature(s) unserved by every RPC`,
+    );
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {

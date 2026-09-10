@@ -35,7 +35,7 @@ import {
   parseTransactionsBatch as defaultParseTransactionsBatch,
   extractX402PaymentForWallet,
   extractPayshPayment,
-  type HeliusEnhancedTransaction,
+  type ParseBatchResult,
   type PayshExtractedPayment,
 } from './helius';
 import { withConcurrency } from '@/lib/concurrency';
@@ -69,7 +69,7 @@ export interface ScanOpts {
     address: string,
     pageOpts: { limit: number; before?: string },
   ) => Promise<SignatureRecord[]>;
-  parseTransactionsBatch?: (sigs: string[]) => Promise<HeliusEnhancedTransaction[]>;
+  parseTransactionsBatch?: (sigs: string[]) => Promise<ParseBatchResult>;
   insertTransactions?: (txs: Omit<Transaction, 'id'>[]) => Promise<number>;
   recordPayshSignal?: (paysh: PayshExtractedPayment) => Promise<void>;
   // ── Cursor IO — also injectable so tests skip Supabase ──────────────────
@@ -85,6 +85,12 @@ export interface ScanResult {
   scanned: number;
   hits: number;
   reachedCap: boolean;
+  /**
+   * Signatures no RPC could serve. This scan's cursor only moves backwards, so
+   * these pages are never revisited — a non-zero value means that much of the
+   * wallet's history was skipped, not that it was empty.
+   */
+  unresolved: number;
 }
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
@@ -180,6 +186,7 @@ export async function scanWalletHistory(
   let hits = 0;
   let consecutiveZeroHitPages = 0;
   let reachedCap = false;
+  let pageUnresolved = 0;
 
   while (scanned < maxSignatures) {
     const remaining = maxSignatures - scanned;
@@ -197,12 +204,16 @@ export async function scanWalletHistory(
 
     if (sigs.length === 0) break;
 
-    // Parse this page's signatures via Helius. A partial-failure inside
-    // parseTransactionsBatch returns fewer txs than sigs requested; that's
-    // OK — we still advance the cursor past the whole page so the next run
-    // doesn't redo the network round-trip for txs Helius already responded to.
+    // Parse this page's signatures. This scan walks BACKWARDS into deep history
+    // via `before`, so past the primary RPC's retention horizon every signature
+    // comes back null — that is why parseTransactionsBatch retries the archive
+    // endpoint. Whatever is still unresolved is genuinely skipped: this cursor
+    // only moves backwards and never revisits a page.
     const sigStrings = sigs.map((s) => s.signature);
-    let parsed: HeliusEnhancedTransaction[] = [];
+    let parsed: ParseBatchResult = {
+      transactions: [], requested: sigStrings.length,
+      unresolved: [], undecodable: 0, recoveredFromArchive: 0,
+    };
     try {
       parsed = await parseBatch(sigStrings);
     } catch (err) {
@@ -212,19 +223,24 @@ export async function scanWalletHistory(
       // until next run, but that's fine: history is immutable.
     }
 
-    // Surface parse-loss so production drift is observable. Helius silently
-    // drops txs it can't decode; if this ratio creeps up we want to notice.
-    if (parsed.length < sigStrings.length) {
+    // Surface parse-loss so production drift is observable — and distinguish the
+    // two causes, which used to be conflated into one "lost" number: a meta-less
+    // tx has nothing to extract (final), an unresolved one was never served
+    // (a re-scan with a deeper archive endpoint would recover it).
+    if (parsed.unresolved.length > 0 || parsed.undecodable > 0) {
       console.warn(
-        `[wallet-scan] ${wallet}: parsed ${parsed.length}/${sigStrings.length} signatures ` +
-        `(${sigStrings.length - parsed.length} lost)`,
+        `[wallet-scan] ${wallet}: decoded ${parsed.transactions.length}/${sigStrings.length} ` +
+        `signatures · ${parsed.unresolved.length} unresolved by every RPC, ` +
+        `${parsed.undecodable} meta-less` +
+        (parsed.recoveredFromArchive > 0 ? `, ${parsed.recoveredFromArchive} recovered from archive` : ''),
       );
     }
+    pageUnresolved += parsed.unresolved.length;
 
     const pageX402Hits: Omit<Transaction, 'id'>[] = [];
     const pagePayshHits: PayshExtractedPayment[] = [];
 
-    for (const tx of parsed) {
+    for (const tx of parsed.transactions) {
       const x402 = extractX402PaymentForWallet(tx, wallet, ALL_FACILITATOR_ADDRESSES_SET);
       if (x402) pageX402Hits.push(x402.payment);
 
@@ -290,7 +306,7 @@ export async function scanWalletHistory(
     }
   }
 
-  return { scanned, hits, reachedCap };
+  return { scanned, hits, reachedCap, unresolved: pageUnresolved };
 }
 
 // ─── Worker ──────────────────────────────────────────────────────────────────
@@ -328,7 +344,9 @@ export async function runWalletScanWorker(batchSize = 1): Promise<void> {
       await dbMarkWalletScanComplete(addr, result.hits, result.reachedCap);
       succeeded++;
       console.log(
-        `[wallet-scan-worker] ${addr}: scanned=${result.scanned} hits=${result.hits} reachedCap=${result.reachedCap}`,
+        `[wallet-scan-worker] ${addr}: scanned=${result.scanned} hits=${result.hits} ` +
+        `reachedCap=${result.reachedCap}` +
+        (result.unresolved > 0 ? ` unresolved=${result.unresolved} (history skipped)` : ''),
       );
     } catch (err) {
       failed++;

@@ -6,8 +6,11 @@
  * with cursor-based incremental indexing and parallel facilitator fetching.
  *
  * Env:
- *   HELIUS_RPC_URL — Helius endpoint with api-key (required for batch parsing)
- *   SOLANA_RPC_URL — Fallback Solana RPC endpoint
+ *   SOLANA_RPC_URL         — indexer RPC (a free standard endpoint; preferred)
+ *   HELIUS_RPC_URL         — fallback RPC when SOLANA_RPC_URL is unset
+ *   SOLANA_ARCHIVE_RPC_URL — full-history RPC for transactions the indexer RPC
+ *                            has already pruned. Defaults to public mainnet-beta,
+ *                            so this works with no configuration.
  */
 
 import {
@@ -145,6 +148,44 @@ export async function getSignaturesWithCursorFallback(
   }
 }
 
+/**
+ * Next cursor for a fetched signature batch, given the signatures this run could
+ * not obtain from any RPC.
+ *
+ * `signatures` is newest-first (`getSignaturesForAddress` order) and the cursor
+ * is an exclusive `until`, so storing `signatures[i]` means the next run sees
+ * only `0..i-1`. Anything at or below `i` is unreachable FOREVER — `until` never
+ * looks back. That is why this takes the unresolved set: the old code stored
+ * `signatures[0]` unconditionally, so every signature the RPC could not serve was
+ * skipped by the parser *and* passed by the cursor, silently.
+ *
+ * Policy: anchor to the newest signature strictly OLDER than every unresolved
+ * one, so the next run re-fetches all of them. Re-processing costs nothing —
+ * `insertTransactions` upserts on `tx_signature` and `signal_events` on
+ * `(agent_wallet, kind, tx_ref)`. When the oldest signature in the batch is
+ * itself unresolved there is no safe anchor, so the cursor must not move at all.
+ *
+ * The hold is only good while the signature stays inside the fetched window; see
+ * (design notes, kept out of this repo) §3.3, §6 —
+ * the archive fallback in `parseTransactionsBatch` is what makes it durable.
+ */
+export function computeSafeCursor(
+  signatures: string[],
+  unresolved: ReadonlySet<string>,
+): string | null {
+  if (signatures.length === 0) return null;
+  if (unresolved.size === 0) return signatures[0];
+
+  // Newest-first ⇒ the LAST unresolved index is the oldest unresolved signature.
+  let oldestUnresolvedIdx = -1;
+  for (let i = signatures.length - 1; i >= 0; i--) {
+    if (unresolved.has(signatures[i])) { oldestUnresolvedIdx = i; break; }
+  }
+  if (oldestUnresolvedIdx === -1) return signatures[0]; // none of them are ours
+
+  return signatures[oldestUnresolvedIdx + 1] ?? null;
+}
+
 // ─── Fetch Pipeline ─────────────────────────────────────────────────────────
 
 /**
@@ -162,7 +203,14 @@ export async function fetchTransactionsForFacilitator(
 ): Promise<{
   transactions: Omit<Transaction, 'id'>[];
   paysh: PayshExtractedPayment[];
-  latestSignature: string | null;
+  /**
+   * Where the stored cursor may safely move to — NOT necessarily the newest
+   * signature. Null means "do not advance": something in this batch is still
+   * owed. See computeSafeCursor.
+   */
+  cursor: string | null;
+  /** Signatures no endpoint could serve. Non-empty ⇒ this run was lossy. */
+  unresolved: string[];
   rateLimited: boolean;
 }> {
   const connection = getConnection();
@@ -189,24 +237,35 @@ export async function fetchTransactionsForFacilitator(
   } catch (err) {
     const rateLimited = isRpcRateLimited(err);
     if (!rateLimited) console.error(`[indexer] Failed to get signatures for ${address}:`, err);
-    return { transactions: [], paysh: [], latestSignature: null, rateLimited };
+    return { transactions: [], paysh: [], cursor: null, unresolved: [], rateLimited };
   }
 
   if (signatures.length === 0) {
     const name = getFacilitatorName(address) ?? 'unknown';
     console.log(`[indexer] ${address} (${name}): 0 new signatures`);
-    return { transactions: [], paysh: [], latestSignature: null, rateLimited: false };
+    return { transactions: [], paysh: [], cursor: null, unresolved: [], rateLimited: false };
   }
 
-  const latestSignature = signatures[0].signature;
   const sigStrings = signatures.map((s) => s.signature);
 
-  // Batch parse via Helius Enhanced Transactions API
+  // Decode via standard RPC, with the archive endpoint covering anything the
+  // primary has already pruned.
   const parsed = await parseTransactionsBatch(sigStrings);
+
+  // The cursor may only pass signatures we actually obtained. Log the SIGNATURES,
+  // not a count: recovery is a targeted archive re-parse, which needs them.
+  const cursor = computeSafeCursor(sigStrings, new Set(parsed.unresolved));
+  if (parsed.unresolved.length > 0) {
+    console.warn(
+      `[indexer] ${address}: ${parsed.unresolved.length}/${sigStrings.length} signatures ` +
+      `unserved by every RPC — cursor held at ${cursor ?? '(unchanged)'}. ` +
+      `Unresolved: ${parsed.unresolved.join(',')}`,
+    );
+  }
 
   const results: Omit<Transaction, 'id'>[] = [];
   const payshHits: PayshExtractedPayment[] = [];
-  for (const tx of parsed) {
+  for (const tx of parsed.transactions) {
     const payment = extractX402Payment(tx, address);
     if (payment) results.push(payment);
 
@@ -224,9 +283,18 @@ export async function fetchTransactionsForFacilitator(
     ?? (isSpecimen ? SPECIMEN_FACILITATOR_LABEL : 'unknown');
   console.log(
     `[indexer] ${address} (${name}): ${results.length}/${signatures.length} USDC txs` +
-    (payshHits.length > 0 ? ` (+${payshHits.length} pay.sh-routed)` : ''),
+    (payshHits.length > 0 ? ` (+${payshHits.length} pay.sh-routed)` : '') +
+    (parsed.recoveredFromArchive > 0 ? ` (+${parsed.recoveredFromArchive} from archive RPC)` : '') +
+    (parsed.undecodable > 0 ? ` (${parsed.undecodable} meta-less)` : '') +
+    (parsed.unresolved.length > 0 ? ` (${parsed.unresolved.length} UNRESOLVED)` : ''),
   );
-  return { transactions: results, paysh: payshHits, latestSignature, rateLimited: false };
+  return {
+    transactions: results,
+    paysh: payshHits,
+    cursor,
+    unresolved: parsed.unresolved,
+    rateLimited: false,
+  };
 }
 
 /**
@@ -237,7 +305,12 @@ export async function fetchTransactionsForFacilitator(
 export async function fetchAllX402Transactions(
   limit: number = DEFAULT_LIMIT,
   options?: { backfill?: boolean },
-): Promise<{ transactions: Omit<Transaction, 'id'>[]; paysh: PayshExtractedPayment[] }> {
+): Promise<{
+  transactions: Omit<Transaction, 'id'>[];
+  paysh: PayshExtractedPayment[];
+  /** Signatures no RPC could serve this run, across all facilitators. */
+  unresolved: number;
+}> {
   const backfill = options?.backfill ?? false;
 
   // Iteration set: existing x402 facilitators + pay.sh operator addresses
@@ -259,7 +332,7 @@ export async function fetchAllX402Transactions(
     FACILITATOR_CONCURRENCY,
     async (address) => {
       if (breaker.tripped) {
-        return { transactions: [], paysh: [], latestSignature: null, rateLimited: true };
+        return { transactions: [], paysh: [], cursor: null, unresolved: [], rateLimited: true };
       }
 
       // Load cursor for incremental indexing (skip in backfill mode)
@@ -279,9 +352,11 @@ export async function fetchAllX402Transactions(
         );
       }
 
-      // Save cursor for next run (newest signature from this batch)
-      if (result.latestSignature && !backfill) {
-        await upsertCursor(address, result.latestSignature);
+      // Save cursor for next run. NOT `signatures[0]`: computeSafeCursor holds it
+      // below anything this run failed to obtain, so a transaction the RPC could
+      // not serve is retried instead of skipped past forever.
+      if (result.cursor && !backfill) {
+        await upsertCursor(address, result.cursor);
       }
 
       return result;
@@ -290,11 +365,13 @@ export async function fetchAllX402Transactions(
 
   const allTxs = results.flatMap((r) => r.transactions);
   const allPaysh = results.flatMap((r) => r.paysh);
+  const unresolved = results.reduce((n, r) => n + r.unresolved.length, 0);
   console.log(
     `[indexer] Total x402 transactions fetched: ${allTxs.length}` +
-    (allPaysh.length > 0 ? ` (${allPaysh.length} pay.sh-routed)` : ''),
+    (allPaysh.length > 0 ? ` (${allPaysh.length} pay.sh-routed)` : '') +
+    (unresolved > 0 ? ` · ${unresolved} signatures UNRESOLVED (cursors held)` : ''),
   );
-  return { transactions: allTxs, paysh: allPaysh };
+  return { transactions: allTxs, paysh: allPaysh, unresolved };
 }
 
 // ─── Indexer Run ─────────────────────────────────────────────────────────────
@@ -316,13 +393,21 @@ export async function runIndexer(
   scored: number;
   payshSignals: number;
   operatorsScored: number;
+  /**
+   * Signatures no RPC could serve. Non-zero ⇒ the run is DEGRADED, not clean:
+   * cursors were held so the next run retries, but the hold only lasts while the
+   * signature stays inside the fetched window. Callers must surface it.
+   */
+  unresolved: number;
 }> {
   console.log(`[indexer] Starting ${options?.backfill ? 'backfill' : 'incremental'} indexer run...`);
 
-  const { transactions, paysh } = await fetchAllX402Transactions(limit, options);
+  const { transactions, paysh, unresolved } = await fetchAllX402Transactions(limit, options);
   if (transactions.length === 0 && paysh.length === 0) {
+    // Decoding nothing while owing `unresolved` signatures is precisely the
+    // silent case — carry the count out rather than reporting an empty clean run.
     console.log('[indexer] No new transactions found');
-    return { fetched: 0, inserted: 0, scored: 0, payshSignals: 0, operatorsScored: 0 };
+    return { fetched: 0, inserted: 0, scored: 0, payshSignals: 0, operatorsScored: 0, unresolved };
   }
 
   // Ensure wallet records exist before inserting transactions/signal_events
@@ -508,6 +593,7 @@ export async function runIndexer(
     scored,
     payshSignals: payshSignalsInserted,
     operatorsScored,
+    unresolved,
   };
 }
 

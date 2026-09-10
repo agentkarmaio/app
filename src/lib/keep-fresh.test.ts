@@ -21,7 +21,7 @@ function makeDeps(over: Partial<KeepFreshDeps> = {}): { deps: KeepFreshDeps; ran
   const ran: string[] = [];
   const deps: KeepFreshDeps = {
     syncWebhook: async () => { ran.push('webhook'); return { matched: 1, active: 1, reEnabled: [], errors: [] }; },
-    index: async () => { ran.push('index'); return { fetched: 1, inserted: 1, scored: 1, payshSignals: 0, operatorsScored: 0 }; },
+    index: async () => { ran.push('index'); return { fetched: 1, inserted: 1, scored: 1, payshSignals: 0, operatorsScored: 0, unresolved: 0 }; },
     indexArc: async () => { ran.push('arc'); return { fetched: 2, inserted: 2 }; },
     drainOnce: async () => { ran.push('drain'); return { claimed: 0, scored: 0, skipped: 0, errors: [], remaining: 0, elapsedMs: 1 }; },
     readLastTxIso: async () => { ran.push('freshness'); return FRESH_TX; },
@@ -112,5 +112,45 @@ describe('runKeepFresh isolates a failed step from the rest of the floor', () =>
 
     expect(calls).toBe(2);
     expect(out.drained).toBe(8);
+  });
+});
+
+// A run that could not obtain transactions is DEGRADED, not clean. Cursors are
+// held so the next run retries, but the hold only survives while those
+// signatures stay inside the fetched window — so this has to page while an
+// archive re-parse can still recover them.
+// Spec: (design notes, kept out of this repo) §3.4
+describe('runKeepFresh treats unresolved signatures as a degraded run', () => {
+  test('indexer reporting unresolved > 0 → not ok (CLI exits 1, CI pages)', async () => {
+    const { deps } = makeDeps({
+      index: async () => ({
+        fetched: 12, inserted: 12, scored: 12, payshSignals: 0, operatorsScored: 0,
+        unresolved: 3,
+      }),
+    });
+    const out = await runKeepFresh(deps);
+
+    expect(out.indexer?.unresolved).toBe(3);
+    expect(out.ok).toBe(false);
+    // Nothing THREW — the run must not be mislabelled as a step failure.
+    expect(out.failedSteps).toEqual([]);
+  });
+
+  test('the empty-but-lossy run is caught too (0 fetched, 2 unresolved)', async () => {
+    // The silent case: nothing decoded, so every count reads clean, while two
+    // transactions were owed. `fetched === 0` must not imply healthy.
+    const { deps } = makeDeps({
+      index: async () => ({
+        fetched: 0, inserted: 0, scored: 0, payshSignals: 0, operatorsScored: 0,
+        unresolved: 2,
+      }),
+    });
+    const out = await runKeepFresh(deps);
+    expect(out.ok).toBe(false);
+  });
+
+  test('unresolved = 0 stays ok', async () => {
+    const { deps } = makeDeps();
+    expect((await runKeepFresh(deps)).ok).toBe(true);
   });
 });

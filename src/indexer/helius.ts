@@ -2,6 +2,7 @@ import { Connection, type ParsedTransactionWithMeta } from '@solana/web3.js';
 import { USDC_MINT } from '../config/facilitators';
 import { detectPayshRouted } from './paysh-fingerprint';
 import { withConcurrency } from '@/lib/concurrency';
+import { optionalEnv } from '@/lib/require-env';
 import type { Transaction } from '../db/schema';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -67,15 +68,41 @@ const DEFAULT_RPC = 'https://api.mainnet-beta.solana.com';
  * Helius credits (Helius stays reserved for the push webhook only). Falls back to
  * HELIUS_RPC_URL, then public mainnet-beta. Setting SOLANA_RPC_URL is what makes
  * Solana ingestion fully independent of the Helius quota.
+ *
+ * `optionalEnv`, NOT `??`: keep-fresh.yml passes SOLANA_RPC_URL as a CI secret,
+ * and an unset GitHub secret expands to an EMPTY STRING that `??` accepts —
+ * `new Connection('')` then throws instead of falling back. Same root cause as
+ * the 2026-06-23 floor outage.
  */
 export function getIndexerRpcUrl(): string {
-  return process.env.SOLANA_RPC_URL ?? process.env.HELIUS_RPC_URL ?? DEFAULT_RPC;
+  return optionalEnv('SOLANA_RPC_URL', optionalEnv('HELIUS_RPC_URL', DEFAULT_RPC));
 }
 
 let _rpcConn: Connection | null = null;
 function getRpcConnection(): Connection {
   if (!_rpcConn) _rpcConn = new Connection(getIndexerRpcUrl(), 'confirmed');
   return _rpcConn;
+}
+
+/**
+ * RPC endpoint for signatures the indexer RPC cannot serve.
+ *
+ * `solana-rpc.publicnode.com` prunes BOTH its signature index and its
+ * transaction store at ~2 days (measured 2026-09-10), while
+ * `api.mainnet-beta.solana.com` serves ≥300 days at roughly 0.6 req/s. Anything
+ * the primary returns `null` for is retried here before being called lost — see
+ * (design notes, kept out of this repo) §3.2.
+ */
+export function getArchiveRpcUrl(): string {
+  return optionalEnv('SOLANA_ARCHIVE_RPC_URL', DEFAULT_RPC);
+}
+
+let _archiveConn: Connection | null = null;
+/** Null when the archive resolves to the primary — re-asking it proves nothing. */
+function getArchiveConnection(): Connection | null {
+  if (getArchiveRpcUrl() === getIndexerRpcUrl()) return null;
+  if (!_archiveConn) _archiveConn = new Connection(getArchiveRpcUrl(), 'confirmed');
+  return _archiveConn;
 }
 
 // ─── Parse (standard RPC — no Helius Enhanced API) ───────────────────────────
@@ -182,37 +209,155 @@ export function mapParsedTxToEnhanced(
 }
 
 /**
+ * Outcome of a parse batch. Three states per signature, not two — the old
+ * `HeliusEnhancedTransaction[]` return conflated "the RPC could not serve this
+ * transaction" (retryable, and the cursor MUST NOT pass it) with "this
+ * transaction carried nothing to extract" (final, and the cursor may pass).
+ * Callers that only look at `transactions.length` cannot tell a clean run from a
+ * lossy one, which is exactly how transactions went missing silently.
+ */
+export interface ParseBatchResult {
+  transactions: HeliusEnhancedTransaction[];
+  /** How many signatures went in — `transactions.length` is not the denominator. */
+  requested: number;
+  /** Signatures no endpoint could serve this run. Cursor must not advance past these. */
+  unresolved: string[];
+  /** Fetched but `meta`-less: no token balances exist, so nothing to extract. Final. */
+  undecodable: number;
+  /** Of the signatures the primary RPC missed, how many the archive endpoint served. */
+  recoveredFromArchive: number;
+}
+
+export type ParsedTxFetcher = (signature: string) => Promise<ParsedTransactionWithMeta | null>;
+
+/**
+ * Archive calls per batch. `api.mainnet-beta.solana.com` rate-limits at ~0.6
+ * req/s and `Connection` retries 429s with exponential backoff, so one call can
+ * take ~10s. 100 covers the live facilitator path completely (≤200 signatures,
+ * normally 0–2 misses) and lets a 1000-signature `wallet-scan` page past the
+ * retention horizon degrade instead of running for hours. Over-budget signatures
+ * stay `unresolved` — honest: we did not obtain them.
+ */
+export const ARCHIVE_RETRY_BUDGET = 100;
+
+/**
+ * Serializes archive calls PROCESS-WIDE, not per batch.
+ *
+ * `fetchAllX402Transactions` runs FACILITATOR_CONCURRENCY (5) facilitators in
+ * parallel, each with its own retry loop, so a per-call limit of 1 would still
+ * put 5 requests in flight against an endpoint measured 429ing under less. That
+ * failure is self-defeating: a 429 becomes `unresolved`, which holds the cursor
+ * and pages — the archive leg failing precisely when it is load-bearing.
+ *
+ * The chain never rejects (both branches run the next task), so one failed
+ * archive call cannot wedge the queue.
+ */
+let _archiveGate: Promise<unknown> = Promise.resolve();
+function archiveSerialized<T>(fn: () => Promise<T>): Promise<T> {
+  const run = _archiveGate.then(fn, fn);
+  _archiveGate = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function fetchOrNull(
+  fetcher: ParsedTxFetcher,
+  sig: string,
+  label: string,
+): Promise<ParsedTransactionWithMeta | null> {
+  try {
+    return await fetcher(sig);
+  } catch (err) {
+    console.error(
+      `[rpc] ${label} getParsedTransaction failed ${sig.slice(0, 12)}…:`,
+      err instanceof Error ? err.message.slice(0, 100) : err,
+    );
+    return null;
+  }
+}
+
+/**
+ * Parse policy, with the fetchers injected so it is testable without an RPC
+ * (same shape as `getSignaturesWithCursorFallback` in indexer/index.ts).
+ *
+ * A signature the primary endpoint returns null for — or throws on — is retried
+ * against `archive` in the SAME batch. It has to be the same batch: a pruned
+ * signature is gone from the next run's `getSignaturesForAddress` list too, so
+ * deferring the retry means the cursor hold expires before the retry happens.
+ *
+ * Order is preserved: `transactions` follows the input order of the signatures
+ * that decoded.
+ */
+export async function parseWithArchiveFallback(
+  signatures: string[],
+  primary: ParsedTxFetcher,
+  archive: ParsedTxFetcher | null,
+  budget: number = ARCHIVE_RETRY_BUDGET,
+): Promise<ParseBatchResult> {
+  const empty: ParseBatchResult = {
+    transactions: [], requested: signatures.length,
+    unresolved: [], undecodable: 0, recoveredFromArchive: 0,
+  };
+  if (signatures.length === 0) return empty;
+
+  const fetched = await withConcurrency(signatures, PARSE_CONCURRENCY, (sig) =>
+    fetchOrNull(primary, sig, 'primary'),
+  );
+
+  // Retry misses OLDEST-FIRST (signatures arrive newest-first). The cursor can
+  // only advance below the deepest signature still missing, so a budget spent on
+  // the newest misses would leave the anchor pinned exactly where it was.
+  let recoveredFromArchive = 0;
+  if (archive) {
+    const missing: number[] = [];
+    for (let i = fetched.length - 1; i >= 0; i--) if (!fetched[i]) missing.push(i);
+    const attempts = missing.slice(0, Math.max(0, budget));
+    if (attempts.length > 0) {
+      console.warn(
+        `[rpc] primary missed ${missing.length}/${signatures.length} transactions — ` +
+        `retrying ${attempts.length} against ${getArchiveRpcUrl()}`,
+      );
+    }
+    for (const i of attempts) {
+      const tx = await archiveSerialized(() => fetchOrNull(archive, signatures[i], 'archive'));
+      if (tx) { fetched[i] = tx; recoveredFromArchive++; }
+    }
+  }
+
+  const transactions: HeliusEnhancedTransaction[] = [];
+  const unresolved: string[] = [];
+  let undecodable = 0;
+  for (let i = 0; i < fetched.length; i++) {
+    const tx = fetched[i];
+    if (!tx) { unresolved.push(signatures[i]); continue; }
+    const mapped = mapParsedTxToEnhanced(tx, signatures[i]);
+    if (mapped) transactions.push(mapped);
+    else undecodable++;
+  }
+
+  return { transactions, requested: signatures.length, unresolved, undecodable, recoveredFromArchive };
+}
+
+/**
  * Fetch + decode transactions via standard-RPC `getParsedTransaction` (singular,
  * concurrent). Replaces the credit-heavy Helius Enhanced Transactions API — runs
  * on whatever getIndexerRpcUrl() resolves to (set SOLANA_RPC_URL to a free RPC
- * for $0/mo). Order is preserved so signatures[i] maps to results' i-th tx.
+ * for $0/mo), falling back to SOLANA_ARCHIVE_RPC_URL for anything that RPC has
+ * already pruned.
  */
 export async function parseTransactionsBatch(
   signatures: string[],
-): Promise<HeliusEnhancedTransaction[]> {
-  if (signatures.length === 0) return [];
-
-  const connection = getRpcConnection();
-  const parsed = await withConcurrency(signatures, PARSE_CONCURRENCY, async (sig) => {
-    try {
-      return await connection.getParsedTransaction(sig, {
-        maxSupportedTransactionVersion: 0,
-        commitment: 'confirmed',
-      });
-    } catch (err) {
-      console.error(`[rpc] getParsedTransaction failed ${sig.slice(0, 12)}…:`, err instanceof Error ? err.message.slice(0, 100) : err);
-      return null;
-    }
-  });
-
-  const results: HeliusEnhancedTransaction[] = [];
-  for (let i = 0; i < parsed.length; i++) {
-    const tx = parsed[i];
-    if (!tx) continue;
-    const mapped = mapParsedTxToEnhanced(tx, signatures[i]);
-    if (mapped) results.push(mapped);
+): Promise<ParseBatchResult> {
+  if (signatures.length === 0) {
+    return { transactions: [], requested: 0, unresolved: [], undecodable: 0, recoveredFromArchive: 0 };
   }
-  return results;
+  const connection = getRpcConnection();
+  const archive = getArchiveConnection();
+  const opts = { maxSupportedTransactionVersion: 0, commitment: 'confirmed' } as const;
+  return parseWithArchiveFallback(
+    signatures,
+    (sig) => connection.getParsedTransaction(sig, opts),
+    archive ? (sig) => archive.getParsedTransaction(sig, opts) : null,
+  );
 }
 
 // ─── Payment Extraction ──────────────────────────────────────────────────────

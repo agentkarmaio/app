@@ -30,6 +30,10 @@ name: Keep data fresh
 #                              (getIndexerRpcUrl). Free RPCs lack deep signature history,
 #                              so runs auto-switch to --backfill (incremental `until:<old
 #                              sig>` errors "Transaction not found").
+#   SOLANA_ARCHIVE_RPC_URL     Full-history RPC for transactions the endpoint above
+#                              has already pruned (publicnode retains ~2 days).
+#                              Unset → https://api.mainnet-beta.solana.com, so the
+#                              archive retry works with no secret configured.
 
 on:
   schedule:
@@ -58,6 +62,7 @@ jobs:
           # Optional free RPC → Helius-free ingestion. When set, the indexer reads
           # Solana through it (getParsedTransaction) instead of Helius credits.
           SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
+          SOLANA_ARCHIVE_RPC_URL: ${{ secrets.SOLANA_ARCHIVE_RPC_URL }}
           HELIUS_RPC_URL: ${{ secrets.HELIUS_RPC_URL }}
           HELIUS_WEBHOOK_SECRET: ${{ secrets.HELIUS_WEBHOOK_SECRET }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}

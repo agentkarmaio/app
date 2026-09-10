@@ -57,6 +57,11 @@ async function main(): Promise<void> {
   const hits: Hit[] = [];
   let scanned = 0;
   let parsed = 0;
+  // Signatures come from the DB, so they are arbitrarily old — on a
+  // retention-limited primary RPC most of them can only be served by the
+  // archive endpoint. Counting what neither could serve is the difference
+  // between "nothing was routed through pay.sh" and "we never looked".
+  let unresolved = 0;
   const startedAt = Date.now();
 
   for (let i = 0; i < work.length; i += HELIUS_BATCH_SIZE) {
@@ -72,8 +77,9 @@ async function main(): Promise<void> {
       continue;
     }
 
-    parsed += parsedTxs.length;
-    for (const tx of parsedTxs) {
+    parsed += parsedTxs.transactions.length;
+    unresolved += parsedTxs.unresolved.length;
+    for (const tx of parsedTxs.transactions) {
       const paysh = extractPayshPayment(tx);
       if (!paysh) continue;
       hits.push({
@@ -90,14 +96,18 @@ async function main(): Promise<void> {
     if (scanned % PROGRESS_EVERY < HELIUS_BATCH_SIZE) {
       const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
       console.log(
-        `[paysh-backfill] ${scanned}/${work.length} scanned, ${parsed} parsed, ${hits.length} hits (${elapsed}s)`,
+        `[paysh-backfill] ${scanned}/${work.length} scanned, ${parsed} parsed, ${hits.length} hits` +
+        (unresolved > 0 ? `, ${unresolved} UNRESOLVED` : '') + ` (${elapsed}s)`,
       );
     }
   }
 
   const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
   console.log(
-    `[paysh-backfill] Done. Scanned ${scanned}, parsed ${parsed}, classified ${hits.length} as pay.sh-routed in ${elapsed}s`,
+    `[paysh-backfill] Done. Scanned ${scanned}, parsed ${parsed}, classified ${hits.length} as pay.sh-routed in ${elapsed}s` +
+    (unresolved > 0
+      ? `\n[paysh-backfill] WARNING: ${unresolved} signature(s) were served by NO RPC — those transactions were not inspected. Set SOLANA_ARCHIVE_RPC_URL to a full-history endpoint and re-run.`
+      : ''),
   );
 
   if (hits.length === 0) {

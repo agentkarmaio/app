@@ -154,6 +154,14 @@ async function registerIndexerWorker() {
           `scored=${result.scored} operatorsScored=${result.operatorsScored}`,
         );
       }
+      // Logged unconditionally: a tick that decodes nothing WHILE owing
+      // signatures is exactly the case the counters above would hide.
+      if (result.unresolved > 0) {
+        console.error(
+          `[indexer-worker] DEGRADED: ${result.unresolved} signature(s) served by no RPC ` +
+          '— cursors held, see [indexer] warnings for the signatures',
+        );
+      }
     } catch (err) {
       console.error('[indexer-worker] run failed:', err instanceof Error ? err.message : err);
     } finally {

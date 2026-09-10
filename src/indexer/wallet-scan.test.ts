@@ -34,6 +34,25 @@ import type { Transaction } from '../db/schema';
 import { PAYSH_OPERATORS, type PayshOperator } from '../config/paysh-operators';
 import { ALL_FACILITATOR_ADDRESSES } from '../config/facilitators';
 import { SPL_TOKEN_PROGRAM, MEMO_PROGRAM } from './paysh-fingerprint';
+import type { ParseBatchResult } from './helius';
+
+/**
+ * Wrap decoded txs in the ParseBatchResult envelope. `requested` defaults to
+ * `transactions.length`; pass it explicitly to model a page where the RPC could
+ * not serve every signature.
+ */
+function batch(
+  transactions: HeliusEnhancedTransaction[],
+  extra: Partial<ParseBatchResult> = {},
+): ParseBatchResult {
+  return {
+    transactions,
+    requested: extra.requested ?? transactions.length,
+    unresolved: extra.unresolved ?? [],
+    undecodable: extra.undecodable ?? 0,
+    recoveredFromArchive: extra.recoveredFromArchive ?? 0,
+  };
+}
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -210,7 +229,7 @@ describe('scanWalletHistory — termination', () => {
       getSignaturesForAddress: async () => [],
       parseTransactionsBatch: async () => {
         parseCalls++;
-        return [];
+        return batch([]);
       },
       insertTransactions: async () => 0,
       recordPayshSignal: async () => {},
@@ -238,7 +257,7 @@ describe('scanWalletHistory — termination', () => {
       parseTransactionsBatch: async (sigs: string[]) => {
         parseCalls++;
         // All noise — none hit a facilitator.
-        return sigs.map(() => makeNoiseTx());
+        return batch(sigs.map(() => makeNoiseTx()));
       },
       insertTransactions: async () => 0,
       recordPayshSignal: async () => {},
@@ -265,7 +284,7 @@ describe('scanWalletHistory — termination', () => {
       },
       // Every tx is a hit so noise-floor doesn't trip.
       parseTransactionsBatch: async (sigs: string[]) =>
-        sigs.map(() => makeX402Tx(PAYER, COINBASE_FACILITATOR, 0.01)),
+        batch(sigs.map(() => makeX402Tx(PAYER, COINBASE_FACILITATOR, 0.01))),
       insertTransactions: async (rows: Array<Omit<Transaction, 'id'>>) => rows.length,
       recordPayshSignal: async () => {},
     });
@@ -289,7 +308,7 @@ describe('scanWalletHistory — termination', () => {
         return [];
       },
       parseTransactionsBatch: async (sigs: string[]) =>
-        sigs.map(() => makeNoiseTx()),
+        batch(sigs.map(() => makeNoiseTx())),
       insertTransactions: async () => 0,
       recordPayshSignal: async () => {},
     });
@@ -322,7 +341,7 @@ describe('scanWalletHistory — idempotency', () => {
           if (pageIdx === 1) return [{ signature: inputSig }];
           return [];
         },
-        parseTransactionsBatch: async () => [tx],
+        parseTransactionsBatch: async () => batch([tx]),
         insertTransactions: async (rows: Array<Omit<Transaction, 'id'>>) => {
           insertCalls.push(rows);
           // Real Supabase upsert with onConflict ignoreDuplicates returns 0 on
@@ -385,7 +404,7 @@ describe('scanWalletHistory — known facilitator hit', () => {
           [paysh.signature, paysh],
           [vanilla.signature, vanilla],
         ]);
-        return sigs.map((s) => map.get(s)!).filter(Boolean);
+        return batch(sigs.map((s) => map.get(s)!).filter(Boolean));
       },
       insertTransactions: async (rows: Array<Omit<Transaction, 'id'>>) => {
         inserted.push(...rows);

@@ -23,7 +23,8 @@ export const maxDuration = 300;
  *   backfill: ignore cursors and fetch historical (default false)
  *
  * Returns: the runIndexer result plus `freshness` — the post-run staleness
- * assessment (severity fresh|warning|critical|unknown). 207 if still critical.
+ * assessment (severity fresh|warning|critical|unknown). 207 if still critical,
+ * or if any signature was served by no RPC (`unresolved > 0` — a degraded run).
  *
  * Drive from any external scheduler (GitHub Actions, cron-job.org). The
  * in-process indexer worker (instrumentation.ts) mirrors this for the
@@ -73,9 +74,21 @@ export async function POST(request: NextRequest) {
       console.error('[cron/indexer] ingest still critical after run', freshness);
     }
 
+    // 207 for unresolved too: an external scheduler that alerts on status must
+    // not read a run that could not obtain transactions as a clean 200. Cursors
+    // were held, so nothing is lost yet — but only until those signatures scroll
+    // out of the fetched window.
+    const degraded = freshness.severity === 'critical' || result.unresolved > 0;
+    if (result.unresolved > 0) {
+      console.error(
+        `[cron/indexer] DEGRADED: ${result.unresolved} signature(s) served by no RPC ` +
+        '— cursors held, see [indexer] warnings for the signature list',
+      );
+    }
+
     return NextResponse.json(
       { ...result, freshness },
-      { status: freshness.severity === 'critical' ? 207 : 200 },
+      { status: degraded ? 207 : 200 },
     );
   } catch (err) {
     console.error('[cron/indexer] Error:', err);
