@@ -46,6 +46,7 @@ import {
   resolveStellarRpcUrl,
 } from './stellar-config';
 import { readStellarSummary, AK_TAG2 } from './erc8004-stellar';
+import { AK_STELLAR } from '@/config/ak-validator';
 
 // ─── Feedback integrity hash (sha256, NOT keccak256) ─────────────────────────
 
@@ -168,22 +169,92 @@ export interface PublishStellarFeedbackInput {
   feedbackHash: Uint8Array;
 }
 
+/**
+ * How a submitted give_feedback actually ended up. `txId` is present whenever a
+ * transaction reached the network, INCLUDING the two non-success states — the
+ * hash is the only handle an operator has to look the attempt up on Horizon.
+ *
+ *  - `confirmed`     getTransaction returned SUCCESS. The attestation is on chain.
+ *  - `failed`        getTransaction returned FAILED. Sequence consumed, nothing written.
+ *  - `expired`       Never observed AND the account sequence never moved. The tx
+ *                    carried timebounds (setTimeout below), so once they pass it
+ *                    can never be included. Definitively not published.
+ *  - `indeterminate` Never observed BUT the account sequence advanced — something
+ *                    consumed this transaction's sequence number. Almost certainly
+ *                    our own submission landing behind a blackholed RPC response.
+ *                    Do NOT resend: the next run's get_summary dedupe read is the
+ *                    ground truth and will skip the agent if the write landed.
+ */
+export type StellarPublishState = 'confirmed' | 'failed' | 'expired' | 'indeterminate';
+
 export interface PublishStellarFeedbackResult {
   dryRun: boolean;
   agentId: number;
   txId?: string;
+  /** Absent in simulate mode; always present after an execute attempt. */
+  state?: StellarPublishState;
+  /** Human-readable reason for a non-confirmed state. */
+  detail?: string;
 }
 
 export interface PublishDeps {
   server?: rpc.Server;
   keypair?: Keypair;
+  /**
+   * Source account for a SIMULATE-only run, when no keypair is available.
+   * Soroban's simulateTransaction needs a source account but no signature, so
+   * a dry run must not require the secret — that is what lets the scheduled
+   * job exercise the whole path (selection → gates → dedupe → simulate) before
+   * anyone arms it with a signing key. Ignored in execute mode, where the
+   * keypair defines the caller.
+   */
+  caller?: string;
+  /** Poll cadence for the confirmation wait. Default 2s (tests inject 0). */
+  pollIntervalMs?: number;
+  /** How long to wait for inclusion before falling back to the sequence check. */
+  confirmTimeoutMs?: number;
 }
 
 /**
+ * Transaction timebound, in seconds. Doubles as the safety boundary for the
+ * whole confirm-vs-resend question: after maxTime the transaction can never be
+ * included, so "not seen and sequence unchanged" is a proof of non-publication
+ * rather than a guess.
+ */
+export const TX_TIMEOUT_SECONDS = 60;
+
+/** Confirmation wait: the full timebound plus a ledger of slack (~6s closes). */
+export const DEFAULT_CONFIRM_TIMEOUT_MS = (TX_TIMEOUT_SECONDS + 8) * 1000;
+
+/**
+ * What a `sendTransaction` status means for the confirmation wait. Pure, so the
+ * four-way branch is unit-testable without a network.
+ *
+ *  - PENDING          accepted into the mempool → poll for inclusion.
+ *  - DUPLICATE        this exact hash is already known → poll the SAME hash;
+ *                     it is one transaction either way, not a second write.
+ *  - TRY_AGAIN_LATER  rejected without entering the mempool (congestion, or the
+ *                     node's recently-seen set). Poll anyway — the node's view
+ *                     is not authoritative and a resend is never safe.
+ *  - ERROR            malformed/rejected outright → raise.
+ */
+export function classifySendStatus(status: string): 'poll' | 'raise' {
+  return status === 'ERROR' ? 'raise' : 'poll';
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
  * Sign and submit give_feedback on the Reputation Registry.
- *  - 'simulate' → dry-run, never signs/sends.
- *  - 'execute'  → simulate, assemble, sign, send.
+ *  - 'simulate' → dry-run, never signs/sends, never needs the secret.
+ *  - 'execute'  → simulate, assemble, sign, send, then WAIT for inclusion.
  * Raises on any simulate/send error (AK core rule — no silent fallback).
+ *
+ * The wait is not optional politeness: the Soroban RPC drops a meaningful share
+ * of send responses while the transaction still lands. Returning a bare hash
+ * would leave the caller unable to tell "wrote it" from "wrote it twice", so
+ * every execute resolves to one of the four {@link StellarPublishState} values
+ * and this function NEVER resends on its own.
  */
 export async function publishStellarFeedback(
   input: PublishStellarFeedbackInput,
@@ -191,10 +262,15 @@ export async function publishStellarFeedback(
   deps: PublishDeps = {},
 ): Promise<PublishStellarFeedbackResult> {
   const server = deps.server ?? new rpc.Server(resolveStellarRpcUrl(), { allowHttp: false });
-  const keypair = deps.keypair ?? loadStellarKeypair();
-  const caller = keypair.publicKey();
+  // Simulate never signs, so it never touches the keyfile: an unarmed dry run
+  // must exercise the real path, not fail on a missing secret.
+  const keypair = deps.keypair ?? (mode === 'execute' ? loadStellarKeypair() : null);
+  const caller = keypair?.publicKey() ?? deps.caller ?? AK_STELLAR.account;
 
   const source = await server.getAccount(caller);
+  // Capture BEFORE build: TransactionBuilder consumes (and increments) the
+  // account's sequence, and this value is what the blackhole check compares to.
+  const seqBefore = BigInt(source.sequenceNumber());
   const contract = new Contract(STELLAR_REPUTATION_REGISTRY);
   const args = buildGiveFeedbackArgs({ caller, ...input });
 
@@ -203,7 +279,7 @@ export async function publishStellarFeedback(
     networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
   })
     .addOperation(contract.call('give_feedback', ...args))
-    .setTimeout(60)
+    .setTimeout(TX_TIMEOUT_SECONDS)
     .build();
 
   const sim = (await server.simulateTransaction(tx)) as { error?: string };
@@ -214,18 +290,92 @@ export async function publishStellarFeedback(
   if (mode === 'simulate') {
     return { dryRun: true, agentId: input.agentId };
   }
+  if (!keypair) {
+    throw new Error('execute mode requires a keypair (STELLAR_PRIVATE_KEY or .keys/agentkarma-stellar.json)');
+  }
 
   const prepared = rpc
     .assembleTransaction(tx, sim as rpc.Api.SimulateTransactionSuccessResponse)
     .build();
   prepared.sign(keypair);
   const sent = await server.sendTransaction(prepared);
-  if (sent.status === 'ERROR') {
+  if (classifySendStatus(sent.status) === 'raise') {
     throw new Error(
       `give_feedback send failed (agent ${input.agentId}): ${JSON.stringify(sent.errorResult ?? sent)}`,
     );
   }
-  return { dryRun: false, agentId: input.agentId, txId: sent.hash };
+
+  const settled = await awaitStellarInclusion(server, {
+    hash: sent.hash,
+    caller,
+    seqBefore,
+    sendStatus: sent.status,
+    pollIntervalMs: deps.pollIntervalMs ?? 2000,
+    timeoutMs: deps.confirmTimeoutMs ?? DEFAULT_CONFIRM_TIMEOUT_MS,
+  });
+
+  return { dryRun: false, agentId: input.agentId, txId: sent.hash, ...settled };
+}
+
+interface InclusionArgs {
+  hash: string;
+  caller: string;
+  seqBefore: bigint;
+  sendStatus: string;
+  pollIntervalMs: number;
+  timeoutMs: number;
+}
+
+/**
+ * Poll for inclusion, then fall back to the account sequence.
+ *
+ * The sequence fallback is what makes a blackholed submission safe to leave
+ * alone: a transaction's sequence number is consumed exactly once, so an
+ * advanced sequence means this submission (the only one this process sent) was
+ * included — whether or not the RPC ever admitted it. An unchanged sequence
+ * past the timebound means it never was, and never can be.
+ */
+export async function awaitStellarInclusion(
+  server: rpc.Server,
+  a: InclusionArgs,
+): Promise<{ state: StellarPublishState; detail?: string }> {
+  const deadline = Date.now() + a.timeoutMs;
+
+  while (Date.now() < deadline) {
+    await sleep(a.pollIntervalMs);
+    let got: { status?: string; resultXdr?: unknown } | null = null;
+    try {
+      got = (await server.getTransaction(a.hash)) as { status?: string };
+    } catch {
+      got = null; // RPC hiccup — keep polling; the deadline bounds the wait.
+    }
+    if (got?.status === 'SUCCESS') return { state: 'confirmed' };
+    if (got?.status === 'FAILED') {
+      return { state: 'failed', detail: 'getTransaction returned FAILED' };
+    }
+  }
+
+  // Never observed. Ask the ledger, not the RPC's memory: did our sequence move?
+  try {
+    const after = await server.getAccount(a.caller);
+    if (BigInt(after.sequenceNumber()) > a.seqBefore) {
+      return {
+        state: 'indeterminate',
+        detail:
+          `tx never observed (send status ${a.sendStatus}) but account sequence advanced ` +
+          `${a.seqBefore} → ${after.sequenceNumber()} — it most likely landed. NOT resending.`,
+      };
+    }
+    return {
+      state: 'expired',
+      detail: `tx never included and sequence unchanged at ${a.seqBefore} — timebound passed, cannot land`,
+    };
+  } catch (err) {
+    return {
+      state: 'indeterminate',
+      detail: `tx never observed and the sequence re-read failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }
 
 // ─── publishStellarScore (idempotent, badge-gated) ───────────────────────────

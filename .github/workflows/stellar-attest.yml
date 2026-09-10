@@ -1,0 +1,127 @@
+name: Stellar attest
+
+# Gives AgentKarma's Stellar attestations a running cadence.
+#
+# Until now the stellar-8004 Reputation Registry held exactly two AK records,
+# both written by hand on 2026-08-04. Partners are told AK publishes portable
+# on-chain attestations; anyone who checked found two, neither theirs. This job
+# closes that gap the same way the registry mirror closed the staleness gap:
+# a small, bounded, scheduled sweep instead of a script somebody remembers to run.
+#
+# Deliberately SEPARATE from stellar-refresh.yml, which runs hourly:
+#
+#   1. Cadence. Hourly is right for reading a registry; it is wrong for writing
+#      to mainnet. This job writes at most a handful of records a day.
+#   2. Blast radius. This is the only workflow that gets the mainnet signing
+#      key. The hourly mirror/behaviour job has no business holding it.
+#   3. Failure semantics. A Soroban write that does not confirm must page on its
+#      own terms, without turning a healthy registry refresh red (or vice versa).
+#
+# It still runs AFTER a mirror refresh (05:45 follows stellar-refresh's 05:30),
+# so target selection reads a fresh population — and every target is re-read
+# live on chain before it is rated, so a stale mirror can only cost coverage,
+# never correctness.
+#
+# ARMING — the scheduled run SIMULATES until this is set:
+#
+#   Repository variable  STELLAR_ATTEST_ENABLED = true
+#   Repository secret    STELLAR_PRIVATE_KEY    = AK's Stellar seed (S…)
+#
+# Unarmed, the daily run still exercises the whole path — fee-account preflight,
+# target selection, the dedupe sweep, the honesty gates, and a real Soroban
+# simulation of every write — and fails loudly if any of it breaks. That is a
+# real check, not a placeholder: simulation needs a source account, not a
+# signature, so the pipeline is verified daily before it is ever armed. Arming
+# adds only the ability to send. An unset variable arrives as an empty string,
+# which is not 'true', so the safe direction is also the default.
+#
+# Concurrency is MANDATORY here: two overlapping runs would both read "not yet
+# rated" for the same agent and both write it.
+#
+# Required repo secrets:
+#   NEXT_PUBLIC_SUPABASE_URL   target selection (registry mirror)
+#   SUPABASE_SERVICE_ROLE_KEY  target selection
+# Optional repo secrets:
+#   STELLAR_PRIVATE_KEY   signing seed — required only once armed
+#   STELLAR_RPC_URL       Soroban RPC override (falls back to the mainnet default)
+#   STELLAR_HORIZON_URL   Horizon override (fee-account preflight)
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_ALERT_CHAT_ID   failure alerts
+
+on:
+  schedule:
+    - cron: '45 5 * * *' # daily 05:45 UTC — 15m after the 05:30 stellar-refresh
+                         # so the registry mirror is fresh, and clear of the
+                         # 6h keep-fresh slots and the 03:15 solana registry.
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: 'Write to Stellar mainnet (unchecked = simulate)'
+        type: boolean
+        default: false
+      count:
+        description: 'Max attestations to publish this run'
+        type: string
+        default: '3'
+
+concurrency:
+  group: stellar-attest
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/bun-setup
+
+      # The script refuses to start below the XLM floor, refuses to rate AK's
+      # own registration, refuses to score metadata it could not read, and never
+      # resends a submission — see scripts/stellar-batch-feedback.ts. A manual
+      # dispatch is always explicit: it executes only when the box is ticked,
+      # regardless of the arming variable.
+      - name: Publish metadata-quality attestations
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          STELLAR_RPC_URL: ${{ secrets.STELLAR_RPC_URL }}
+          STELLAR_HORIZON_URL: ${{ secrets.STELLAR_HORIZON_URL }}
+          STELLAR_PRIVATE_KEY: ${{ secrets.STELLAR_PRIVATE_KEY }}
+          EVENT: ${{ github.event_name }}
+          ARMED: ${{ vars.STELLAR_ATTEST_ENABLED }}
+          DISPATCH_EXECUTE: ${{ inputs.execute }}
+          COUNT: ${{ inputs.count }}
+        run: |
+          set -euo pipefail
+          # A dispatch input reaches a shell here, so it is validated rather
+          # than interpolated: an unchecked value like "3 --execute" would arm
+          # a run nobody armed.
+          COUNT="${COUNT:-3}"
+          case "$COUNT" in
+            ''|*[!0-9]*) echo "::error::count must be a positive integer, got '$COUNT'"; exit 1 ;;
+          esac
+          EXEC=""
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            if [ "${DISPATCH_EXECUTE:-false}" = "true" ]; then EXEC="--execute"; fi
+          elif [ "${ARMED:-}" = "true" ]; then
+            EXEC="--execute"
+          else
+            echo "::notice::STELLAR_ATTEST_ENABLED is not 'true' — simulating. Set the repo variable to arm the cadence."
+          fi
+          echo "running: stellar-batch-feedback --count $COUNT $EXEC"
+          bun run scripts/stellar-batch-feedback.ts --count "$COUNT" $EXEC
+
+      # Reasons this pages: the fee account cannot pay, the RPC is unusable, or
+      # a submitted write did not confirm. The last one needs a human — the run
+      # deliberately does not retry, because a resend can double-publish.
+      - name: Page on failure
+        if: failure()
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            🛟 <b>AgentKarma stellar-attest FAILED</b>
+            Either the fee account cannot pay, or a give_feedback write did not confirm.
+            Check the account sequence on Horizon BEFORE re-running — a blackholed submission may already have landed.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

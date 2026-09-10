@@ -28,7 +28,10 @@ import {
   loadStellarKeypair,
   publishStellarFeedback,
   publishStellarScore,
+  awaitStellarInclusion,
+  classifySendStatus,
   DELTA_THRESHOLD,
+  TX_TIMEOUT_SECONDS,
 } from './erc8004-stellar-publish';
 import type { WalletScore } from '@/scoring/index';
 
@@ -242,6 +245,44 @@ describe('publishStellarFeedback', () => {
     expect(res.txId).toBe('ABC');
   });
 
+  // An unarmed scheduled run must exercise selection → gates → simulate without
+  // the signing key: Soroban simulation needs a source account, not a signature.
+  test('simulate needs no keypair — only a caller address', async () => {
+    const res = await publishStellarFeedback(baseInput, 'simulate', {
+      server: makeFakeRpc(),
+      caller: CALLER,
+    });
+    expect(res.dryRun).toBe(true);
+    expect(res.state).toBeUndefined();
+  });
+
+  test('execute resolves to a confirmation state, not a bare hash', async () => {
+    const res = await publishStellarFeedback(baseInput, 'execute', {
+      server: makeFakeRpc({ sendHash: 'ABC' }),
+      keypair: kp,
+      pollIntervalMs: 0,
+    });
+    expect(res.state).toBe('confirmed');
+    expect(res.txId).toBe('ABC');
+  });
+
+  // GitHub Actions substitutes an unset secret as an EMPTY STRING; treating ''
+  // as "set" would send with a malformed key instead of failing loudly.
+  test('an empty STELLAR_PRIVATE_KEY falls through to the keyfile, never silently used', () => {
+    expect(() =>
+      loadStellarKeypair({ STELLAR_PRIVATE_KEY: '' }, {
+        readFile: () => JSON.stringify({ secret: kp.secret() }),
+        fileMode: () => 0o600,
+      }),
+    ).not.toThrow();
+    expect(
+      loadStellarKeypair({ STELLAR_PRIVATE_KEY: '' }, {
+        readFile: () => JSON.stringify({ secret: kp.secret() }),
+        fileMode: () => 0o600,
+      }).publicKey(),
+    ).toBe(kp.publicKey());
+  });
+
   test('raises on simulate error (no silent fallback)', async () => {
     await expect(
       publishStellarFeedback(baseInput, 'execute', {
@@ -249,6 +290,107 @@ describe('publishStellarFeedback', () => {
         keypair: kp,
       }),
     ).rejects.toThrow(/AgentNotFound/);
+  });
+});
+
+// ── Confirmation: the sorobanrpc blackhole ───────────────────────────────────
+//
+// The RPC drops a meaningful share of send responses while the transaction
+// still lands. Returning a bare hash would leave a caller unable to tell "wrote
+// it" from "wrote it twice", so every execute resolves against getTransaction
+// and, failing that, the account sequence — which is consumed exactly once.
+
+/** An rpc.Server whose getTransaction/getAccount answers are scripted per call. */
+function makeConfirmRpc(opts: {
+  txStatuses?: Array<string | 'THROW'>;
+  seqBefore: string;
+  seqAfter?: string;
+  accountThrows?: boolean;
+}) {
+  let call = 0;
+  return {
+    // The post-timeout re-read: what the ledger says the sequence is NOW.
+    getAccount: async () => {
+      if (opts.accountThrows) throw new Error('sequence re-read failed');
+      return new Account(CALLER, opts.seqAfter ?? opts.seqBefore);
+    },
+    getTransaction: async () => {
+      const status = opts.txStatuses?.[Math.min(call++, (opts.txStatuses.length ?? 1) - 1)] ?? 'NOT_FOUND';
+      if (status === 'THROW') throw new Error('rpc hiccup');
+      return { status };
+    },
+  } as unknown as import('@stellar/stellar-sdk').rpc.Server;
+}
+
+describe('classifySendStatus', () => {
+  test('only ERROR raises — every other status is polled, never resent', () => {
+    expect(classifySendStatus('ERROR')).toBe('raise');
+    for (const s of ['PENDING', 'DUPLICATE', 'TRY_AGAIN_LATER']) {
+      expect(classifySendStatus(s)).toBe('poll');
+    }
+  });
+});
+
+describe('awaitStellarInclusion', () => {
+  const base = { hash: 'TX', caller: CALLER, sendStatus: 'PENDING', pollIntervalMs: 0, timeoutMs: 50 };
+
+  test('SUCCESS → confirmed', async () => {
+    const r = await awaitStellarInclusion(
+      makeConfirmRpc({ txStatuses: ['NOT_FOUND', 'SUCCESS'], seqBefore: '10' }),
+      { ...base, seqBefore: BigInt(10) },
+    );
+    expect(r.state).toBe('confirmed');
+  });
+
+  test('FAILED → failed (sequence consumed, nothing written)', async () => {
+    const r = await awaitStellarInclusion(
+      makeConfirmRpc({ txStatuses: ['FAILED'], seqBefore: '10' }),
+      { ...base, seqBefore: BigInt(10) },
+    );
+    expect(r.state).toBe('failed');
+  });
+
+  // The blackhole: response never came back, but the sequence moved — the write
+  // almost certainly landed. Reporting `indeterminate` (and NOT resending) is
+  // what stops a double attestation.
+  test('never observed + sequence advanced → indeterminate, never a resend', async () => {
+    const r = await awaitStellarInclusion(
+      makeConfirmRpc({ txStatuses: ['NOT_FOUND'], seqBefore: '10', seqAfter: '11' }),
+      { ...base, seqBefore: BigInt(10) },
+    );
+    expect(r.state).toBe('indeterminate');
+    expect(r.detail).toMatch(/sequence advanced/);
+    expect(r.detail).toMatch(/NOT resending/);
+  });
+
+  // Timebounds make this a proof, not a guess: past maxTime the tx can never
+  // be included, so an unchanged sequence means it definitively did not land.
+  test('never observed + sequence unchanged → expired (definitively not published)', async () => {
+    const r = await awaitStellarInclusion(
+      makeConfirmRpc({ txStatuses: ['NOT_FOUND'], seqBefore: '10', seqAfter: '10' }),
+      { ...base, seqBefore: BigInt(10) },
+    );
+    expect(r.state).toBe('expired');
+  });
+
+  test('a re-read that itself fails is indeterminate, never assumed clean', async () => {
+    const r = await awaitStellarInclusion(
+      makeConfirmRpc({ txStatuses: ['NOT_FOUND'], seqBefore: '10', accountThrows: true }),
+      { ...base, seqBefore: BigInt(10) },
+    );
+    expect(r.state).toBe('indeterminate');
+  });
+
+  test('a transient getTransaction throw does not end the wait', async () => {
+    const r = await awaitStellarInclusion(
+      makeConfirmRpc({ txStatuses: ['THROW', 'SUCCESS'], seqBefore: '10' }),
+      { ...base, seqBefore: BigInt(10) },
+    );
+    expect(r.state).toBe('confirmed');
+  });
+
+  test('the tx timebound is what bounds the wait', () => {
+    expect(TX_TIMEOUT_SECONDS).toBe(60);
   });
 });
 

@@ -5,7 +5,9 @@
  * Usage:
  *   bun run scripts/publish-stellar-feedback.ts <agentId> [--execute]
  *
- * Defaults to --simulate. Pass --execute to actually send.
+ * Defaults to --simulate. Pass --execute to actually send. A simulate run never
+ * loads the signing key. For the scheduled, bounded, self-deduping cadence over
+ * the whole eligible population, use scripts/stellar-batch-feedback.ts.
  *
  * Behavior:
  *  - Refuses to target AK's own registration (owner == AK's account) —
@@ -29,8 +31,12 @@ import {
   publishStellarFeedback,
   feedbackHashFromJson,
 } from '../src/integrations/erc8004-stellar-publish';
+import {
+  buildStellarAssessment,
+  classifyTarget,
+} from '../src/integrations/erc8004-stellar-attest';
 import { scoreMetadataQuality } from '../src/scoring/celo-metadata';
-import { AK_VALIDATOR } from '../src/config/ak-validator';
+import { AK_VALIDATOR, AK_STELLAR } from '../src/config/ak-validator';
 
 const SCHEME_TAG1 = AK_VALIDATOR.scheme.tag1; // 'agentkarma_metadata'
 const SCHEME_TAG2 = AK_VALIDATOR.scheme.tag2; // rubric version (v0.2)
@@ -46,77 +52,68 @@ if (!target || !Number.isInteger(Number(target)) || Number(target) < 0) {
 const targetId = Number(target);
 
 const server = new rpc.Server(resolveStellarRpcUrl(), { allowHttp: false });
-const keypair = loadStellarKeypair();
-const akAccount = keypair.publicKey();
+// Only an actual send needs the secret; a dry run must be runnable without it.
+const keypair = execute ? loadStellarKeypair() : undefined;
+const akAccount = keypair?.publicKey() ?? AK_STELLAR.account;
 
 console.log(`[1/4] resolving Stellar agent ${targetId}…`);
 const agent = await readStellarAgent(server, targetId);
-if (!agent) {
-  console.error(`✖ no agent registered with id ${targetId} on Stellar`);
-  process.exit(1);
-}
-if (agent.owner === akAccount) {
-  console.error(`✖ agent ${targetId} is AK's own registration — cannot self-rate.`);
-  process.exit(1);
-}
-console.log(`    owner:    ${agent.owner}`);
-console.log(`    agentURI: ${agent.agentURI.slice(0, 96)}${agent.agentURI.length > 96 ? '…' : ''}`);
-console.log(`    name:     ${agent.registration?.name ?? '(none)'}`);
-if (agent.registrationError) console.log(`    registrationError: ${agent.registrationError}`);
-
-// Honesty gate: an UNREACHABLE https URL is a real quality signal (the rubric's
-// `resolves` dimension), but an UNSUPPORTED scheme (ipfs://, ar://) is OUR
-// fetcher's limitation — the rubric itself rewards content-addressed URIs.
-// Publishing a 0 for that would attest our infra gap as the agent's quality.
-if (agent.registrationError?.includes('unsupported URI scheme')) {
-  console.error(
-    `✖ agent ${targetId}'s metadata is on a scheme our fetcher does not resolve ` +
-      `(${agent.agentURI.slice(0, 16)}…). Refusing to publish a misleading 0 — ` +
-      `pick a target with an https/data: URI, or add IPFS gateway support first.`,
-  );
-  process.exit(1);
+if (agent) {
+  console.log(`    owner:    ${agent.owner}`);
+  console.log(`    agentURI: ${agent.agentURI.slice(0, 96)}${agent.agentURI.length > 96 ? '…' : ''}`);
+  console.log(`    name:     ${agent.registration?.name ?? '(none)'}`);
+  if (agent.registrationError) console.log(`    registrationError: ${agent.registrationError}`);
 }
 
 console.log(`[2/4] scoring metadata quality…`);
-const quality = scoreMetadataQuality(agent);
-console.log(`    score:   ${quality.score}/100`);
+const quality = agent?.registration ? scoreMetadataQuality(agent) : null;
+
+// Same gates as the batch run (src/integrations/erc8004-stellar-attest.ts):
+// refuses AK's own registration, and refuses to publish a misleading 0 when the
+// metadata sits on a URI scheme our fetcher cannot resolve — that gap is ours,
+// not the agent's. No score floor here: naming one agent explicitly is a
+// deliberate act, and the rubric's honest low score is the point.
+const verdict = classifyTarget({
+  agent,
+  score: quality?.score ?? null,
+  akAccount,
+  minScore: 0,
+});
+if (verdict.decision !== 'publish') {
+  console.error(`✖ agent ${targetId}: ${verdict.decision} — ${verdict.reason}`);
+  process.exit(1);
+}
+
+console.log(`    score:   ${quality!.score}/100`);
 console.log(`    breakdown:`);
-for (const [k, v] of Object.entries(quality.breakdown)) {
+for (const [k, v] of Object.entries(quality!.breakdown)) {
   console.log(`      ${k.padEnd(20)} ${v.toString().padStart(3)}`);
 }
 console.log(`    notes:`);
-for (const n of quality.notes) console.log(`      • ${n}`);
+for (const n of quality!.notes) console.log(`      • ${n}`);
 
-const assessmentPayload = {
-  rater: 'AgentKarma',
-  raterAccount: akAccount,
-  chain: 'stellar',
-  target: targetId,
+const { payload, feedbackUri } = buildStellarAssessment({
+  agentId: targetId,
+  akAccount,
   scheme: SCHEME_TAG1,
   version: SCHEME_TAG2,
-  score: quality.score,
-  breakdown: quality.breakdown,
-  notes: quality.notes,
-  generatedAt: new Date().toISOString(),
-};
-
-// Inline the assessment so feedbackUri content == what feedbackHash covers.
-const feedbackUri = `data:application/json;base64,${Buffer.from(
-  JSON.stringify(assessmentPayload),
-).toString('base64')}`;
-const feedbackHash = feedbackHashFromJson(assessmentPayload);
+  score: quality!.score,
+  breakdown: quality!.breakdown,
+  notes: quality!.notes,
+});
+const feedbackHash = feedbackHashFromJson(payload);
 
 console.log(`[3/4] preparing feedback record…`);
 console.log(`    tag1:         ${SCHEME_TAG1}`);
 console.log(`    tag2:         ${SCHEME_TAG2}`);
-console.log(`    value:        ${quality.score}`);
+console.log(`    value:        ${quality!.score}`);
 console.log(`    feedbackUri:  data:application/json;base64,… (${feedbackUri.length} chars)`);
 console.log(`    feedbackHash: sha256:${Buffer.from(feedbackHash).toString('hex')}`);
 
 const result = await publishStellarFeedback(
   {
     agentId: targetId,
-    value: BigInt(quality.score),
+    value: BigInt(quality!.score),
     valueDecimals: 0,
     tag1: SCHEME_TAG1,
     tag2: SCHEME_TAG2,
@@ -125,13 +122,14 @@ const result = await publishStellarFeedback(
     feedbackHash,
   },
   execute ? 'execute' : 'simulate',
-  { server, keypair },
+  { server, keypair, caller: akAccount },
 );
 
 console.log(`[4/4] ${execute ? 'executed' : 'simulated'}`);
 if (result.dryRun) {
   console.log(`    simulation OK — re-run with --execute to send`);
 } else {
+  console.log(`    state:    ${result.state}${result.detail ? ` (${result.detail})` : ''}`);
   console.log(`    tx:       ${result.txId}`);
   console.log(`    explorer: https://stellar.expert/explorer/public/tx/${result.txId}`);
   console.log(`    8004scan: https://stellar8004.com/agents/${targetId}`);
