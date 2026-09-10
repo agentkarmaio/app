@@ -20,6 +20,7 @@
     "indexer:stellar-transfers": "bun run src/indexer/stellar-transfers-run.ts",
     "indexer:celo": "bun run src/indexer/celo-run.ts",
     "indexer:arc-transfers": "bun run src/indexer/arc-transfers-run.ts",
+    "indexer:gap": "bun run scripts/backfill-facilitator-gap.ts",
     "registry:scan": "bun run src/indexer/erc8004-registry-run.ts",
     "registry:scan:stellar": "bun run src/indexer/stellar-registry-run.ts",
     "registry:scan:solana": "bun run src/indexer/solana-registry-run.ts",
