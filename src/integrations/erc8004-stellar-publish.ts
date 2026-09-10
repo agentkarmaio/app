@@ -209,6 +209,14 @@ export interface PublishDeps {
    * keypair defines the caller.
    */
   caller?: string;
+  /**
+   * Refuse to sign when the assembled fee exceeds this many stroops.
+   *
+   * The fee is only knowable AFTER simulation, so this is the last gate before
+   * a signature: a balance check upstream cannot see it. Omitted = no ceiling,
+   * which is only appropriate for a hand-driven single write.
+   */
+  maxFeeStroops?: number;
   /** Poll cadence for the confirmation wait. Default 2s (tests inject 0). */
   pollIntervalMs?: number;
   /** How long to wait for inclusion before falling back to the sequence check. */
@@ -240,6 +248,18 @@ export const DEFAULT_CONFIRM_TIMEOUT_MS = (TX_TIMEOUT_SECONDS + 8) * 1000;
  */
 export function classifySendStatus(status: string): 'poll' | 'raise' {
   return status === 'ERROR' ? 'raise' : 'poll';
+}
+
+/** Error raised when the assembled fee exceeds the caller's ceiling. */
+export interface FeeCeilingError extends Error {
+  code: 'fee_ceiling';
+  feeStroops: number;
+  ceilingStroops: number;
+}
+
+/** Branch on the tagged code, never on message text. */
+export function isFeeCeilingError(err: unknown): err is FeeCeilingError {
+  return err instanceof Error && (err as Partial<FeeCeilingError>).code === 'fee_ceiling';
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -297,6 +317,21 @@ export async function publishStellarFeedback(
   const prepared = rpc
     .assembleTransaction(tx, sim as rpc.Api.SimulateTransactionSuccessResponse)
     .build();
+
+  // Last gate before a signature. The resource fee is a property of network
+  // state, not of our payload, so it can move by orders of magnitude between
+  // runs — refuse rather than sign whatever the simulation came back with.
+  const fee = Number(prepared.fee);
+  if (deps.maxFeeStroops !== undefined && fee > deps.maxFeeStroops) {
+    throw Object.assign(
+      new Error(
+        `fee ceiling exceeded (agent ${input.agentId}): assembled fee ${(fee / 1e7).toFixed(4)} XLM ` +
+          `> ceiling ${(deps.maxFeeStroops / 1e7).toFixed(4)} XLM. Nothing signed, nothing sent.`,
+      ),
+      { code: 'fee_ceiling' as const, feeStroops: fee, ceilingStroops: deps.maxFeeStroops },
+    );
+  }
+
   prepared.sign(keypair);
   const sent = await server.sendTransaction(prepared);
   if (classifySendStatus(sent.status) === 'raise') {

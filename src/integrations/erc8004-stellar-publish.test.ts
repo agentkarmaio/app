@@ -30,6 +30,7 @@ import {
   publishStellarScore,
   awaitStellarInclusion,
   classifySendStatus,
+  isFeeCeilingError,
   DELTA_THRESHOLD,
   TX_TIMEOUT_SECONDS,
 } from './erc8004-stellar-publish';
@@ -281,6 +282,46 @@ describe('publishStellarFeedback', () => {
         fileMode: () => 0o600,
       }).publicKey(),
     ).toBe(kp.publicKey());
+  });
+
+  // The resource fee is knowable only AFTER simulation, so this is the last
+  // gate before a signature. Refusing must happen with nothing signed or sent.
+  test('refuses to sign when the assembled fee exceeds the ceiling', async () => {
+    let sent = false;
+    const fakeRpc = makeFakeRpc();
+    (fakeRpc as unknown as { sendTransaction: () => unknown }).sendTransaction = async () => {
+      sent = true;
+      return { status: 'PENDING', hash: 'X' };
+    };
+    let caught: unknown;
+    try {
+      await publishStellarFeedback(baseInput, 'execute', {
+        server: fakeRpc,
+        keypair: kp,
+        maxFeeStroops: 1, // 1 stroop — anything real exceeds it
+        pollIntervalMs: 0,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isFeeCeilingError(caught)).toBe(true);
+    expect(sent).toBe(false);
+    expect((caught as Error).message).toMatch(/Nothing signed, nothing sent/);
+  });
+
+  test('a generous ceiling does not interfere', async () => {
+    const res = await publishStellarFeedback(baseInput, 'execute', {
+      server: makeFakeRpc({ sendHash: 'OK1' }),
+      keypair: kp,
+      maxFeeStroops: 10_000_000,
+      pollIntervalMs: 0,
+    });
+    expect(res.state).toBe('confirmed');
+  });
+
+  test('isFeeCeilingError branches on the code, not the message text', () => {
+    expect(isFeeCeilingError(new Error('fee ceiling exceeded'))).toBe(false);
+    expect(isFeeCeilingError(Object.assign(new Error('x'), { code: 'fee_ceiling' }))).toBe(true);
   });
 
   test('raises on simulate error (no silent fallback)', async () => {

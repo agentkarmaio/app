@@ -44,11 +44,50 @@ export const ATTEST_MIN_SCORE = 70;
 export const ATTEST_BATCH_SIZE = 3;
 
 /**
- * XLM floor below which the run refuses to write. Base reserve holds 1 XLM
- * hostage and a Soroban invoke costs well under 0.01 XLM, so this is ~4 XLM of
- * genuine headroom — hundreds of attestations — not a tight budget.
+ * XLM floor below which the run refuses to start. Necessary, not sufficient:
+ * a healthy balance says nothing about what the NEXT write actually costs, so
+ * {@link feeCeilingStroops} gates each transaction on its simulated fee too.
  */
 export const MIN_XLM_BALANCE = 5;
+
+/**
+ * Hard ceiling on what a single attestation may cost, in XLM.
+ *
+ * Sized against reality, not a guess: the two 2026-08-04 attestations charged
+ * 0.1515 and 0.1339 XLM (Horizon `fee_charged`). One XLM is ~6× that — ample
+ * for fee-market swings — while still refusing anything an order of magnitude
+ * out of band.
+ *
+ * This exists because a balance floor alone let a run sail through preflight
+ * and then get rejected by the network: on 2026-09-10 the same `give_feedback`
+ * simulated at 53.89 XLM, ~360× the August cost and more than the account
+ * holds. The footprint showed both `contractCode` entries in the WRITE set with
+ * ~52 KB of write bytes, i.e. the caller was being charged rent to extend the
+ * shared registry contract's own state — a cost that is neither AK's to pay by
+ * accident nor predictable from a balance check.
+ */
+export const MAX_FEE_XLM = 1;
+
+/** One XLM in stroops. */
+export const STROOPS_PER_XLM = 10_000_000;
+
+/**
+ * Effective per-transaction fee ceiling, in stroops: the policy cap, further
+ * limited by what the account can actually spend (balance minus the 1 XLM base
+ * reserve, which the network never lets you spend).
+ *
+ * Pure, so the two ways a write can be unaffordable — "absurdly expensive" and
+ * "more than we hold" — are one testable decision instead of two scattered
+ * checks.
+ */
+export function feeCeilingStroops(balanceXlm: number, maxFeeXlm = MAX_FEE_XLM): number {
+  // Convert to stroops FIRST, then do integer arithmetic. Subtracting the
+  // reserve in XLM leaves float residue (1.4 - 1 = 0.3999999999999999), which
+  // silently shaves a stroop off the ceiling.
+  const balance = Math.round(balanceXlm * STROOPS_PER_XLM);
+  const spendable = Math.max(0, balance - STROOPS_PER_XLM); // 1 XLM base reserve
+  return Math.min(Math.round(maxFeeXlm * STROOPS_PER_XLM), spendable);
+}
 
 // ─── Target gating (pure) ───────────────────────────────────────────────────
 

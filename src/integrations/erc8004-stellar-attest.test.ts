@@ -11,7 +11,10 @@
 import { describe, expect, test } from 'bun:test';
 import {
   ATTEST_MIN_SCORE,
+  MAX_FEE_XLM,
   MIN_XLM_BALANCE,
+  STROOPS_PER_XLM,
+  feeCeilingStroops,
   buildStellarAssessment,
   classifyTarget,
   readStellarFeeAccount,
@@ -182,5 +185,37 @@ describe('readStellarFeeAccount', () => {
         },
       }),
     ).rejects.toThrow(/503/);
+  });
+});
+
+// A balance floor alone is not a payment gate: on 2026-09-10 a run cleared the
+// 5 XLM floor with 34.5 XLM and the network still rejected the write, because
+// the same give_feedback that cost 0.15 XLM in August simulated at 53.89.
+describe('feeCeilingStroops', () => {
+  test('caps at the policy maximum when the balance is healthy', () => {
+    expect(feeCeilingStroops(34.5)).toBe(MAX_FEE_XLM * STROOPS_PER_XLM);
+    expect(MAX_FEE_XLM).toBe(1);
+  });
+
+  test('drops to what is actually spendable when the balance is thin', () => {
+    // 1.4 XLM held − 1 XLM base reserve = 0.4 XLM spendable, below the cap.
+    expect(feeCeilingStroops(1.4)).toBe(4_000_000);
+  });
+
+  test('never proposes spending the base reserve', () => {
+    expect(feeCeilingStroops(1)).toBe(0);
+    expect(feeCeilingStroops(0.5)).toBe(0);
+    expect(feeCeilingStroops(0)).toBe(0);
+  });
+
+  test('rejects the observed 53.89 XLM fee at every plausible balance', () => {
+    const observed = 538_919_532; // simulated 2026-09-10, agent 6
+    for (const balance of [34.5, 100, 1000]) {
+      expect(feeCeilingStroops(balance)).toBeLessThan(observed);
+    }
+  });
+
+  test('an explicit override still cannot exceed the spendable balance', () => {
+    expect(feeCeilingStroops(3, 100)).toBe(2 * STROOPS_PER_XLM);
   });
 });

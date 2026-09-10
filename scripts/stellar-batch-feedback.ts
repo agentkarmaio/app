@@ -54,13 +54,16 @@ import {
   loadStellarKeypair,
   publishStellarFeedback,
   feedbackHashFromJson,
+  isFeeCeilingError,
 } from '../src/integrations/erc8004-stellar-publish';
 import {
   ATTEST_BATCH_SIZE,
   ATTEST_MIN_SCORE,
   buildStellarAssessment,
   classifyTarget,
+  feeCeilingStroops,
   readStellarFeeAccount,
+  MAX_FEE_XLM,
   MIN_XLM_BALANCE,
   type AttestDecision,
 } from '../src/integrations/erc8004-stellar-attest';
@@ -79,6 +82,7 @@ function argVal(name: string, fallback: string): string {
 const execute = process.argv.includes('--execute');
 const count = Number(argVal('count', String(ATTEST_BATCH_SIZE)));
 const minScore = Number(argVal('min', String(ATTEST_MIN_SCORE)));
+const maxFeeXlm = Number(argVal('max-fee', String(MAX_FEE_XLM)));
 const jitterSec = Number(argVal('jitter', '25'));
 
 if (!Number.isInteger(count) || count < 1 || !Number.isFinite(minScore)) {
@@ -121,7 +125,7 @@ if (execute && akAccount !== AK_STELLAR.account) {
 console.log(`[attest] mode:     ${execute ? 'EXECUTE (mainnet writes)' : 'simulate'}`);
 console.log(`[attest] account:  ${akAccount}`);
 console.log(`[attest] scheme:   ${SCHEME_TAG1} ${SCHEME_TAG2}`);
-console.log(`[attest] budget:   ${count} write(s), min score ${minScore}`);
+console.log(`[attest] budget:   ${count} write(s), min score ${minScore}, max fee ${maxFeeXlm} XLM/write`);
 console.log('');
 
 // ─── 1. Fee-account preflight ───────────────────────────────────────────────
@@ -139,6 +143,12 @@ if (fee.state === 'low') {
   );
   process.exit(1);
 }
+// A healthy balance does not mean the next write is affordable: the Soroban
+// resource fee is a property of network state and moved ~360x between
+// 2026-08-04 (0.15 XLM) and 2026-09-10 (53.89 XLM). The real gate is the
+// SIMULATED fee, enforced per transaction just before signing.
+const ceiling = feeCeilingStroops(fee.xlm, maxFeeXlm);
+console.log(`[attest] fee gate: refuse any write above ${(ceiling / 1e7).toFixed(4)} XLM`);
 
 // ─── 2. Eligible population from the registry mirror ────────────────────────
 
@@ -251,7 +261,7 @@ for (let t = 0; t < targets.length; t++) {
         feedbackHash: feedbackHashFromJson(payload),
       },
       execute ? 'execute' : 'simulate',
-      { server, keypair, caller: akAccount },
+      { server, keypair, caller: akAccount, maxFeeStroops: ceiling },
     );
 
     if (result.dryRun) {
@@ -286,6 +296,16 @@ for (let t = 0; t < targets.length; t++) {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    if (isFeeCeilingError(err)) {
+      // Not a transient error and not this agent's fault: the network is
+      // charging more than policy allows, so every remaining target would be
+      // refused identically. Stop and say so once.
+      console.log(`fee ${(err.feeStroops / 1e7).toFixed(4)} XLM > ceiling — refusing (nothing signed)`);
+      outcomes.push({ agentId: id, decision: 'error', detail: msg });
+      const left = targets.slice(t + 1);
+      if (left.length > 0) console.log(`  stopping — ${left.length} target(s) untouched: ${left.join(', ')}`);
+      break;
+    }
     console.log(`error: ${msg.slice(0, 100)}`);
     outcomes.push({ agentId: id, decision: 'error', detail: msg });
   }
