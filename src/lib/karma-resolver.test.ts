@@ -251,6 +251,63 @@ describe('resolveKarmaEnrichment — independence block', () => {
     expect(e.explain.some((l) => l.includes('this wallet also pays'))).toBe(true);
   });
 
+  test('counts the payments the reading was computed over', async () => {
+    __setSupabaseForTest(
+      makeFakeSupabase({
+        transactions: {
+          rows: [
+            { wallet_address: SELF, counterparty: SELF, amount: '10' },
+            { wallet_address: SELF, counterparty: SELF, amount: '5' },
+          ],
+        },
+      }) as never,
+    );
+    const e = await resolveKarmaEnrichment({
+      address: OWNER, chain: 'celo', walletRow: null,
+      core: { provider: { score: 40, trustTier: 'Poor', confidenceBadge: 'behavior-inferred' }, consumerHasSignal: false, txCount: 2, claimed: false },
+    });
+    // The fake serves the same two rows to both directions: 2 out + 2 in.
+    expect(e.independence?.observedPayments).toBe(4);
+  });
+
+  test('shares are rounded, not carried to float precision', async () => {
+    __setSupabaseForTest(
+      makeFakeSupabase({
+        transactions: {
+          rows: [
+            { wallet_address: SELF, counterparty: SELF, amount: '1' },
+            { wallet_address: SELF, counterparty: '0xdddddddddddddddddddddddddddddddddddddddd', amount: '2' },
+          ],
+        },
+      }) as never,
+    );
+    const e = await resolveKarmaEnrichment({
+      address: OWNER, chain: 'celo', walletRow: null,
+      core: { provider: { score: 40, trustTier: 'Poor', confidenceBadge: 'behavior-inferred' }, consumerHasSignal: false, txCount: 2, claimed: false },
+    });
+    const share = e.independence?.reciprocalShare;
+    expect(share).not.toBeNull();
+    // At most 4 decimal places — no 0.8934608756962262 in a partner's response.
+    expect(String(share).split('.')[1]?.length ?? 0).toBeLessThanOrEqual(4);
+  });
+
+  test('a declared wallet with observable flow does not claim "no payment receipts"', async () => {
+    // The Stellar case: zero INDEXED receipts, but real payments on chain.
+    // Saying both "no payment receipts on record" and reporting a block built
+    // from those payments is the contradiction this guards.
+    __setSupabaseForTest(
+      makeFakeSupabase({
+        transactions: { rows: [{ wallet_address: SELF, counterparty: SELF, amount: '10' }] },
+      }) as never,
+    );
+    const e = await resolveKarmaEnrichment({
+      address: OWNER, chain: 'celo', walletRow: null,
+      core: { provider: { score: 0, trustTier: 'Unrated', confidenceBadge: 'declared' }, consumerHasSignal: false, txCount: 0, claimed: false },
+    });
+    expect(e.explain.some((l) => l.includes('no payment receipts on record'))).toBe(false);
+    expect(e.explain.some((l) => l.includes('observable on-chain'))).toBe(true);
+  });
+
   test('a failing transactions read omits only the independence block', async () => {
     __setSupabaseForTest(
       makeFakeSupabase({ transactions: { error: { message: 'statement timeout' } } }) as never,

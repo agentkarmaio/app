@@ -170,6 +170,10 @@ export interface IndependenceBlock {
   reciprocalPayerCount: number;
   /** Share of this wallet's outbound rows that carry a payee. Drives the verdict gate. */
   coverage: number;
+  /** How many payment records this reading was computed over — the denominator
+   *  behind `payerCount`, so a consumer can weigh a 2-payment verdict against a
+   *  200-payment one. */
+  observedPayments: number;
   /** True when a read hit its window — the figures are a recent sample, not all history. */
   windowed: boolean;
   /**
@@ -403,14 +407,20 @@ export function buildIndependenceBlock(
 ): IndependenceBlock | null {
   if (flows.outbound.length === 0 && flows.inbound.length === 0) return null;
   const r = computeReciprocity(flows);
+  const observedPayments =
+    flows.outbound.length + flows.inbound.reduce((sum, row) => sum + row.count, 0);
+  // These are shares of a sampled window, not measurements. Sixteen decimal
+  // places would claim a precision the input does not have.
+  const round = (v: number | null) => (v === null ? null : Math.round(v * 10_000) / 10_000);
   return {
     ...(flows.network ? { network: flows.network } : {}),
-    reciprocalShare: r.reciprocalShare,
-    independentShare: r.independentShare,
+    observedPayments,
+    reciprocalShare: round(r.reciprocalShare),
+    independentShare: round(r.independentShare),
     verdict: r.verdict,
     payerCount: r.payerCount,
     reciprocalPayerCount: r.reciprocalPayerCount,
-    coverage: r.coverage,
+    coverage: round(r.coverage) ?? 0,
     windowed: flows.saturated,
   };
 }
@@ -444,9 +454,17 @@ export function buildExplain(input: ExplainInput): string[] {
   const { provider, txCount } = input;
   const declaredOnly = provider.confidenceBadge === 'declared' && txCount === 0;
 
+  // A wallet can have zero INDEXED receipts and still have observable payment
+  // flow — the normal case on Stellar, where the receipt indexer needs a
+  // facilitator these agents do not use. Saying "no payment receipts" beside an
+  // independence block computed from 91 payments reads as a contradiction, so
+  // name the distinction rather than asserting one half of it.
+  const observed = input.independence?.observedPayments ?? 0;
   out.push(
     declaredOnly
-      ? `Provider score ${provider.score} (${provider.trustTier}), declared; no payment receipts on record, so the score comes from declared metadata only.`
+      ? observed > 0
+        ? `Provider score ${provider.score} (${provider.trustTier}), declared; no receipt-backed payments are indexed for this address, though ${observed} ${plural(observed, 'payment is', 'payments are')} observable on-chain.`
+        : `Provider score ${provider.score} (${provider.trustTier}), declared; no payment receipts on record, so the score comes from declared metadata only.`
       : `Provider score ${provider.score} (${provider.trustTier}), ${provider.confidenceBadge}, from ${txCount} indexed ${plural(txCount, 'transaction', 'transactions')}.`,
   );
   out.push(input.claimed ? 'Claimed by its operator.' : 'Unclaimed by its operator.');

@@ -15,6 +15,7 @@
  * Spec: (design notes, kept out of this repo)
  */
 
+import { unstable_cache } from 'next/cache';
 import { USDC_ISSUER, type StellarNetwork } from '@/config/stellar-x402';
 import type { ReciprocityInput } from '@/scoring/reciprocity';
 
@@ -249,3 +250,28 @@ export async function stellarAccountExists(
   }
   return false;
 }
+
+/**
+ * How long a cached Horizon reading stays fresh.
+ *
+ * Independence moves at the speed of an agent's payment history, not the
+ * request rate, so a minute of staleness costs a consumer nothing while
+ * removing three Horizon round-trips from every repeat read. Matches the
+ * 60-120s window the profile page already uses for its chain reads.
+ */
+export const STELLAR_FLOWS_TTL_SECONDS = 90;
+
+/**
+ * Cached {@link fetchStellarFlows}, keyed by address.
+ *
+ * The uncached function takes an injected transport, which is not serializable,
+ * so the cache wraps a single-argument form. Callers on a request path should
+ * use this; tests and scripts call `fetchStellarFlows` directly with their own
+ * transport.
+ */
+export const fetchStellarFlowsCached = unstable_cache(
+  async (account: string): Promise<StellarFlowsResult | null> => fetchStellarFlows(account),
+  ['stellar-flows'],
+  { revalidate: STELLAR_FLOWS_TTL_SECONDS, tags: ['stellar-flows'] },
+);
+

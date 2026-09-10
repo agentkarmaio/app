@@ -44,7 +44,7 @@ import {
   type FeedbackBlock,
   type DiscoveryBlock,
 } from '@/lib/karma-enrichment';
-import { fetchStellarFlows } from '@/integrations/stellar-flows';
+import { fetchStellarFlowsCached } from '@/integrations/stellar-flows';
 import type {
   Chain,
   ConfidenceBadge,
@@ -303,7 +303,7 @@ export async function resolveKarmaEnrichment(args: {
     // Evidence only — nothing is written, and the block carries the network it
     // came from so a testnet reading can never pass as mainnet.
     try {
-      const live = await fetchStellarFlows(address);
+      const live = await fetchStellarFlowsCached(address);
       if (live) {
         independence =
           buildIndependenceBlock({ ...live.flows, saturated: live.saturated, network: live.network }) ??
