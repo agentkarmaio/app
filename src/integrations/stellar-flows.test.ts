@@ -95,6 +95,34 @@ describe('foldHorizonPayments — attribution', () => {
   });
 });
 
+describe('foldHorizonPayments — a self-swap is not revenue', () => {
+  // A strict-send path payment to oneself is how you trade on the Stellar DEX.
+  // Folded naively it lands in `inbound` keyed to the account itself, and the
+  // account reads as having a paying customer. Three of these on a real mainnet
+  // agent (GC2NIKT6…) moved its verdict from insufficient-data to independent.
+  const selfSwap = (account: string, amount: string) => ({
+    type: 'path_payment_strict_send',
+    created_at: '2026-09-01T00:00:00Z',
+    from: account,
+    to: account,
+    amount,
+    asset_code: 'USDC',
+    asset_issuer: T_ISSUER,
+    source_asset_code: 'XLM',
+  });
+
+  test('a DEX self-swap produces no flow in either direction', () => {
+    const f = foldHorizonPayments([selfSwap(ME, '1.03')], ME, 'testnet');
+    expect(f.inbound).toEqual([]);
+    expect(f.outbound).toEqual([]);
+  });
+
+  test('a real payment alongside a self-swap still counts', () => {
+    const f = foldHorizonPayments([selfSwap(ME, '1.03'), classicPayment(PAYER, ME, '2')], ME, 'testnet');
+    expect(f.inbound).toEqual([{ payer: PAYER, total: 2, count: 1 }]);
+  });
+});
+
 describe('foldHorizonPayments — asset identity (the impersonation guard)', () => {
   test('USDC from the WRONG issuer does not count', () => {
     const impostor = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';

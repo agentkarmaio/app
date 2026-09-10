@@ -27,9 +27,12 @@ import {
   STELLAR_FACILITATOR_SET,
   STELLAR_MPP_RECIPIENTS,
   STELLAR_USDC_DECIMALS,
+  USDC_ISSUER,
+  isStellarAccount,
   isStellarContract,
   type StellarNetwork,
 } from '../config/stellar-x402';
+import { extractUsdcTransfers, type AssetPin } from '@/lib/stellar-horizon-usdc';
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
@@ -39,7 +42,7 @@ import {
   type InsertSignalEventInput,
 } from '../db/client';
 import { buildPayshRoutedSignal } from '../scoring/signals';
-import { resolveHorizonUrl } from './stellar-activity';
+import { resolveHorizonUrl, type HorizonFetch } from './stellar-activity';
 
 // ── Raw RPC event shape (subset of @stellar/stellar-sdk rpc.Api.EventResponse) ─
 export interface RawSorobanEvent {
@@ -385,54 +388,151 @@ export async function runStellarIndexer(
   });
 }
 
+// ─── Horizon backfill ─────────────────────────────────────────────────────────
+
+/**
+ * The two Horizon hosts whose network is knowable from the URL alone. A private
+ * or proxied Horizon is not in here; there the declared network is trusted.
+ */
+const HORIZON_HOSTS: Record<StellarNetwork, string> = {
+  pubnet: 'horizon.stellar.org',
+  testnet: 'horizon-testnet.stellar.org',
+};
+
+/**
+ * Refuse to read one network's Horizon while pinning the other network's USDC
+ * issuer. That combination matches nothing, so it would return zero rows and
+ * exit green — the 2026-08-05 blank-secret failure shape. Fail at the boundary
+ * that knows the cause instead.
+ */
+function assertHorizonServesNetwork(base: string, network: StellarNetwork): void {
+  let host: string;
+  try {
+    host = new URL(base).host;
+  } catch {
+    throw new Error(`Horizon URL is not a valid URL: ${base}`);
+  }
+  for (const candidate of ['pubnet', 'testnet'] as const) {
+    if (host === HORIZON_HOSTS[candidate] && candidate !== network) {
+      throw new Error(
+        `Horizon host ${host} serves ${candidate}, but network is '${network}'. `
+        + `The USDC issuer pin would match nothing and the run would report zero rows.`,
+      );
+    }
+  }
+}
+
+/** Horizon's paging token for one record, or null if the record is unusable. */
+function pagingTokenOf(record: unknown): string | null {
+  if (typeof record !== 'object' || record === null) return null;
+  const token = (record as { paging_token?: unknown }).paging_token;
+  return typeof token === 'string' && token.length > 0 ? token : null;
+}
+
+/** Default transport. Injected in tests; this path never runs in production. */
+const horizonJson: HorizonFetch = async (url) => {
+  const res = await fetch(url, { headers: { accept: 'application/json' } });
+  if (!res.ok) throw new Error(`Horizon backfill failed: ${res.status} ${res.statusText}`);
+  return (await res.json()) as Record<string, unknown>;
+};
+
 /**
  * Horizon backfill fallback (spec §4). For history beyond RPC's ~7-day getEvents
  * window, walk facilitator payments via Horizon REST. Cursor is the Horizon
  * paging_token, stored in last_signature.
+ *
+ * Decoding is delegated to the shared Horizon decoder, so this path sees the
+ * same three USDC-carrying shapes as the live indexer. Before that it matched
+ * `type === 'payment'` only, which discards every Soroban settlement — i.e.
+ * essentially every real Stellar agent payment.
+ *
+ * NOTHING HERE WRITES, and nothing calls it: STELLAR_FACILITATORS is empty, so
+ * the run that would use it is a no-op. Rows and cursor are returned for a
+ * caller to persist.
+ *
+ * Fixes spec: (design notes, kept out of this repo)
+ *
+ * @returns `nextCursor` — the paging token of the last record READ, not of the
+ * last row emitted. A record this filter deliberately skips counts as processed
+ * and is passed, which is correct while the filter is a permanent decision. A
+ * caller that persists this cursor MUST rewind it (delete the cursor row) if the
+ * filter ever widens again: records skipped under the narrower filter sit behind
+ * it and would never be revisited. No rewind was needed for the widening this
+ * function just underwent — `indexer_cursors` holds zero rows for chain
+ * 'stellar' (verified 2026-09-10), because nothing has ever called this.
  */
 export async function backfillFromHorizon(opts: {
   facilitator: string;
+  /** Which network's USDC issuer to pin. Default pubnet, matching runStellarIndexer. */
+  network?: StellarNetwork;
   horizonUrl?: string;
   cursor?: string;
   limit?: number;
+  /** Injected transport. The path is dormant, so DI is the only way to test it. */
+  fetchJson?: HorizonFetch;
 }): Promise<{ rows: Omit<Transaction, 'id'>[]; nextCursor: string | null }> {
+  const network = opts.network ?? 'pubnet';
+
+  // Guard before interpolation — never put an unvalidated string into the URL
+  // (mirrors fetchStellarActivity).
+  if (!isStellarAccount(opts.facilitator)) {
+    throw new Error(`not a Stellar StrKey account address: ${opts.facilitator.slice(0, 12)}…`);
+  }
+
   // Shared resolver: `??` would accept an empty STELLAR_HORIZON_URL (which is
   // what an unset GitHub Actions secret expands to) and build an invalid URL.
   const base = resolveHorizonUrl(opts.horizonUrl);
+  assertHorizonServesNetwork(base, network);
+
   const limit = opts.limit ?? 200;
   const url = new URL(`${base}/accounts/${opts.facilitator}/payments`);
   url.searchParams.set('limit', String(limit));
   url.searchParams.set('order', 'asc');
   if (opts.cursor) url.searchParams.set('cursor', opts.cursor);
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`Horizon backfill failed: ${res.status} ${res.statusText}`);
-  const body = (await res.json()) as {
-    _embedded: { records: Array<{
-      type: string; from?: string; to?: string; amount?: string;
-      transaction_hash: string; created_at: string; paging_token: string;
-      asset_code?: string; transaction_successful?: boolean;
-    }> };
-  };
+  const fetchJson = opts.fetchJson ?? horizonJson;
+  const body = await fetchJson(url.toString());
+  // Records stay `unknown`: the decoder is the thing that knows their shape,
+  // and it skips anything malformed rather than throwing mid-page.
+  const embedded = body._embedded as { records?: unknown } | undefined;
+  const records: unknown[] = Array.isArray(embedded?.records) ? embedded.records : [];
 
-  const records = body._embedded.records;
+  // CODE:ISSUER, never a bare code. Anyone can issue a token coded "USDC"; a
+  // bare-code match would score a stranger's token as Circle's.
+  const pin: AssetPin = { code: 'USDC', issuer: USDC_ISSUER[network] };
+
   const rows: Omit<Transaction, 'id'>[] = [];
-  let nextCursor: string | null = null;
-  for (const r of records) {
-    nextCursor = r.paging_token;
-    if (r.type !== 'payment' || r.asset_code !== 'USDC' || !r.from || !r.amount) continue;
-    rows.push({
-      chain: 'stellar',
-      wallet_address: r.from,
-      facilitator: opts.facilitator,
-      // Payee (`to`) = the scored payer's counterparty, distinct from the
-      // facilitator router (mirrors toTransactionRow).
-      counterparty: r.to ?? null,
-      amount: Number(r.amount),
-      timestamp: r.created_at,
-      success: r.transaction_successful ?? true,
-      tx_signature: r.transaction_hash,
-    });
+  // `transactions.tx_signature` is globally UNIQUE, so at most one row per
+  // transaction can land. One Soroban invocation can carry several USDC legs;
+  // emitting all of them would overstate what a caller could persist. First
+  // leg wins, mirroring stellarTransfersIndexer's run-level seenTxHashes.
+  const seenTxHashes = new Set<string>();
+  let lastProcessedToken: string | null = null;
+
+  for (const record of records) {
+    // Processed — whether or not it produced a row. See the @returns note.
+    lastProcessedToken = pagingTokenOf(record) ?? lastProcessedToken;
+
+    // Self-movements (a DEX self-swap, a self-transfer) never reach here: the
+    // decoder drops them, so no row carries a null-normalizing counterparty.
+    for (const transfer of extractUsdcTransfers(record, pin)) {
+      if (seenTxHashes.has(transfer.txHash)) continue;
+      seenTxHashes.add(transfer.txHash);
+
+      rows.push({
+        chain: 'stellar',
+        wallet_address: transfer.from,
+        // Payee (`to`) = the scored payer's counterparty, distinct from the
+        // facilitator router (mirrors toTransactionRow).
+        counterparty: transfer.to,
+        facilitator: opts.facilitator,
+        amount: transfer.amount,
+        timestamp: transfer.createdAt,
+        success: transfer.successful,
+        tx_signature: transfer.txHash,
+      });
+    }
   }
-  return { rows, nextCursor };
+
+  return { rows, nextCursor: lastProcessedToken };
 }

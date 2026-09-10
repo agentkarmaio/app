@@ -47,6 +47,12 @@ import {
   type InsertSignalEventInput,
 } from '@/db/client';
 import { withConcurrency } from '@/lib/concurrency';
+import {
+  extractUsdcTransfers,
+  type AssetPin,
+  type HorizonPaymentRecord,
+  type StellarUsdcTransfer,
+} from '@/lib/stellar-horizon-usdc';
 import { buildUsdcTransferSignal } from '@/scoring/signals';
 import { isHorizonNotFound, resolveHorizonUrl } from './stellar-activity';
 
@@ -65,122 +71,20 @@ export const ADDRESS_CONCURRENCY = 4;
 export const STELLAR_RUN_TIME_BUDGET_MS = 120_000;
 
 // ─── Horizon record shapes ────────────────────────────────────────────────────
+//
+// The record shapes and the USDC decoder live in @/lib/stellar-horizon-usdc:
+// the x402 Horizon backfill and the read-time independence signal decode the
+// same three shapes against the same issuer pin, and three copies of that
+// decision is exactly how one of them ends up dropping every Soroban
+// settlement. Re-exported here so this module's surface is unchanged.
 
-/**
- * One entry of `invoke_host_function.asset_balance_changes`. This is where a
- * Soroban SAC transfer actually lives — the enclosing record carries no
- * from/to, which is why a `type === 'payment'` filter drops every Soroban
- * settlement (the latent bug in backfillFromHorizon).
- */
-export interface HorizonBalanceChange {
-  type: string;
-  from?: string;
-  to?: string;
-  amount?: string;
-  asset_type?: string;
-  asset_code?: string;
-  asset_issuer?: string;
-}
-
-/** A record from `GET /accounts/{G…}/payments`. */
-export interface HorizonPaymentRecord {
-  id: string;
-  paging_token: string;
-  transaction_successful: boolean;
-  source_account: string;
-  type: string;
-  created_at: string;
-  transaction_hash: string;
-  // classic payment / path payment
-  asset_type?: string;
-  asset_code?: string;
-  asset_issuer?: string;
-  source_asset_code?: string;
-  source_asset_issuer?: string;
-  from?: string;
-  to?: string;
-  amount?: string;
-  // Soroban
-  asset_balance_changes?: HorizonBalanceChange[];
-}
-
-/** A decoded USDC value movement, independent of which record shape carried it. */
-export interface StellarUsdcTransfer {
-  from: string;
-  to: string;
-  amount: number;
-  txHash: string;
-  pagingToken: string;
-  createdAt: string;
-  successful: boolean;
-}
-
-/** The asset to match, pinned as code + issuer. Never a bare code. */
-export interface AssetPin {
-  code: string;
-  issuer: string;
-}
-
-function assetMatches(pin: AssetPin, code: string | undefined, issuer: string | undefined): boolean {
-  return code === pin.code && issuer === pin.issuer;
-}
-
-/** Horizon amounts are decimal strings ("0.5000000"). Non-finite → 0, which is dropped. */
-function parseAmount(raw: string | undefined): number {
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : 0;
-}
-
-/**
- * Pure: decode every issuer-pinned USDC transfer carried by one Horizon record.
- *
- * Handles the three shapes that actually carry USDC (all three confirmed
- * against mainnet):
- *   1. classic `payment`               — from/to/amount on the record
- *   2. `path_payment_strict_send|receive` — matched on the DESTINATION asset;
- *      `amount` is the destination amount, so `to` really did receive that USDC
- *   3. `invoke_host_function`          — transfers live in asset_balance_changes
- *
- * Returns [] for anything else (create_account, manage_data, a mint/burn
- * balance change, a non-USDC asset, a USDC-coded token from another issuer).
- */
-export function extractUsdcTransfers(
-  record: HorizonPaymentRecord,
-  pin: AssetPin,
-): StellarUsdcTransfer[] {
-  const base = {
-    txHash: record.transaction_hash,
-    pagingToken: record.paging_token,
-    createdAt: record.created_at,
-    successful: record.transaction_successful,
-  };
-  const out: StellarUsdcTransfer[] = [];
-
-  // Soroban: the record itself has no from/to.
-  for (const change of record.asset_balance_changes ?? []) {
-    if (change.type !== 'transfer') continue;
-    if (!assetMatches(pin, change.asset_code, change.asset_issuer)) continue;
-    if (!change.from || !change.to) continue;
-    const amount = parseAmount(change.amount);
-    if (amount <= 0) continue;
-    out.push({ from: change.from, to: change.to, amount, ...base });
-  }
-
-  // Classic payment + path payment (destination asset).
-  const isClassicValueOp =
-    record.type === 'payment' ||
-    record.type === 'path_payment_strict_send' ||
-    record.type === 'path_payment_strict_receive';
-
-  if (isClassicValueOp && assetMatches(pin, record.asset_code, record.asset_issuer)) {
-    const amount = parseAmount(record.amount);
-    if (record.from && record.to && amount > 0) {
-      out.push({ from: record.from, to: record.to, amount, ...base });
-    }
-  }
-
-  return out;
-}
+export {
+  extractUsdcTransfers,
+  type AssetPin,
+  type HorizonBalanceChange,
+  type HorizonPaymentRecord,
+  type StellarUsdcTransfer,
+} from '@/lib/stellar-horizon-usdc';
 
 /**
  * Pure: map a transfer to an AK `transactions` row.
@@ -428,10 +332,9 @@ async function walkAddress(
       // Processed — whether or not it produced a row.
       lastProcessedToken = record.paging_token;
 
+      // Self-movements never reach here: extractUsdcTransfers drops them, so
+      // no row can carry a counterparty that normalizes to null.
       for (const transfer of extractUsdcTransfers(record, deps.asset)) {
-        // Self-transfer: normalizeCounterparty() would null the counterparty,
-        // producing exactly the row that degrades the independence read.
-        if (transfer.from === transfer.to) continue;
         // Seed scope. Not redundant with the per-account feed: a Soroban invoke
         // can carry legs between two third parties.
         if (!deps.seed.has(transfer.from) && !deps.seed.has(transfer.to)) continue;

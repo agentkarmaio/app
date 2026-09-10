@@ -17,6 +17,7 @@
 
 import { unstable_cache } from 'next/cache';
 import { USDC_ISSUER, type StellarNetwork } from '@/config/stellar-x402';
+import { extractUsdcTransfers, type AssetPin } from '@/lib/stellar-horizon-usdc';
 import type { ReciprocityInput } from '@/scoring/reciprocity';
 
 /** Re-exported for convenience; the single definition lives in the chain config. */
@@ -68,82 +69,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-/** Finite and positive, or it does not contribute. */
-function usableAmount(raw: unknown): number {
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : 0;
-}
-
-/** One side-of-payment entry, normalized across the classic and Soroban shapes. */
-interface Movement {
-  from: unknown;
-  to: unknown;
-  amount: unknown;
-  code: unknown;
-  issuer: unknown;
-}
-
-/**
- * Horizon renders the two payment shapes differently:
- *   - a classic `payment` op carries from/to/amount/asset_* on the record itself
- *   - a Soroban SAC transfer is an `invoke_host_function` op whose
- *     `asset_balance_changes` entries each carry their own from/to/asset_*
- * Both reduce to the same movement.
- */
-function movementsOf(record: unknown): Movement[] {
-  if (!isRecord(record)) return [];
-  const out: Movement[] = [];
-
-  const changes = record.asset_balance_changes;
-  if (Array.isArray(changes)) {
-    for (const c of changes) {
-      if (!isRecord(c)) continue;
-      out.push({ from: c.from, to: c.to, amount: c.amount, code: c.asset_code, issuer: c.asset_issuer });
-    }
-  }
-
-  if (record.type === 'payment') {
-    out.push({
-      from: record.from,
-      to: record.to,
-      amount: record.amount,
-      code: record.asset_code,
-      issuer: record.asset_issuer,
-    });
-  }
-
-  return out;
-}
-
 /**
  * Fold Horizon payment records into reciprocity flows for one account.
  *
- * Pure. Anything unrecognized — a malformed record, another asset, the wrong
- * issuer, a transfer between two third parties — is skipped rather than guessed
- * at. Stellar StrKey is case-sensitive, so addresses are compared verbatim.
+ * Pure. Decoding is delegated to the shared Horizon decoder, so this signal
+ * reads exactly the same three record shapes, against exactly the same issuer
+ * pin, as the two indexer paths — a divergence here would mean an agent's
+ * independence verdict disagreed with its own indexed history.
+ *
+ * Anything unrecognized — a malformed record, another asset, the wrong issuer,
+ * a transfer between two third parties — is skipped rather than guessed at.
+ * Stellar StrKey is case-sensitive, so addresses are compared verbatim.
  */
 export function foldHorizonPayments(
   records: readonly unknown[],
   account: string,
   network: StellarNetwork,
 ): StellarFlows {
-  const issuer = USDC_ISSUER[network];
+  const pin: AssetPin = { code: 'USDC', issuer: USDC_ISSUER[network] };
   const outbound: StellarFlows['outbound'] = [];
   const byPayer = new Map<string, { payer: string; total: number; count: number }>();
 
   for (const record of records) {
-    for (const m of movementsOf(record)) {
-      if (m.code !== 'USDC' || m.issuer !== issuer) continue;
-      const amount = usableAmount(m.amount);
-      if (amount === 0) continue;
-
-      if (m.to === account && typeof m.from === 'string') {
-        const entry = byPayer.get(m.from) ?? { payer: m.from, total: 0, count: 0 };
-        entry.total += amount;
+    for (const transfer of extractUsdcTransfers(record, pin)) {
+      if (transfer.to === account) {
+        const entry = byPayer.get(transfer.from) ?? { payer: transfer.from, total: 0, count: 0 };
+        entry.total += transfer.amount;
         entry.count += 1;
-        byPayer.set(m.from, entry);
-      } else if (m.from === account && typeof m.to === 'string') {
-        outbound.push({ counterparty: m.to, amount });
+        byPayer.set(transfer.from, entry);
+      } else if (transfer.from === account) {
+        outbound.push({ counterparty: transfer.to, amount: transfer.amount });
       }
     }
   }

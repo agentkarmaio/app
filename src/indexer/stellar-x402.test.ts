@@ -17,10 +17,11 @@ import {
   attributeTransfer,
   toTransactionRow,
   stellarReceiptIndexer,
+  backfillFromHorizon,
   type RawSorobanEvent,
   type StellarTransferEvent,
 } from './stellar-x402';
-import { USDC_SAC } from '../config/stellar-x402';
+import { USDC_ISSUER, USDC_SAC } from '../config/stellar-x402';
 import type { Transaction } from '../db/schema';
 
 // ── Fixture addresses — real StrKey, generated inline (Correction C5). ────────
@@ -313,5 +314,184 @@ describe('stellarReceiptIndexer — runtime integration', () => {
   test.skip('end-to-end against live Soroban RPC + Supabase', async () => {
     // integration: requires STELLAR_RPC_URL + seeded STELLAR_FACILITATORS + DB.
     // const res = await runStellarIndexer();
+  });
+});
+
+// ─── Horizon backfill ─────────────────────────────────────────────────────────
+//
+// This path cannot be verified end-to-end: STELLAR_FACILITATORS is empty, so
+// the indexer that would call it is a no-op. DI transport is the bar, mirroring
+// stellar-transfers.test.ts.
+//
+// Spec: (design notes, kept out of this repo)
+
+const HORIZON_ISSUER = USDC_ISSUER.pubnet;
+const PAYER = seededAccount(5);
+const PAYEE = seededAccount(6);
+const THIRD = seededAccount(7);
+const NOT_CIRCLE = seededAccount(8);
+
+/** Horizon record base. Every field Horizon actually sends on /payments. */
+function record(fields: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: '274824030874775553',
+    paging_token: '274824030874775553',
+    transaction_successful: true,
+    source_account: FACILITATOR,
+    created_at: '2026-08-17T00:10:59Z',
+    transaction_hash: 'aa11',
+    ...fields,
+  };
+}
+
+const classic = (fields: Record<string, unknown> = {}) => record({
+  type: 'payment', from: PAYER, to: PAYEE, amount: '1.5',
+  asset_code: 'USDC', asset_issuer: HORIZON_ISSUER, ...fields,
+});
+
+const soroban = (changes: Array<Record<string, unknown>>, fields: Record<string, unknown> = {}) =>
+  record({ type: 'invoke_host_function', asset_balance_changes: changes, ...fields });
+
+const transferLeg = (from: string, to: string, amount: string, issuer = HORIZON_ISSUER) => ({
+  type: 'transfer', from, to, amount, asset_code: 'USDC', asset_issuer: issuer,
+});
+
+/** Injected Horizon: serves one page, records every URL it is asked for. */
+function fakeHorizon(records: Array<Record<string, unknown>>) {
+  const urls: string[] = [];
+  return {
+    urls,
+    fetchJson: async (url: string) => { urls.push(url); return { _embedded: { records } }; },
+  };
+}
+
+describe('backfillFromHorizon — shapes that carry USDC (defect 1)', () => {
+  test('a Soroban invoke_host_function settlement is a row, not a skip', async () => {
+    const h = fakeHorizon([soroban([transferLeg(PAYER, PAYEE, '0.01')])]);
+    const { rows } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].wallet_address).toBe(PAYER);
+    expect(rows[0].counterparty).toBe(PAYEE);
+    expect(rows[0].amount).toBe(0.01);
+  });
+
+  test('a path payment counts on its destination asset', async () => {
+    const h = fakeHorizon([classic({ type: 'path_payment_strict_send', amount: '3' })]);
+    const { rows } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows.map((r) => r.amount)).toEqual([3]);
+  });
+
+  test('a classic payment still lands (no regression on the shape that worked)', async () => {
+    const h = fakeHorizon([classic()]);
+    const { rows } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows).toHaveLength(1);
+  });
+
+  test('row maps to the AK transactions schema, facilitator = the walked account', async () => {
+    const h = fakeHorizon([classic({ transaction_successful: false })]);
+    const { rows } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows[0]).toEqual({
+      chain: 'stellar',
+      wallet_address: PAYER,
+      facilitator: FACILITATOR,
+      counterparty: PAYEE,
+      amount: 1.5,
+      timestamp: '2026-08-17T00:10:59Z',
+      success: false,
+      tx_signature: 'aa11',
+    });
+  });
+});
+
+describe('backfillFromHorizon — asset identity (defect 2)', () => {
+  test('a token coded USDC from another issuer is not USDC', async () => {
+    const h = fakeHorizon([classic({ asset_issuer: NOT_CIRCLE })]);
+    const { rows } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows).toEqual([]);
+  });
+
+  test('the testnet issuer does not match while reading pubnet', async () => {
+    const h = fakeHorizon([soroban([transferLeg(PAYER, PAYEE, '5', USDC_ISSUER.testnet)])]);
+    const { rows } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows).toEqual([]);
+  });
+
+  test('reading testnet pins the testnet issuer', async () => {
+    const h = fakeHorizon([soroban([transferLeg(PAYER, PAYEE, '5', USDC_ISSUER.testnet)])]);
+    const { rows } = await backfillFromHorizon({
+      facilitator: FACILITATOR, network: 'testnet',
+      horizonUrl: 'https://horizon-testnet.stellar.org', fetchJson: h.fetchJson,
+    });
+    expect(rows).toHaveLength(1);
+  });
+
+  test('a declared network contradicting a known Horizon host throws rather than returning nothing', async () => {
+    const h = fakeHorizon([]);
+    await expect(backfillFromHorizon({
+      facilitator: FACILITATOR, network: 'pubnet',
+      horizonUrl: 'https://horizon-testnet.stellar.org', fetchJson: h.fetchJson,
+    })).rejects.toThrow(/network/i);
+    expect(h.urls).toEqual([]);
+  });
+});
+
+describe('backfillFromHorizon — what a row must not be', () => {
+  test('a multi-leg record yields ONE row: tx_signature is globally unique', async () => {
+    const h = fakeHorizon([
+      soroban([transferLeg(PAYER, PAYEE, '1'), transferLeg(PAYEE, THIRD, '2')]),
+    ]);
+    const { rows } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amount).toBe(1);
+  });
+
+  test('two records sharing a tx hash collapse to one row', async () => {
+    const h = fakeHorizon([classic(), classic({ paging_token: '2', amount: '9' })]);
+    const { rows } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows).toHaveLength(1);
+  });
+
+  test('a self-transfer is dropped — its counterparty would normalize to null', async () => {
+    const h = fakeHorizon([classic({ to: PAYER })]);
+    const { rows } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows).toEqual([]);
+  });
+
+  test('a facilitator that is not a G… account throws before any request', async () => {
+    const h = fakeHorizon([]);
+    await expect(backfillFromHorizon({ facilitator: '../../evil', fetchJson: h.fetchJson }))
+      .rejects.toThrow();
+    expect(h.urls).toEqual([]);
+  });
+});
+
+describe('backfillFromHorizon — cursor (defect 3)', () => {
+  test('nextCursor is the last record READ, including records the filter skipped', async () => {
+    // The documented contract: a skipped record counts as processed. A caller
+    // persisting this must rewind if the filter ever widens again.
+    const h = fakeHorizon([
+      classic(),
+      record({ type: 'create_account', paging_token: '999' }),
+    ]);
+    const { rows, nextCursor } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows).toHaveLength(1);
+    expect(nextCursor).toBe('999');
+  });
+
+  test('an empty page moves no cursor', async () => {
+    const h = fakeHorizon([]);
+    const { rows, nextCursor } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows).toEqual([]);
+    expect(nextCursor).toBeNull();
+  });
+
+  test('a supplied cursor resumes the walk in ascending order', async () => {
+    const h = fakeHorizon([]);
+    await backfillFromHorizon({ facilitator: FACILITATOR, cursor: '4242', limit: 50, fetchJson: h.fetchJson });
+    const url = new URL(h.urls[0]);
+    expect(url.pathname).toBe(`/accounts/${FACILITATOR}/payments`);
+    expect(url.searchParams.get('cursor')).toBe('4242');
+    expect(url.searchParams.get('order')).toBe('asc');
+    expect(url.searchParams.get('limit')).toBe('50');
   });
 });
