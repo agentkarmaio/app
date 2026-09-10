@@ -352,3 +352,61 @@ describe('recoverFacilitatorGap retries unresolved signatures before giving up',
     expect(advanced).not.toContain('s1'); // never claims the top
   });
 });
+
+// Recovering receipts that never reach scoring changes nothing a user can see.
+// The first live run ingested 2,222 rows and moved zero karma scores, because
+// nothing marked their payers dirty — the same wiring wallet-scan has had all
+// along (wallet-scan.ts:300).
+describe('recoverFacilitatorGap marks recovered payers for rescoring', () => {
+  const ADDR = 'Faci1itator22222222222222222222222222222222';
+  const history = ['s1', 's2', 's3', 's4', CURSOR];
+
+  function depsWithPayers(over: Partial<GapRecoveryDeps> = {}) {
+    const dirty: string[][] = [];
+    const base: GapRecoveryDeps = {
+      fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
+      parseBatch: async (sigs) => ({
+        transactions: sigs.map((signature) => ({ signature }) as never),
+        requested: sigs.length, unresolved: [], undecodable: 0, recoveredFromArchive: 0,
+      }),
+      // Two distinct payers, alternating across the gap.
+      extract: (tx) => {
+        const sig = (tx as { signature: string }).signature;
+        return { tx_signature: sig, wallet_address: sig === 's1' ? 'payerB' : 'payerA' } as never;
+      },
+      persist: async (rows) => rows.length,
+      markDirty: async (addrs) => { dirty.push(addrs); },
+      advanceCursor: async () => {},
+      ...over,
+    };
+    return { base, dirty };
+  }
+
+  test('marks the distinct payers behind the recovered rows', async () => {
+    const { base, dirty } = depsWithPayers();
+    await recoverFacilitatorGap(ADDR, CURSOR, base, { batchSize: 10 });
+
+    const all = new Set(dirty.flat());
+    expect(all.has('payerA')).toBe(true);
+    expect(all.has('payerB')).toBe(true);
+  });
+
+  test('deduplicates within a batch — one entry per payer, not one per row', async () => {
+    const { base, dirty } = depsWithPayers();
+    await recoverFacilitatorGap(ADDR, CURSOR, base, { batchSize: 10 });
+
+    for (const batch of dirty) expect(batch.length).toBe(new Set(batch).size);
+  });
+
+  test('a dry run marks nothing', async () => {
+    const { base, dirty } = depsWithPayers();
+    await recoverFacilitatorGap(ADDR, CURSOR, base, { dryRun: true });
+    expect(dirty).toEqual([]);
+  });
+
+  test('nothing extracted → nothing marked', async () => {
+    const { base, dirty } = depsWithPayers({ extract: () => null });
+    await recoverFacilitatorGap(ADDR, CURSOR, base, { batchSize: 10 });
+    expect(dirty).toEqual([]);
+  });
+});

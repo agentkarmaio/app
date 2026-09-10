@@ -37,6 +37,7 @@ import {
   upsertCursor,
   insertTransactions,
   ensureWalletsExist,
+  markWalletsDirty,
 } from '../src/db/client';
 import { parseTransactionsBatch, extractX402Payment, getArchiveRpcUrl } from '../src/indexer/helius';
 import { recoverFacilitatorGap } from '../src/indexer/facilitator-gap';
@@ -93,6 +94,7 @@ for (const address of addresses) {
         await ensureWalletsExist([...new Set(rows.map((r) => r.wallet_address))]);
         return insertTransactions(rows);
       },
+      markDirty: (addrs) => markWalletsDirty(addrs),
       advanceCursor: async (a, s) => { await upsertCursor(a, s); },
     }, { maxSignatures, dryRun: !write });
   } catch (err) {

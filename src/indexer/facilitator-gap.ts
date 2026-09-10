@@ -75,6 +75,12 @@ export interface GapRecoveryDeps {
   extract: (tx: HeliusEnhancedTransaction, facilitator: string) => Omit<Transaction, 'id'> | null;
   /** Committed per batch, so a killed run keeps the progress it made. */
   persist: (rows: Omit<Transaction, 'id'>[]) => Promise<number>;
+  /**
+   * Queue the recovered payers for rescoring. Without this the receipts land and
+   * no karma moves — which is what the first live run did: 2,222 rows ingested,
+   * zero scores changed. Same wiring wallet-scan already has.
+   */
+  markDirty?: (addresses: string[]) => Promise<void>;
   /** Advance the cursor. Called ONLY on a complete, fully-resolved recovery. */
   advanceCursor?: (address: string, signature: string) => Promise<void>;
 }
@@ -156,7 +162,13 @@ export async function recoverFacilitatorGap(
       if (payment) rows.push(payment);
     }
     result.extracted += rows.length;
-    if (rows.length > 0) result.inserted += await deps.persist(rows);
+    if (rows.length > 0) {
+      result.inserted += await deps.persist(rows);
+      // Per batch, like the insert: a killed run leaves the payers it already
+      // recovered queued for scoring rather than silently inert.
+      const payers = [...new Set(rows.map((r) => r.wallet_address).filter(Boolean))];
+      if (payers.length > 0 && deps.markDirty) await deps.markDirty(payers);
+    }
     return parsed.unresolved;
   };
 
