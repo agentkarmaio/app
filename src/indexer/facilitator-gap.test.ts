@@ -233,17 +233,15 @@ describe('recoverFacilitatorGap resumability', () => {
     // it would strand the unresolved signature exactly like the original bug.
     const history = ['s1', 's2', 's3', 's4', CURSOR];
     const advanced: string[] = [];
-    let batchNo = 0;
+    // PERSISTENT miss — one that survives the retry pass. A transient miss is a
+    // different case and is covered below: it must NOT cost the run its prefix.
     const r = await recoverFacilitatorGap(ADDR, CURSOR, {
       fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
-      parseBatch: async (sigs) => {
-        batchNo++;
-        return {
-          transactions: [], requested: sigs.length,
-          unresolved: batchNo === 2 ? [sigs[0]] : [],
-          undecodable: 0, recoveredFromArchive: 0,
-        };
-      },
+      parseBatch: async (sigs) => ({
+        transactions: [], requested: sigs.length,
+        unresolved: sigs.includes('s1') ? ['s1'] : [],
+        undecodable: 0, recoveredFromArchive: 0,
+      }),
       extract: () => null,
       persist: async () => 0,
       advanceCursor: async (_a, s) => { advanced.push(s); },
@@ -252,6 +250,7 @@ describe('recoverFacilitatorGap resumability', () => {
     expect(advanced).toEqual(['s3']); // first batch only
     expect(r.cursorAdvanced).toBe(true);
     expect(r.complete).toBe(false);
+    expect(advanced).not.toContain('s1'); // never claims the top
   });
 
   test('a CAPPED walk never advances, even per batch', async () => {
@@ -273,5 +272,83 @@ describe('recoverFacilitatorGap resumability', () => {
     expect(r.capped).toBe(true);
     expect(advanced).toEqual([]);
     expect(r.cursorAdvanced).toBe(false);
+  });
+});
+
+// Observed on the first real run (2026-09-10): 10 transient archive 429s across
+// 2,656 signatures, the FIRST of them in batch 3 of ~107. Under the
+// prefix rule that froze the cursor 50 signatures in and kept it frozen for the
+// remaining ~2,600 — so the whole walk had to be redone. One flaky call must not
+// cost the run its resumability when a retry would have resolved it.
+describe('recoverFacilitatorGap retries unresolved signatures before giving up', () => {
+  const ADDR = 'Faci1itator22222222222222222222222222222222';
+  const history = ['s1', 's2', 's3', 's4', CURSOR];
+
+  test('a transient miss that resolves on retry still completes and reaches the top', async () => {
+    let seen = 0;
+    const advanced: string[] = [];
+    const r = await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
+      parseBatch: async (sigs) => {
+        seen++;
+        // s4 (the oldest, ingested first) misses once, then succeeds on retry.
+        const miss = seen === 1 && sigs.includes('s4');
+        return {
+          transactions: sigs.filter((x) => !(miss && x === 's4')).map((signature) => ({ signature }) as never),
+          requested: sigs.length,
+          unresolved: miss ? ['s4'] : [],
+          undecodable: 0, recoveredFromArchive: 0,
+        };
+      },
+      extract: (tx) => ({ tx_signature: (tx as { signature: string }).signature }) as never,
+      persist: async (rows) => rows.length,
+      advanceCursor: async (_a, s) => { advanced.push(s); },
+    }, { batchSize: 2 });
+
+    expect(r.unresolved).toBe(0);       // the retry cleared it
+    expect(r.complete).toBe(true);
+    expect(advanced.at(-1)).toBe('s1'); // cursor reached the top of the gap
+  });
+
+  test('the retry INGESTS what it recovers, it does not just clear the counter', async () => {
+    let seen = 0;
+    const persisted: string[] = [];
+    await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
+      parseBatch: async (sigs) => {
+        seen++;
+        const miss = seen === 1 && sigs.includes('s4');
+        return {
+          transactions: sigs.filter((x) => !(miss && x === 's4')).map((signature) => ({ signature }) as never),
+          requested: sigs.length, unresolved: miss ? ['s4'] : [],
+          undecodable: 0, recoveredFromArchive: 0,
+        };
+      },
+      extract: (tx) => ({ tx_signature: (tx as { signature: string }).signature }) as never,
+      persist: async (rows) => { persisted.push(...rows.map((x) => x.tx_signature)); return rows.length; },
+      advanceCursor: async () => {},
+    }, { batchSize: 2 });
+
+    expect(persisted).toContain('s4');
+  });
+
+  test('a signature that fails BOTH times stays unresolved and blocks completion', async () => {
+    const advanced: string[] = [];
+    const r = await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
+      parseBatch: async (sigs) => ({
+        transactions: sigs.filter((x) => x !== 's4').map((signature) => ({ signature }) as never),
+        requested: sigs.length,
+        unresolved: sigs.includes('s4') ? ['s4'] : [],
+        undecodable: 0, recoveredFromArchive: 0,
+      }),
+      extract: (tx) => ({ tx_signature: (tx as { signature: string }).signature }) as never,
+      persist: async (rows) => rows.length,
+      advanceCursor: async (_a, s) => { advanced.push(s); },
+    }, { batchSize: 2 });
+
+    expect(r.unresolved).toBe(1);
+    expect(r.complete).toBe(false);
+    expect(advanced).not.toContain('s1'); // never claims the top
   });
 });

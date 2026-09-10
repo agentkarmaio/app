@@ -144,13 +144,12 @@ export async function recoverFacilitatorGap(
   // new place.
   const batchSize = opts.batchSize ?? RECOVERY_BATCH;
   let prefixIntact = !capped;
+  let lastAdvanced: string | null = null;
+  const missed: string[] = [];
 
-  for (let i = 0; i < ordered.length; i += batchSize) {
-    const batch = ordered.slice(i, i + batchSize);
+  /** Decode a batch, extract, persist. Returns what no endpoint could serve. */
+  const ingest = async (batch: string[]): Promise<string[]> => {
     const parsed = await deps.parseBatch(batch);
-    result.scanned += batch.length;
-    result.unresolved += parsed.unresolved.length;
-
     const rows: Omit<Transaction, 'id'>[] = [];
     for (const tx of parsed.transactions) {
       const payment = deps.extract(tx, address);
@@ -158,17 +157,50 @@ export async function recoverFacilitatorGap(
     }
     result.extracted += rows.length;
     if (rows.length > 0) result.inserted += await deps.persist(rows);
+    return parsed.unresolved;
+  };
+
+  for (let i = 0; i < ordered.length; i += batchSize) {
+    const batch = ordered.slice(i, i + batchSize);
+    const unresolved = await ingest(batch);
+    result.scanned += batch.length;
+    missed.push(...unresolved);
 
     // One unresolved signature ends the prefix: everything above it is no longer
     // contiguous with the cursor.
-    if (parsed.unresolved.length > 0) prefixIntact = false;
+    if (unresolved.length > 0) prefixIntact = false;
     if (!prefixIntact || !deps.advanceCursor) continue;
 
     // `ordered` is oldest-first, so the batch's last entry is its newest.
-    await deps.advanceCursor(address, batch[batch.length - 1]);
+    lastAdvanced = batch[batch.length - 1];
+    await deps.advanceCursor(address, lastAdvanced);
     result.cursorAdvanced = true;
   }
 
+  // Second pass over the misses. Measured on the first real run: 10 transient
+  // archive 429s in 2,656 signatures, the first in batch 3 of ~107 — enough to
+  // freeze the cursor for the remaining ~2,600 and force the whole walk to be
+  // redone. Retrying costs one extra call per miss and is what lets a flaky
+  // endpoint still produce a complete run.
+  if (missed.length > 0 && !capped) {
+    const stillMissing: string[] = [];
+    for (let i = 0; i < missed.length; i += batchSize) {
+      stillMissing.push(...(await ingest(missed.slice(i, i + batchSize))));
+    }
+    result.unresolved = stillMissing.length;
+  } else {
+    result.unresolved = missed.length;
+  }
+
   result.complete = !capped && result.unresolved === 0;
+
+  // Everything resolved in the end, so the prefix reaches the top after all —
+  // unless the per-batch advances already got there, in which case repeating the
+  // write would be pure noise.
+  const top = signatures[0].signature;
+  if (result.complete && deps.advanceCursor && lastAdvanced !== top) {
+    await deps.advanceCursor(address, top);
+    result.cursorAdvanced = true;
+  }
   return result;
 }
