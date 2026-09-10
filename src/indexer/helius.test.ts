@@ -11,7 +11,7 @@
  * Run: bun test src/indexer/helius.test.ts
  */
 
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import type { HeliusEnhancedTransaction } from './helius';
 import { mapParsedTxToEnhanced, extractX402Payment, getIndexerRpcUrl } from './helius';
 import { USDC_MINT } from '../config/facilitators';
@@ -196,23 +196,27 @@ describe('extractX402Payment — counterparty (payee) extraction', () => {
 });
 
 describe('getIndexerRpcUrl', () => {
+  // Restore in a hook, never in trailing statements after the expect: a failing
+  // assertion skips those, and bun runs every test file in ONE process, so the
+  // fakes below would leak into whichever file happens to run next.
+  const savedSol = process.env.SOLANA_RPC_URL;
+  const savedHel = process.env.HELIUS_RPC_URL;
+  afterEach(() => {
+    if (savedSol === undefined) delete process.env.SOLANA_RPC_URL;
+    else process.env.SOLANA_RPC_URL = savedSol;
+    if (savedHel === undefined) delete process.env.HELIUS_RPC_URL;
+    else process.env.HELIUS_RPC_URL = savedHel;
+  });
+
   test('falls back to public mainnet-beta when no RPC env is set', () => {
-    const prevSol = process.env.SOLANA_RPC_URL;
-    const prevHel = process.env.HELIUS_RPC_URL;
     delete process.env.SOLANA_RPC_URL;
     delete process.env.HELIUS_RPC_URL;
     expect(getIndexerRpcUrl()).toBe('https://api.mainnet-beta.solana.com');
-    if (prevSol !== undefined) process.env.SOLANA_RPC_URL = prevSol;
-    if (prevHel !== undefined) process.env.HELIUS_RPC_URL = prevHel;
   });
 
   test('prefers SOLANA_RPC_URL (free RPC) over Helius', () => {
-    const prevSol = process.env.SOLANA_RPC_URL;
-    const prevHel = process.env.HELIUS_RPC_URL;
     process.env.SOLANA_RPC_URL = 'https://free.example/rpc';
     process.env.HELIUS_RPC_URL = 'https://helius/?api-key=k';
     expect(getIndexerRpcUrl()).toBe('https://free.example/rpc');
-    if (prevSol !== undefined) process.env.SOLANA_RPC_URL = prevSol; else delete process.env.SOLANA_RPC_URL;
-    if (prevHel !== undefined) process.env.HELIUS_RPC_URL = prevHel; else delete process.env.HELIUS_RPC_URL;
   });
 });
