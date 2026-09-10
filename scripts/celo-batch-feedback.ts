@@ -36,7 +36,15 @@ import {
   activeSignerAddress,
 } from '../src/integrations/erc8004-celo-publish';
 import { AK_VALIDATOR, isAkRater } from '../src/config/ak-validator';
+import {
+  celoFeeCeilingWei,
+  readCeloFeeAccount,
+  MAX_FEE_CELO,
+  MIN_CELO_BALANCE,
+} from '../src/integrations/erc8004-celo-attest';
+import { ATTEST_MIN_SCORE, isFeeCeilingError } from '../src/lib/attest-policy';
 import { supabase } from '../src/db/client';
+import { formatEther } from 'viem';
 
 const AK_AGENT_ID = BigInt(AK_VALIDATOR.agentId);
 // Scheme tag1/tag2 sourced from the validator config so the on-chain version
@@ -57,7 +65,8 @@ function argVal(name: string, fallback?: string): string | undefined {
   return fallback;
 }
 
-const minScore = Number(argVal('min', '70'));
+const minScore = Number(argVal('min', String(ATTEST_MIN_SCORE)));
+const maxFeeCelo = Number(argVal('max-fee', String(MAX_FEE_CELO)));
 const jitterSec = Number(argVal('jitter', '25'));
 const execute = argFlag('execute');
 const countArg = argVal('count');
@@ -129,6 +138,48 @@ async function sampleCandidates(min: number, count: number): Promise<number[]> {
   return shuffle([...new Set(collected)]).slice(0, count);
 }
 
+console.log(
+  `AK signer: ${AK_SIGNER}${isAkRater(AK_SIGNER) && AK_SIGNER.toLowerCase() === AK_VALIDATOR.validator.toLowerCase() ? ' (dedicated validator)' : ' (treasury/controller)'}`,
+);
+
+// ─── Fee-account preflight ─────────────────────────────────────────────────
+// A drip that cannot pay gas fails on the invisible side, so the balance is
+// read BEFORE any target work. Measured 2026-09-10: ~0.0445 CELO per write.
+const fee = await readCeloFeeAccount(AK_SIGNER, { minCelo: MIN_CELO_BALANCE });
+console.log(`balance: ${fee.celo} CELO (floor ${MIN_CELO_BALANCE})`);
+if (fee.state === 'low') {
+  console.error(
+    `FAILED: signer ${AK_SIGNER} holds ${fee.celo} CELO, below the ${MIN_CELO_BALANCE} CELO floor — ` +
+      `refusing to start a drip that will run dry mid-run. Top it up from the treasury.`,
+  );
+  process.exit(1);
+}
+// The balance says nothing about what THIS write costs; the estimate does.
+const ceilingWei = celoFeeCeilingWei(fee.wei, maxFeeCelo);
+console.log(`fee gate: refuse any write above ${maxFeeCelo} CELO`);
+
+// Coverage — the number a partner actually asks about. Read from the mirror
+// rather than the chain: enumerating raters for 8,695 eligible agents is not a
+// per-run cost worth paying, and the mirror lags by at most one scan.
+const { count: eligibleTotal } = await supabase
+  .from('erc8004_agents')
+  .select('agent_id', { count: 'exact', head: true })
+  .eq('chain', 'celo')
+  .gte('metadata_score', minScore);
+const { data: ratedRows } = await supabase
+  .from('erc8004_feedback')
+  .select('agent_id, client')
+  .eq('chain', 'celo')
+  .eq('tag1', SCHEME_TAG1);
+const ratedCount = new Set(
+  (ratedRows ?? []).filter((r) => isAkRater(String(r.client))).map((r) => Number(r.agent_id)),
+).size;
+console.log(
+  `coverage: ${eligibleTotal ?? 0} eligible (score ≥ ${minScore}) · ` +
+    `${ratedCount} already rated by AK · ${(eligibleTotal ?? 0) - ratedCount} remaining`,
+);
+console.log('');
+
 // ─── Resolve target id list ────────────────────────────────────────────────
 let targets: number[];
 if (countArg !== undefined) {
@@ -138,7 +189,6 @@ if (countArg !== undefined) {
     process.exit(1);
   }
   targets = await sampleCandidates(minScore, count);
-  console.log(`AK signer: ${AK_SIGNER}${isAkRater(AK_SIGNER) && AK_SIGNER.toLowerCase() === AK_VALIDATOR.validator.toLowerCase() ? ' (dedicated validator)' : ' (treasury/controller)'}`);
   console.log(`mode: sample (${targets.length} drawn, min score ${minScore})`);
 } else {
   const from = Number(argVal('from', '2'));
@@ -150,12 +200,10 @@ if (countArg !== undefined) {
   }
   targets = [];
   for (let id = from; id <= to; id++) targets.push(id);
-  console.log(`AK signer: ${AK_SIGNER}${isAkRater(AK_SIGNER) && AK_SIGNER.toLowerCase() === AK_VALIDATOR.validator.toLowerCase() ? ' (dedicated validator)' : ' (treasury/controller)'}`);
   console.log(`mode: range (agentId ${from}..${to}, min score ${minScore})`);
 }
 console.log(`pacing: ${execute ? `${jitterSec}s jitter between writes` : 'n/a (simulate)'}`);
 console.log(`mode: ${execute ? 'EXECUTE' : 'simulate'}`);
-console.log('');
 
 interface Outcome {
   agentId: number;
@@ -236,6 +284,7 @@ for (let t = 0; t < targets.length; t++) {
         feedbackHash: feedbackHashFromJson(assessment),
       },
       execute ? 'execute' : 'simulate',
+      { signer: AK_SIGNER, maxFeeWei: ceilingWei },
     );
 
     if (result.dryRun) {
@@ -258,6 +307,13 @@ for (let t = 0; t < targets.length; t++) {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    if (isFeeCeilingError(err)) {
+      // Network-wide, not this agent's fault — every remaining target would be
+      // refused identically, so stop and say it once.
+      console.log(`fee ${formatEther(BigInt(err.feeUnits))} CELO > ceiling — refusing (nothing signed)`);
+      outcomes.push({ agentId: id, decision: 'error', detail: msg });
+      break;
+    }
     console.log(`error: ${msg.slice(0, 60)}`);
     outcomes.push({ agentId: id, decision: 'error', detail: msg });
   }
@@ -287,4 +343,15 @@ if (rated.length > 0) {
 if (!execute) {
   console.log('');
   console.log('--simulate mode: nothing sent. Re-run with --execute to write feedback.');
+}
+
+// A scheduled drip that errors and exits 0 is indistinguishable from a healthy
+// one that had nothing to do. Expected outcomes (already_rated, unresolved,
+// below_threshold) stay green; real errors page.
+const errored = outcomes.filter((o) => o.decision === 'error');
+if (errored.length > 0) {
+  console.error('');
+  console.error(`FAILED: ${errored.length} target(s) errored:`);
+  for (const o of errored) console.error(`  agent ${o.agentId}: ${o.detail?.slice(0, 160) ?? ''}`);
+  process.exit(1);
 }

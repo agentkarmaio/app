@@ -47,6 +47,7 @@ import {
 } from './stellar-config';
 import { readStellarSummary, AK_TAG2 } from './erc8004-stellar';
 import { AK_STELLAR } from '@/config/ak-validator';
+import { feeCeilingError } from '@/lib/attest-policy';
 
 // ─── Feedback integrity hash (sha256, NOT keccak256) ─────────────────────────
 
@@ -257,17 +258,10 @@ export function classifySendStatus(status: string): 'poll' | 'raise' {
   return status === 'ERROR' ? 'raise' : 'poll';
 }
 
-/** Error raised when the assembled fee exceeds the caller's ceiling. */
-export interface FeeCeilingError extends Error {
-  code: 'fee_ceiling';
-  feeStroops: number;
-  ceilingStroops: number;
-}
-
-/** Branch on the tagged code, never on message text. */
-export function isFeeCeilingError(err: unknown): err is FeeCeilingError {
-  return err instanceof Error && (err as Partial<FeeCeilingError>).code === 'fee_ceiling';
-}
+// The fee-ceiling error shape is shared with the Celo publisher — see
+// src/lib/attest-policy.ts. Re-exported so this module stays the one import
+// a Stellar caller needs.
+export { isFeeCeilingError } from '@/lib/attest-policy';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -326,12 +320,11 @@ export async function publishStellarFeedback(
   // reports green while a real run would be refused, which is precisely the
   // silent failure the preflight exists to prevent.
   if (deps.maxFeeStroops !== undefined && fee > deps.maxFeeStroops) {
-    throw Object.assign(
-      new Error(
-        `fee ceiling exceeded (agent ${input.agentId}): assembled fee ${(fee / 1e7).toFixed(4)} XLM ` +
-          `> ceiling ${(deps.maxFeeStroops / 1e7).toFixed(4)} XLM. Nothing signed, nothing sent.`,
-      ),
-      { code: 'fee_ceiling' as const, feeStroops: fee, ceilingStroops: deps.maxFeeStroops },
+    throw feeCeilingError(
+      `fee ceiling exceeded (agent ${input.agentId}): assembled fee ${(fee / 1e7).toFixed(4)} XLM ` +
+        `> ceiling ${(deps.maxFeeStroops / 1e7).toFixed(4)} XLM. Nothing signed, nothing sent.`,
+      fee,
+      deps.maxFeeStroops,
     );
   }
 

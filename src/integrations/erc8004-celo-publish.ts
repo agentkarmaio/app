@@ -23,6 +23,7 @@ import { celo } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
+import { feeCeilingError } from '@/lib/attest-policy';
 
 export const REPUTATION_REGISTRY_CELO = '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63' as const;
 
@@ -49,6 +50,24 @@ export interface PublishFeedbackResult {
   block?: bigint;
   gasUsed?: bigint;
   estimatedCostCelo?: string;
+  /** Exact estimated cost in wei — what the fee ceiling compares against. */
+  feeWei?: bigint;
+}
+
+export interface PublishFeedbackDeps {
+  /**
+   * Signer address for a SIMULATE-only run, when no private key is available.
+   * viem simulates and estimates gas against an address, so a dry run must not
+   * require the key — that is what lets the scheduled job exercise the whole
+   * path (selection, dedupe, gas estimate) before anyone arms it.
+   */
+  signer?: `0x${string}`;
+  /**
+   * Refuse to sign when the estimated fee exceeds this many wei. Checked in
+   * BOTH modes: a dry run that ignores the fee cannot warn that the cadence
+   * has become unaffordable, which is the whole point of a daily canary.
+   */
+  maxFeeWei?: bigint;
 }
 
 /**
@@ -65,7 +84,19 @@ function resolveKeyfile(): string {
   return resolve('.keys/agentkarma-celo.json');
 }
 
+/**
+ * Load the signing account. Precedence:
+ *   1. CELO_VALIDATOR_PRIVATE_KEY env (0x-prefixed) — the only way a scheduled
+ *      CI run can sign, since it has no keyfile to read.
+ *   2. .keys/*.json (local operator runs).
+ *
+ * An unset GitHub secret arrives as an EMPTY STRING, so the env branch tests
+ * truthiness rather than presence — an empty value falls through to the
+ * keyfile and fails loudly there instead of building a malformed account.
+ */
 function loadKeypair() {
+  const fromEnv = process.env.CELO_VALIDATOR_PRIVATE_KEY;
+  if (fromEnv) return privateKeyToAccount(fromEnv as `0x${string}`);
   const { privateKey } = JSON.parse(readFileSync(resolveKeyfile(), 'utf-8')) as {
     privateKey: `0x${string}`;
   };
@@ -74,6 +105,8 @@ function loadKeypair() {
 
 /** Public address of the wallet that will sign attestations (no key exposure). */
 export function activeSignerAddress(): `0x${string}` {
+  const fromEnv = process.env.CELO_VALIDATOR_PRIVATE_KEY;
+  if (fromEnv) return privateKeyToAccount(fromEnv as `0x${string}`).address;
   const { address } = JSON.parse(readFileSync(resolveKeyfile(), 'utf-8')) as {
     address: `0x${string}`;
   };
@@ -105,8 +138,11 @@ const ZERO_HASH = '0x00000000000000000000000000000000000000000000000000000000000
 export async function publishFeedback(
   input: PublishFeedbackInput,
   mode: 'simulate' | 'execute' = 'simulate',
+  deps: PublishFeedbackDeps = {},
 ): Promise<PublishFeedbackResult> {
-  const account = loadKeypair();
+  // Simulate never signs, so it never needs the key.
+  const account = mode === 'execute' ? loadKeypair() : null;
+  const caller = account ?? deps.signer ?? activeSignerAddress();
   const publicClient = makePublic();
 
   const agentId = BigInt(input.agentId);
@@ -125,7 +161,7 @@ export async function publishFeedback(
   ] as const;
 
   const { request } = await publicClient.simulateContract({
-    account,
+    account: caller,
     address: REPUTATION_REGISTRY_CELO,
     abi: REPUTATION_ABI,
     functionName: 'giveFeedback',
@@ -133,14 +169,27 @@ export async function publishFeedback(
   });
 
   const gas = await publicClient.estimateContractGas({
-    account,
+    account: caller,
     address: REPUTATION_REGISTRY_CELO,
     abi: REPUTATION_ABI,
     functionName: 'giveFeedback',
     args,
   });
   const gasPrice = await publicClient.getGasPrice();
-  const cost = formatEther(gas * gasPrice);
+  const feeWei = gas * gasPrice;
+  const cost = formatEther(feeWei);
+
+  // Last gate before a signature, and it applies to the dry run too: the fee is
+  // a property of network state, so a run that ignores it reports green while a
+  // real write would be refused.
+  if (deps.maxFeeWei !== undefined && feeWei > deps.maxFeeWei) {
+    throw feeCeilingError(
+      `fee ceiling exceeded (agent ${agentId}): estimated ${cost} CELO ` +
+        `> ceiling ${formatEther(deps.maxFeeWei)} CELO. Nothing signed, nothing sent.`,
+      feeWei,
+      deps.maxFeeWei,
+    );
+  }
 
   if (mode === 'simulate') {
     return {
@@ -148,7 +197,11 @@ export async function publishFeedback(
       agentId: agentId.toString(),
       gasUsed: gas,
       estimatedCostCelo: cost,
+      feeWei,
     };
+  }
+  if (!account) {
+    throw new Error('execute mode requires a key (CELO_VALIDATOR_PRIVATE_KEY or .keys/*.json)');
   }
 
   const wallet = makeWallet(account);
@@ -165,5 +218,6 @@ export async function publishFeedback(
     block: receipt.blockNumber,
     gasUsed: receipt.gasUsed,
     estimatedCostCelo: cost,
+    feeWei,
   };
 }

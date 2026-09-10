@@ -24,6 +24,7 @@
     "registry:scan:solana": "bun run src/indexer/solana-registry-run.ts",
     "stellar:behavior": "bun run scripts/stellar-backfill-behavior.ts",
     "stellar:attest": "bun run scripts/stellar-batch-feedback.ts",
+    "celo:attest": "bun run scripts/celo-batch-feedback.ts",
     "registry:scan:incremental": "bun run src/indexer/erc8004-registry-run.ts celo --incremental",
     "feedback:scan": "bun run src/indexer/erc8004-feedback-uri-run.ts",
     "keep-fresh": "bun run src/scripts/keep-fresh.ts",

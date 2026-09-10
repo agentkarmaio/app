@@ -27,14 +27,12 @@
 import type { StellarAgent } from './erc8004-stellar';
 import { resolveHorizonUrl, isHorizonNotFound } from '@/indexer/stellar-activity';
 import { AK_STELLAR } from '@/config/ak-validator';
+import { ATTEST_MIN_SCORE } from '@/lib/attest-policy';
 
 // ─── Policy constants ───────────────────────────────────────────────────────
 
-/**
- * Minimum metadata-quality score AK will publish. Mirrors the Celo drip's
- * `--min 70` default — same rubric, same positive-bias policy.
- */
-export const ATTEST_MIN_SCORE = 70;
+/** Re-exported so Stellar callers keep one import; defined once for all chains. */
+export { ATTEST_MIN_SCORE } from '@/lib/attest-policy';
 
 /**
  * Writes per scheduled run. Small on purpose: the eligible Stellar population

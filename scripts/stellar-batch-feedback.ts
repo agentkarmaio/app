@@ -301,7 +301,7 @@ for (let t = 0; t < targets.length; t++) {
       // Not a transient error and not this agent's fault: the network is
       // charging more than policy allows, so every remaining target would be
       // refused identically. Stop and say so once.
-      console.log(`fee ${(err.feeStroops / 1e7).toFixed(4)} XLM > ceiling — refusing (nothing signed)`);
+      console.log(`fee ${(Number(err.feeUnits) / 1e7).toFixed(4)} XLM > ceiling — refusing (nothing signed)`);
       outcomes.push({ agentId: id, decision: 'error', detail: msg });
       const left = targets.slice(t + 1);
       if (left.length > 0) console.log(`  stopping — ${left.length} target(s) untouched: ${left.join(', ')}`);

@@ -1,0 +1,119 @@
+name: Celo attest
+
+# Gives AgentKarma's Celo attestation drip a running cadence.
+#
+# The Celo ReputationRegistry holds 70 AK metadata attestations against 8,695
+# eligible agents — 0.8% coverage that only moves when someone runs the script
+# by hand. Unlike Stellar's, this pool never exhausts, so a small daily drip
+# compounds indefinitely.
+#
+# Sibling of stellar-attest.yml, and deliberately NOT a shared workflow: the two
+# chains fail differently. Celo gets a receipt and a revert status from viem, so
+# there is no send-blackhole ambiguity to resolve; what it needed instead was a
+# way to sign at all from CI (the key path was keyfile-only until now) and a gas
+# preflight.
+#
+# ARMING — the scheduled run SIMULATES until both are set:
+#
+#   Repository variable  CELO_ATTEST_ENABLED        = true
+#   Repository secret    CELO_VALIDATOR_PRIVATE_KEY = the validator key (0x…)
+#
+# Unarmed, the daily run still exercises the whole path — balance preflight,
+# coverage, stratified sampling, the live already-rated read, and a real
+# eth_estimateGas for every candidate write — and fails loudly if any of it
+# breaks. viem simulates against an address, so no key is needed for that.
+#
+# FUNDING, measured 2026-09-10: one attestation costs ~0.0445 CELO and the
+# dedicated validator wallet (0xf9c6…2F0d) held 0.2596 CELO — about five writes.
+# The run refuses below a 1 CELO floor, so arming this without topping the
+# validator up from the treasury (0xCfc0…5b96, 59.3 CELO) will page on day one
+# rather than half-publish.
+#
+# Concurrency is MANDATORY: two overlapping runs would both sample from the same
+# unrated pool and could rate the same agent twice.
+#
+# Required repo secrets:
+#   NEXT_PUBLIC_SUPABASE_URL   target selection + coverage (registry mirror)
+#   SUPABASE_SERVICE_ROLE_KEY  target selection + coverage
+# Optional repo secrets:
+#   CELO_VALIDATOR_PRIVATE_KEY  signing key — required only once armed
+#   CELO_RPC_URL                RPC override (falls back to viem's Celo default)
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_ALERT_CHAT_ID   failure alerts
+
+on:
+  schedule:
+    - cron: '15 6 * * *' # daily 06:15 UTC — clear of the 05:45 stellar-attest,
+                         # the 05:30 stellar-refresh, the 6h keep-fresh slots
+                         # and the 03:15 solana registry scan.
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: 'Write to Celo mainnet (unchecked = simulate)'
+        type: boolean
+        default: false
+      count:
+        description: 'Max attestations to publish this run'
+        type: string
+        default: '3'
+
+concurrency:
+  group: celo-attest
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/bun-setup
+
+      # The script refuses below the CELO floor, refuses any write above the fee
+      # ceiling before signing, skips AK's own agent and anything it has already
+      # rated, and publishes only at or above the score floor — see
+      # scripts/celo-batch-feedback.ts. A manual dispatch is always explicit: it
+      # executes only when the box is ticked, regardless of the arming variable.
+      - name: Publish metadata-quality attestations
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          CELO_RPC_URL: ${{ secrets.CELO_RPC_URL }}
+          CELO_VALIDATOR_PRIVATE_KEY: ${{ secrets.CELO_VALIDATOR_PRIVATE_KEY }}
+          EVENT: ${{ github.event_name }}
+          ARMED: ${{ vars.CELO_ATTEST_ENABLED }}
+          DISPATCH_EXECUTE: ${{ inputs.execute }}
+          COUNT: ${{ inputs.count }}
+        run: |
+          set -euo pipefail
+          # A dispatch input reaches a shell here, so it is validated rather
+          # than interpolated: an unchecked value like "3 --execute" would arm
+          # a run nobody armed.
+          COUNT="${COUNT:-3}"
+          case "$COUNT" in
+            ''|*[!0-9]*) echo "::error::count must be a positive integer, got '$COUNT'"; exit 1 ;;
+          esac
+          EXEC=""
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            if [ "${DISPATCH_EXECUTE:-false}" = "true" ]; then EXEC="--execute"; fi
+          elif [ "${ARMED:-}" = "true" ]; then
+            EXEC="--execute"
+          else
+            echo "::notice::CELO_ATTEST_ENABLED is not 'true' — simulating. Set the repo variable to arm the drip."
+          fi
+          echo "running: celo-batch-feedback --count $COUNT $EXEC"
+          bun run scripts/celo-batch-feedback.ts --count "$COUNT" $EXEC
+
+      # Reasons this pages: the validator wallet is running dry, gas is priced
+      # out of band, or a target errored. None of them should rot silently —
+      # a drip nobody notices has stopped is the failure this job exists to fix.
+      - name: Page on failure
+        if: failure()
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            🛟 <b>AgentKarma celo-attest FAILED</b>
+            Either the validator wallet cannot pay gas, gas is above the fee ceiling, or a giveFeedback target errored.
+            Celo writes get a receipt, so a failure here means nothing landed — but check the run before re-running.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
