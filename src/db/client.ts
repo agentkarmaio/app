@@ -277,9 +277,41 @@ export function makeEnsureWallets(chain: Chain): (addresses: string[]) => Promis
  */
 const TRANSIENT_PG_CODES = new Set(['57014', '40001', '40P01']);
 
+/**
+ * Transport failures, which never reach Postgres at all.
+ *
+ * `supabase-js` normalises a failed fetch into its own error object with an
+ * EMPTY `code`, so a code-only classifier waves them through. On 2026-09-11
+ * five consecutive `solana-transfers` chunks died that way — none on 57014 —
+ * in a prelude that issues ~1,218 sequential requests. At that volume a
+ * dropped socket is routine, and it is the same "ask again" class as a
+ * cancelled statement.
+ *
+ * An ALLOWLIST, never a catch-all: a blank code with an unrecognised message
+ * is an application error and must still surface on the first attempt, or a
+ * real bug gets four chances to look like flakiness.
+ */
+const TRANSPORT_FAILURE_PATTERNS = [
+  'fetch failed',
+  'operation timed out',
+  'socket connection was closed',
+  'unable to connect',
+  'econnreset',
+  'econnrefused',
+  'etimedout',
+  'eai_again',
+  'network error',
+];
+
 function isTransientDbError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
-  return typeof code === 'string' && TRANSIENT_PG_CODES.has(code);
+  if (typeof code === 'string' && TRANSIENT_PG_CODES.has(code)) return true;
+  // Only when Postgres did NOT answer — a real PG error always carries a code.
+  if (typeof code === 'string' && code !== '') return false;
+  const message = (err as { message?: unknown } | null)?.message;
+  if (typeof message !== 'string') return false;
+  const lower = message.toLowerCase();
+  return TRANSPORT_FAILURE_PATTERNS.some((p) => lower.includes(p));
 }
 
 /**

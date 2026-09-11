@@ -1088,6 +1088,54 @@ describe('withTransientDbRetry', () => {
     }
   });
 
+  test('RETRIES TRANSPORT FAILURES, which carry no postgres code at all', async () => {
+    // Measured 2026-09-11: five consecutive solana-transfers chunks died in a
+    // prelude that makes ~1,218 sequential requests. None was a 57014 — they
+    // were fetch-layer failures that supabase-js normalises into its error
+    // shape with an EMPTY `code`, so a code-only classifier passes them
+    // straight through. At that request volume a transport blip is not an
+    // outage, it is Tuesday.
+    for (const message of [
+      'TimeoutError: The operation timed out.',
+      'Error: The socket connection was closed unexpectedly. For more information, pass `verbose: true`',
+      'Error: Unable to connect. Is the computer able to access the url?',
+      'TypeError: fetch failed',
+      'read ECONNRESET',
+    ]) {
+      let calls = 0;
+      await withTransientDbRetry(async () => {
+        calls++;
+        if (calls === 1) throw { code: '', message, details: '', hint: '' };
+      }, fast);
+      expect(calls).toBe(2);
+    }
+  });
+
+  test('retries a bare thrown Error whose message is a transport failure', async () => {
+    // Not every path goes through supabase-js's error object; an undici/bun
+    // fetch rejection arrives as a plain Error with no `code` property.
+    let calls = 0;
+    await withTransientDbRetry(async () => {
+      calls++;
+      if (calls === 1) throw new Error('fetch failed');
+    }, fast);
+    expect(calls).toBe(2);
+  });
+
+  test('an empty code with an unrecognised message is NOT retried', async () => {
+    // The transport list is an allowlist on purpose. A blank code plus an
+    // application error must still surface on the first attempt, or a real bug
+    // gets four chances to look like flakiness.
+    let calls = 0;
+    await expect(
+      withTransientDbRetry(async () => {
+        calls++;
+        throw { code: '', message: 'row level security policy violated' };
+      }, fast),
+    ).rejects.toMatchObject({ message: 'row level security policy violated' });
+    expect(calls).toBe(1);
+  });
+
   test('never retries a schema or constraint error', async () => {
     let calls = 0;
     await expect(
