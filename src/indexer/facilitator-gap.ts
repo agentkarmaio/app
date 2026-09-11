@@ -194,25 +194,36 @@ export async function recoverFacilitatorGap(
   // freeze the cursor for the remaining ~2,600 and force the whole walk to be
   // redone. Retrying costs one extra call per miss and is what lets a flaky
   // endpoint still produce a complete run.
+  let stillMissing = missed;
   if (missed.length > 0 && !capped) {
-    const stillMissing: string[] = [];
+    const remaining: string[] = [];
     for (let i = 0; i < missed.length; i += batchSize) {
-      stillMissing.push(...(await ingest(missed.slice(i, i + batchSize))));
+      remaining.push(...(await ingest(missed.slice(i, i + batchSize))));
     }
-    result.unresolved = stillMissing.length;
-  } else {
-    result.unresolved = missed.length;
+    stillMissing = remaining;
   }
-
+  result.unresolved = stillMissing.length;
   result.complete = !capped && result.unresolved === 0;
 
-  // Everything resolved in the end, so the prefix reaches the top after all —
-  // unless the per-batch advances already got there, in which case repeating the
-  // write would be pure noise.
-  const top = signatures[0].signature;
-  if (result.complete && deps.advanceCursor && lastAdvanced !== top) {
-    await deps.advanceCursor(address, top);
-    result.cursorAdvanced = true;
+  // Recompute the prefix against what is missing AFTER the retries, not during
+  // the walk. Measured 2026-09-11: retries cleared 115 misses down to 4, yet the
+  // cursor had stopped at the first of the 115 — crediting 650 of 2,606
+  // signatures when nearly all of them had, in the end, resolved.
+  //
+  // Signature granularity, not batch: the prefix ends immediately below the
+  // OLDEST signature still missing. A capped walk is still excluded entirely —
+  // its signatures are not adjacent to the cursor at all.
+  if (!capped && deps.advanceCursor) {
+    const holes = new Set(stillMissing);
+    let prefixEnd = ordered.length - 1;
+    for (let i = 0; i < ordered.length; i++) {
+      if (holes.has(ordered[i])) { prefixEnd = i - 1; break; }
+    }
+    const target = prefixEnd >= 0 ? ordered[prefixEnd] : null;
+    if (target && target !== lastAdvanced) {
+      await deps.advanceCursor(address, target);
+      result.cursorAdvanced = true;
+    }
   }
   return result;
 }

@@ -247,10 +247,13 @@ describe('recoverFacilitatorGap resumability', () => {
       advanceCursor: async (_a, s) => { advanced.push(s); },
     }, { batchSize: 2 });
 
-    expect(advanced).toEqual(['s3']); // first batch only
+    // ordered = s4,s3,s2,s1. The walk freezes at the batch holding s1, then the
+    // post-retry recompute extends the prefix to s2 — the last signature that
+    // actually landed and is still contiguous with the cursor. It stops there.
+    expect(advanced.at(-1)).toBe('s2');
     expect(r.cursorAdvanced).toBe(true);
     expect(r.complete).toBe(false);
-    expect(advanced).not.toContain('s1'); // never claims the top
+    expect(advanced).not.toContain('s1'); // never past the hole
   });
 
   test('a CAPPED walk never advances, even per batch', async () => {
@@ -408,5 +411,76 @@ describe('recoverFacilitatorGap marks recovered payers for rescoring', () => {
     const { base, dirty } = depsWithPayers({ extract: () => null });
     await recoverFacilitatorGap(ADDR, CURSOR, base, { batchSize: 10 });
     expect(dirty).toEqual([]);
+  });
+});
+
+// Observed 2026-09-11: the retry pass cleared 115 main-loop misses down to 4,
+// but the cursor still stopped at the FIRST main-loop miss — the prefix was
+// computed during the walk and never revisited. 650 of 2,606 signatures were
+// credited when nearly all of them had, in the end, resolved.
+describe('recoverFacilitatorGap recomputes the prefix after retries', () => {
+  const ADDR = 'Faci1itator22222222222222222222222222222222';
+  const history = ['s1', 's2', 's3', 's4', 's5', 's6', CURSOR]; // ordered: s6..s1
+
+  /** Misses `transient` on first sight only; misses `permanent` always. */
+  function flaky(transient: string[], permanent: string[]) {
+    const seen = new Set<string>();
+    return async (sigs: string[]) => {
+      const unresolved = sigs.filter((x) => {
+        if (permanent.includes(x)) return true;
+        if (transient.includes(x) && !seen.has(x)) { seen.add(x); return true; }
+        return false;
+      });
+      return {
+        transactions: sigs.filter((x) => !unresolved.includes(x)).map((signature) => ({ signature }) as never),
+        requested: sigs.length, unresolved, undecodable: 0, recoveredFromArchive: 0,
+      };
+    };
+  }
+
+  test('the cursor ends just below the OLDEST still-missing signature, not the first transient one', async () => {
+    // s6 (oldest, first batch) blips then recovers; s2 never resolves.
+    const advanced: string[] = [];
+    const r = await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
+      parseBatch: flaky(['s6'], ['s2']),
+      extract: (tx) => ({ tx_signature: (tx as { signature: string }).signature }) as never,
+      persist: async (rows) => rows.length,
+      advanceCursor: async (_a, s) => { advanced.push(s); },
+    }, { batchSize: 2 });
+
+    expect(r.unresolved).toBe(1);          // only s2 survives
+    expect(r.complete).toBe(false);
+    // ordered = s6,s5,s4,s3,s2,s1 → prefix ends at s3, the one before s2.
+    expect(advanced.at(-1)).toBe('s3');
+    expect(advanced).not.toContain('s1');  // never past the hole
+  });
+
+  test('every miss clearing on retry takes the cursor all the way to the top', async () => {
+    const advanced: string[] = [];
+    const r = await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
+      parseBatch: flaky(['s6', 's4', 's2'], []),
+      extract: (tx) => ({ tx_signature: (tx as { signature: string }).signature }) as never,
+      persist: async (rows) => rows.length,
+      advanceCursor: async (_a, s) => { advanced.push(s); },
+    }, { batchSize: 2 });
+
+    expect(r.complete).toBe(true);
+    expect(advanced.at(-1)).toBe('s1'); // s1 is the newest of the gap
+  });
+
+  test('a capped walk still never advances, however the retries go', async () => {
+    const advanced: string[] = [];
+    const r = await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 2).fetchSignatures,
+      parseBatch: flaky(['s6'], []),
+      extract: () => null,
+      persist: async () => 0,
+      advanceCursor: async (_a, s) => { advanced.push(s); },
+    }, { pageSize: 2, maxSignatures: 2, batchSize: 1 });
+
+    expect(r.capped).toBe(true);
+    expect(advanced).toEqual([]);
   });
 });
