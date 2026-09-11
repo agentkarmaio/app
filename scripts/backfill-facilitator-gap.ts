@@ -107,6 +107,22 @@ for (const address of addresses) {
 
   totalGap += result.gap;
   totalInserted += result.inserted;
+
+  // An aborted walk still did work. Report the real counts before anything
+  // else: run 34611182319 printed "inserted 0" for 2,241 committed rows.
+  if (result.error) {
+    console.error(
+      `[gap] ${address}: ABORTED after ${result.scanned}/${result.gap} signatures — ` +
+      `${result.error.slice(0, 120)}`,
+    );
+    console.error(
+      `[gap] ${address.slice(0, 10)}… kept: inserted=${result.inserted} ` +
+      `cursorAdvanced=${result.cursorAdvanced} — re-run to continue from there`,
+    );
+    stranded.push(address);
+    continue;
+  }
+
   if (result.gap === 0) continue;
 
   console.log(

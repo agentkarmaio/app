@@ -484,3 +484,84 @@ describe('recoverFacilitatorGap recomputes the prefix after retries', () => {
     expect(advanced).toEqual([]);
   });
 });
+
+// Run 34611182319: 83 minutes, 2,241 rows committed, cursor advanced ZERO, and
+// the summary reported "inserted 0". Two causes — a miss in an early batch
+// killed the prefix for the whole run (the end-of-run retry that would have
+// cleared it never got to run), and the throw discarded the counts.
+describe('recoverFacilitatorGap survives a mid-run crash', () => {
+  const ADDR = 'Faci1itator22222222222222222222222222222222';
+  const history = ['s1', 's2', 's3', 's4', 's5', 's6', CURSOR]; // ordered s6..s1
+
+  test('a transient miss in the FIRST batch no longer poisons the whole run', async () => {
+    // Retried immediately, so the prefix stays intact and the cursor keeps
+    // climbing — instead of freezing at batch 1 for the next 80 minutes.
+    const seen = new Set<string>();
+    const advanced: string[] = [];
+    const r = await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
+      parseBatch: async (sigs) => {
+        const miss = sigs.filter((x) => x === 's6' && !seen.has(x));
+        miss.forEach((x) => seen.add(x));
+        return {
+          transactions: sigs.filter((x) => !miss.includes(x)).map((signature) => ({ signature }) as never),
+          requested: sigs.length, unresolved: miss, undecodable: 0, recoveredFromArchive: 0,
+        };
+      },
+      extract: (tx) => ({ tx_signature: (tx as { signature: string }).signature }) as never,
+      persist: async (rows) => rows.length,
+      advanceCursor: async (_a, s) => { advanced.push(s); },
+    }, { batchSize: 2 });
+
+    expect(r.unresolved).toBe(0);
+    expect(r.complete).toBe(true);
+    expect(advanced.at(-1)).toBe('s1');
+  });
+
+  test('an exception returns what landed instead of throwing it away', async () => {
+    let n = 0;
+    const advanced: string[] = [];
+    const r = await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
+      parseBatch: async (sigs) => {
+        if (++n === 3) throw new TypeError('The socket connection was closed unexpectedly');
+        return {
+          transactions: sigs.map((signature) => ({ signature }) as never),
+          requested: sigs.length, unresolved: [], undecodable: 0, recoveredFromArchive: 0,
+        };
+      },
+      extract: (tx) => ({ tx_signature: (tx as { signature: string }).signature }) as never,
+      persist: async (rows) => rows.length,
+      advanceCursor: async (_a, s) => { advanced.push(s); },
+    }, { batchSize: 2 });
+
+    expect(r.error).toContain('socket connection');
+    expect(r.inserted).toBe(4);        // two batches committed before the throw
+    expect(r.complete).toBe(false);
+    expect(advanced).toEqual(['s5', 's3']); // progress kept, not discarded
+  });
+
+  test('a crash NEVER advances the cursor past signatures it never processed', async () => {
+    // The end-of-run prefix recompute must be bounded to what was actually
+    // walked. Unbounded it would see "nothing missing" among the processed
+    // batches and jump the cursor to the top of the gap, skipping the rest.
+    let n = 0;
+    const advanced: string[] = [];
+    await recoverFacilitatorGap(ADDR, CURSOR, {
+      fetchSignatures: fakeRpc(history, 1000).fetchSignatures,
+      parseBatch: async (sigs) => {
+        if (++n === 2) throw new Error('boom');
+        return {
+          transactions: sigs.map((signature) => ({ signature }) as never),
+          requested: sigs.length, unresolved: [], undecodable: 0, recoveredFromArchive: 0,
+        };
+      },
+      extract: (tx) => ({ tx_signature: (tx as { signature: string }).signature }) as never,
+      persist: async (rows) => rows.length,
+      advanceCursor: async (_a, s) => { advanced.push(s); },
+    }, { batchSize: 2 });
+
+    expect(advanced).toEqual(['s5']);      // only the batch that completed
+    expect(advanced).not.toContain('s1');  // never the top
+  });
+});

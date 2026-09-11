@@ -99,6 +99,13 @@ export interface GapRecoveryResult {
   cursorAdvanced: boolean;
   /** True only when the whole gap was walked AND every signature resolved. */
   complete: boolean;
+  /**
+   * Set when the walk aborted part-way. The run is NOT thrown away: rows
+   * committed before the abort are counted above and the cursor still moves up
+   * behind them. Run 34611182319 lost 83 minutes of cursor progress and
+   * reported "inserted 0" for 2,241 committed rows because this threw instead.
+   */
+  error?: string;
 }
 
 /** Parse batch size. Kept small: the archive endpoint rate-limits hard, and the
@@ -172,21 +179,35 @@ export async function recoverFacilitatorGap(
     return parsed.unresolved;
   };
 
-  for (let i = 0; i < ordered.length; i += batchSize) {
-    const batch = ordered.slice(i, i + batchSize);
-    const unresolved = await ingest(batch);
-    result.scanned += batch.length;
-    missed.push(...unresolved);
+  // How many signatures were actually attempted. On an abort this is less than
+  // ordered.length, and the prefix recompute below MUST be bounded by it —
+  // unbounded, it would see no holes among the processed batches and jump the
+  // cursor to the top of the gap, skipping everything never walked.
+  let processed = 0;
 
-    // One unresolved signature ends the prefix: everything above it is no longer
-    // contiguous with the cursor.
-    if (unresolved.length > 0) prefixIntact = false;
-    if (!prefixIntact || !deps.advanceCursor) continue;
+  try {
+    for (let i = 0; i < ordered.length; i += batchSize) {
+      const batch = ordered.slice(i, i + batchSize);
+      const unresolved = await ingest(batch);
+      result.scanned += batch.length;
+      processed += batch.length;
+      missed.push(...unresolved);
 
-    // `ordered` is oldest-first, so the batch's last entry is its newest.
-    lastAdvanced = batch[batch.length - 1];
-    await deps.advanceCursor(address, lastAdvanced);
-    result.cursorAdvanced = true;
+      // One unresolved signature ends the prefix: everything above it is no
+      // longer contiguous with the cursor.
+      if (unresolved.length > 0) prefixIntact = false;
+      if (!prefixIntact || !deps.advanceCursor) continue;
+
+      // `ordered` is oldest-first, so the batch's last entry is its newest.
+      lastAdvanced = batch[batch.length - 1];
+      await deps.advanceCursor(address, lastAdvanced);
+      result.cursorAdvanced = true;
+    }
+  } catch (err) {
+    // Transport drops happen on an 80-minute walk. Record and fall through:
+    // the rows are already committed, and the cursor still deserves to move up
+    // behind them.
+    result.error = err instanceof Error ? err.message : String(err);
   }
 
   // Second pass over the misses. Measured on the first real run: 10 transient
@@ -194,8 +215,11 @@ export async function recoverFacilitatorGap(
   // freeze the cursor for the remaining ~2,600 and force the whole walk to be
   // redone. Retrying costs one extra call per miss and is what lets a flaky
   // endpoint still produce a complete run.
+  // Skipped after an abort: the retry needs the network that just failed, and
+  // treating an un-retried miss as permanent only makes the cursor advance
+  // LESS, which is the safe direction.
   let stillMissing = missed;
-  if (missed.length > 0 && !capped) {
+  if (missed.length > 0 && !capped && !result.error) {
     const remaining: string[] = [];
     for (let i = 0; i < missed.length; i += batchSize) {
       remaining.push(...(await ingest(missed.slice(i, i + batchSize))));
@@ -203,7 +227,8 @@ export async function recoverFacilitatorGap(
     stillMissing = remaining;
   }
   result.unresolved = stillMissing.length;
-  result.complete = !capped && result.unresolved === 0;
+  result.complete =
+    !capped && result.unresolved === 0 && !result.error && processed === ordered.length;
 
   // Recompute the prefix against what is missing AFTER the retries, not during
   // the walk. Measured 2026-09-11: retries cleared 115 misses down to 4, yet the
@@ -215,9 +240,10 @@ export async function recoverFacilitatorGap(
   // its signatures are not adjacent to the cursor at all.
   if (!capped && deps.advanceCursor) {
     const holes = new Set(stillMissing);
-    let prefixEnd = ordered.length - 1;
-    for (let i = 0; i < ordered.length; i++) {
-      if (holes.has(ordered[i])) { prefixEnd = i - 1; break; }
+    const walked = ordered.slice(0, processed);
+    let prefixEnd = walked.length - 1;
+    for (let i = 0; i < walked.length; i++) {
+      if (holes.has(walked[i])) { prefixEnd = i - 1; break; }
     }
     const target = prefixEnd >= 0 ? ordered[prefixEnd] : null;
     if (target && target !== lastAdvanced) {
