@@ -13,6 +13,13 @@
 #   SOLANA_ARCHIVE_RPC_URL                                optional; unset falls
 #     back to https://api.mainnet-beta.solana.com. A paid full-history endpoint
 #     makes this far faster — mainnet-beta serves ~0.6 req/s and 429s in bursts.
+#   SOLANA_RPC_URL                                        optional; defaults to
+#     publicnode below. It MUST differ from the archive URL — see the env block.
+#
+# Measured 2026-09-11 (run 34598999730): with both URLs resolving to
+# mainnet-beta, this managed 50 signatures/HOUR — 11,360 would have taken ~227h
+# against a 5.5h timeout. The same work runs ~35x faster locally. The difference
+# is concurrency, in the direction you would not guess: see the env block.
 #
 # Runs are RESUMABLE: the cursor climbs behind the contiguous ingested prefix, so
 # a timeout kill resumes rather than restarting. Re-dispatch until complete=true.
@@ -51,6 +58,20 @@ jobs:
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # These two MUST resolve to DIFFERENT endpoints. getArchiveConnection()
+          # returns null when they match, which disables the archive path — and
+          # the archive path is what serializes calls to one at a time
+          # (archiveSerialized). Without it, PARSE_CONCURRENCY=5 fires five
+          # parallel requests at a rate-limited public endpoint from a shared
+          # runner IP; they all 429, all back off together, and throughput
+          # collapses to 50 signatures/hour. Going SLOWER on purpose is ~35x
+          # faster here.
+          #
+          # publicnode retains ~2 days, so every signature in a 59-81 day gap
+          # misses it and falls through to the serialized archive. That is the
+          # intended path. A literal default, not a bare secret: an unset GitHub
+          # secret expands to '' and would collapse both back onto mainnet-beta.
+          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL || 'https://solana-rpc.publicnode.com' }}
           SOLANA_ARCHIVE_RPC_URL: ${{ secrets.SOLANA_ARCHIVE_RPC_URL }}
         run: |
           ARGS="--max ${{ inputs.max }}"
