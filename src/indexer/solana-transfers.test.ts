@@ -19,7 +19,6 @@
  *     where the correct answer is independently known — the analogue of the
  *     Fianza fixture in stellar-flows.test.ts.
  *
- * Spec: (design notes, kept out of this repo)
  *
  * Run: bun test src/indexer/solana-transfers.test.ts
  */

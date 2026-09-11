@@ -40,7 +40,6 @@
  *   bun run scripts/solana-transfers-run.ts --dry-run --payee-only --limit=20
  *   bun run scripts/solana-transfers-run.ts --payee-only --spenders-only
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';

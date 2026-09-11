@@ -8,7 +8,6 @@
  * (1000 signatures max), and which `keep-fresh:backfill` cannot do at all (its
  * RPC retains ~2 days; the gaps are 59-81 days old).
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 import type { Transaction } from '../db/schema';

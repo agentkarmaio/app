@@ -163,7 +163,6 @@ export async function getSignaturesWithCursorFallback(
  * dead cursor is KEPT on purpose — it is the only record of where the gap
  * begins, and `backfill-facilitator-gap` needs it to page back to.
  *
- * Spec: (design notes, kept out of this repo) §3
  */
 export function describeCursorReset(
   address: string,

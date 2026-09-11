@@ -12,7 +12,6 @@
  * failure that matters: dropping `until` on page 2 walks the address's ENTIRE
  * history instead of stopping at the gap.
  *
- * Spec: (design notes, kept out of this repo)
  * Run: bun test src/indexer/facilitator-gap.test.ts
  */
 

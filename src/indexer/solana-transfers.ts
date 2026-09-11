@@ -40,7 +40,6 @@
  * the SEEDED FACE ONLY (see {@link solanaTransfersIndexer}), which is where
  * this departs from them and why.
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 import type { Chain, Transaction } from '@/db/schema';

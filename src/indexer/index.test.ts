@@ -183,7 +183,6 @@ describe('computeSafeCursor', () => {
 // 2026-09-10 to be incapable of recovering ANY of it (every affected gap is
 // 59-81 days old; the indexer RPC retains ~2 days). All 16 re-anchoring
 // facilitators are in the zero-signature case.
-// Spec: (design notes, kept out of this repo) §3
 describe('describeCursorReset', () => {
   const ADDR = 'BfqzVwCcNf1TcVyYaZr6zjjeZKFt57fMDMcRKGjTqQCm';
 
