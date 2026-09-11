@@ -54,6 +54,7 @@ import {
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
+  markWalletsDirty as dbMarkWalletsDirty,
   makeEnsureWallets as dbMakeEnsureWallets,
   getCursor as dbGetCursor,
   upsertCursor as dbUpsertCursor,
@@ -437,6 +438,12 @@ export interface SolanaTransfersDeps {
   insertTransactions: (rows: Omit<Transaction, 'id'>[]) => Promise<number>;
   insertSignalEvents: (inputs: InsertSignalEventInput[]) => Promise<number>;
   ensureWallets: (addresses: string[]) => Promise<void>;
+  /**
+   * Queue the walked payer for rescoring. REQUIRED, not optional: the sibling
+   * gap recovery shipped without it and moved zero scores off 2,222 recovered
+   * rows (2fac4c9). Evidence no score reads is not recovered.
+   */
+  markDirty: (addresses: string[]) => Promise<void>;
   getCursor: (key: string) => Promise<{ last_signature: string; last_slot: number | null } | null>;
   upsertCursor: (key: string, lastSignature: string, lastSlot?: number) => Promise<void>;
   pageSize?: number;
@@ -616,6 +623,10 @@ async function walkWallet(
       await deps.ensureWallets([address]);
       inserted = await deps.insertTransactions(rows);
       await deps.insertSignalEvents(signals);
+      // Inside the same try on purpose: rows this wallet gained that no score
+      // ever reads are worse than re-walking the page (inserts are idempotent
+      // on tx_signature), so a failure here must hold the cursor too.
+      await deps.markDirty([address]);
     }
   } catch (err) {
     console.error(`[solana-transfers] write failed for ${address}:`, err);
@@ -822,6 +833,7 @@ export async function runSolanaTransfersIndexer(
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
     ensureWallets: dbMakeEnsureWallets(SOLANA_CHAIN),
+    markDirty: dbMarkWalletsDirty,
     getCursor: async (key) => {
       const cursor = await dbGetCursor(key);
       return cursor ? { last_signature: cursor.last_signature, last_slot: cursor.last_slot ?? null } : null;

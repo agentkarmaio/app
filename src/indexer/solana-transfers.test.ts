@@ -401,12 +401,14 @@ function makeDeps(over: Partial<SolanaTransfersDeps> = {}): {
   rows: Array<{ wallet_address: string; counterparty: string | null }>;
   signals: Array<{ agentWallet: string; face: string }>;
   wallets: string[];
+  dirty: string[][];
   cursors: Map<string, string>;
   sigCalls: Array<{ address: string; before?: string }>;
 } {
   const rows: Array<{ wallet_address: string; counterparty: string | null }> = [];
   const signals: Array<{ agentWallet: string; face: string }> = [];
   const wallets: string[] = [];
+  const dirty: string[][] = [];
   const cursors = new Map<string, string>();
   const sigCalls: Array<{ address: string; before?: string }> = [];
 
@@ -433,13 +435,14 @@ function makeDeps(over: Partial<SolanaTransfersDeps> = {}): {
       return s.length;
     },
     ensureWallets: async (a) => { wallets.push(...a); },
+    markDirty: async (a) => { dirty.push([...a]); },
     getCursor: async () => null,
     upsertCursor: async (key, sig) => { cursors.set(key, sig); },
     maxSignatures: 100,
     pageSize: 50,
     ...over,
   };
-  return { deps, rows, signals, wallets, cursors, sigCalls };
+  return { deps, rows, signals, wallets, dirty, cursors, sigCalls };
 }
 
 describe('solanaTransfersIndexer', () => {
@@ -477,6 +480,51 @@ describe('solanaTransfersIndexer', () => {
     expect(wallets).not.toContain(PAYEE_A);
     expect(signals).toHaveLength(1);
     expect(signals[0]).toEqual({ agentWallet: WALLET, face: 'consumer' });
+  });
+
+  test('QUEUES THE WALKED PAYER FOR RESCORING once rows land', async () => {
+    // The sibling gap recovery ingested 2,222 rows and moved zero karma scores
+    // because nothing marked the payers dirty (2fac4c9). Recovered evidence no
+    // score reads is not recovered: `enrichment.independence` reads
+    // `transactions` live and would flip, but persisted wallets.score,
+    // rank_score and the leaderboard would not.
+    const { deps, dirty } = makeDeps();
+    await solanaTransfersIndexer(deps);
+
+    expect(dirty.flat()).toEqual([WALLET]);
+  });
+
+  test('queues nothing when the walk produced no rows', async () => {
+    // A sink wallet (inbound only) has nothing new for any score to read, so
+    // enqueueing it would burn a rescore on unchanged evidence.
+    const { deps, dirty, rows } = makeDeps({
+      parseTransactionsBatch: async (sigs) => ({
+        transactions: sigs.map((sig) =>
+          tx([{ owner: WALLET, mint: USDC_MINT, raw: '250000' }], { signature: sig }),
+        ),
+        requested: sigs.length,
+        unresolved: [],
+        undecodable: 0,
+        recoveredFromArchive: 0,
+      }),
+    });
+    await solanaTransfersIndexer(deps);
+
+    expect(rows).toHaveLength(0);
+    expect(dirty).toEqual([]);
+  });
+
+  test('a failed rescore enqueue holds the cursor, so the page is re-walked', async () => {
+    // Rows without a rescore are the exact failure this guard exists for.
+    // Inserts are idempotent (`ignoreDuplicates` on tx_signature), so re-reading
+    // the page costs RPC calls, not duplicate rows.
+    const { deps, cursors } = makeDeps({
+      markDirty: async () => { throw new Error('kong 502'); },
+    });
+    const result = await solanaTransfersIndexer(deps);
+
+    expect(result.failed).toEqual([WALLET]);
+    expect(cursors.size).toBe(0);
   });
 
   test('an unresolved signature does NOT advance the cursor past it', async () => {
