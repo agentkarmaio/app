@@ -46,7 +46,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { Connection, PublicKey } from '@solana/web3.js';
-import { supabase } from '../src/db/client';
+import { supabase, withTransientDbRetry } from '../src/db/client';
 import { getArchiveRpcUrl } from '../src/indexer/helius';
 import { USDC_MINT } from '../src/config/facilitators';
 import {
@@ -149,15 +149,24 @@ async function withoutOutbound(seed: string[]): Promise<string[]> {
   // `idx_transactions_chain_wallet_address` makes each of these a point lookup,
   // so ~1,220 of them cost about a minute — nothing against the RPC walk that
   // follows.
+  //
+  // Retried: a bare `throw error` here discards the whole prelude on one
+  // transient cancel, and the run behind it — which is exactly how the
+  // 2026-09-11 seed derivation died. The throw lives INSIDE the retried fn
+  // because supabase-js returns `{ error }` rather than throwing, so a wrapper
+  // around the query alone would retry nothing.
   for (const address of seed) {
-    const { data, error } = await supabase
-      .from('transactions')
-      .select('tx_signature')
-      .eq('chain', 'solana')
-      .eq('wallet_address', address)
-      .limit(1);
-    if (error) throw error;
-    if ((data ?? []).length === 0) out.push(address);
+    const rows = await withTransientDbRetry(async () => {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('tx_signature')
+        .eq('chain', 'solana')
+        .eq('wallet_address', address)
+        .limit(1);
+      if (error) throw error;
+      return data ?? [];
+    });
+    if (rows.length === 0) out.push(address);
   }
   return out;
 }

@@ -32,6 +32,7 @@ import {
   UNDECLARED_ROUTERS,
   buildSolanaSeedSet,
   classifyUsdcDebit,
+  deriveSolanaProviderSeed,
   solanaTransfersCursorKey,
   solanaTransfersIndexer,
   toTransactionRow,
@@ -514,6 +515,61 @@ describe('solanaTransfersIndexer', () => {
     expect(dirty).toEqual([]);
   });
 
+  test('ONE WALLET THROWING DOES NOT KILL THE RUN', async () => {
+    // withConcurrency rejects on the first failure, like Promise.all, and
+    // walkWallet's try covers the write block only. getCursor (one DB read per
+    // wallet) and getSignaturesForAddress (a throwing 429 on mainnet-beta) sit
+    // outside it — so before this guard a single transient at hour 3 of a
+    // 4-hour chunk discarded every wallet still unwalked.
+    const walked: string[] = [];
+    const { deps, cursors } = makeDeps({
+      seed: new Set([WALLET, PAYEE_A, PAYEE_B]),
+      scanTargets: [WALLET, PAYEE_A, PAYEE_B],
+      getCursor: async (key) => {
+        if (key === solanaTransfersCursorKey(PAYEE_A)) throw new Error('57014');
+        return null;
+      },
+      getSignaturesForAddress: async (address, opts) => {
+        walked.push(address);
+        return opts.before ? [] : [{ signature: `sig-${address.slice(0, 4)}`, blockTime: 1_756_000_000 }];
+      },
+    });
+
+    const result = await solanaTransfersIndexer(deps);
+
+    expect(result.failed).toEqual([PAYEE_A]);
+    expect(result.scanned).toBe(3);
+    // The wallets either side of the thrower still walked and banked cursors.
+    expect(cursors.has(solanaTransfersCursorKey(WALLET))).toBe(true);
+    expect(cursors.has(solanaTransfersCursorKey(PAYEE_B))).toBe(true);
+    expect(cursors.has(solanaTransfersCursorKey(PAYEE_A))).toBe(false);
+  });
+
+  test('a throttled signature fetch banks no cursor, so the wallet is retried', async () => {
+    // mainnet-beta 429s a sequential walk, and a 429 THROWS (unlike
+    // parseWithArchiveFallback, which converts a miss to `unresolved`). The
+    // throw is caught per page: earlier pages keep what they banked, this one
+    // is simply not walked. A wallet throttled on its FIRST page therefore
+    // writes nothing and banks nothing — which leaves it blocked, so
+    // `--payee-only` re-derives it next run. Self-healing, not silent loss.
+    const { deps, cursors, rows } = makeDeps({
+      seed: new Set([WALLET, PAYEE_A]),
+      scanTargets: [WALLET, PAYEE_A],
+      getSignaturesForAddress: async (address, opts) => {
+        if (address === WALLET) throw new Error('429 Too Many Requests');
+        return opts.before ? [] : [{ signature: 'sig-b', blockTime: 1_756_000_000 }];
+      },
+    });
+
+    const result = await solanaTransfersIndexer(deps);
+
+    expect(result.scanned).toBe(2);
+    expect(cursors.has(solanaTransfersCursorKey(WALLET))).toBe(false);
+    expect(rows.every((r) => r.wallet_address !== WALLET)).toBe(true);
+    // The other wallet is untouched by its neighbour's throttle.
+    expect(cursors.has(solanaTransfersCursorKey(PAYEE_A))).toBe(true);
+  });
+
   test('a failed rescore enqueue holds the cursor, so the page is re-walked', async () => {
     // Rows without a rescore are the exact failure this guard exists for.
     // Inserts are idempotent (`ignoreDuplicates` on tx_signature), so re-reading
@@ -686,6 +742,47 @@ describe('census: J7aN3PLJnT… complete outbound history (mainnet, 2026-09-10)'
 });
 
 // ─── Cross-module invariants ──────────────────────────────────────────────────
+
+describe('deriveSolanaProviderSeed — paging survives contention', () => {
+  test('a transient 57014 on one page is retried, not fatal', async () => {
+    // Measured 2026-09-11: the derivation died at ~350k rows scanned on a
+    // single 57014, throwing away the whole scan and the run behind it. Page
+    // cost grows (1.5s at offset 0, 4.1s at 400k) but stays far under the
+    // timeout, so this is contention, not deep-offset exhaustion — the codebase
+    // remedy for that is `withTransientDbRetry`, not keyset pagination.
+    let calls = 0;
+    const seed = await deriveSolanaProviderSeed({
+      sinceDays: 90,
+      scanCap: 1, // exactly one page, so `calls` counts retries and nothing else
+      pageSize: 1,
+      readPage: async () => {
+        calls += 1;
+        if (calls === 1) return { data: null, error: { code: '57014' } };
+        return { data: [{ counterparty: PAYEE_A, facilitator: FACILITATOR }], error: null };
+      },
+    });
+
+    expect(seed).toEqual([PAYEE_A]);
+    expect(calls).toBe(2); // the failed page was retried, not skipped
+  });
+
+  test('a non-transient error still surfaces on the first attempt', async () => {
+    // A bad column (42703) is a bug, not contention. Retrying it just delays
+    // the report.
+    let calls = 0;
+    await expect(
+      deriveSolanaProviderSeed({
+        scanCap: 2,
+        pageSize: 1,
+        readPage: async () => {
+          calls += 1;
+          return { data: null, error: { code: '42703', message: 'column does not exist' } };
+        },
+      }),
+    ).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
+});
 
 describe('production wiring invariants', () => {
   /**

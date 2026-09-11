@@ -55,6 +55,7 @@ import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
   markWalletsDirty as dbMarkWalletsDirty,
+  withTransientDbRetry,
   makeEnsureWallets as dbMakeEnsureWallets,
   getCursor as dbGetCursor,
   upsertCursor as dbUpsertCursor,
@@ -62,6 +63,7 @@ import {
   type InsertSignalEventInput,
 } from '@/db/client';
 import { withConcurrency } from '@/lib/concurrency';
+import { INGEST_RETRY, withRateLimitRetry } from '@/lib/rpc-retry';
 import { buildUsdcTransferSignal } from '@/scoring/signals';
 import {
   ARCHIVE_RETRY_BUDGET,
@@ -745,38 +747,73 @@ export async function deriveSolanaProviderSeed(opts: {
   sinceDays?: number;
   scanCap?: number;
   onProgress?: (scanned: number, found: number) => void;
+  /** Page size. Injected only by tests; production uses `SEED_PAGE_SIZE`. */
+  pageSize?: number;
+  /**
+   * The page read, injected so the retry is testable without mocking the
+   * module-global supabase client — `mock.module` is process-wide in bun, and
+   * this suite shares one process with 97 other files.
+   */
+  readPage?: (offset: number, size: number, since: string) => Promise<SeedPageResult>;
 } = {}): Promise<string[]> {
   const sinceDays = opts.sinceDays ?? 90;
   const scanCap = opts.scanCap ?? SEED_SCAN_CAP;
+  const pageSize = opts.pageSize ?? SEED_PAGE_SIZE;
+  const readPage = opts.readPage ?? readSeedPage;
   const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
   const seen = new Set<string>();
 
-  for (let offset = 0; offset < scanCap; offset += SEED_PAGE_SIZE) {
-    const { data, error } = await supabase
-      .from('transactions')
-      // `facilitator` is selected so `buildSolanaSeedSet`'s closure guard is LIVE
-      // rather than vacuous: without the column every row arrives with
-      // `facilitator: undefined`, which the guard reads as "caller already
-      // filtered". Belt and braces only works when both are actually fastened.
-      .select('counterparty, facilitator')
-      .eq('chain', SOLANA_CHAIN)
-      .not('counterparty', 'is', null)
-      // The closure guard, server-side: exclude only rows THIS indexer wrote.
-      // Not `.in(ALL_FACILITATOR_ADDRESSES)` — see buildSolanaSeedSet's header
-      // for why an allowlist off an auto-generated config shrinks scope.
-      .neq('facilitator', USDC_MINT)
-      .gte('timestamp', since)
-      .order('timestamp', { ascending: false })
-      .range(offset, offset + SEED_PAGE_SIZE - 1);
-    if (error) throw error;
+  for (let offset = 0; offset < scanCap; offset += pageSize) {
+    // The throw MUST live inside the retried fn: supabase-js RETURNS `{ error }`
+    // and never throws, so a `withTransientDbRetry` wrapped around the query
+    // alone would retry nothing and quietly look correct.
+    const rows = await withTransientDbRetry(async () => {
+      const { data, error } = await readPage(offset, pageSize, since);
+      if (error) throw error;
+      return (data ?? []) as SeedPayeeRow[];
+    });
 
-    const rows = (data ?? []) as SeedPayeeRow[];
     for (const address of buildSolanaSeedSet({ payeeRows: rows })) seen.add(address);
-    if (rows.length < SEED_PAGE_SIZE) break;
+    if (rows.length < pageSize) break;
     if (offset > 0 && offset % 50_000 === 0) opts.onProgress?.(offset, seen.size);
   }
 
   return [...seen];
+}
+
+/** What one seed page read returns — supabase-js's shape, narrowed. */
+export type SeedPageResult = {
+  data: SeedPayeeRow[] | null;
+  error: { code?: string; message?: string } | null;
+};
+
+/**
+ * The live seed page. Split out from the loop so the retry has something to
+ * retry and the test has something to replace.
+ *
+ * Measured 2026-09-11: a single `57014` at ~350k rows scanned killed a whole
+ * derivation and the 14-hour run behind it. Page cost does grow with offset
+ * (1.5s at 0, 4.1s at 400k) but stays far under the statement timeout, so the
+ * cause is contention, not deep-offset exhaustion — which is why this is a
+ * retry and not a switch to keyset pagination.
+ */
+async function readSeedPage(offset: number, size: number, since: string): Promise<SeedPageResult> {
+  return supabase
+    .from('transactions')
+    // `facilitator` is selected so `buildSolanaSeedSet`'s closure guard is LIVE
+    // rather than vacuous: without the column every row arrives with
+    // `facilitator: undefined`, which the guard reads as "caller already
+    // filtered". Belt and braces only works when both are actually fastened.
+    .select('counterparty, facilitator')
+    .eq('chain', SOLANA_CHAIN)
+    .not('counterparty', 'is', null)
+    // The closure guard, server-side: exclude only rows THIS indexer wrote.
+    // Not `.in(ALL_FACILITATOR_ADDRESSES)` — see buildSolanaSeedSet's header
+    // for why an allowlist off an auto-generated config shrinks scope.
+    .neq('facilitator', USDC_MINT)
+    .gte('timestamp', since)
+    .order('timestamp', { ascending: false })
+    .range(offset, offset + size - 1) as unknown as Promise<SeedPageResult>;
 }
 
 let _sigConn: Connection | null = null;
@@ -823,9 +860,11 @@ export async function runSolanaTransfersIndexer(
     seed,
     scanTargets: seedList,
     getSignaturesForAddress: async (address, pageOpts) => {
-      const sigs = await signatureConnection().getSignaturesForAddress(
-        new PublicKey(address),
-        pageOpts,
+      // Every sibling indexer wraps its RPC in this; mainnet-beta throttles a
+      // sequential walk, and a 429 THROWS, which costs the wallet its page.
+      const sigs = await withRateLimitRetry(
+        () => signatureConnection().getSignaturesForAddress(new PublicKey(address), pageOpts),
+        INGEST_RETRY,
       );
       return sigs.map((s) => ({ signature: s.signature, blockTime: s.blockTime ?? null }));
     },
@@ -834,11 +873,15 @@ export async function runSolanaTransfersIndexer(
     insertSignalEvents: dbInsertSignalEvents,
     ensureWallets: dbMakeEnsureWallets(SOLANA_CHAIN),
     markDirty: dbMarkWalletsDirty,
-    getCursor: async (key) => {
-      const cursor = await dbGetCursor(key);
-      return cursor ? { last_signature: cursor.last_signature, last_slot: cursor.last_slot ?? null } : null;
-    },
-    upsertCursor: async (key, sig, slot) => { await dbUpsertCursor(key, sig, slot ?? undefined); },
+    getCursor: async (key) =>
+      withTransientDbRetry(async () => {
+        const cursor = await dbGetCursor(key);
+        return cursor
+          ? { last_signature: cursor.last_signature, last_slot: cursor.last_slot ?? null }
+          : null;
+      }),
+    upsertCursor: async (key, sig, slot) =>
+      withTransientDbRetry(async () => { await dbUpsertCursor(key, sig, slot ?? undefined); }),
     timeBudgetMs: opts.timeBudgetMs ?? SOLANA_RUN_TIME_BUDGET_MS,
     ...(opts.maxSignatures != null ? { maxSignatures: opts.maxSignatures } : {}),
     ...(opts.concurrency != null ? { concurrency: opts.concurrency } : {}),
