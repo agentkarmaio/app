@@ -1,7 +1,7 @@
 /**
  * Farm-detector — pure ratio evaluation against fixed thresholds.
  *
- * See (design notes, kept out of this repo). Replaces
+ * See the design notes (kept out of this repo). Replaces
  * the manual, ad-hoc investigation that produced the `project_arc_registry_synthetic`
  * memory (2026-07-03/07-08) with a repeatable, testable judgment: given three
  * bounded samples (bulk-mint tokenURI ratio, settlement self-dealt/templated

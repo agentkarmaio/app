@@ -208,8 +208,7 @@ export function describeCursorReset(
  * `(agent_wallet, kind, tx_ref)`. When the oldest signature in the batch is
  * itself unresolved there is no safe anchor, so the cursor must not move at all.
  *
- * The hold is only good while the signature stays inside the fetched window; see
- * (design notes, kept out of this repo) §3.3, §6 —
+ * The hold is only good while the signature stays inside the fetched window:
  * the archive fallback in `parseTransactionsBatch` is what makes it durable.
  */
 export function computeSafeCursor(

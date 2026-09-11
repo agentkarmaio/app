@@ -7,7 +7,6 @@
  * silently changes an independence verdict a lender may act on. Injected
  * transport throughout: no test here touches the network.
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 import { describe, expect, test } from 'bun:test';

@@ -2,7 +2,7 @@
 /**
  * Farm-detector — pure ratio evaluation tests.
  *
- * See (design notes, kept out of this repo). This
+ * See the design notes (kept out of this repo). This
  * module only judges pre-computed sample counts against fixed thresholds; the
  * RPC/DB sampling that produces those counts lives in scripts/arc-farm-detector.ts
  * (untested glue, same convention as arc-backfill-agents.ts).

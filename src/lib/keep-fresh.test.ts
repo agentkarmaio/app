@@ -119,7 +119,6 @@ describe('runKeepFresh isolates a failed step from the rest of the floor', () =>
 // held so the next run retries, but the hold only survives while those
 // signatures stay inside the fetched window — so this has to page while an
 // archive re-parse can still recover them.
-// Spec: (design notes, kept out of this repo) §3.4
 describe('runKeepFresh treats unresolved signatures as a degraded run', () => {
   test('indexer reporting unresolved > 0 → not ok (CLI exits 1, CI pages)', async () => {
     const { deps } = makeDeps({

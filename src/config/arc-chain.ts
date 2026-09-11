@@ -80,7 +80,7 @@ export const arcTestnet = defineChain({
  * implementation and revert on every registry read — so the vanity addresses
  * are reserved, not yet live. Gate any mirror on a supportsInterface(0x80ac58cd)
  * liveness probe and treat a revert as "not live yet", never "zero agents".
- * See (design notes, kept out of this repo). USDC (6-decimal
+ * See the design notes (kept out of this repo). USDC (6-decimal
  * ERC-20 at the 0x3600…0000 predeploy) and Multicall3 are the only confirmed
  * live contracts, which is why only multicall3 is declared here.
  */

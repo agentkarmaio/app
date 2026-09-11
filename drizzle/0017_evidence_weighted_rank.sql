@@ -1,5 +1,4 @@
 -- Evidence-weighted leaderboard ranking (2026-08-25).
--- Spec: (design notes, kept out of this repo)
 --
 -- The raw `score` mixes signal tiers. Tier-3 declared metadata quality
 -- (agentkarma_metadata v0.2 — a deterministic registration checklist with NO

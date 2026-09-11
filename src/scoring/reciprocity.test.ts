@@ -9,7 +9,6 @@
  * the indexer cannot see payees on this chain (503k Solana rows carry a NULL
  * counterparty), the answer is "cannot tell", never "clean".
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 import { describe, expect, test } from 'bun:test';

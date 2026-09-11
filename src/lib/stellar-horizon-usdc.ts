@@ -16,7 +16,6 @@
  * Input is `unknown` on purpose: two of the three callers hand over raw Horizon
  * JSON, and one malformed record must not take down a whole read.
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 /**

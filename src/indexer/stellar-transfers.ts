@@ -21,7 +21,6 @@
  * invisible to the inbound lookup and makes a wallet look MORE independent than
  * it is.
  *
- * Spec: (design notes, kept out of this repo)
  *
  * Env:
  *   STELLAR_HORIZON_URL — Horizon endpoint (optional; defaults to mainnet).

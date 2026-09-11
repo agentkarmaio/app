@@ -450,8 +450,6 @@ const horizonJson: HorizonFetch = async (url) => {
  * the run that would use it is a no-op. Rows and cursor are returned for a
  * caller to persist.
  *
- * Fixes spec: (design notes, kept out of this repo)
- *
  * @returns `nextCursor` — the paging token of the last record READ, not of the
  * last row emitted. A record this filter deliberately skips counts as processed
  * and is passed, which is correct while the filter is a permanent decision. A

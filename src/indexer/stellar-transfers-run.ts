@@ -13,7 +13,6 @@
  *   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY — required (seed set)
  *   STELLAR_HORIZON_URL — optional; defaults to https://horizon.stellar.org
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 import type { Transaction } from '@/db/schema';

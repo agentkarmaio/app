@@ -90,8 +90,7 @@ function getRpcConnection(): Connection {
  * `solana-rpc.publicnode.com` prunes BOTH its signature index and its
  * transaction store at ~2 days (measured 2026-09-10), while
  * `api.mainnet-beta.solana.com` serves ≥300 days at roughly 0.6 req/s. Anything
- * the primary returns `null` for is retried here before being called lost — see
- * (design notes, kept out of this repo) §3.2.
+ * the primary returns `null` for is retried here before being called lost.
  */
 export function getArchiveRpcUrl(): string {
   return optionalEnv('SOLANA_ARCHIVE_RPC_URL', DEFAULT_RPC);

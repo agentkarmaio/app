@@ -1156,7 +1156,7 @@ describe('withTransientDbRetry', () => {
 // and the "All chains" leaderboard opened with a block of 0-tx Celo agents.
 // Ranking now reads `rank_score` (= score × 0.7 for declared rows), a generated
 // column, so a declaration can no longer outrank observed behavior.
-// See (design notes, kept out of this repo)
+// See the design notes (kept out of this repo)
 describe('leaderboard ranks by evidence-weighted score', () => {
   type Order = { column: string; ascending: boolean | undefined };
 

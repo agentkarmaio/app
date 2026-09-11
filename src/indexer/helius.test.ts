@@ -232,7 +232,6 @@ describe('getIndexerRpcUrl', () => {
 // signature the RPC could not serve was dropped with no error and no counter,
 // and its caller advanced the cursor past it anyway. `unresolved` is what makes
 // a lossy run impossible to report as clean.
-// Spec: (design notes, kept out of this repo)
 describe('parseWithArchiveFallback', () => {
   const SIGS = ['sigA', 'sigB', 'sigC'];
   const found = (sig: string) => usdcPaymentTx() as ParsedTransactionWithMeta & { __sig?: string };

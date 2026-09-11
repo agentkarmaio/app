@@ -18,7 +18,6 @@
  * distinct addresses over many transactions. Same family, different evidence —
  * the names stay separate so a reader can tell which one produced a flag.
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 import { isEvmChain } from '@/lib/chain-meta';
@@ -40,7 +39,7 @@ import type { Chain } from '@/db/schema';
  * The gate stands regardless of backfill progress. Coverage is a per-wallet
  * property of the evidence in hand; it does not become safe to assume a payee
  * just because most rows elsewhere have one. See
- * (design notes, kept out of this repo).
+ * the design notes (kept out of this repo).
  */
 export const COVERAGE_FLOOR = 0.5;
 

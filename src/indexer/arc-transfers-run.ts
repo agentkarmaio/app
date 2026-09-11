@@ -17,7 +17,6 @@
  *   ARC_RPC_URL — required by the indexer; rpc.drpc.testnet.arc.io is the only
  *                 keyless endpoint that serves historical getLogs.
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 import type { Transaction } from '@/db/schema';

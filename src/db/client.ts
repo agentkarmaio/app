@@ -432,7 +432,6 @@ export async function getLeaderboard(
  * `rank_score` = score × 0.7 for declared-only rows; the weight lives in SQL
  * (drizzle/0017_evidence_weighted_rank.sql + src/db/sql/explore-agents-view.sql).
  *
- * Spec: (design notes, kept out of this repo)
  */
 const RANK_ORDER_COLUMN = 'rank_score';
 

@@ -1,7 +1,7 @@
 /**
  * Arc farm-detector — scheduled observability job.
  *
- * See (design notes, kept out of this repo). Samples
+ * See the design notes (kept out of this repo). Samples
  * three bounded signals (recent registry tokenURIs, a recent settlement
  * window, sampled agents' feedback) and judges them against fixed thresholds
  * via the pure `evaluateFarmSignals` — replacing the manual investigation

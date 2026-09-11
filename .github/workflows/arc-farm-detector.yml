@@ -6,7 +6,7 @@ name: Arc farm detector
 # memory, 2026-07-03/07-08). Alert-only: never blocks ingestion or writes to the
 # DB. Replaces the manual, ad-hoc investigation that produced that memory with
 # a repeatable, scheduled check. See
-# (design notes, kept out of this repo).
+# the design notes (kept out of this repo).
 #
 # Required repo secrets:
 #   NEXT_PUBLIC_SUPABASE_URL   \ isTemplatedCounterparty resolves an address to

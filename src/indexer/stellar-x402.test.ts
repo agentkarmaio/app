@@ -323,7 +323,6 @@ describe('stellarReceiptIndexer — runtime integration', () => {
 // the indexer that would call it is a no-op. DI transport is the bar, mirroring
 // stellar-transfers.test.ts.
 //
-// Spec: (design notes, kept out of this repo)
 
 const HORIZON_ISSUER = USDC_ISSUER.pubnet;
 const PAYER = seededAccount(5);

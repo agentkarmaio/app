@@ -7,7 +7,7 @@
  * (same convention as farm-detector). Every decision about whether a payee may
  * be written to a row lives here, and every branch has a test.
  *
- * See (design notes, kept out of this repo).
+ * See the design notes (kept out of this repo).
  *
  * Run: bun test src/indexer/counterparty-backfill.test.ts
  */

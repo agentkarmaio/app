@@ -31,8 +31,7 @@
  * on `facilitator = <escrow>` — never conflates plain transfers with ERC-8183
  * settlements (see getArcDashboardStats in db/client.ts).
  *
- * Spec: (design notes, kept out of this repo)
- * (original design: (design notes, kept out of this repo))
+ * (the original design notes are kept out of this repo)
  *
  * Env vars:
  *   ARC_RPC_URL               — Arc EVM RPC endpoint (required, raises if absent).

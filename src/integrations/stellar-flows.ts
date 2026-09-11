@@ -12,7 +12,6 @@
  * only — they never enter `transactions`, never feed karma, Explore or
  * rank_score. Tier-1 receipt ingestion stays the indexer's job.
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 import { unstable_cache } from 'next/cache';

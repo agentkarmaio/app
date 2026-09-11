@@ -1,7 +1,7 @@
 # AgentKarma Settlement Contract — Deployments
 
 The settlement-gated, payment-weighted score contract (U7). Trust model: `trust-ak-oracle`
-(see `../../(design notes, kept out of this repo)`). Non-routing:
+(design notes are kept out of this repo). Non-routing:
 the contract is a witness, it never receives/holds/relays funds.
 
 ## Testnet (Stellar `Test SDF Network ; September 2015`)

@@ -13,7 +13,6 @@
  * establish the payee returns a reason, never a value. A refused row stays
  * NULL — the state it is already in.
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 import { normalizeCounterparty } from '@/db/client';

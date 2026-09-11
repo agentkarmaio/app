@@ -30,7 +30,6 @@
  *   bun run scripts/backfill-solana-counterparty.ts --dry-run --limit=50
  *   bun run scripts/backfill-solana-counterparty.ts
  *
- * Spec: (design notes, kept out of this repo)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
