@@ -16,14 +16,229 @@
  * Run: bun test src/indexer/index.test.ts
  */
 
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test, spyOn } from 'bun:test';
+import { Connection } from '@solana/web3.js';
+import { __setSupabaseForTest } from '../db/client';
+import * as helius from './helius';
+import * as db from '../db/client';
+import * as attestation from '../integrations/attestation';
+import { ALL_FACILITATOR_ADDRESSES } from '../config/facilitators';
 import {
   isRpcRateLimited,
   isCursorUnresolvable,
   getSignaturesWithCursorFallback,
   computeSafeCursor,
   describeCursorReset,
+  runIndexer,
+  fetchTransactionsForFacilitator,
 } from './index';
+
+describe('Solana run coverage', () => {
+  const address = 'BfqzVwCcNf1TcVyYaZr6zjjeZKFt57fMDMcRKGjTqQCm';
+  const signature = { signature: 'sig-1', slot: 1, err: null, memo: null, blockTime: 1 };
+  test('late signature responses after cancellation cannot start the next facilitator', async () => {
+    const controller = new AbortController();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let calls = 0;
+    const signatures = spyOn(Connection.prototype, 'getSignaturesForAddress').mockImplementation(async () => {
+      calls++; await gate; return [];
+    });
+    try {
+      const pending = runIndexer(100, { backfill: true, signal: controller.signal });
+      const beforeAbort = calls;
+      expect(beforeAbort).toBeGreaterThan(0);
+      controller.abort(Error('scan_cancelled'));
+      release();
+      await expect(pending).rejects.toThrow('scan_cancelled');
+      expect(calls).toBe(beforeAbort);
+    } finally { release(); signatures.mockRestore(); }
+  });
+  test('a 429 before useful work cannot be reported as complete', async () => {
+    const signatures = spyOn(Connection.prototype, 'getSignaturesForAddress').mockRejectedValue(new Error('429 Too Many Requests'));
+    try {
+      const result = await runIndexer(100, { backfill: true });
+      expect(result.fetched).toBe(0);
+      expect(result.unresolved).toBe(0);
+      expect(result.coverage.complete).toBe(false);
+      expect(result.coverage.checked).toBe(0);
+      expect(result.coverage.pending).toBeGreaterThan(0);
+      expect(result.coverage.reason).toBe('rpc_rate_limited');
+      expect(signatures.mock.calls.length).toBeLessThanOrEqual(5);
+    } finally { signatures.mockRestore(); }
+  });
+
+  test('actually checking every target with zero matching activity is complete', async () => {
+    const signatures = spyOn(Connection.prototype, 'getSignaturesForAddress').mockResolvedValue([]);
+    try {
+      const result = await runIndexer(100, { backfill: true });
+      expect(result.fetched).toBe(0);
+      expect(result.coverage.complete).toBe(true);
+      expect(result.coverage.checked).toBe(signatures.mock.calls.length);
+      expect(result.coverage.pending).toBe(0);
+    } finally { signatures.mockRestore(); }
+  });
+
+  test('successful early targets cannot hide later quota-skipped targets', async () => {
+    let calls = 0;
+    const signatures = spyOn(Connection.prototype, 'getSignaturesForAddress').mockImplementation(async () => {
+      if (++calls === 2) throw new Error('429 Too Many Requests');
+      return [];
+    });
+    try {
+      const result = await runIndexer(100, { backfill: true });
+      expect(result.coverage.complete).toBe(false);
+      expect(result.coverage.checked).toBeGreaterThan(0);
+      expect(result.coverage.pending).toBeGreaterThan(0);
+      expect(result.coverage.reason).toBe('rpc_rate_limited');
+    } finally { signatures.mockRestore(); }
+  });
+
+  test('non-quota RPC errors remain incomplete rather than empty successful reads', async () => {
+    const signatures = spyOn(Connection.prototype, 'getSignaturesForAddress').mockRejectedValue(new Error('fetch failed'));
+    const log = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await runIndexer(100, { backfill: true });
+      expect(result.coverage.complete).toBe(false);
+      expect(result.coverage.checked).toBe(0);
+      expect(result.coverage.reason).toBe('rpc_unavailable');
+    } finally { signatures.mockRestore(); log.mockRestore(); }
+  });
+
+  test('a cursor outside RPC retention remains unresolved even when fallback returns no signatures', async () => {
+    let writes = 0;
+    __setSupabaseForTest({ from: () => ({ select: () => ({ eq: () => ({ eq: () => ({ single: async () => ({ data: { last_signature: 'old-sig' }, error: null }) }) }) }), upsert: async () => { writes++; return { error: null }; } }) });
+    const signatures = spyOn(Connection.prototype, 'getSignaturesForAddress').mockImplementation(async (_key, options) => {
+      if (options?.until) throw new Error('Transaction old-sig not found');
+      return [];
+    });
+    try {
+      const result = await runIndexer(100);
+      expect(result.coverage.complete).toBe(false);
+      expect(result.coverage.pending).toBeGreaterThan(0);
+      expect(result.coverage.gaps).toBeGreaterThan(0);
+      expect(result.coverage.unresolved).toBe(0);
+      expect(result.coverage.reason).toBe('archive_gap');
+      expect(writes).toBe(0);
+    } finally { signatures.mockRestore(); __setSupabaseForTest(null); }
+  });
+
+  test('a full signature page is a bounded scan with unknown older coverage', async () => {
+    const signatures = spyOn(Connection.prototype, 'getSignaturesForAddress').mockResolvedValue([signature]);
+    const parser = spyOn(helius, 'parseTransactionsBatch').mockResolvedValue({ transactions: [], requested: 1, unresolved: [], undecodable: 0, recoveredFromArchive: 0 });
+    try {
+      const result = await fetchTransactionsForFacilitator(address, 1, { until: 'old-sig' });
+      expect(result.coverage).toEqual({ complete: false, checked: 1, pending: 1, unresolved: 0, gaps: 1, reason: 'scan_limit' });
+      // This health change reports the existing policy without silently
+      // rewriting historical cursors or extending parsing behavior.
+      expect(result.cursor).toBe('sig-1');
+    } finally { signatures.mockRestore(); parser.mockRestore(); }
+  });
+
+  test('archive misses remain incomplete even when no payment decoded', async () => {
+    const signatures = spyOn(Connection.prototype, 'getSignaturesForAddress').mockResolvedValue([signature]);
+    const parser = spyOn(helius, 'parseTransactionsBatch').mockResolvedValue({ transactions: [], requested: 1, unresolved: ['sig-1'], undecodable: 0, recoveredFromArchive: 0 });
+    try {
+      const result = await fetchTransactionsForFacilitator(address, 100, { until: 'old-sig' });
+      expect(result.coverage).toEqual({ complete: false, checked: 1, pending: 1, unresolved: 1, gaps: 0, reason: 'scan_partial' });
+      expect(result.cursor).toBeNull();
+      expect(result.unresolved).toEqual(['sig-1']);
+    } finally { signatures.mockRestore(); parser.mockRestore(); }
+  });
+
+  test('metadata-less records passed by the existing cursor policy remain explicit historical gaps', async () => {
+    const signatures = spyOn(Connection.prototype, 'getSignaturesForAddress').mockResolvedValue([signature]);
+    const parser = spyOn(helius, 'parseTransactionsBatch').mockResolvedValue({ transactions: [], requested: 1, unresolved: [], undecodable: 1, recoveredFromArchive: 0 });
+    try {
+      const result = await fetchTransactionsForFacilitator(address, 100, { until: 'old-sig' });
+      expect(result.coverage.complete).toBe(false);
+      expect(result.coverage.gaps).toBe(1);
+      expect(result.coverage.unresolved).toBe(0);
+      expect(result.cursor).toBe('sig-1');
+    } finally { signatures.mockRestore(); parser.mockRestore(); }
+  });
+});
+
+describe('Solana receipt-before-cursor ordering', () => {
+  const firstAddress = ALL_FACILITATOR_ADDRESSES[0];
+  const secondAddress = ALL_FACILITATOR_ADDRESSES[1];
+  const signature = { signature: 'receipt-sig', slot: 1, err: null, memo: null, blockTime: 1 };
+
+  function setup(failure?: 'receipt' | 'signal' | 'later_fetch', abort?: AbortController) {
+    const events: string[] = [];
+    const restores: Array<{ mockRestore: () => void }> = [];
+    let parsedFirst!: () => void;
+    const firstParsed = new Promise<void>(resolve => { parsedFirst = resolve; });
+    restores.push(spyOn(Connection.prototype, 'getSignaturesForAddress').mockImplementation(async (key) => key.toBase58() === firstAddress ? [signature] : []));
+    restores.push(spyOn(helius, 'parseTransactionsBatch').mockImplementation(async () => {
+      parsedFirst();
+      return { transactions: [{} as helius.HeliusEnhancedTransaction], requested: 1, unresolved: [], undecodable: 0, recoveredFromArchive: 0 };
+    }));
+    restores.push(spyOn(helius, 'extractX402Payment').mockReturnValue({ chain: 'solana', wallet_address: 'payer', facilitator: firstAddress, amount: 1, timestamp: '2026-09-12T00:00:00Z', success: true, tx_signature: signature.signature }));
+    restores.push(spyOn(helius, 'extractPayshPayment').mockReturnValue(null));
+    restores.push(spyOn(db, 'getCursor').mockImplementation(async (address) => {
+      if (failure === 'later_fetch' && address === secondAddress) {
+        await firstParsed;
+        await Bun.sleep(5);
+        throw Error('later_facilitator_aborted');
+      }
+      return null;
+    }));
+    restores.push(spyOn(db, 'upsertCursor').mockImplementation(async () => { events.push('cursor'); }));
+    restores.push(spyOn(db, 'ensureWalletsExist').mockResolvedValue(undefined));
+    restores.push(spyOn(db, 'insertTransactions').mockImplementation(async () => {
+      events.push('receipt');
+      if (failure === 'receipt') throw Error('receipt_insert_failed');
+      return 1;
+    }));
+    restores.push(spyOn(db, 'insertSignalEvents').mockImplementation(async () => {
+      events.push('signal');
+      if (failure === 'signal') throw Error('signal_insert_failed');
+      abort?.abort(Error('commit_cancelled'));
+      return 1;
+    }));
+    restores.push(spyOn(db, 'getTransactionsForWallets').mockResolvedValue([]));
+    restores.push(spyOn(db, 'getLatestSignalValues').mockResolvedValue(new Map()));
+    restores.push(spyOn(attestation, 'readAttestations').mockResolvedValue(new Map()));
+    return { events, restore: () => restores.reverse().forEach(spy => spy.mockRestore()) };
+  }
+
+  test('a later facilitator abort cannot advance the first cursor without saving its receipt', async () => {
+    const fixture = setup('later_fetch');
+    try {
+      await expect(runIndexer(100)).rejects.toThrow('later_facilitator_aborted');
+      expect(fixture.events).toEqual([]);
+    } finally { fixture.restore(); }
+  });
+
+  for (const failure of ['receipt', 'signal'] as const) {
+    test(`${failure} persistence failure leaves cursors available for retry`, async () => {
+      const fixture = setup(failure);
+      try {
+        await expect(runIndexer(100)).rejects.toThrow(`${failure}_insert_failed`);
+        expect(fixture.events).not.toContain('cursor');
+      } finally { fixture.restore(); }
+    });
+  }
+
+  test('a completed run publishes its cursor only after durable receipt and signal writes', async () => {
+    const fixture = setup();
+    try {
+      const result = await runIndexer(100);
+      expect(result.inserted).toBe(1);
+      expect(fixture.events).toEqual(['receipt', 'signal', 'cursor']);
+    } finally { fixture.restore(); }
+  });
+
+  test('abort after receipt persistence still prevents deferred cursor commits', async () => {
+    const controller = new AbortController();
+    const fixture = setup(undefined, controller);
+    try {
+      await expect(runIndexer(100, { signal: controller.signal })).rejects.toThrow('commit_cancelled');
+      expect(fixture.events).toEqual(['receipt', 'signal']);
+    } finally { fixture.restore(); }
+  });
+});
 
 describe('isRpcRateLimited', () => {
   test('matches the Helius quota-exhaustion error seen in prod logs', () => {

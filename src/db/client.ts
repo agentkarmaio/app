@@ -7,6 +7,7 @@
  */
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { makeIndexingFetch } from './indexing-fetch';
 import type {
   Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating, LivenessStatus,
   ConfidenceBadge, SignalEvent, SignalTier, KarmaFace, AutonomyLabel,
@@ -107,7 +108,7 @@ function getSupabase(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error('NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set');
-  _client = createClient(url, key);
+  _client = createClient(url, key, { global: { fetch: makeIndexingFetch() } });
   return _client;
 }
 
@@ -1790,12 +1791,15 @@ export async function cleanupOldScoreSnapshots(days = 90): Promise<number> {
 // fires the external "counters regressed" monitor, and is indistinguishable
 // from real data. Reset when the client is swapped (test seam).
 let staleStats: {
-  tx?: { totalTransactions: number; totalVolumeUsdc: number };
-  agents?: { totalAgents: number; tierDistribution: Record<string, number> };
+  tx?: { totalTransactions: number; totalVolumeUsdc: number; updatedAt: string };
+  agents?: { totalAgents: number; tierDistribution: Record<string, number>; updatedAt: string };
   registries?: { chain: string; agents: number; feedbacks: number }[];
 } = {};
 
 export async function getStats() {
+  let countsStale = false;
+  let transactionsUpdatedAt: string | null = null;
+  let agentsUpdatedAt: string | null = null;
   // Every figure comes from a SQL aggregate RPC — NEVER from streaming the full
   // transactions (~850k) or agent (~103k) tables. The old row-streaming
   // fallbacks (`select amount` / `select trust_tier`) blew the 8s statement
@@ -1811,8 +1815,11 @@ export async function getStats() {
     const stats = txStatsRes.data as Record<string, unknown>;
     totalTransactions = Number(stats.total_count ?? 0);
     totalVolumeUsdc = Number(stats.total_volume ?? 0);
-    staleStats.tx = { totalTransactions, totalVolumeUsdc };
+    transactionsUpdatedAt = new Date().toISOString();
+    staleStats.tx = { totalTransactions, totalVolumeUsdc, updatedAt: transactionsUpdatedAt };
   } else if (staleStats.tx) {
+    countsStale = true;
+    transactionsUpdatedAt = staleStats.tx.updatedAt;
     console.warn('[db] get_transaction_stats failed, serving stale figures:', txStatsRes.error?.message);
     ({ totalTransactions, totalVolumeUsdc } = staleStats.tx);
   } else {
@@ -1834,7 +1841,8 @@ export async function getStats() {
       tierDistribution[row.trust_tier] = n;
       totalAgents += n;
     }
-    staleStats.agents = { totalAgents, tierDistribution };
+    agentsUpdatedAt = new Date().toISOString();
+    staleStats.agents = { totalAgents, tierDistribution, updatedAt: agentsUpdatedAt };
   } else {
     if (tierRes.error) console.warn('[db] get_tier_distribution unavailable:', tierRes.error.message);
     // Cheap degradation: a HEAD count (no row scan) so totalAgents survives —
@@ -1842,7 +1850,10 @@ export async function getStats() {
     const headRes = await supabase.from('explore_agents').select('*', { count: 'exact', head: true });
     if (headRes.count != null) {
       totalAgents = headRes.count;
+      agentsUpdatedAt = new Date().toISOString();
     } else if (staleStats.agents) {
+      countsStale = true;
+      agentsUpdatedAt = staleStats.agents.updatedAt;
       ({ totalAgents, tierDistribution } = staleStats.agents);
     } else {
       throw new Error(`agent count failed with no stale figures to serve: ${headRes.error?.message}`);
@@ -1861,7 +1872,8 @@ export async function getStats() {
     registries = staleStats.registries ?? [];
   }
 
-  return { totalAgents, totalTransactions, totalVolumeUsdc, tierDistribution, registries };
+  return { totalAgents, totalTransactions, totalVolumeUsdc, tierDistribution, registries,
+    freshness: { stale: countsStale, transactionsUpdatedAt, agentsUpdatedAt } };
 }
 
 // --- Explore Queries ---------------------------------------------------------

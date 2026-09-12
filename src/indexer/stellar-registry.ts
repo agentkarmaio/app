@@ -91,6 +91,7 @@ export function makeStellarRegistryReader(server: rpc.Server): StellarRegistryRe
 // ─── Mapping ────────────────────────────────────────────────────────────────
 
 export interface MapOpts {
+  signal?: AbortSignal;
   /** Fetch http(s)/ipfs registrations. Off = mark 'pending' for a fast pass. */
   fetchRemote?: boolean;
   timeoutMs?: number;
@@ -109,10 +110,13 @@ export async function mapStellarAgentToScanned(
   identity: StellarAgentIdentity,
   opts: MapOpts = {},
 ): Promise<ScannedAgent> {
+  opts.signal?.throwIfAborted();
   const { registration, status } = await decodeRegistration(identity.agentURI, {
     fetchRemote: opts.fetchRemote ?? true,
     timeoutMs: opts.timeoutMs ?? 8000,
+    signal: opts.signal,
   });
+  opts.signal?.throwIfAborted();
   const registrationStatus: Erc8004RegistrationStatus = status;
   // tokenURI is load-bearing, not decoration: the rubric's 10-point
   // `tamperResistance` dimension checks whether the pointer is content-addressed
@@ -164,7 +168,9 @@ export async function scanStellarRegistry(opts: ScanStellarOpts): Promise<ScanSt
     jitter: opts.jitter,
   };
 
-  const to = opts.to ?? (await withRateLimitRetry(() => reader.totalAgents(), retryOpts)) - 1;
+  opts.signal?.throwIfAborted();
+  const to = opts.to ?? (await withRateLimitRetry(() => { opts.signal?.throwIfAborted(); return reader.totalAgents(); }, retryOpts)) - 1;
+  opts.signal?.throwIfAborted();
 
   const agents: ScannedAgent[] = [];
   const errors: Array<{ agentId: number; error: string }> = [];
@@ -174,20 +180,26 @@ export async function scanStellarRegistry(opts: ScanStellarOpts): Promise<ScanSt
 
   async function worker() {
     for (;;) {
+      opts.signal?.throwIfAborted();
       const id = cursor++;
       if (id > to) return;
       attempted++;
       try {
-        const exists = await withRateLimitRetry(() => reader.exists(id), retryOpts);
+        const exists = await withRateLimitRetry(() => { opts.signal?.throwIfAborted(); return reader.exists(id); }, retryOpts);
+        opts.signal?.throwIfAborted();
         if (!exists) {
           missing++;
           onProgress?.(id, 'missing');
           continue;
         }
-        const identity = await withRateLimitRetry(() => reader.read(id), retryOpts);
-        agents.push(await mapStellarAgentToScanned(identity, opts));
+        const identity = await withRateLimitRetry(() => { opts.signal?.throwIfAborted(); return reader.read(id); }, retryOpts);
+        opts.signal?.throwIfAborted();
+        const mapped = await mapStellarAgentToScanned(identity, opts);
+        opts.signal?.throwIfAborted();
+        agents.push(mapped);
         onProgress?.(id, 'scanned');
       } catch (err) {
+        opts.signal?.throwIfAborted();
         errors.push({ agentId: id, error: err instanceof Error ? err.message : String(err) });
         onProgress?.(id, 'error');
       }
@@ -195,6 +207,7 @@ export async function scanStellarRegistry(opts: ScanStellarOpts): Promise<ScanSt
   }
 
   await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => worker()));
+  opts.signal?.throwIfAborted();
   agents.sort((a, b) => a.agentId - b.agentId);
   return { agents, attempted, missing, errors };
 }

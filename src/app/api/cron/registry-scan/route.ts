@@ -8,6 +8,7 @@ import {
   setRegistryCursorTip,
 } from '@/db/client';
 import type { Chain } from '@/db/schema';
+import { createIndexingJob, runManagedIndexingTask } from '@/lib/indexing-jobs';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -64,16 +65,23 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const result = await runIncrementalRegistryScan(
+    let result: Awaited<ReturnType<typeof runIncrementalRegistryScan>> | undefined;
+    const indexing = await runManagedIndexingTask({ ...createIndexingJob('celo','registry'), run: async (signal) => {
+      result = await runIncrementalRegistryScan(
       config,
       upsertErc8004Agents,
       upsertErc8004Feedback,
       (c) => getRegistryCursorTip(c as Chain),
       (c, tip) => setRegistryCursorTip(c as Chain, tip),
-      { rescanWindow, onProgress: (m) => console.log(`[cron/registry-scan] ${m}`) },
+      { rescanWindow, signal, onProgress: (m) => console.log(`[cron/registry-scan] ${m}`) },
     );
+      return {status: result.errors ? 'failed' : 'caught_up', errorCode: result.errors ? 'registry_read_failure' : undefined,
+        checkedCount: result.agentsScanned, insertedCount: result.agentsPersisted, unresolvedCount: result.errors};
+    }});
+    if (!result) return NextResponse.json({status:indexing.status},{status:indexing.status==='busy'?202:503});
     return NextResponse.json(
       {
+        indexing,
         chain: result.chain,
         tip: result.tip,
         agentsScanned: result.agentsScanned,
@@ -82,7 +90,7 @@ export async function POST(request: NextRequest) {
         feedbackPersisted: result.feedbackPersisted,
         errors: result.errors,
       },
-      { status: 200 },
+      { status: indexing.status === 'caught_up' ? 200 : 207 },
     );
   } catch (err) {
     console.error('[cron/registry-scan] Error:', err);

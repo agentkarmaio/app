@@ -32,6 +32,8 @@ import { withRateLimitRetry, type RateLimitRetryOpts } from '@/lib/rpc-retry';
 
 /** Upstream page cap. `searchAgents` never returns more than this per call. */
 export const SOLANA_INDEXER_PAGE_SIZE = 250;
+/** A dead upstream cannot drive an unbounded offset walk. */
+export const SOLANA_MAX_CONSECUTIVE_PAGE_ERRORS = 3;
 
 // ─── Reader abstraction ─────────────────────────────────────────────────────
 
@@ -81,6 +83,7 @@ export function makeSolanaRegistryReader(sdk: {
 // ─── Mapping ────────────────────────────────────────────────────────────────
 
 export interface MapOpts {
+  signal?: AbortSignal;
   /** Fetch http(s)/ipfs registrations. Off = mark 'pending' for a fast pass. */
   fetchRemote?: boolean;
   timeoutMs?: number;
@@ -109,10 +112,13 @@ export async function mapSolanaAgentToScanned(
   row: SolanaIndexedAgent,
   opts: MapOpts = {},
 ): Promise<ScannedAgent> {
+  opts.signal?.throwIfAborted();
   const { registration, status } = await decodeRegistration(row.agent_uri, {
     fetchRemote: opts.fetchRemote ?? true,
     timeoutMs: opts.timeoutMs ?? 8000,
+    signal: opts.signal,
   });
+  opts.signal?.throwIfAborted();
   const registrationStatus: Erc8004RegistrationStatus = status;
 
   // tokenURI is load-bearing, not decoration: the rubric's 10-point
@@ -174,7 +180,8 @@ export interface ScanSolanaResult {
  * A failing page is recorded and the sweep MOVES ON to the next offset rather
  * than aborting: one 503 in the middle of ~1,470 rows should cost that page,
  * not the run. Every such gap is reported in `errors` so a partial sweep never
- * reads as a complete one.
+ * reads as a complete one. Three consecutive failed pages end the sweep;
+ * explicit cancellation throws before another RPC or metadata request.
  */
 export async function scanSolanaRegistry(opts: ScanSolanaOpts): Promise<ScanSolanaResult> {
   const {
@@ -198,23 +205,30 @@ export async function scanSolanaRegistry(opts: ScanSolanaOpts): Promise<ScanSola
   let duplicates = 0;
   let pagesFetched = 0;
   let offset = fromOffset;
+  let consecutivePageErrors = 0;
 
   for (;;) {
+    opts.signal?.throwIfAborted();
     if (agents.length >= maxAgents) break;
 
     let rows: SolanaIndexedAgent[];
     try {
-      rows = await withRateLimitRetry(() => reader.page(offset, limit), retryOpts);
+      rows = await withRateLimitRetry(() => { opts.signal?.throwIfAborted(); return reader.page(offset, limit); }, retryOpts);
+      opts.signal?.throwIfAborted();
     } catch (err) {
+      opts.signal?.throwIfAborted();
       errors.push({ offset, error: err instanceof Error ? err.message : String(err) });
       pagesFetched++;
+      if (++consecutivePageErrors >= SOLANA_MAX_CONSECUTIVE_PAGE_ERRORS) break;
       offset += limit;
       continue;
     }
 
     pagesFetched++;
+    consecutivePageErrors = 0;
 
     for (const row of rows) {
+      opts.signal?.throwIfAborted();
       if (agents.length >= maxAgents) break;
       const agentId = parseAgentId(row.agent_id);
       if (agentId === null) {
@@ -226,7 +240,9 @@ export async function scanSolanaRegistry(opts: ScanSolanaOpts): Promise<ScanSola
         continue;
       }
       seen.add(agentId);
-      agents.push(await mapSolanaAgentToScanned(row, opts));
+      const mapped = await mapSolanaAgentToScanned(row, opts);
+      opts.signal?.throwIfAborted();
+      agents.push(mapped);
     }
 
     onProgress?.(agents.length, offset);
@@ -238,6 +254,7 @@ export async function scanSolanaRegistry(opts: ScanSolanaOpts): Promise<ScanSola
     if (rows.length < limit) break;
   }
 
+  opts.signal?.throwIfAborted();
   agents.sort((a, b) => a.agentId - b.agentId);
   return { agents, pagesFetched, skippedNoAgentId, duplicates, errors };
 }

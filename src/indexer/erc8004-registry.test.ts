@@ -439,3 +439,55 @@ describe('runIncrementalRegistryScan (cursor-driven)', () => {
     expect(saved).toBe(false);
   });
 });
+
+describe('explicit registry membership', () => {
+  const config = { chain: 'arc', identityRegistry: '0x0', reputationRegistry: '0x0', rpcEnvVar: 'X', viemChain: {} } as unknown as Erc8004RegistryConfig;
+  test('refreshes sparse known IDs without discovering or filling the gap', async () => {
+    const seen: number[] = [];
+    const client = {
+      readContract: (async () => { throw new Error('tip discovery forbidden'); }) as never,
+      multicall: (async ({ contracts }: { contracts: { functionName: string; args: bigint[] }[] }) => contracts.map((c) => {
+        if (c.functionName === 'ownerOf') seen.push(Number(c.args[0]));
+        return { status: 'success', result: c.functionName === 'tokenURI' ? '' : '0xAA' };
+      })) as never,
+    };
+    await runRegistryScan(config, async (_chain, rows) => rows.length, async () => 0, {
+      agentIds: [72, 845_000], scanFeedback: false, fetchRemote: false, client,
+    });
+    expect(seen).toEqual([72, 845_000]);
+  });
+  test('failed read on a known ID is an error, not an assumed unminted gap', async () => {
+    const result = await runRegistryScan(config, async () => 0, async () => 0, {
+      agentIds: [72], scanFeedback: false, client: {
+        readContract: (async () => { throw new Error('tip discovery forbidden'); }) as never,
+        multicall: (async () => [{ status: 'failure' }, { status: 'failure' }, { status: 'failure' }]) as never,
+      },
+    });
+    expect(result.errors).toBe(1);
+  });
+});
+
+describe('EVM registry cancellation', () => {
+  test('abort during tip discovery is not swallowed as a missing token', async () => {
+    const controller = new AbortController(); let calls = 0;
+    await expect(findRegistryTip({ readContract: (async () => {
+      calls++; controller.abort(Error('stop_registry')); throw Error('RPC unavailable');
+    }) as never }, '0x0', controller.signal)).rejects.toThrow('stop_registry');
+    expect(calls).toBe(1);
+  });
+  test('abort after identity reads prevents writes, metadata and feedback reads', async () => {
+    const controller = new AbortController(); let reads = 0; let writes = 0;
+    const config = { chain: 'arc', identityRegistry: '0x0', reputationRegistry: '0x0', rpcEnvVar: 'X', viemChain: {} } as unknown as Erc8004RegistryConfig;
+    await expect(runRegistryScan(config, async () => { writes++; return 1; }, async () => { writes++; return 1; }, {
+      agentIds: [72], signal: controller.signal, fetchRemote: false,
+      client: {
+        readContract: (async () => { throw Error('tip forbidden'); }) as never,
+        multicall: (async () => { reads++; controller.abort(Error('stop_registry')); return [
+          { status: 'success', result: '0xAA' }, { status: 'success', result: '0xAA' },
+          { status: 'success', result: 'https://example.com/agent.json' },
+        ]; }) as never,
+      },
+    })).rejects.toThrow('stop_registry');
+    expect(reads).toBe(1); expect(writes).toBe(0);
+  });
+});

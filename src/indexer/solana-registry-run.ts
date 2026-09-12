@@ -24,6 +24,8 @@
  *      NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (required unless --dry-run).
  */
 
+import { runIndexerCli } from './managed-cli';
+
 import { SolanaSDK } from '8004-solana';
 import { Keypair } from '@solana/web3.js';
 import { makeSolanaRegistryReader, scanSolanaRegistry } from '@/indexer/solana-registry';
@@ -69,17 +71,43 @@ const sdk = new SolanaSDK({
   ...(rpcUrl ? { rpcUrl } : {}),
 });
 
-const result = await scanSolanaRegistry({
-  reader: makeSolanaRegistryReader(sdk),
-  fromOffset,
-  pageSize,
-  maxAgents,
-  fetchRemote,
-  onProgress: (total, offset) => {
-    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(0);
-    console.log(`[${elapsed.padStart(4)}s] offset ${String(offset).padStart(5)} — ${total} agents mapped`);
+let written = 0;
+const execution = await runIndexerCli({
+  chain: 'solana', path: 'registry', dryRun,
+  run: async (signal) => {
+    const scanned = await scanSolanaRegistry({
+      signal,
+      reader: makeSolanaRegistryReader(sdk),
+      fromOffset,
+      pageSize,
+      maxAgents,
+      fetchRemote,
+      onProgress: (total, offset) => {
+        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(0);
+        console.log(`[${elapsed.padStart(4)}s] offset ${String(offset).padStart(5)} — ${total} agents mapped`);
+      },
+    });
+    if (!dryRun) {
+      signal?.throwIfAborted();
+      const { upsertErc8004Agents } = await import('@/db/client');
+      written = await upsertErc8004Agents('solana', scanned.agents);
+    }
+    return scanned;
+  },
+  summarize: (r) => {
+    const unresolved = r.errors.length + r.skippedNoAgentId;
+    const partial = fromOffset > 0 || maxAgents !== undefined;
+    return { status: unresolved ? 'failed' : partial ? 'catching_up' : 'caught_up',
+      errorCode: unresolved || partial ? 'scan_partial' : undefined,
+      checkedCount: r.agents.length, insertedCount: written, unresolvedCount: unresolved };
   },
 });
+if (!execution.result) {
+  console.log(`[solana-registry] ${execution.status}${execution.errorCode ? ` (${execution.errorCode})` : ''} — no scan result`);
+  process.exit(execution.exitCode);
+}
+const result = execution.result;
+console.log(`[solana-registry] managed status: ${execution.status}`);
 
 console.log('');
 console.log(`[solana-registry] pages fetched:      ${result.pagesFetched}`);
@@ -106,13 +134,10 @@ if (result.errors.length > 0) {
 if (dryRun) {
   console.log('');
   console.log('[solana-registry] dry run — no rows written');
-  process.exit(0);
+  process.exit(execution.exitCode);
 }
 
-// Imported lazily so --dry-run never needs Supabase credentials.
-const { upsertErc8004Agents } = await import('@/db/client');
-const written = await upsertErc8004Agents('solana', result.agents);
 console.log('');
 console.log(`[solana-registry] erc8004_agents rows upserted: ${written}`);
 console.log(`[solana-registry] elapsed: ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
-process.exit(0);
+process.exit(execution.exitCode);

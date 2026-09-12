@@ -181,6 +181,7 @@ export function toSignalPair(t: CeloX402Transfer, observedAt: string): InsertSig
 // ─── DI core ────────────────────────────────────────────────────────────────
 
 export interface CeloX402IndexerDeps {
+  signal?: AbortSignal;
   /** Lowercased facilitator/payee addresses to match on Transfer from/to. */
   facilitators: ReadonlySet<string>;
   /** Current chain head block number. Bounds the pagination loop. */
@@ -201,6 +202,8 @@ export interface CeloX402IndexerDeps {
   windowSize?: number;
   /** Max windows processed per invocation (bounded backfill). */
   maxWindows?: number;
+  timeBudgetMs?: number;
+  now?: () => number;
 }
 
 export const CELO_DEFAULT_WINDOW = 5_000;
@@ -213,27 +216,52 @@ export const CELO_CURSOR_KEY = 'celo:x402';
  * when the facilitator set is empty. Cursor advances even across dry windows so
  * a scanned-but-empty range is never re-examined.
  */
-export async function celoX402Indexer(deps: CeloX402IndexerDeps): Promise<IndexRunResult> {
+export interface CeloX402RunResult extends IndexRunResult {
+  coverage: {
+    complete: boolean;
+    head?: string;
+    checkpoint?: string | null;
+    checked: number;
+    pending: number;
+    unresolved: number;
+    reason?: string;
+  };
+}
+
+export async function celoX402Indexer(deps: CeloX402IndexerDeps): Promise<CeloX402RunResult> {
+  deps.signal?.throwIfAborted();
   const cursors = new Map<string, string>();
   const windowSize = deps.windowSize ?? CELO_DEFAULT_WINDOW;
   const maxWindows = deps.maxWindows ?? CELO_DEFAULT_MAX_WINDOWS;
+  const now = deps.now ?? Date.now;
+  const deadline = deps.timeBudgetMs == null ? Number.POSITIVE_INFINITY : now() + deps.timeBudgetMs;
+  if (!Number.isSafeInteger(windowSize) || windowSize < 1 || !Number.isSafeInteger(maxWindows) || maxWindows < 1) {
+    throw new Error('Invalid Celo indexer bounds');
+  }
 
   // Nothing to match against → skip the RPC round-trip entirely.
   if (deps.facilitators.size === 0) {
-    return { fetched: 0, inserted: 0, cursors };
+    return { fetched: 0, inserted: 0, cursors, coverage: { complete: false, checked: 0, pending: 0, unresolved: 0, reason: 'empty_seed' } };
   }
 
   // Resolve start block from cursor (last_slot + 1), else the fallback.
   let startBlock = deps.startBlockFallback;
   const cursor = await deps.getCursor(CELO_CURSOR_KEY);
+  deps.signal?.throwIfAborted();
   if (cursor?.last_slot != null) startBlock = BigInt(cursor.last_slot) + BigInt(1);
 
   const head = await deps.getHead();
+  deps.signal?.throwIfAborted();
 
   // Cursor already at/after head → no-op, but keep the cursor pinned to head.
   if (startBlock > head) {
     cursors.set(CELO_CURSOR_KEY, String(head));
-    return { fetched: 0, inserted: 0, cursors };
+    const ahead = startBlock - BigInt(1) > head;
+    return { fetched: 0, inserted: 0, cursors, coverage: {
+      complete: !ahead, head: String(head), checkpoint: String(startBlock - BigInt(1)),
+      checked: 0, pending: 0, unresolved: ahead ? 1 : 0,
+      ...(ahead ? { reason: 'head_behind_cursor' } : {}),
+    } };
   }
 
   const rows: Omit<Transaction, 'id'>[] = [];
@@ -244,25 +272,32 @@ export async function celoX402Indexer(deps: CeloX402IndexerDeps): Promise<IndexR
   // Cache block timestamps so many transfers at one block resolve the ISO once.
   const tsCache = new Map<string, string>();
   const tsFor = async (block: bigint): Promise<string> => {
+    deps.signal?.throwIfAborted();
     const key = block.toString();
     const cached = tsCache.get(key);
     if (cached !== undefined) return cached;
     const ts = await deps.blockTimestamp(block);
+    deps.signal?.throwIfAborted();
     tsCache.set(key, ts);
     return ts;
   };
 
   let maxBlock = startBlock - BigInt(1);
   let windowsProcessed = 0;
+  let budgetExpired = false;
 
   for (let from = startBlock; from <= head; from += BigInt(windowSize)) {
+    deps.signal?.throwIfAborted();
+    if (now() >= deadline) { budgetExpired = true; break; }
     let to = from + BigInt(windowSize) - BigInt(1);
     if (to > head) to = head;
     if (to > maxBlock) maxBlock = to;
 
     const transfers = await deps.getLogs(from, to);
+    deps.signal?.throwIfAborted();
 
     for (const t of transfers) {
+      deps.signal?.throwIfAborted();
       const sig = celoTxSignature(t);
       if (seen.has(sig)) continue;
       seen.add(sig);
@@ -278,31 +313,47 @@ export async function celoX402Indexer(deps: CeloX402IndexerDeps): Promise<IndexR
   }
 
   const advanceCursor = async (): Promise<void> => {
+    deps.signal?.throwIfAborted();
+    if (windowsProcessed === 0) return;
     await deps.upsertCursor(CELO_CURSOR_KEY, String(maxBlock), Number(maxBlock));
+    deps.signal?.throwIfAborted();
     cursors.set(CELO_CURSOR_KEY, String(maxBlock));
   };
 
+  const coverage: CeloX402RunResult['coverage'] = {
+    complete: maxBlock >= head,
+    head: String(head), checkpoint: windowsProcessed > 0 ? String(maxBlock) : cursor?.last_signature ?? null,
+    checked: Number(maxBlock - startBlock + BigInt(1)),
+    pending: Number(head - maxBlock), unresolved: 0,
+    ...(maxBlock < head ? { reason: budgetExpired ? 'time_budget' : 'window_limit' } : {}),
+  };
   const fetched = rows.length;
   if (fetched === 0) {
     await advanceCursor();
-    return { fetched: 0, inserted: 0, cursors };
+    return { fetched: 0, inserted: 0, cursors, coverage };
   }
 
   // FK pre-create both faces before inserting transactions / signal_events.
-  for (const w of wallets) await deps.ensureWallet(w);
+  for (const w of wallets) {
+    deps.signal?.throwIfAborted();
+    await deps.ensureWallet(w);
+  }
+  deps.signal?.throwIfAborted();
 
   const inserted = await deps.insertTransactions(rows);
+  deps.signal?.throwIfAborted();
   await deps.insertSignalEvents(signals);
+  deps.signal?.throwIfAborted();
 
   await advanceCursor();
-  return { fetched, inserted, cursors };
+  return { fetched, inserted, cursors, coverage };
 }
 
 // ─── Production wiring ──────────────────────────────────────────────────────
 
-function makeClient() {
+function makeClient(signal?: AbortSignal) {
   const rpcUrl = process.env.CELO_RPC_URL; // optional; viem defaults to public Forno
-  return createPublicClient({ chain: celo, transport: http(rpcUrl) });
+  return createPublicClient({ chain: celo, transport: http(rpcUrl, { fetchOptions: { signal } }) });
 }
 
 /** Recent-head lookback (~1 day at Celo's ~5s blocks) for a first seeded run
@@ -332,13 +383,16 @@ async function rpcGetLogs(
   facilitatorSet: ReadonlySet<string>,
   fromBlock: bigint,
   toBlock: bigint,
+  signal?: AbortSignal,
 ): Promise<CeloX402Transfer[]> {
   const out: CeloX402Transfer[] = [];
   for (const token of CELO_X402_TOKENS) {
+    signal?.throwIfAborted();
     const [outLogs, inLogs] = await Promise.all([
       client.getLogs({ address: token.address, event: ERC20_TRANSFER, args: { from: facilitatorList }, fromBlock, toBlock }),
       client.getLogs({ address: token.address, event: ERC20_TRANSFER, args: { to: facilitatorList }, fromBlock, toBlock }),
     ]);
+    signal?.throwIfAborted();
     for (const log of [...outLogs, ...inLogs]) {
       const rec = toRecord(log, token, facilitatorSet);
       if (rec) out.push(rec);
@@ -355,22 +409,25 @@ async function rpcGetLogs(
  * DB or advancing the cursor — the local verification path before a real write.
  */
 export async function runCeloX402Indexer(
-  opts: { windowSize?: number; maxWindows?: number; dryRun?: boolean } = {},
-): Promise<IndexRunResult & { rows?: Omit<Transaction, 'id'>[] }> {
+  opts: { windowSize?: number; maxWindows?: number; timeBudgetMs?: number; dryRun?: boolean; signal?: AbortSignal } = {},
+): Promise<CeloX402RunResult & { rows?: Omit<Transaction, 'id'>[] }> {
   // Curated/env set UNIONED with self-seeded discovered payees (verified rows in
   // celo_x402_payees). Empty-set no-op preserved when all sources are empty.
+  opts.signal?.throwIfAborted();
   const facilitatorSet = await celoX402FacilitatorSetWithDiscovered();
+  opts.signal?.throwIfAborted();
   if (facilitatorSet.size === 0) {
-    return { fetched: 0, inserted: 0, cursors: new Map() };
+    return { fetched: 0, inserted: 0, cursors: new Map(), coverage: { complete: false, checked: 0, pending: 0, unresolved: 0, reason: 'empty_seed' } };
   }
 
-  const client = makeClient();
+  const client = makeClient(opts.signal);
   const facilitatorList = [...facilitatorSet] as `0x${string}`[];
   const envStart = resolveStartBlockEnv();
 
   // Dry-run: collect rows via the same window logic, no DB writes, no cursor.
   if (opts.dryRun) {
     const head = await client.getBlockNumber();
+    opts.signal?.throwIfAborted();
     let start = envStart != null ? BigInt(envStart) : head - BigInt(CELO_DEFAULT_LOOKBACK_BLOCKS);
     if (start < BigInt(0)) start = BigInt(0);
     const windowSize = BigInt(opts.windowSize ?? CELO_DEFAULT_WINDOW);
@@ -378,35 +435,53 @@ export async function runCeloX402Indexer(
     const rows: Omit<Transaction, 'id'>[] = [];
     const seen = new Set<string>();
     let processed = 0;
+    let checkedThrough = start - BigInt(1);
     for (let from = start; from <= head; from += windowSize) {
+      opts.signal?.throwIfAborted();
       let to = from + windowSize - BigInt(1);
       if (to > head) to = head;
-      const transfers = await rpcGetLogs(client, facilitatorList, facilitatorSet, from, to);
+      const transfers = await rpcGetLogs(client, facilitatorList, facilitatorSet, from, to, opts.signal);
+      opts.signal?.throwIfAborted();
       for (const t of transfers) {
+        opts.signal?.throwIfAborted();
         const sig = celoTxSignature(t);
         if (seen.has(sig)) continue;
         seen.add(sig);
         const block = await client.getBlock({ blockNumber: t.blockNumber });
+        opts.signal?.throwIfAborted();
         rows.push(toTransactionRow(t, new Date(Number(block.timestamp) * 1000).toISOString()));
       }
+      checkedThrough = to;
       if (++processed >= maxWindows) break;
     }
-    return { fetched: rows.length, inserted: 0, cursors: new Map(), rows };
+    return {
+      fetched: rows.length, inserted: 0, cursors: new Map(), rows,
+      coverage: {
+        complete: checkedThrough >= head, head: String(head), checkpoint: null,
+        checked: Number(checkedThrough - start + BigInt(1)),
+        pending: Number(head > checkedThrough ? head - checkedThrough : BigInt(0)),
+        unresolved: 0, reason: 'dry_run',
+      },
+    };
   }
 
+  opts.signal?.throwIfAborted();
   return celoX402Indexer({
+    signal: opts.signal,
     facilitators: facilitatorSet,
     windowSize: opts.windowSize,
     maxWindows: opts.maxWindows,
+    timeBudgetMs: opts.timeBudgetMs ?? 120_000,
     startBlockFallback:
       envStart != null
         ? BigInt(envStart)
         : (await client.getBlockNumber()) - BigInt(CELO_DEFAULT_LOOKBACK_BLOCKS),
-    getHead: async () => withRateLimitRetry(() => client.getBlockNumber(), INGEST_RETRY),
+    getHead: async () => withRateLimitRetry(() => { opts.signal?.throwIfAborted(); return client.getBlockNumber(); }, INGEST_RETRY),
     getLogs: (fromBlock, toBlock) =>
-      withRateLimitRetry(() => rpcGetLogs(client, facilitatorList, facilitatorSet, fromBlock, toBlock), INGEST_RETRY),
+      withRateLimitRetry(() => rpcGetLogs(client, facilitatorList, facilitatorSet, fromBlock, toBlock, opts.signal), INGEST_RETRY),
     blockTimestamp: async (blockNumber) => {
-      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }), INGEST_RETRY);
+      const block = await withRateLimitRetry(() => { opts.signal?.throwIfAborted(); return client.getBlock({ blockNumber }); }, INGEST_RETRY);
+      opts.signal?.throwIfAborted();
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
     insertTransactions: dbInsertTransactions,

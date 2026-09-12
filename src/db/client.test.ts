@@ -374,7 +374,7 @@ describe('getStats failure contract: stale-on-error, throw-on-cold, no row-strea
       tierRows: [{ trust_tier: 'Good', count: 106101 }],
     });
     __setSupabaseForTest(fake);
-    await getStats(); // primes the last-known-good figures
+    const first = await getStats(); // primes the last-known-good figures
 
     // Same DB identity, transient RPC failure (the 08:01 statement timeout) —
     // swap the rpc handler in place so the stale state survives.
@@ -394,6 +394,8 @@ describe('getStats failure contract: stale-on-error, throw-on-cold, no row-strea
     expect(stats.totalTransactions).toBe(838401);
     expect(stats.totalVolumeUsdc).toBe(273685.73);
     expect(stats.totalAgents).toBe(106145);
+    expect(stats.freshness.stale).toBe(true);
+    expect(stats.freshness.transactionsUpdatedAt).toBe(first.freshness.transactionsUpdatedAt);
   });
 
   test('tier RPC failure degrades to a HEAD count over the canonical explore view', async () => {

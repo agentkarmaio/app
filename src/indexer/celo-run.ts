@@ -14,6 +14,10 @@
  *   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY — required for real runs
  */
 
+import { runIndexerCli } from './managed-cli';
+import { coverageOutcome } from '@/lib/indexing-jobs';
+
+import { requireEnv } from '../lib/require-env';
 import { runCeloX402Indexer } from './celo-x402';
 import { celoX402FacilitatorSetWithDiscovered } from '../config/celo-x402';
 
@@ -29,23 +33,33 @@ const windowSize = numArg('--window');
 const maxWindows = numArg('--max-windows');
 
 // Merged set: curated + env + verified self-seeded payees (celo_x402_payees).
+requireEnv(['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']);
 const facilitators = await celoX402FacilitatorSetWithDiscovered();
 console.log(`[celo-indexer] mode: ${dryRun ? 'DRY-RUN (no DB writes)' : 'live'}`);
 console.log(`[celo-indexer] RPC: ${process.env.CELO_RPC_URL ? 'custom' : 'public Forno (rate-limited)'}`);
 console.log(`[celo-indexer] facilitators+payees seeded: ${facilitators.size}`);
 if (facilitators.size === 0) {
   console.log('[celo-indexer] none seeded — no-op. Seed via CELO_X402_FACILITATORS env, config, or scripts/celo-x402-discover-payees.ts.');
-  process.exit(0);
 }
 console.log(`[celo-indexer] watching: ${[...facilitators].join(', ')}`);
 
 const start = Date.now();
 
-runCeloX402Indexer({ windowSize, maxWindows, dryRun })
-  .then((result) => {
+runIndexerCli({
+  chain: 'celo', path: 'payments', dryRun: dryRun,
+  run: async (signal) => runCeloX402Indexer({ windowSize, maxWindows, dryRun, signal }),
+  summarize: (result) => coverageOutcome(result.coverage, result.inserted),
+})
+  .then(({ result, status, exitCode, errorCode }) => {
+    if (!result) {
+      console.log(`[indexer] ${status}${errorCode ? ` (${errorCode})` : ''} — no scan result`);
+      process.exit(exitCode);
+    }
+    console.log(`[indexer] managed status: ${status}`);
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     console.log(`\n[celo-indexer] Done in ${elapsed}s`);
     console.log(`[celo-indexer] Fetched: ${result.fetched} | Inserted: ${result.inserted}`);
+    console.log(`[celo-indexer] coverage: ${JSON.stringify(result.coverage)}`);
     if (dryRun && result.rows) {
       console.log(`[celo-indexer] DRY-RUN rows (${result.rows.length}):`);
       for (const r of result.rows.slice(0, 20)) {
@@ -57,7 +71,7 @@ runCeloX402Indexer({ windowSize, maxWindows, dryRun })
       if (result.rows.length > 20) console.log(`  …and ${result.rows.length - 20} more`);
     }
     for (const [k, v] of result.cursors) console.log(`[celo-indexer] cursor ${k} → ${v}`);
-    process.exit(0);
+    process.exit(exitCode);
   })
   .catch((err) => {
     console.error('[celo-indexer] Fatal error:', err);

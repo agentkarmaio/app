@@ -41,6 +41,7 @@ import {
 } from '../src/db/client';
 import { parseTransactionsBatch, extractX402Payment, getArchiveRpcUrl } from '../src/indexer/helius';
 import { recoverFacilitatorGap } from '../src/indexer/facilitator-gap';
+import { assertLegacyGapWriteAllowed } from '../src/indexer/legacy-gap-guard';
 import { requireEnv } from '../src/lib/require-env';
 
 requireEnv(['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']);
@@ -52,6 +53,10 @@ function flag(name: string): string | undefined {
 const write = process.argv.includes('--write');
 const only = flag('--address');
 const maxSignatures = Number(flag('--max')) || 10_000;
+
+// Read-only probes stay independent. Long writes require an intentionally
+// paused managed poller; never change that operational policy automatically.
+if (write) await assertLegacyGapWriteAllowed();
 
 // Full history is the whole point — never fall back to the indexer's RPC here.
 const archive = new Connection(getArchiveRpcUrl(), 'confirmed');

@@ -134,7 +134,7 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           # Optional RPC override; falls back to the config default when unset.
           CELO_RPC_URL: ${{ secrets.CELO_RPC_URL }}
-        run: bun run registry:scan:incremental
+        run: bun run src/scripts/indexing-run.ts celo registry
 
       # A broken mirror refresh must page, not rot silently (2026-06-23 lesson).
       - name: Page on failure

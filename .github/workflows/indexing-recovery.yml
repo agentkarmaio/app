@@ -1,0 +1,50 @@
+name: Chain indexing recovery
+
+# App-independent recovery; shared database leases prevent overlap with the
+# five-minute application workers. Each path fails independently.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: indexing-recovery
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { chain: arc, path: escrow }
+          - { chain: arc, path: transfers }
+          - { chain: arc, path: registry }
+          - { chain: celo, path: payments }
+          - { chain: stellar, path: transfers }
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/bun-setup
+      - name: Run bounded indexing path
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ARC_RPC_URL: ${{ vars.ARC_RPC_URL }}
+          ARC_JOBS_START_BLOCK: ${{ vars.ARC_JOBS_START_BLOCK }}
+          ARC_TRANSFERS_START_BLOCK: ${{ vars.ARC_TRANSFERS_START_BLOCK }}
+          CELO_RPC_URL: ${{ secrets.CELO_RPC_URL }}
+          STELLAR_HORIZON_URL: ${{ secrets.STELLAR_HORIZON_URL }}
+          CHAIN: ${{ matrix.chain }}
+          INDEXING_PATH: ${{ matrix.path }}
+        run: bun run src/scripts/indexing-run.ts "$CHAIN" "$INDEXING_PATH"
+      - name: Page on failure
+        if: failure()
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            AgentKarma indexing recovery failed: ${{ matrix.chain }}/${{ matrix.path }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
