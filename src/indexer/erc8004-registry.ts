@@ -84,6 +84,9 @@ export interface ScannedFeedback {
   revoked: boolean;
 }
 
+export type RegistryFailureStage = 'identity' | 'registration' | 'feedback' | 'unknown';
+export interface RegistryFailedMember { agentId: number; stages: RegistryFailureStage[] }
+
 export interface RegistryScanResult {
   chain: string;
   tip: number;
@@ -92,6 +95,8 @@ export interface RegistryScanResult {
   feedbackScanned: number;
   feedbackPersisted: number;
   errors: number;
+  /** Exhaustive failed members for explicit agentIds scans; absent for discovery. */
+  failedMembers?: RegistryFailedMember[];
 }
 
 export type PersistAgents = (chain: string, agents: ScannedAgent[]) => Promise<number>;
@@ -335,6 +340,15 @@ export async function runRegistryScan(
     chain: config.chain, tip, agentsScanned: 0, agentsPersisted: 0,
     feedbackScanned: 0, feedbackPersisted: 0, errors: 0,
   };
+  if (explicitIds) result.failedMembers = [];
+  const failed = (agentIds: number[], stage: RegistryFailureStage) => {
+    if (!result.failedMembers) return;
+    for (const agentId of agentIds) {
+      const previous = result.failedMembers.find(member => member.agentId === agentId);
+      if (previous) { if (!previous.stages.includes(stage)) previous.stages.push(stage); }
+      else result.failedMembers.push({ agentId, stages: [stage] });
+    }
+  };
   if (tip < from) return result;
 
   const ids: number[] = explicitIds ?? [];
@@ -355,6 +369,7 @@ export async function runRegistryScan(
     } catch (err) {
       opts.signal?.throwIfAborted();
       result.errors++;
+      failed(batch, 'identity');
       log(`identity multicall failed for ${batch[0]}..${batch[batch.length - 1]}: ${errMsg(err)}`);
       continue;
     }
@@ -369,6 +384,7 @@ export async function runRegistryScan(
         // Membership is already known: a failed read cannot be silently treated
         // as a hole in a discovered range or allowed to clear saved metadata.
         result.errors++;
+        failed([id], 'identity');
         continue;
       }
       if (ownerR?.status !== 'success') continue; // unminted / burned id
@@ -394,7 +410,19 @@ export async function runRegistryScan(
         agent.registration = dec.registration;
         agent.registrationStatus = dec.status;
         agent.metadataScore = scoreMetadataQuality({ registration: dec.registration }).score;
+        if (explicitIds && dec.status === 'unreachable') {
+          result.errors++;
+          failed([agent.agentId], 'registration');
+        }
       }, opts.signal);
+    }
+
+    // An outage is not evidence that previously saved registration disappeared.
+    // Retain the whole stored identity until all its metadata reads succeed.
+    if (explicitIds) {
+      for (let i = live.length - 1; i >= 0; i--) {
+        if (live[i].registrationStatus === 'unreachable') live.splice(i, 1);
+      }
     }
 
     // Persist identities first so the feedback FK target (chain, agent_id) exists.
@@ -420,16 +448,30 @@ export async function runRegistryScan(
         } catch {
           opts.signal?.throwIfAborted();
           result.errors++;
+          failed(fbIds, 'feedback');
           continue;
         }
         const records: ScannedFeedback[] = [];
         const aggById = new Map<number, FeedbackAgg>();
         for (let i = 0; i < fbIds.length; i++) {
           if (fbReads[i]?.status !== 'success') {
-            if (explicitIds) result.errors++;
+            if (explicitIds) { result.errors++; failed([fbIds[i]], 'feedback'); }
             continue;
           }
-          const recs = parseFeedbackArrays(fbIds[i], fbReads[i].result as readonly unknown[]);
+          let recs: ScannedFeedback[];
+          try {
+            const values = fbReads[i].result;
+            if (explicitIds && (!Array.isArray(values) || values.length !== 7
+              || !values.every(Array.isArray) || values.some(array => array.length !== values[0].length))) {
+              throw Error('Invalid registry feedback arrays');
+            }
+            recs = parseFeedbackArrays(fbIds[i], values as readonly unknown[]);
+          } catch (error) {
+            if (!explicitIds) throw error;
+            result.errors++;
+            failed([fbIds[i]], 'feedback');
+            continue;
+          }
           records.push(...recs);
           aggById.set(fbIds[i], aggregateAgentFeedback(recs));
         }
@@ -452,6 +494,7 @@ export async function runRegistryScan(
   }
 
   opts.signal?.throwIfAborted();
+  result.failedMembers?.sort((a, b) => a.agentId - b.agentId);
   return result;
 }
 

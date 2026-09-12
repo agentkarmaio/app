@@ -93,3 +93,16 @@ describe('per-path indexing health', () => {
     ).toBe('catching_up');
   });
 });
+
+test('public issue reasons distinguish throttling, retrying records, and unverified history without raw errors', () => {
+  const result = buildIndexingHealth([
+    row('arc', 'transfers', { status: 'failed', error_code: 'rpc_rate_limited' }),
+    row('arc', 'registry', { status: 'failed', error_code: 'registry_read_failure', unresolved_count: 1 }),
+    row('solana', 'payments', { status: 'catching_up', gaps_count: 18 }),
+    row('celo', 'payments', { status: 'failed', error_code: 'https://rpc.invalid/SECRET' }),
+  ], now);
+  expect(result.chains.find(c => c.chain === 'arc')?.paths.find(p => p.path === 'transfers')?.issue).toBe('rate_limited');
+  expect(result.chains.find(c => c.chain === 'arc')?.paths.find(p => p.path === 'registry')?.issue).toBe('registry_retry');
+  expect(result.chains.find(c => c.chain === 'solana')?.paths.find(p => p.path === 'payments')?.issue).toBe('history_gap');
+  expect(JSON.stringify(result)).not.toContain('SECRET');
+});

@@ -227,7 +227,6 @@ describe('aggregateAgentFeedback', () => {
 describe('findRegistryTip', () => {
   function fakeClient(maxId: number) {
     return {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       readContract: (async ({ args }: { args: readonly unknown[] }) => {
         const id = Number(args[0] as bigint);
         if (id >= 1 && id <= maxId) return '0xowner';
@@ -464,6 +463,54 @@ describe('explicit registry membership', () => {
       },
     });
     expect(result.errors).toBe(1);
+    expect(result.failedMembers).toEqual([{ agentId: 72, stages: ['identity'] }]);
+  });
+  test('identity and feedback batch failures name every affected explicit member', async () => {
+    for (const stage of ['identity', 'feedback'] as const) {
+      const result = await runRegistryScan(config, async (_chain, rows) => rows.length, async () => 0, {
+        agentIds: [2, 70], fetchRemote: false, client: {
+          readContract: (async () => { throw Error('tip forbidden'); }) as never,
+          multicall: (async ({ contracts }: { contracts: { functionName: string }[] }) => {
+            if (stage === 'identity' || contracts[0].functionName === 'readAllFeedback') throw Error('RPC failed');
+            return contracts.map(c => ({ status: 'success', result: c.functionName === 'tokenURI' ? '' : '0xAA' }));
+          }) as never,
+        },
+      });
+      expect(result.failedMembers).toEqual([{ agentId: 2, stages: [stage] }, { agentId: 70, stages: [stage] }]);
+    }
+  });
+  test('failed remote metadata keeps prior metadata untouched while valid empty and invalid metadata are observed', async () => {
+    const persisted: ScannedAgent[] = [];
+    const result = await runRegistryScan(config, async (_chain, rows) => { persisted.push(...rows); return rows.length; }, async () => 0, {
+      agentIds: [2, 70, 80], scanFeedback: false, fetchRemote: true,
+      client: {
+        readContract: (async () => { throw Error('tip forbidden'); }) as never,
+        multicall: (async ({ contracts }: { contracts: { functionName: string; args: bigint[] }[] }) => contracts.map(c => ({
+          status: 'success', result: c.functionName !== 'tokenURI' ? '0xAA'
+            : Number(c.args[0]) === 2 ? 'http://127.0.0.1/private.json' : Number(c.args[0]) === 70 ? '' : 'data:application/json,{broken',
+        }))) as never,
+      },
+    });
+    expect(result.failedMembers).toEqual([{ agentId: 2, stages: ['registration'] }]);
+    expect(result.errors).toBe(1);
+    expect(persisted.map(row => [row.agentId, row.registrationStatus])).toEqual([[70, 'empty'], [80, 'invalid']]);
+  });
+  test.each([
+    { reply: [] }, { reply: [[], [], [], [], [], []] }, { reply: [['0xAA'], [], [], [], [], [], []] },
+  ])('a malformed known-member feedback reply %j is retained without blocking later members', async ({ reply }) => {
+    const result = await runRegistryScan(config, async (_chain, rows) => rows.length, async () => 0, {
+      agentIds: [2, 70], fetchRemote: false,
+      client: {
+        readContract: (async () => { throw Error('tip forbidden'); }) as never,
+        multicall: (async ({ contracts }: { contracts: { functionName: string; args: bigint[] }[] }) => contracts.map(c => ({
+          status: 'success', result: c.functionName === 'readAllFeedback'
+            ? (Number(c.args[0]) === 2 ? reply : [[], [], [], [], [], [], []])
+            : c.functionName === 'tokenURI' ? '' : '0xAA',
+        }))) as never,
+      },
+    });
+    expect(result.failedMembers).toEqual([{ agentId: 2, stages: ['feedback'] }]);
+    expect(result.agentsPersisted).toBe(2);
   });
 });
 

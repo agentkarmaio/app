@@ -79,3 +79,15 @@ test('timeout becomes visible even if an in-flight reader ignores abort', async 
   stop();
   expect(values).toEqual([]);
 });
+
+test('inactive indexing is not presented as a previously running paused scanner', async () => {
+  const { INDEXING_STATUS_LABELS } = await import('./live-flow-state');
+  expect(INDEXING_STATUS_LABELS.disabled).toBe('Not enabled');
+});
+
+test('coverage accepts only known public issue codes', async () => {
+  const { buildIndexingHealth } = await import('@/lib/indexing-health');
+  const value = buildIndexingHealth([]);
+  value.chains[0].paths[0].issue = 'http://provider.invalid/SECRET' as never;
+  expect(() => parseActivityHealth(value)).toThrow('Invalid network coverage');
+});

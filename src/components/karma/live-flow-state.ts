@@ -1,4 +1,4 @@
-import type { IndexingHealth, IndexingStatus } from '@/lib/indexing-health';
+import type { IndexingHealth, IndexingStatus, IndexingIssue } from '@/lib/indexing-health';
 
 export interface ActivityStats {
   totalAgents: number;
@@ -12,8 +12,14 @@ export interface ActivityStats {
 
 export const INDEXING_STATUS_LABELS: Record<IndexingStatus, string> = {
   current: 'Up to date', running: 'Checking', catching_up: 'Catching up',
-  dormant: 'No targets', disabled: 'Paused', failed: 'Scan failed',
+  dormant: 'No targets', disabled: 'Not enabled', failed: 'Scan failed',
   delayed: 'Delayed', unknown: 'Not yet verified',
+};
+
+export const INDEXING_ISSUE_MESSAGES: Record<IndexingIssue, string> = {
+  rate_limited: 'The RPC provider limited requests. The next scheduled check will retry.',
+  registry_retry: 'Some agent records could not be refreshed and remain queued for retry.',
+  history_gap: 'Historical coverage is unverified. This count does not represent missing transactions.',
 };
 
 export function activityStatus(
@@ -51,6 +57,7 @@ export function parseActivityHealth(value: unknown): IndexingHealth {
     || health.chains.length !== chains.length || new Set(health.chains.map((chain) => chain?.chain)).size !== chains.length
     || !health.chains.every((chain) => chain && chains.includes(chain.chain) && validStatus(chain.status)
       && Array.isArray(chain.paths) && chain.paths.length > 0 && chain.paths.every((path) => path
+        && (path.issue == null || (typeof path.issue === 'string' && Object.hasOwn(INDEXING_ISSUE_MESSAGES, path.issue)))
         && typeof path.path === 'string' && typeof path.label === 'string' && validStatus(path.status)
         && validTime(path.lastCheckedAt) && validTime(path.lastSuccessAt) && validTime(path.lastAttemptAt)
         && validCount(path.checked) && validCount(path.pending) && validCount(path.unresolved) && validCount(path.inserted)))) {

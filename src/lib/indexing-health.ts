@@ -77,6 +77,7 @@ export interface HealthStateRow {
   path: string;
   enabled: boolean;
   status: string | null;
+  error_code?: string | null;
   last_attempt_at: string | null;
   last_finished_at: string | null;
   last_success_at: string | null;
@@ -130,6 +131,15 @@ const priority: IndexingStatus[] = [
 ];
 const worst = (states: IndexingStatus[]) =>
   priority.find((s) => states.includes(s)) ?? 'unknown';
+export type IndexingIssue = 'rate_limited' | 'registry_retry' | 'history_gap';
+function publicIssue(row: HealthStateRow | undefined, now: number): IndexingIssue | null {
+  if (!row || !row.enabled) return null;
+  if ((row.gaps_count ?? 0) > 0 || row.error_code === 'archive_gap') return 'history_gap';
+  if (stateStatus(row, now) === 'running') return null;
+  if (row.error_code === 'rpc_rate_limited' || row.error_code === 'rate_limited') return 'rate_limited';
+  if (row.error_code === 'registry_read_failure') return 'registry_retry';
+  return null;
+}
 /** A small explicit projection: never serialize the private worker row. */
 export function buildIndexingHealth(rows: HealthStateRow[], now = Date.now()) {
   const chains = (['solana', 'arc', 'celo', 'stellar', 'arc-mainnet'] as Chain[]).map(
@@ -143,6 +153,7 @@ export function buildIndexingHealth(rows: HealthStateRow[], now = Date.now()) {
             path: def.path,
             label: def.label,
             status: stateStatus(row, now),
+            issue: publicIssue(row, now),
             lastAttemptAt: row?.last_attempt_at ?? null,
             lastSuccessAt: row?.last_success_at ?? null,
             lastCheckedAt: row?.last_finished_at ?? null,

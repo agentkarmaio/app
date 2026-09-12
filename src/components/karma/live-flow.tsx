@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import type { IndexingHealth } from '@/lib/indexing-health';
 import {
-  activityStatus, INDEXING_STATUS_LABELS, parseActivityStats, parseActivityHealth, startActivityPoll, type ActivityStats,
+  activityStatus, INDEXING_STATUS_LABELS, INDEXING_ISSUE_MESSAGES, parseActivityStats, parseActivityHealth, startActivityPoll, type ActivityStats,
 } from './live-flow-state';
 
 const CHAIN_LABELS = { solana: 'Solana', arc: 'Arc testnet', 'arc-mainnet': 'Arc mainnet', celo: 'Celo', stellar: 'Stellar' };
@@ -96,6 +96,7 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
                         <p className="mt-0.5 text-[11px] text-muted-foreground">Last checked: <CheckedTime value={path.lastCheckedAt} empty="Never checked" /></p>
                         <p className="text-[11px] text-muted-foreground">Last complete scan: <CheckedTime value={path.lastSuccessAt} empty="Not yet completed" /></p>
                         {path.unresolved > 0 && <p className="text-[11px] text-muted-foreground">At least {path.unresolved.toLocaleString('en-US')} coverage issues</p>}
+                        {path.issue && <p className="mt-1 text-[11px] text-muted-foreground">{INDEXING_ISSUE_MESSAGES[path.issue]}</p>}
                       </li>
                     ))}
                   </ul>

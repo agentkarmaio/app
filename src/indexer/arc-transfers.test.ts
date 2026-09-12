@@ -698,7 +698,7 @@ test('late timestamp responses cannot start queued block RPCs after cancellation
   const { deps, state } = makeDeps(transfers, {
     signal: controller.signal,
     blockTimestamp: async () => {
-      if (++timestampCalls === 20) started();
+      if (++timestampCalls === 2) started();
       await pending;
       return TS;
     },
@@ -708,7 +708,7 @@ test('late timestamp responses cannot start queued block RPCs after cancellation
   controller.abort(new Error('scan cancelled'));
   release();
   await expect(run).rejects.toThrow('scan cancelled');
-  expect(timestampCalls).toBe(20);
+  expect(timestampCalls).toBe(2);
   expect(state.cursors).toEqual([]);
   expect(state.inserted).toEqual([]);
 });
@@ -826,4 +826,77 @@ test('mainnet refuses mismatched token configuration or numeric evidence before 
   await expect(arcTransfersIndexer(wrongToken.deps)).rejects.toThrow('arc_mainnet_transfer_invalid');
   const wrongAmount = makeDeps([{ ...native, amount: 999 }], { chain: 'arc-mainnet' });
   await expect(arcTransfersIndexer(wrongAmount.deps)).rejects.toThrow('arc_mainnet_transfer_invalid');
+});
+
+describe('timestamp-stage recovery', () => {
+  function windows(timestamp: (block: bigint) => Promise<string>) {
+    return makeDeps([], {
+      getHead: async () => 20n, windowSize: 10,
+      getCursor: async () => ({ last_signature: '0', last_slot: 0 }),
+      getLogs: async (from) => [transfer({ rawAmount: 1_000_000n, block: from, txHash: `0x${from}` })],
+      blockTimestamp: timestamp,
+    });
+  }
+  test('a timestamp throttle in window two banks only the complete first window', async () => {
+    const f = windows(async block => { if (block === 11n) throw Error('429 rate limit'); return TS; });
+    const result = await arcTransfersIndexer(f.deps);
+    expect(f.state.inserted.map(row => row.tx_signature)).toEqual(['0x1']);
+    expect(f.state.signals).toHaveLength(2);
+    expect(f.state.cursors.map(row => row[1])).toEqual(['10']);
+    expect(result.coverage).toMatchObject({ complete: false, checked: 10, pending: 10, checkpoint: '10', reason: 'rate_limited' });
+  });
+  test('first-window timestamp throttle leaves the previous checkpoint and real backlog visible', async () => {
+    const f = windows(async () => { throw Error('429 rate limit'); });
+    const result = await arcTransfersIndexer(f.deps);
+    expect(f.state.inserted).toEqual([]);
+    expect(f.state.cursors).toEqual([]);
+    expect(result.coverage).toMatchObject({ complete: false, checked: 0, pending: 20, checkpoint: '0', head: '20', reason: 'rate_limited' });
+  });
+  test('a failed timestamp batch drains in-flight work and never launches the remaining queue', async () => {
+    const called: bigint[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const f = makeDeps([], {
+      getHead: async () => 10n, windowSize: 10,
+      getCursor: async () => ({ last_signature: '0', last_slot: 0 }),
+      getLogs: async () => Array.from({ length: 8 }, (_, i) => transfer({ rawAmount: 1n, block: BigInt(i + 1), txHash: `0x${i + 1}` })),
+      blockTimestamp: async block => {
+        called.push(block);
+        if (block === 1n) throw Error('429 rate limit');
+        await gate; return TS;
+      },
+    });
+    let settled = false;
+    const run = arcTransfersIndexer(f.deps).finally(() => { settled = true; });
+    await Bun.sleep(10);
+    expect(called.length).toBeLessThanOrEqual(2);
+    expect(settled).toBe(false);
+    release();
+    const result = await run;
+    expect(called.length).toBeLessThanOrEqual(2);
+    expect(result.coverage.checked).toBe(0);
+    expect(f.state.inserted).toEqual([]);
+  });
+  test('a non-throttle timestamp error still fails instead of implying a checked window', async () => {
+    const f = windows(async () => { throw Error('invalid block'); });
+    await expect(arcTransfersIndexer(f.deps)).rejects.toThrow('invalid block');
+    expect(f.state.cursors).toEqual([]);
+  });
+});
+
+test('timestamp queue budget expiry banks the previous complete window', async () => {
+  let time = 0;
+  const timestampCalls: bigint[] = [];
+  const f = makeDeps([], {
+    getHead: async () => 20n, windowSize: 10, now: () => time, timeBudgetMs: 10,
+    getCursor: async () => ({ last_signature: '0', last_slot: 0 }),
+    getLogs: async from => (from === 1n ? [1n] : [11n, 12n, 13n]).map(block =>
+      transfer({ rawAmount: 1n, block, txHash: `0x${block}` })),
+    blockTimestamp: async block => { timestampCalls.push(block); if (block === 11n) time = 10; return TS; },
+  });
+  const result = await arcTransfersIndexer(f.deps);
+  expect(timestampCalls).toEqual([1n, 11n]);
+  expect(f.state.inserted.map(row => row.tx_signature)).toEqual(['0x1']);
+  expect(f.state.cursors.map(row => row[1])).toEqual(['10']);
+  expect(result.coverage).toMatchObject({ checked: 10, pending: 10, checkpoint: '10', reason: 'budget', complete: false });
 });
