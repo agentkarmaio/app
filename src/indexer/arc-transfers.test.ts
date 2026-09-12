@@ -34,8 +34,10 @@ import {
 } from './arc-transfers';
 import { ARC_JOBS_CONTRACT } from './arc-jobs';
 import type { Log } from 'viem';
-import type { Transaction } from '@/db/schema';
-import type { InsertSignalEventInput } from '@/db/client';
+import type { InsertSignalEventInput, TransactionInsert } from '@/db/client';
+import { __setSupabaseForTest } from '@/db/client';
+import { resolveAttestations } from '@/lib/karma-resolver';
+import type { SignalEvent } from '@/db/schema';
 
 const FROM = '0x1111111111111111111111111111111111111111' as const;
 const TO = '0x2222222222222222222222222222222222222222' as const;
@@ -69,7 +71,7 @@ function makeDeps(
   transfers: ArcTransfer[],
   overrides: Partial<Parameters<typeof arcTransfersIndexer>[0]> = {},
 ) {
-  const inserted: Omit<Transaction, 'id'>[] = [];
+  const inserted: TransactionInsert[] = [];
   const signals: InsertSignalEventInput[] = [];
   const ensured: string[] = [];
   const cursors: Array<[string, string, number | undefined]> = [];
@@ -85,7 +87,7 @@ function makeDeps(
       return transfers;
     },
     blockTimestamp: async () => TS,
-    insertTransactions: async (rows: Omit<Transaction, 'id'>[]) => { inserted.push(...rows); return rows.length; },
+    insertTransactions: async (rows: TransactionInsert[]) => { inserted.push(...rows); return rows.length; },
     insertSignalEvents: async (s: InsertSignalEventInput[]) => { signals.push(...s); return s.length; },
     ensureWallets: async (addresses: string[]) => { ensured.push(...addresses); },
     getCursor: async () => null,
@@ -514,8 +516,12 @@ describe('arcTransfersIndexer', () => {
     expect(provider.chain).toBe('arc');
     expect(provider.kind).toBe('usdc_transfer_settled');
     expect(provider.weight).toBe(0.6);
+    expect(provider.tier).toBe(1);
+    expect(provider.signedBy).toBe(FROM);
     expect(consumer.agentWallet).toBe(FROM);
     expect(consumer.chain).toBe('arc');
+    expect(consumer.tier).toBe(1);
+    expect(consumer.signedBy).toBe(TO);
   });
 
   test('skips a transfer where the escrow contract is either side (arc-jobs already covers it)', async () => {
@@ -728,4 +734,96 @@ test('replaying an existing transaction reports zero inserts even when its signa
   expect(result.fetched).toBe(1);
   expect(result.inserted).toBe(0);
   expect(state.signals).toHaveLength(2);
+});
+
+describe('Arc transfer engine network separation', () => {
+  const rawHash = `0x${'a'.repeat(64)}` as const;
+  const native = (index: number): ArcTransfer => ({
+    ...transfer({ rawAmount: 1n, txHash: rawHash }),
+    logIndex: index, emitter: '0xfffffffffffffffffffffffffffffffffffffffe', decimals: 18,
+    amountDecimal: '0.000000000000000001', amount: 1e-18,
+  });
+  test('mainnet writes independent cursor, exact native value, and two signals per movement', async () => {
+    const { deps, state } = makeDeps([native(0), native(1)], { chain: 'arc-mainnet' });
+    const result = await arcTransfersIndexer(deps);
+    expect(result.fetched).toBe(2);
+    expect(result.inserted).toBe(2);
+    expect(state.inserted.map((row) => row.chain)).toEqual(['arc-mainnet', 'arc-mainnet']);
+    expect(state.inserted.map((row) => row.tx_signature)).toEqual([`${rawHash}:0`, `${rawHash}:1`]);
+    expect(state.inserted.map((row) => row.amount)).toEqual(['0.000000000000000001', '0.000000000000000001']);
+    expect(state.cursors[0][0]).toBe(`arc-mainnet-transfers:${ARC_USDC_CONTRACT}`);
+    expect(state.signals).toHaveLength(4);
+    for (const signal of state.signals) {
+      expect(signal.chain).toBe('arc-mainnet');
+      expect(signal.tier).toBe(2);
+      expect(signal.signedBy).toBeNull();
+      expect(signal.payload?.source).toBe('arc_native_usdc_transfer');
+      expect(signal.payload?.rawTxHash).toBe(rawHash);
+      expect(signal.payload?.rawAmount).toBe('1');
+      expect(signal.payload?.decimals).toBe(18);
+    }
+  });
+  test('emitted mainnet movement evidence is excluded from voluntary attestations', async () => {
+    const { deps, state } = makeDeps([native(0)], { chain: 'arc-mainnet' });
+    await arcTransfersIndexer(deps);
+    const rows: SignalEvent[] = state.signals.map((signal, index) => ({
+      id: String(index), chain: signal.chain!, agent_wallet: signal.agentWallet,
+      tier: signal.tier, kind: signal.kind, face: signal.face ?? 'provider', weight: signal.weight ?? 1,
+      value: signal.value ?? null, payload: signal.payload ?? null,
+      signed_by: signal.signedBy ?? null, tx_ref: signal.txRef ?? null,
+      observed_at: new Date(signal.observedAt!).toISOString(), created_at: TS,
+    }));
+    const filters = new Map<string, unknown>();
+    const query = {
+      select: () => query,
+      eq: (key: string, value: unknown) => { filters.set(key, value); return query; },
+      order: () => query,
+      limit: async () => ({ data: rows.filter(row => row.chain === filters.get('chain')
+        && row.agent_wallet === filters.get('agent_wallet')), error: null }),
+    };
+    __setSupabaseForTest({ from: () => query });
+    try {
+      const result = await resolveAttestations(TO, 50, 'arc-mainnet');
+      expect(result.voluntary).toEqual([]);
+      expect(result.erc8004.averageScore).toBeNull();
+    } finally { __setSupabaseForTest(null); }
+  });
+  test('mainnet does not reuse a testnet escrow exclusion', async () => {
+    const { deps, state } = makeDeps([{ ...native(0), to: ARC_JOBS_CONTRACT }], { chain: 'arc-mainnet' });
+    await arcTransfersIndexer(deps);
+    expect(state.inserted).toHaveLength(1);
+    expect(state.inserted[0].counterparty).toBe(ARC_JOBS_CONTRACT.toLowerCase());
+  });
+  test('mainnet refuses injected testnet-style records before any receipt or cursor write', async () => {
+    const { deps, state } = makeDeps([transfer({ rawAmount: 1n })], { chain: 'arc-mainnet' });
+    await expect(arcTransfersIndexer(deps)).rejects.toThrow('arc_mainnet_transfer_invalid');
+    expect(state.inserted).toEqual([]);
+    expect(state.cursors).toEqual([]);
+  });
+  test('identical event replay remains idempotent while retaining both signals', async () => {
+    const stored = new Set<string>();
+    const { deps, state } = makeDeps([native(0), native(1)], {
+      chain: 'arc-mainnet',
+      insertTransactions: async (rows) => {
+        let inserted = 0;
+        for (const row of rows) {
+          const key = `${row.chain}:${row.tx_signature}`;
+          if (!stored.has(key)) { stored.add(key); inserted++; }
+        }
+        return inserted;
+      },
+    });
+    expect((await arcTransfersIndexer(deps)).inserted).toBe(2);
+    expect((await arcTransfersIndexer(deps)).inserted).toBe(0);
+    expect(stored.size).toBe(2);
+    expect(state.signals).toHaveLength(8);
+  });
+});
+
+test('mainnet refuses mismatched token configuration or numeric evidence before writes', async () => {
+  const native: ArcTransfer = { ...transfer({ rawAmount: 1n, txHash: `0x${'a'.repeat(64)}` }), logIndex: 0, emitter: '0xfffffffffffffffffffffffffffffffffffffffe', decimals: 18, amountDecimal: '0.000000000000000001', amount: 1e-18 };
+  const wrongToken = makeDeps([native], { chain: 'arc-mainnet', usdcContract: ARC_JOBS_CONTRACT });
+  await expect(arcTransfersIndexer(wrongToken.deps)).rejects.toThrow('arc_mainnet_transfer_invalid');
+  const wrongAmount = makeDeps([{ ...native, amount: 999 }], { chain: 'arc-mainnet' });
+  await expect(arcTransfersIndexer(wrongAmount.deps)).rejects.toThrow('arc_mainnet_transfer_invalid');
 });

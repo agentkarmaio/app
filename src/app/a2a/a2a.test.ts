@@ -19,7 +19,7 @@ const STELLAR = 'G' + 'A'.repeat(55);
 beforeEach(() => __resetRateLimitForTests());
 
 test('explicit non-EVM agent IDs never fall through to Celo or Arc', async () => {
-  for (const chain of ['stellar', 'solana']) {
+  for (const chain of ['stellar', 'solana', 'arc-mainnet']) {
     let registryCalls = 0;
     const response = await handleMessageSend('unsupported-chain', {
       message: { parts: [{ kind: 'data', data: { agentId: 66, chain } }] },
@@ -28,6 +28,12 @@ test('explicit non-EVM agent IDs never fall through to Celo or Arc', async () =>
     const body = await response.json();
     expect(body.result.parts[1].data).toMatchObject({ found: false, reason: 'unsupported_agent_id_chain', chain });
   }
+});
+
+test('structured and textual Arc mainnet addresses preserve the network pin', () => {
+  expect(extractTarget({ parts: [{ kind: 'data', data: { wallet: EVM, chain: 'arc-mainnet' } }] })).toMatchObject({ wallet: EVM, chain: 'arc-mainnet' });
+  expect(extractTarget({ parts: [{ kind: 'text', text: `Check ${EVM} on arc-mainnet` }] })).toMatchObject({ wallet: EVM, chain: 'arc-mainnet' });
+  expect(extractTarget({ parts: [{ kind: 'text', text: `Check ${EVM} on Arc mainnet` }] })).toMatchObject({ wallet: EVM, chain: 'arc-mainnet' });
 });
 
 test('resolver and registry exceptions cannot leak private details into logs', async () => {

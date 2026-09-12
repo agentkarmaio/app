@@ -50,7 +50,7 @@ export async function GET(
   // need the most-recent one. Empty for chains/agents without indexed txs.
   let lastTxAt: string | null = null;
   try {
-    const recent = await getRecentTransactionsForWallet(wallet, 1);
+    const recent = await getRecentTransactionsForWallet(wallet, 1, chain);
     lastTxAt = recent[0]?.timestamp ?? null;
   } catch {
     lastTxAt = null;

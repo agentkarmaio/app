@@ -41,6 +41,9 @@ const ERROR_CODES = new Set([
   'rpc_rate_limited',
   'rpc_range_rejected',
   'rpc_unavailable',
+  'rpc_authentication_failed',
+  'rpc_chain_mismatch',
+  'configuration_invalid',
   'configuration_missing',
   'scan_failed',
   'unmatched',
@@ -61,6 +64,9 @@ const ERROR_CODES = new Set([
 ]);
 export function indexingErrorCode(error: unknown): string {
   const m = error instanceof Error ? error.message : String(error);
+  if (m === 'arc_mainnet_chain_mismatch') return 'rpc_chain_mismatch';
+  if (m === 'arc_mainnet_rpc_missing') return 'configuration_missing';
+  if (['arc_mainnet_rpc_invalid', 'arc_mainnet_start_invalid', 'arc_mainnet_seed_invalid', 'arc_mainnet_seed_limit'].includes(m)) return 'configuration_invalid';
   if (ERROR_CODES.has(m)) return m;
   if (/429|rate.limit|quota|max usage/i.test(m)) return 'rpc_rate_limited';
   if (/range.*block|block.*range/i.test(m)) return 'rpc_range_rejected';

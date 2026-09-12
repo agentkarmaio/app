@@ -16,8 +16,10 @@ BEGIN
   IF p_owner IS NULL OR p_lease_ms IS NULL OR p_lease_ms NOT BETWEEN 1000 AND 900000 THEN
     RAISE EXCEPTION 'indexing_lease_invalid' USING ERRCODE = '22023';
   END IF;
+  -- Mainnet activation is explicit: missing/deleted rollout state fails closed.
+  -- ON CONFLICT preserves an operator-enabled existing mainnet row.
   INSERT INTO public.indexing_state(chain, path, enabled, interval_ms)
-  VALUES (p_chain, p_path, p_enabled, p_interval_ms)
+  VALUES (p_chain, p_path, CASE WHEN p_chain = 'arc-mainnet' THEN false ELSE p_enabled END, p_interval_ms)
   ON CONFLICT (chain, path) DO NOTHING;
   SELECT * INTO state FROM public.indexing_state
     WHERE chain = p_chain AND path = p_path FOR UPDATE;

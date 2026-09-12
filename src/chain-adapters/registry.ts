@@ -8,12 +8,14 @@ import { makeSolanaAdapter } from './solana';
 import { makeCeloAdapter } from './celo';
 import { makeStellarAdapter } from './stellar';
 import { makeArcAdapter } from './arc';
+import { makeArcMainnetAdapter } from './arc-mainnet';
 
 const _adapters: Map<Chain, ChainAdapter> = new Map([
   ['solana',  makeSolanaAdapter()],
   ['celo',    makeCeloAdapter()],
   ['stellar', makeStellarAdapter()],
   ['arc',     makeArcAdapter()],
+  ['arc-mainnet', makeArcMainnetAdapter()],
 ]);
 
 export function getAdapter(chain: Chain): ChainAdapter {

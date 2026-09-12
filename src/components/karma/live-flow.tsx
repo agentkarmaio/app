@@ -7,7 +7,7 @@ import {
   activityStatus, INDEXING_STATUS_LABELS, parseActivityStats, parseActivityHealth, startActivityPoll, type ActivityStats,
 } from './live-flow-state';
 
-const CHAIN_LABELS = { solana: 'Solana', arc: 'Arc testnet', celo: 'Celo', stellar: 'Stellar' };
+const CHAIN_LABELS = { solana: 'Solana', arc: 'Arc testnet', 'arc-mainnet': 'Arc mainnet', celo: 'Celo', stellar: 'Stellar' };
 
 function CheckedTime({ value, empty }: { value: string | null | undefined; empty: string }) {
   if (!value || !Number.isFinite(Date.parse(value))) return <span>{empty}</span>;
@@ -76,7 +76,7 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
         </summary>
         <div className="absolute left-0 top-full z-40 mt-2 max-h-[70vh] w-[min(28rem,calc(100vw-3rem))] overflow-y-auto rounded-lg border border-border bg-popover p-4 text-xs font-normal text-popover-foreground shadow-lg">
           <p className="font-medium">Network coverage</p>
-          <p className="mt-1 text-muted-foreground">Relevant agent activity across four networks. Counts include previously indexed records.</p>
+          <p className="mt-1 text-muted-foreground">Relevant agent activity across supported networks. Mainnet and testnet records are kept separate. Counts include previously indexed receipts.</p>
           {healthFailed && <p className="mt-3 text-muted-foreground">Status updates are delayed. Showing the last available report.</p>}
           {health ? (
             <div className="mt-4 space-y-4">
@@ -114,7 +114,7 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
       {stats ? (
         <span className="inline-flex items-center gap-2">
           <span key={`tx-${pulseKey}`} className="font-mono tabular-nums karma-live-flash motion-reduce:animate-none">{stats.totalTransactions.toLocaleString('en-US')}</span>
-          <span>tx</span>
+          <span>receipts</span>
           <span aria-hidden="true">·</span>
           <span className="font-mono tabular-nums">{stats.totalAgents.toLocaleString('en-US')}</span>
           <span>agents</span>

@@ -1,9 +1,16 @@
 import { expect, test } from 'bun:test';
 import {
   executeIndexingJob,
+  indexingErrorCode,
   type LeaseDependencies,
   type IndexingJob,
 } from './indexing-runner';
+test('mainnet admission failures retain actionable safe classifications', () => {
+  expect(indexingErrorCode(Error('rpc_authentication_failed'))).toBe('rpc_authentication_failed');
+  expect(indexingErrorCode(Error('arc_mainnet_chain_mismatch'))).toBe('rpc_chain_mismatch');
+  expect(indexingErrorCode(Error('arc_mainnet_rpc_missing'))).toBe('configuration_missing');
+  expect(indexingErrorCode(Error('arc_mainnet_rpc_invalid'))).toBe('configuration_invalid');
+});
 const job: IndexingJob = {
   chain: 'arc',
   path: 'escrow',

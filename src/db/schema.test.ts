@@ -9,7 +9,7 @@ import type { IndexerCursor, Wallet } from './schema';
 
 describe('CHAINS dimension', () => {
   test('includes arc alongside solana, celo and stellar', () => {
-    expect([...CHAINS]).toEqual(['solana', 'celo', 'stellar', 'arc']);
+    expect([...CHAINS]).toEqual(['solana', 'celo', 'stellar', 'arc', 'arc-mainnet']);
   });
 
   test('isChain accepts stellar, rejects unknown', () => {

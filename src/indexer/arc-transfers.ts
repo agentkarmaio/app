@@ -39,9 +39,10 @@
  */
 
 import { createPublicClient, http, parseAbiItem, type Log } from 'viem';
-import type { Chain, Transaction } from '@/db/schema';
+import type { Chain } from '@/db/schema';
 import { readArcLogRange, withArcLogRetry, isArcLogRangeError, arcIndexCoverage, ARC_LOG_BUDGET_EXHAUSTED, type ArcIndexRunResult, type ArcIndexCoverage } from './arc-log-range';
 import { arcTestnet } from '@/config/arc-chain';
+import { ARC_MAINNET_TRANSFER_EMITTER, ARC_MAINNET_TRANSFER_EXCLUSIONS, ARC_MAINNET_TRANSFER_DECIMALS, ARC_MAINNET_USDC_CONTRACT } from '@/config/arc-mainnet';
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
@@ -50,6 +51,7 @@ import {
   upsertCursor as dbUpsertCursor,
   supabase,
   type InsertSignalEventInput,
+  type TransactionInsert,
 } from '@/db/client';
 import { INGEST_RETRY, isRateLimitedError, withRateLimitRetry } from '@/lib/rpc-retry';
 import { withConcurrency } from '@/lib/concurrency';
@@ -99,6 +101,7 @@ const USDC_SCALE = 10 ** ARC_USDC_DECIMALS;
 export const ARC_ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 
 const ARC_CHAIN = 'arc' as Chain;
+export type ArcTransferChain = 'arc' | 'arc-mainnet';
 
 /**
  * Addresses that are asset or protocol INFRASTRUCTURE, never a payment
@@ -155,6 +158,12 @@ export interface ArcTransfer {
   amount: number;
   blockNumber: bigint;
   txHash: `0x${string}`;
+  /** Mainnet uses one receipt per system event; testnet keeps legacy tx identity. */
+  logIndex?: number;
+  emitter?: `0x${string}`;
+  decimals?: number;
+  /** Exact mainnet native USDC amount, never rounded through a JS number. */
+  amountDecimal?: string;
 }
 
 /**
@@ -210,17 +219,37 @@ export function toTransactionRow(
   transfer: ArcTransfer,
   usdcContract: string,
   observedAt: string,
-): Omit<Transaction, 'id'> {
+  chain: ArcTransferChain = 'arc',
+): TransactionInsert {
   return {
-    chain: ARC_CHAIN,
+    chain,
     wallet_address: transfer.from,
     facilitator: usdcContract,
     counterparty: transfer.to,
-    amount: transfer.amount,
+    amount: chain === 'arc-mainnet' ? exactMainnetAmount(transfer) : transfer.amount,
     timestamp: observedAt,
     success: true,
-    tx_signature: transfer.txHash,
+    tx_signature: arcTransferReceiptKey(transfer, chain),
   };
+}
+
+/** Mainnet event identity preserves multiple payments inside one EVM transaction. */
+export function arcTransferReceiptKey(transfer: ArcTransfer, chain: ArcTransferChain): string {
+  if (chain === 'arc') return transfer.txHash;
+  if (!Number.isSafeInteger(transfer.logIndex) || transfer.logIndex! < 0 || !/^0x[0-9a-fA-F]{64}$/.test(transfer.txHash)
+    || transfer.emitter?.toLowerCase() !== ARC_MAINNET_TRANSFER_EMITTER || transfer.decimals !== ARC_MAINNET_TRANSFER_DECIMALS) {
+    throw new Error('arc_mainnet_transfer_invalid');
+  }
+  return `${transfer.txHash.toLowerCase()}:${transfer.logIndex}`;
+}
+function exactMainnetAmount(transfer: ArcTransfer): string {
+  const raw = transfer.rawAmount;
+  if (raw <= 0n || raw >= 10n ** 38n) throw new Error('arc_mainnet_transfer_invalid');
+  const integer = raw / 10n ** 18n;
+  const fraction = (raw % (10n ** 18n)).toString().padStart(18, '0').replace(/0+$/, '');
+  const amount = fraction ? `${integer}.${fraction}` : String(integer);
+  if (transfer.amountDecimal !== amount || transfer.amount !== Number(amount)) throw new Error('arc_mainnet_transfer_invalid');
+  return amount;
 }
 
 // ─── Seed set ─────────────────────────────────────────────────────────────────
@@ -340,6 +369,7 @@ export function buildArcSeedSet(input: SeedSetInput = {}): Set<string> {
 // ─── DI core ──────────────────────────────────────────────────────────────────
 
 export interface ArcTransfersIndexerDeps {
+  chain?: ArcTransferChain;
   signal?: AbortSignal;
   usdcContract: string;
   /**
@@ -356,7 +386,7 @@ export interface ArcTransfersIndexerDeps {
    */
   getLogs: (fromBlock: bigint, toBlock: bigint, face: TransferFace) => Promise<ArcTransfer[]>;
   blockTimestamp: (blockNumber: bigint) => Promise<string>;
-  insertTransactions: (rows: Omit<Transaction, 'id'>[]) => Promise<number>;
+  insertTransactions: (rows: TransactionInsert[]) => Promise<number>;
   insertSignalEvents: (inputs: InsertSignalEventInput[]) => Promise<number>;
   /** Batched — see arc-jobs.ts. One round trip for the whole run's wallet set. */
   ensureWallets: (addresses: string[]) => Promise<void>;
@@ -378,8 +408,8 @@ export interface ArcTransfersIndexerDeps {
 }
 
 /** Cursor key namespaced by the USDC contract, distinct from arc-jobs's key. */
-export function arcTransfersCursorKey(usdcContract: string): string {
-  return `arc-transfers:${usdcContract}`;
+export function arcTransfersCursorKey(usdcContract: string, chain: ArcTransferChain = 'arc'): string {
+  return `${chain}-transfers:${usdcContract}`;
 }
 
 /**
@@ -394,7 +424,10 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
   const cursors = new Map<string, string>();
   const windowSize = deps.windowSize ?? ARC_TRANSFERS_MAX_LOG_WINDOW;
   const maxWindows = deps.maxWindows ?? Number.POSITIVE_INFINITY;
-  const cursorKey = arcTransfersCursorKey(deps.usdcContract);
+  const chain = deps.chain ?? 'arc';
+  if (chain === 'arc-mainnet' && deps.usdcContract.toLowerCase() !== ARC_MAINNET_USDC_CONTRACT) throw new Error('arc_mainnet_transfer_invalid');
+  const cursorKey = arcTransfersCursorKey(deps.usdcContract, chain);
+  const exclusions = chain === 'arc-mainnet' ? ARC_MAINNET_TRANSFER_EXCLUSIONS : ARC_TRANSFER_EXCLUSIONS;
 
   // EMPTY SEED = NO-OP, BEFORE ANY IO. It is unverified what a node does with
   // an empty topic OR-array and "match everything" is a plausible answer — the
@@ -419,7 +452,7 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
     return { fetched: 0, inserted: 0, cursors, coverage: arcIndexCoverage(head, startBlock, startBlock - 1n, cursor?.last_slot ?? null) };
   }
 
-  const rows: Omit<Transaction, 'id'>[] = [];
+  const rows: TransactionInsert[] = [];
   const signals: InsertSignalEventInput[] = [];
   const wallets = new Set<string>();
   const tsCache = new Map<string, string>();
@@ -496,15 +529,17 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
 
       // Infrastructure on either side: mint/burn, the token predeploy, or the
       // ERC-8183 escrow (already covered by arc-jobs.ts at full strength).
-      if (touchesExcluded(transfer)) continue;
+      const receiptKey = arcTransferReceiptKey(transfer, chain);
+      if (chain === 'arc-mainnet') exactMainnetAmount(transfer);
+      if (touchesExcluded(transfer, exclusions)) continue;
       // Self-transfer: normalizeCounterparty() would null the counterparty,
       // producing exactly the row that degrades the independence read.
       if (transfer.from === transfer.to) continue;
       // Seed scope. NOT redundant with the topic filter: `getLogs` is a DI seam
       // and the core must not trust that a record reaching it was filtered.
       if (!deps.seed.has(transfer.from) && !deps.seed.has(transfer.to)) continue;
-      if (seenTxHashes.has(transfer.txHash)) continue;
-      seenTxHashes.add(transfer.txHash);
+      if (seenTxHashes.has(receiptKey)) continue;
+      seenTxHashes.add(receiptKey);
 
       kept.push(transfer);
     }
@@ -533,17 +568,32 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
       wallets.add(transfer.from);
       wallets.add(transfer.to);
 
-      rows.push(toTransactionRow(transfer, deps.usdcContract, observedAt));
-      signals.push(
+      const receiptKey = arcTransferReceiptKey(transfer, chain);
+      rows.push(toTransactionRow(transfer, deps.usdcContract, observedAt, chain));
+      const receiptSignals = [
         buildUsdcTransferSignal({
-          walletAddress: transfer.to, face: 'provider', chain: ARC_CHAIN,
-          txHash: transfer.txHash, amount: transfer.amount, counterparty: transfer.from, observedAt,
+          walletAddress: transfer.to, face: 'provider', chain,
+          txHash: receiptKey, amount: transfer.amount, counterparty: transfer.from, observedAt,
         }),
         buildUsdcTransferSignal({
-          walletAddress: transfer.from, face: 'consumer', chain: ARC_CHAIN,
-          txHash: transfer.txHash, amount: transfer.amount, counterparty: transfer.to, observedAt,
+          walletAddress: transfer.from, face: 'consumer', chain,
+          txHash: receiptKey, amount: transfer.amount, counterparty: transfer.to, observedAt,
         }),
-      );
+      ];
+      if (chain === 'arc-mainnet') {
+        for (const signal of receiptSignals) {
+          // Native value movement is observed behavior, not a signed attestation.
+          signal.tier = 2;
+          signal.signedBy = null;
+          signal.payload = {
+            ...signal.payload, source: 'arc_native_usdc_transfer',
+            rawTxHash: transfer.txHash, logIndex: transfer.logIndex,
+            rawAmount: String(transfer.rawAmount), emitter: transfer.emitter, decimals: transfer.decimals,
+            amountDecimal: transfer.amountDecimal,
+          };
+        }
+      }
+      signals.push(...receiptSignals);
     }
 
     if (++windowsProcessed >= maxWindows) break;

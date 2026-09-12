@@ -1,4 +1,5 @@
 import type { Chain } from '@/db/schema';
+import { isEvmChain } from './chain-meta';
 
 /**
  * Build the /agent/[wallet] URL. EVM chains (celo, arc) share the 0x…40hex
@@ -8,7 +9,7 @@ import type { Chain } from '@/db/schema';
  */
 export function agentHref(a: { chain: Chain; address: string; agentId?: number | null }): string {
   const base = `/agent/${a.address}`;
-  if (a.chain === 'celo' || a.chain === 'arc') {
+  if (isEvmChain(a.chain)) {
     // agentId disambiguates the many agents sharing one owner address: the page
     // resolves the registry profile by it even when the owner isn't in `wallets`.
     const q = a.agentId != null ? `?chain=${a.chain}&agentId=${a.agentId}` : `?chain=${a.chain}`;

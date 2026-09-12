@@ -22,7 +22,7 @@
 import { runIndexerCli } from './managed-cli';
 import { coverageOutcome } from '@/lib/indexing-jobs';
 
-import type { Transaction } from '@/db/schema';
+import type { TransactionInsert } from '@/db/client';
 import { requireEnv } from '@/lib/require-env';
 import {
   buildArcSeedSet,
@@ -67,7 +67,7 @@ if (startBlock !== undefined && !DRY_RUN) {
 
 /** Counting no-ops: exercise the real read path, write nothing. */
 function dryRunOverrides(sink: {
-  rows: Omit<Transaction, 'id'>[];
+  rows: TransactionInsert[];
   signals: number;
   wallets: Set<string>;
 }): Partial<ArcTransfersIndexerDeps> {
@@ -86,7 +86,7 @@ function dryRunOverrides(sink: {
   return overrides;
 }
 
-const sink = { rows: [] as Omit<Transaction, 'id'>[], signals: 0, wallets: new Set<string>() };
+const sink = { rows: [] as TransactionInsert[], signals: 0, wallets: new Set<string>() };
 
 console.log(`[arc-transfers] Network: arc testnet`);
 console.log(`[arc-transfers] Mode: ${DRY_RUN ? 'DRY RUN — no writes' : 'live'}`);

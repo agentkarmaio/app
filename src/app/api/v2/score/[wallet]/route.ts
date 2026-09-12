@@ -14,7 +14,7 @@ import { computeSurety } from '@/scoring/surety';
 import { deriveSuccessionLiveness } from '@/scoring/succession';
 import { readAttestation } from '@/integrations/attestation';
 import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
-import { resolveKarmaEnrichment, type EnrichmentCore } from '@/lib/karma-resolver';
+import { resolveKarma, resolveKarmaEnrichment, type EnrichmentCore } from '@/lib/karma-resolver';
 import { stellarAccountExists } from '@/integrations/stellar-flows';
 import { isStellarAccount } from '@/config/stellar-x402';
 import type { Chain, Wallet } from '@/db/schema';
@@ -66,7 +66,7 @@ export async function GET(
   const pinned = chainParam ? resolveChainParam(chainParam, wallet) : null;
   if (chainParam && !pinned) {
     return NextResponse.json(
-      { error: `chain must be one of solana, celo, stellar, arc and match the address format` },
+      { error: `chain must be one of solana, celo, stellar, arc, arc-mainnet and match the address format` },
       { status: 400 },
     );
   }
@@ -78,7 +78,27 @@ export async function GET(
     ? await getWallet(wallet, pinned)
     : (await getWallet(wallet)) ?? pickWalletRow(await getWalletsByAddressAnyChain(wallet), wallet, null);
 
-  const transactions = await getTransactions(wallet, 1000);
+  const evidenceChain = pinned ?? walletRow?.chain ?? detectChain(wallet) ?? 'solana';
+  if (evidenceChain === 'arc-mainnet') {
+    const snapshot = await resolveKarma(wallet, 'arc-mainnet');
+    if (!snapshot) return NextResponse.json({ error: 'Wallet not found' }, { status: 404 });
+    const response: Record<string, unknown> = {
+      address: snapshot.address, chain: 'arc-mainnet', face,
+      identity: snapshot.identity, txCount: snapshot.txCount,
+      lastActive: snapshot.lastActive, autonomy: snapshot.autonomy,
+      receiptEvidence: snapshot.receiptEvidence,
+    };
+    if (face !== 'consumer') response.provider = { ...snapshot.provider, score: snapshot.provider.hasSignal ? snapshot.provider.score : null };
+    if (face !== 'provider') response.consumer = { ...snapshot.consumer, score: snapshot.consumer.hasSignal ? snapshot.consumer.score : null };
+    await attachEnrichmentBlocks(response, wallet, 'arc-mainnet', walletRow, {
+      provider: snapshot.provider, consumerHasSignal: snapshot.consumer.hasSignal,
+      txCount: snapshot.txCount, claimed: snapshot.identity.claimed,
+    });
+    return NextResponse.json(response, {
+      headers: { ...corsHeaders(), 'Cache-Control': 'public, max-age=60' },
+    });
+  }
+  const transactions = await getTransactions(wallet, 1000, 0, evidenceChain);
 
   if (!walletRow && transactions.length === 0) {
     // We hold no rows for this address — but for Stellar that is expected even
@@ -95,12 +115,12 @@ export async function GET(
   }
 
   let feedback = { deliveryRate: 0, total: 0 };
-  try { feedback = await getFeedbackSummary(wallet); } catch { /* ok */ }
+  try { feedback = await getFeedbackSummary(wallet, evidenceChain); } catch { /* ok */ }
 
   const [attestation, manifestMap, signalEvents] = await Promise.all([
-    readAttestation(wallet).catch(() => 0),
-    getLatestSignalValues([wallet], 'manifest').catch(() => new Map<string, number>()),
-    getSignalEventsForWallet(wallet, 200).catch(() => [] as SignalEvent[]),
+    evidenceChain === 'solana' ? readAttestation(wallet).catch(() => 0) : Promise.resolve(0),
+    getLatestSignalValues([wallet], 'manifest', evidenceChain).catch(() => new Map<string, number>()),
+    getSignalEventsForWallet(wallet, 200, evidenceChain).catch(() => [] as SignalEvent[]),
   ]);
 
   const cadence = transactions.length > 0

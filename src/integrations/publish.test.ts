@@ -4,9 +4,11 @@
  * PublishResults. We inject a fake leaderboard + fake adapter through the
  * test seam — no DB, no chain calls.
  */
-import { describe, expect, test, beforeEach } from 'bun:test';
+import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { publishTopScores, __setPublishDepsForTest } from './publish';
 import type { PublishResult } from '@/chain-adapters/types';
+
+afterEach(() => __setPublishDepsForTest(null));
 
 describe('publishTopScores', () => {
   beforeEach(() => {
@@ -48,4 +50,24 @@ describe('publishTopScores', () => {
     await publishTopScores(1);
     expect(seen).toBe('solana');
   });
+});
+
+
+test('selected network scopes candidate wallets and their transaction evidence', async () => {
+  const leaderboardCalls: unknown[][] = [];
+  const transactionCalls: unknown[][] = [];
+  let publications = 0;
+  __setPublishDepsForTest({
+    getLeaderboard: async (...args: unknown[]) => { leaderboardCalls.push(args); return { wallets: [{ address: 'same-address' }], total: 1 }; },
+    getTransactions: async (...args: unknown[]) => { transactionCalls.push(args); return []; },
+    calculateScore: () => { throw new Error('No score without evidence'); },
+    getAdapter: () => ({
+      readAttestation: async () => 0,
+      publishAttestation: async () => { publications++; throw new Error('No publication in this test'); },
+    }),
+  });
+  await publishTopScores(1, 'arc-mainnet');
+  expect(leaderboardCalls).toEqual([[1, 0, { chain: 'arc-mainnet' }]]);
+  expect(transactionCalls).toEqual([['same-address', 1000, 0, 'arc-mainnet']]);
+  expect(publications).toBe(0);
 });

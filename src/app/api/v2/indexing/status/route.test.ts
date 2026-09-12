@@ -18,14 +18,14 @@ beforeEach(() => __resetRateLimitForTests());
 afterEach(() => __setSupabaseForTest(null));
 
 describe('GET indexing status', () => {
-  test('returns four chains with unknown coverage when no worker has run', async () => {
+  test('returns every network with unknown coverage when no worker has run', async () => {
     __setSupabaseForTest(database([]));
     const response = await GET(request());
     const result = await response.json();
     expect(response.status).toBe(200);
     expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
-    expect(result.chains.map((chain: { chain: string }) => chain.chain)).toEqual(['solana', 'arc', 'celo', 'stellar']);
+    expect(result.chains.map((chain: { chain: string }) => chain.chain)).toEqual(['solana', 'arc', 'celo', 'stellar', 'arc-mainnet']);
     expect(result.status).toBe('unknown');
     expect(result.chains[0].paths[0].lastSuccessAt).toBeNull();
   });

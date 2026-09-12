@@ -85,6 +85,11 @@ export function createIndexingJob(
     timeoutMs:
       path === 'registry' ? 1_200_000 : chain === 'solana' ? 600_000 : 180_000,
     run: async (signal) => {
+      if (chain === 'arc-mainnet' && path === 'transfers') {
+        const { runArcMainnetTransfersIndexer } = await import('@/indexer/arc-mainnet-transfers');
+        const result = await runArcMainnetTransfersIndexer({ signal });
+        return coverageOutcome(result.coverage, result.inserted);
+      }
       if (chain === 'arc' && path === 'escrow') {
         const { runArcJobsIndexer } = await import('@/indexer/arc-jobs');
         const r = await runArcJobsIndexer({ signal });

@@ -21,7 +21,7 @@ import {
 // the durable correctness guarantee — never auto-detect an EVM chain from the
 // address (see lib/chain-detect.ts).
 
-export const CHAINS = ['solana', 'celo', 'stellar', 'arc'] as const;
+export const CHAINS = ['solana', 'celo', 'stellar', 'arc', 'arc-mainnet'] as const;
 export type Chain = (typeof CHAINS)[number];
 export const DEFAULT_CHAIN: Chain = 'solana';
 
@@ -180,10 +180,10 @@ export const transactionsTable = pgTable('transactions', {
   chain:          text('chain').notNull().default('solana').$type<Chain>(),
   wallet_address: text('wallet_address').notNull(),
   facilitator:    text('facilitator').notNull(),
-  amount:         numeric('amount', { precision: 20, scale: 6 }).notNull().default('0'),
+  amount:         numeric('amount', { precision: 38, scale: 18 }).notNull().default('0'),
   timestamp:      timestamp('timestamp', { withTimezone: true }).notNull(),
   success:        boolean('success').notNull().default(true),
-  tx_signature:   text('tx_signature').unique().notNull(),
+  tx_signature:   text('tx_signature').notNull(),
   // Payee / resource-server address (the actual counterparty), distinct from the
   // facilitator that routed the payment. Nullable: legacy rows + chains where the
   // payee is not yet extracted fall back to `facilitator` in scoring. Populated
@@ -195,6 +195,7 @@ export const transactionsTable = pgTable('transactions', {
     foreignColumns: [walletsTable.chain, walletsTable.address],
     name: 'transactions_chain_wallet_address_fkey',
   }).onDelete('cascade'),
+  uniqueIndex('transactions_chain_tx_signature_unique').on(table.chain, table.tx_signature),
   index('idx_transactions_chain_wallet_address').on(table.chain, table.wallet_address),
   index('idx_transactions_facilitator').on(table.facilitator),
   index('idx_transactions_counterparty').on(table.counterparty),
@@ -976,7 +977,7 @@ export const indexingStateTable = pgTable('indexing_state', {
   generation: integer('generation').notNull().default(0),
 }, (table) => [
   primaryKey({ columns: [table.chain, table.path], name: 'indexing_state_pkey' }),
-  check('indexing_state_chain_check', sql`${table.chain} IN ('solana', 'arc', 'celo', 'stellar')`),
+  check('indexing_state_chain_check', sql`${table.chain} IN ('solana', 'arc', 'celo', 'stellar', 'arc-mainnet')`),
   check('indexing_state_path_check', sql`${table.path} IN ('payments', 'escrow', 'transfers', 'registry')`),
   check('indexing_state_status_check', sql`${table.status} IS NULL OR ${table.status} IN ('caught_up', 'catching_up', 'dormant', 'failed')`),
   check('indexing_state_counts_check', sql`${table.checked_count} >= 0 AND ${table.pending_count} >= 0 AND ${table.inserted_count} >= 0 AND ${table.unresolved_count} >= 0 AND ${table.gaps_count} >= 0 AND ${table.generation} >= 0`),

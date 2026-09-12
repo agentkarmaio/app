@@ -46,7 +46,7 @@ export function parseActivityHealth(value: unknown): IndexingHealth {
   const validStatus = (status: unknown) => typeof status === 'string' && Object.hasOwn(INDEXING_STATUS_LABELS, status);
   const validTime = (value: unknown) => value === null || (typeof value === 'string' && Number.isFinite(Date.parse(value)));
   const validCount = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-  const chains = ['solana', 'arc', 'celo', 'stellar'];
+  const chains = ['solana', 'arc', 'celo', 'stellar', 'arc-mainnet'];
   if (!health || !validStatus(health.status) || !validTime(health.checkedAt) || !Array.isArray(health.chains)
     || health.chains.length !== chains.length || new Set(health.chains.map((chain) => chain?.chain)).size !== chains.length
     || !health.chains.every((chain) => chain && chains.includes(chain.chain) && validStatus(chain.status)

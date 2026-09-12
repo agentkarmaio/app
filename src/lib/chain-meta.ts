@@ -31,7 +31,8 @@ export const CHAIN_META: Record<Chain, ChainMeta> = {
   // Arc network icon per Arc brand guidelines §3.4 — that asset is the one
   // reserved for referencing the network (the yellow badge means the ARC
   // token). Its navy disc is part of the mark; never dim or recolor it.
-  arc: { label: 'Arc', logo: '/logos/arc-network.svg', href: '/arc' },
+  arc: { label: 'Arc testnet', logo: '/logos/arc-network.svg', href: '/arc' },
+  'arc-mainnet': { label: 'Arc mainnet', logo: '/logos/arc-network.svg', href: '/arc/mainnet' },
 };
 
 /** Solana first, then remaining chains in CHAINS declaration order.
@@ -43,7 +44,7 @@ export function chainOptions(): Chain[] {
 
 /** EVM chains share the same injected-wallet (EIP-1193) connection path. */
 export function isEvmChain(chain: Chain): boolean {
-  return chain === 'celo' || chain === 'arc';
+  return chain === 'celo' || chain === 'arc' || chain === 'arc-mainnet';
 }
 
 /**

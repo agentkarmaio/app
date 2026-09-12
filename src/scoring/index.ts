@@ -65,7 +65,7 @@ function logCap(value: number, max: number): number {
   return clamp01(Math.log10(1 + Math.max(0, value)) / Math.log10(1 + max));
 }
 
-function recencyDecay(daysSinceLastTx: number): number {
+export function recencyDecay(daysSinceLastTx: number): number {
   if (daysSinceLastTx <= 7) return 1.0;
   if (daysSinceLastTx <= 30) return 1.0 - 0.05 * ((daysSinceLastTx - 7) / 23);
   if (daysSinceLastTx <= 90) return 0.95 - 0.10 * ((daysSinceLastTx - 30) / 60);

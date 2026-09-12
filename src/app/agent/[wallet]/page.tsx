@@ -60,6 +60,7 @@ import { ScanPoller } from '@/components/scan-poller';
 import { NotIndexedBlock, type NotIndexedChain } from '@/components/karma/not-indexed-block';
 import { CeloAgentProfile } from '@/components/karma/celo-agent-profile';
 import { ArcAgentProfile } from '@/components/karma/arc-agent-profile';
+import { ArcMainnetAgentProfile } from '@/components/karma/arc-mainnet-agent-profile';
 import { StellarAgentProfile } from '@/components/karma/stellar-agent-profile';
 import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { CardSkeleton } from '@/components/karma/card-skeleton';
@@ -68,6 +69,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import type { Chain, TrustTier, ConfidenceBadge as ConfidenceBadgeValue, AutonomyLabel, Wallet } from '@/db/schema';
+import { isChain } from '@/db/schema';
 
 /**
  * Build a minimal Wallet row for an ERC-8004 registry agent that has no entry in
@@ -350,7 +352,7 @@ export async function generateMetadata(
   },
 ): Promise<Metadata> {
   const { wallet } = await params;
-  const { agentId: agentIdHint } = await searchParams;
+  const { agentId: agentIdHint, chain: chainHint } = await searchParams;
   if (!wallet || wallet.length < 32) {
     return { title: 'Agent not found' };
   }
@@ -358,7 +360,7 @@ export async function generateMetadata(
 
   // Resolve the SAME fields the OG image uses — handles ERC-8004 registry agents
   // (not in `wallets`) so the unfurl shows real score/tier/chain, not 0/Unrated.
-  const f = await cachedAgentCardFields(wallet, agentId);
+  const f = await cachedAgentCardFields(wallet, agentId, isChain(chainHint) ? chainHint : undefined);
   const badgeLabel = f.badge === 'receipt-backed'
     ? 'Receipt-backed'
     : f.badge === 'behavior-inferred'
@@ -366,15 +368,18 @@ export async function generateMetadata(
       : 'Declared';
   const chainLabel = f.chain.charAt(0).toUpperCase() + f.chain.slice(1);
 
-  const title = `${f.name} — Karma ${f.score.toFixed(0)}/100 · ${f.tier}`;
-  const description = f.isRegistry
+  const mainnetUnrated = chainHint === 'arc-mainnet' && f.tier === 'Unrated';
+  const title = mainnetUnrated ? `${f.name} — Unrated · Arc mainnet` : `${f.name} — Karma ${f.score.toFixed(0)}/100 · ${f.tier}`;
+  const description = mainnetUnrated
+    ? 'Arc mainnet payment behavior with separate incoming and outgoing evidence. Trust is Unrated; transfers do not verify service delivery.'
+    : f.isRegistry
     ? `${f.name}: Provider Karma ${f.score.toFixed(1)}/100, trust tier ${f.tier}, confidence ${badgeLabel}. `
       + `ERC-8004 agent on ${chainLabel}. Live reputation snapshot via AgentKarma.`
     : `${f.name}: Provider Karma ${f.score.toFixed(1)}/100, trust tier ${f.tier}, confidence ${badgeLabel}. `
       + `${f.txCount.toLocaleString()} on-chain transactions indexed. `
       + `Live reputation snapshot for autonomous agent on ${chainLabel} via AgentKarma.`;
 
-  const canonical = `/agent/${wallet}`;
+  const canonical = `/agent/${wallet}${isChain(chainHint) ? `?chain=${chainHint}` : ''}`;
   return {
     title,
     description,
@@ -385,11 +390,14 @@ export async function generateMetadata(
       title,
       description,
       siteName: 'AgentKarma',
+      // The address-only generated image cannot carry the network pin.
+      ...(chainHint === 'arc-mainnet' ? { images: [`${SITE_URL}/brand/agentkarma-dark-X.png`] } : {}),
     },
     twitter: {
       card: 'summary_large_image',
       title,
       description,
+      ...(chainHint === 'arc-mainnet' ? { images: [`${SITE_URL}/brand/agentkarma-dark-X.png`] } : {}),
     },
   };
 }
@@ -747,6 +755,7 @@ export default async function AgentProfilePage({
   // feedback form, no score trend — the profile is built from on-chain
   // ERC-8004 registration + reputation reads keyed by agentId.
   if (resolved.addressClass === 'evm') {
+    if (resolved.chain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} />;
     // Prefer a real wallet row's agentId; otherwise honor the ?agentId= hint
     // from the registry-mirror leaderboard (fleet owners aren't in `wallets`, so
     // most registry agents only resolve via this path). Build a minimal walletRow

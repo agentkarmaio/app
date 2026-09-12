@@ -59,12 +59,12 @@ export async function publishTopScores(
   const { getLeaderboard, getTransactions, calculateScore, getAdapter } = deps();
   const adapter = getAdapter(chain);
 
-  const { wallets } = await getLeaderboard(limit);
+  const { wallets } = await getLeaderboard(limit, 0, { chain });
   const result: PublishRunResult = { published: 0, skipped: 0, errors: 0, dryRun: false, details: [] };
 
   for (const wallet of wallets) {
     try {
-      const transactions = await getTransactions(wallet.address, 1000);
+      const transactions = await getTransactions(wallet.address, 1000, 0, chain);
       if (transactions.length === 0) {
         result.skipped++;
         result.details.push({ address: wallet.address, status: 'skipped', score: 0, reason: 'no transactions' });

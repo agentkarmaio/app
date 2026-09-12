@@ -734,7 +734,9 @@ describe('getTransactionsForWallets bounds history per wallet', () => {
     expect(fake.queries).toHaveLength(2); // one bounded query per wallet
     expect(fake.queries.every((q) => q.limit !== null && q.limit > 0)).toBe(true);
     expect(fake.queries.map((q) => q.eq).flat()).toEqual([
+      ['chain', 'solana'],
       ['wallet_address', 'walletA'],
+      ['chain', 'solana'],
       ['wallet_address', 'walletB'],
     ]);
   });
@@ -785,12 +787,13 @@ describe('getTransactionsForWallets bounds history per wallet', () => {
 // smaller answer.
 describe('getAllTransactions refuses unbounded and truncated reads', () => {
   function makeCapFake(rowCount: number) {
-    const seen: { limit: number | null } = { limit: null };
+    const seen: { limit: number | null; chain?: string } = { limit: null };
     return {
       seen,
       from() {
         const builder: Record<string, unknown> = {};
         builder.select = () => builder;
+        builder.eq = (column: string, value: string) => { if (column === 'chain') seen.chain = value; return builder; };
         builder.order = () => builder;
         builder.limit = (n: number) => {
           seen.limit = n;
@@ -805,6 +808,13 @@ describe('getAllTransactions refuses unbounded and truncated reads', () => {
   }
 
   afterAll(() => { __setSupabaseForTest(null); });
+
+  test('legacy bulk scoring reads cannot consume another network', async () => {
+    const fake = makeCapFake(0);
+    __setSupabaseForTest(fake);
+    await getAllTransactions(500);
+    expect(fake.seen.chain).toBe('solana');
+  });
 
   test('always applies the caller-supplied bound to the query', async () => {
     const fake = makeCapFake(10);

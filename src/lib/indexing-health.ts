@@ -61,6 +61,7 @@ export const INDEXING_PATHS: ReadonlyArray<{
     label: 'Agent registry',
     intervalMs: 3_600_000,
   },
+  { chain: 'arc-mainnet', path: 'transfers', label: 'Agent transfers', intervalMs: 300_000 },
 ];
 export type IndexingStatus =
   | 'current'
@@ -131,7 +132,7 @@ const worst = (states: IndexingStatus[]) =>
   priority.find((s) => states.includes(s)) ?? 'unknown';
 /** A small explicit projection: never serialize the private worker row. */
 export function buildIndexingHealth(rows: HealthStateRow[], now = Date.now()) {
-  const chains = (['solana', 'arc', 'celo', 'stellar'] as Chain[]).map(
+  const chains = (['solana', 'arc', 'celo', 'stellar', 'arc-mainnet'] as Chain[]).map(
     (chain) => {
       const paths = INDEXING_PATHS.filter((p) => p.chain === chain).map(
         (def) => {
