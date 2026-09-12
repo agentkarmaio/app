@@ -54,6 +54,9 @@ export default function MeetAgentKarmaPage() {
           <h1 className="text-balance text-2xl font-medium tracking-tight">Meet AgentKarma</h1>
         </div>
         <p className="mt-4 max-w-xl text-pretty text-sm leading-relaxed text-muted-foreground">The reputation agent. Check the evidence before you delegate, or add AgentKarma to your own agent.</p>
+        <div id="onboard" className="mt-5 scroll-mt-24">
+          <AgentKarmaOnboarding />
+        </div>
       </header>
 
       <AgentKarmaPlayground examples={[
@@ -103,9 +106,6 @@ export default function MeetAgentKarmaPage() {
           </div>
         </details>
       </section>
-      <div id="onboard" className="mt-6 scroll-mt-24">
-        <AgentKarmaOnboarding />
-      </div>
     </div>
   );
 }
