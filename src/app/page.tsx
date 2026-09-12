@@ -8,7 +8,7 @@ import { BuiltWith } from '@/components/karma/built-with';
 import { Partners } from '@/components/karma/partners';
 import { Tour } from '@/components/karma/tour';
 import { KarmaCatchingUp } from '@/components/karma/karma-catching-up';
-import { SignalsBand } from '@/components/karma/signals-band';
+import { ScoreGuide } from '@/components/karma/score-guide';
 import { FAQ } from '@/components/karma/faq';
 import type { LeaderboardEntry } from '@/components/karma/leaderboard-table';
 
@@ -26,7 +26,7 @@ export default function HomePage() {
       <Suspense fallback={<LeaderboardSkeleton />}>
         <LeaderboardSection />
       </Suspense>
-      <SignalsBand />
+      <ScoreGuide />
       <FAQ variant="compact" />
     </div>
   );
