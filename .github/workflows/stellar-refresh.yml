@@ -56,11 +56,12 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           STELLAR_RPC_URL: ${{ secrets.STELLAR_RPC_URL }}
-        run: bun run registry:scan:stellar
+        run: bun run src/scripts/indexing-run.ts stellar registry
 
       # Behavioral metrics are orthogonal to the mirror: a Horizon outage must
       # not roll back a successful registry refresh, but it must still page.
       - name: Refresh Autonomy Confidence + cadence from Horizon
+        if: ${{ !cancelled() }}
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -82,6 +83,7 @@ jobs:
       # Lookback is ~2.8h at ~5s/ledger against an hourly cadence — deliberate
       # overlap, so a slow ledger close can never open a gap.
       - name: Watch for Stellar x402 facilitator activity
+        if: ${{ !cancelled() }}
         id: facilitator_watch
         env:
           STELLAR_RPC_URL: ${{ secrets.STELLAR_RPC_URL }}

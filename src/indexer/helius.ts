@@ -262,10 +262,15 @@ async function fetchOrNull(
   fetcher: ParsedTxFetcher,
   sig: string,
   label: string,
+  signal?: AbortSignal,
 ): Promise<ParsedTransactionWithMeta | null> {
+  signal?.throwIfAborted();
   try {
-    return await fetcher(sig);
+    const tx = await fetcher(sig);
+    signal?.throwIfAborted();
+    return tx;
   } catch (err) {
+    signal?.throwIfAborted();
     console.error(
       `[rpc] ${label} getParsedTransaction failed ${sig.slice(0, 12)}…:`,
       err instanceof Error ? err.message.slice(0, 100) : err,
@@ -291,7 +296,9 @@ export async function parseWithArchiveFallback(
   primary: ParsedTxFetcher,
   archive: ParsedTxFetcher | null,
   budget: number = ARCHIVE_RETRY_BUDGET,
+  signal?: AbortSignal,
 ): Promise<ParseBatchResult> {
+  signal?.throwIfAborted();
   const empty: ParseBatchResult = {
     transactions: [], requested: signatures.length,
     unresolved: [], undecodable: 0, recoveredFromArchive: 0,
@@ -299,7 +306,7 @@ export async function parseWithArchiveFallback(
   if (signatures.length === 0) return empty;
 
   const fetched = await withConcurrency(signatures, PARSE_CONCURRENCY, (sig) =>
-    fetchOrNull(primary, sig, 'primary'),
+    fetchOrNull(primary, sig, 'primary', signal),
   );
 
   // Retry misses OLDEST-FIRST (signatures arrive newest-first). The cursor can
@@ -317,7 +324,7 @@ export async function parseWithArchiveFallback(
       );
     }
     for (const i of attempts) {
-      const tx = await archiveSerialized(() => fetchOrNull(archive, signatures[i], 'archive'));
+      const tx = await archiveSerialized(() => fetchOrNull(archive, signatures[i], 'archive', signal));
       if (tx) { fetched[i] = tx; recoveredFromArchive++; }
     }
   }
@@ -345,7 +352,9 @@ export async function parseWithArchiveFallback(
  */
 export async function parseTransactionsBatch(
   signatures: string[],
+  options?: { signal?: AbortSignal },
 ): Promise<ParseBatchResult> {
+  options?.signal?.throwIfAborted();
   if (signatures.length === 0) {
     return { transactions: [], requested: 0, unresolved: [], undecodable: 0, recoveredFromArchive: 0 };
   }
@@ -356,6 +365,8 @@ export async function parseTransactionsBatch(
     signatures,
     (sig) => connection.getParsedTransaction(sig, opts),
     archive ? (sig) => archive.getParsedTransaction(sig, opts) : null,
+    ARCHIVE_RETRY_BUDGET,
+    options?.signal,
   );
 }
 
@@ -577,4 +588,3 @@ export function extractPayshPayment(
     observedAt: new Date(tx.timestamp * 1000).toISOString(),
   };
 }
-

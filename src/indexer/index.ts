@@ -72,6 +72,19 @@ import { withConcurrency } from '@/lib/concurrency';
 const DEFAULT_LIMIT = 100;
 const FACILITATOR_CONCURRENCY = 5;
 
+export interface SolanaScanCoverage {
+  complete: boolean;
+  /** Facilitator targets whose signature read succeeded (not matching tx count). */
+  checked: number;
+  /** Targets not fully checked, including RPC failures and unknown history. */
+  pending: number;
+  /** Unserved signatures still guarded by the existing cursor hold. */
+  unresolved: number;
+  /** Historical uncertainty no later incremental success can prove resolved. */
+  gaps: number;
+  reason?: 'rpc_rate_limited' | 'rpc_unavailable' | 'archive_gap' | 'scan_limit' | 'scan_partial';
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function getConnection(): Connection {
@@ -137,14 +150,21 @@ export async function getSignaturesWithCursorFallback(
     opts: { limit: number; until?: string; before?: string },
   ) => Promise<ConfirmedSignatureInfo[]>,
   opts: { limit: number; until?: string; before?: string },
+  signal?: AbortSignal,
 ): Promise<{ signatures: ConfirmedSignatureInfo[]; cursorReset: boolean }> {
+  signal?.throwIfAborted();
   try {
-    return { signatures: await fetchSignatures(opts), cursorReset: false };
+    const signatures = await fetchSignatures(opts);
+    signal?.throwIfAborted();
+    return { signatures, cursorReset: false };
   } catch (err) {
+    signal?.throwIfAborted();
     if (!opts.until || !isCursorUnresolvable(err)) throw err;
     const { until: _dead, ...withoutCursor } = opts;
     void _dead;
-    return { signatures: await fetchSignatures(withoutCursor), cursorReset: true };
+    const signatures = await fetchSignatures(withoutCursor);
+    signal?.throwIfAborted();
+    return { signatures, cursorReset: true };
   }
 }
 
@@ -241,7 +261,7 @@ export function computeSafeCursor(
 export async function fetchTransactionsForFacilitator(
   address: string,
   limit: number = DEFAULT_LIMIT,
-  options?: { until?: string; before?: string },
+  options?: { until?: string; before?: string; signal?: AbortSignal },
 ): Promise<{
   transactions: Omit<Transaction, 'id'>[];
   paysh: PayshExtractedPayment[];
@@ -254,7 +274,9 @@ export async function fetchTransactionsForFacilitator(
   /** Signatures no endpoint could serve. Non-empty ⇒ this run was lossy. */
   unresolved: string[];
   rateLimited: boolean;
+  coverage: SolanaScanCoverage;
 }> {
+  options?.signal?.throwIfAborted();
   const connection = getConnection();
   const pubkey = new PublicKey(address);
 
@@ -263,12 +285,15 @@ export async function fetchTransactionsForFacilitator(
   if (options?.before) sigOpts.before = options.before;
 
   let signatures: ConfirmedSignatureInfo[];
+  let cursorReset = false;
   try {
     const fetched = await getSignaturesWithCursorFallback(
       (o) => connection.getSignaturesForAddress(pubkey, o),
       sigOpts,
+      options?.signal,
     );
     signatures = fetched.signatures;
+    cursorReset = fetched.cursorReset;
     if (fetched.cursorReset) {
       // Classified only now that the retry's size is known: "re-anchored" and
       // "this endpoint has nothing for this address" are different events with
@@ -278,22 +303,34 @@ export async function fetchTransactionsForFacilitator(
       else console.log(reset.message);
     }
   } catch (err) {
+    options?.signal?.throwIfAborted();
     const rateLimited = isRpcRateLimited(err);
     if (!rateLimited) console.error(`[indexer] Failed to get signatures for ${address}:`, err);
-    return { transactions: [], paysh: [], cursor: null, unresolved: [], rateLimited };
+    return { transactions: [], paysh: [], cursor: null, unresolved: [], rateLimited,
+      coverage: { complete: false, checked: 0, pending: 1, unresolved: 0, gaps: 0,
+        reason: rateLimited ? 'rpc_rate_limited' : 'rpc_unavailable' } };
   }
 
   if (signatures.length === 0) {
     const name = getFacilitatorName(address) ?? 'unknown';
     console.log(`[indexer] ${address} (${name}): 0 new signatures`);
-    return { transactions: [], paysh: [], cursor: null, unresolved: [], rateLimited: false };
+    return { transactions: [], paysh: [], cursor: null, unresolved: [], rateLimited: false,
+      coverage: { complete: !cursorReset, checked: 1, pending: cursorReset ? 1 : 0,
+        unresolved: 0, gaps: cursorReset ? 1 : 0, reason: cursorReset ? 'archive_gap' : undefined } };
   }
 
   const sigStrings = signatures.map((s) => s.signature);
 
   // Decode via standard RPC, with the archive endpoint covering anything the
   // primary has already pruned.
-  const parsed = await parseTransactionsBatch(sigStrings);
+  const parsed = await parseTransactionsBatch(sigStrings, { signal: options?.signal });
+  options?.signal?.throwIfAborted();
+  // A full page proves only a bounded recent window. The existing cursor
+  // policy can advance past older activity; never call that complete history.
+  const limitReached = signatures.length >= limit;
+  const unknownHistory = cursorReset || limitReached;
+  const gaps = parsed.undecodable + (unknownHistory ? 1 : 0);
+  const incomplete = parsed.unresolved.length > 0 || gaps > 0;
 
   // The cursor may only pass signatures we actually obtained. Log the SIGNATURES,
   // not a count: recovery is a targeted archive re-parse, which needs them.
@@ -337,6 +374,15 @@ export async function fetchTransactionsForFacilitator(
     cursor,
     unresolved: parsed.unresolved,
     rateLimited: false,
+    coverage: {
+      complete: !incomplete,
+      checked: 1,
+      pending: incomplete ? 1 : 0,
+      unresolved: parsed.unresolved.length,
+      gaps,
+      reason: cursorReset ? 'archive_gap' : limitReached ? 'scan_limit'
+        : incomplete ? 'scan_partial' : undefined,
+    },
   };
 }
 
@@ -347,13 +393,17 @@ export async function fetchTransactionsForFacilitator(
  */
 export async function fetchAllX402Transactions(
   limit: number = DEFAULT_LIMIT,
-  options?: { backfill?: boolean },
+  options?: IndexerOptions,
 ): Promise<{
   transactions: Omit<Transaction, 'id'>[];
   paysh: PayshExtractedPayment[];
   /** Signatures no RPC could serve this run, across all facilitators. */
   unresolved: number;
+  coverage: SolanaScanCoverage;
+  /** Commit only after this batch's corresponding receipts and signals persist. */
+  cursorUpdates: Array<{ address: string; signature: string }>;
 }> {
+  options?.signal?.throwIfAborted();
   const backfill = options?.backfill ?? false;
 
   // Iteration set: existing x402 facilitators + pay.sh operator addresses
@@ -369,23 +419,28 @@ export async function fetchAllX402Transactions(
   // Run-scoped circuit breaker: once the RPC reports rate/quota exhaustion,
   // stop polling the remaining facilitators this run (they would all 429 too).
   const breaker = { tripped: false };
+  const cursorUpdates: Array<{ address: string; signature: string }> = [];
 
   const results = await withConcurrency(
     iterationAddresses,
     FACILITATOR_CONCURRENCY,
     async (address) => {
+      options?.signal?.throwIfAborted();
       if (breaker.tripped) {
-        return { transactions: [], paysh: [], cursor: null, unresolved: [], rateLimited: true };
+        return { transactions: [], paysh: [], cursor: null, unresolved: [], rateLimited: true,
+          coverage: { complete: false, checked: 0, pending: 1, unresolved: 0, gaps: 0, reason: 'rpc_rate_limited' as const } };
       }
 
       // Load cursor for incremental indexing (skip in backfill mode)
       let until: string | undefined;
       if (!backfill) {
         const cursor = await getCursor(address);
+        options?.signal?.throwIfAborted();
         if (cursor) until = cursor.last_signature;
       }
 
-      const result = await fetchTransactionsForFacilitator(address, limit, { until });
+      const result = await fetchTransactionsForFacilitator(address, limit, { until, signal: options?.signal });
+      options?.signal?.throwIfAborted();
 
       if (result.rateLimited && !breaker.tripped) {
         breaker.tripped = true;
@@ -395,11 +450,10 @@ export async function fetchAllX402Transactions(
         );
       }
 
-      // Save cursor for next run. NOT `signatures[0]`: computeSafeCursor holds it
-      // below anything this run failed to obtain, so a transaction the RPC could
-      // not serve is retried instead of skipped past forever.
+      // Prepare, never commit during fetching: a later timeout must not move
+      // this cursor past receipts still held only in process memory.
       if (result.cursor && !backfill) {
-        await upsertCursor(address, result.cursor);
+        cursorUpdates.push({ address, signature: result.cursor });
       }
 
       return result;
@@ -409,18 +463,28 @@ export async function fetchAllX402Transactions(
   const allTxs = results.flatMap((r) => r.transactions);
   const allPaysh = results.flatMap((r) => r.paysh);
   const unresolved = results.reduce((n, r) => n + r.unresolved.length, 0);
+  const reasons: NonNullable<SolanaScanCoverage['reason']>[] = ['rpc_rate_limited', 'rpc_unavailable', 'archive_gap', 'scan_limit', 'scan_partial'];
+  const coverage: SolanaScanCoverage = {
+    complete: results.every(r => r.coverage.complete),
+    checked: results.reduce((n, r) => n + r.coverage.checked, 0),
+    pending: results.reduce((n, r) => n + r.coverage.pending, 0),
+    unresolved: results.reduce((n, r) => n + r.coverage.unresolved, 0),
+    gaps: results.reduce((n, r) => n + r.coverage.gaps, 0),
+    reason: reasons.find(reason => results.some(r => r.coverage.reason === reason)),
+  };
   console.log(
     `[indexer] Total x402 transactions fetched: ${allTxs.length}` +
     (allPaysh.length > 0 ? ` (${allPaysh.length} pay.sh-routed)` : '') +
     (unresolved > 0 ? ` · ${unresolved} signatures UNRESOLVED (cursors held)` : ''),
   );
-  return { transactions: allTxs, paysh: allPaysh, unresolved };
+  return { transactions: allTxs, paysh: allPaysh, unresolved, coverage, cursorUpdates };
 }
 
 // ─── Indexer Run ─────────────────────────────────────────────────────────────
 
 export interface IndexerOptions {
   backfill?: boolean;
+  signal?: AbortSignal;
 }
 
 /**
@@ -442,15 +506,22 @@ export async function runIndexer(
    * signature stays inside the fetched window. Callers must surface it.
    */
   unresolved: number;
+  coverage: SolanaScanCoverage;
 }> {
+  options?.signal?.throwIfAborted();
   console.log(`[indexer] Starting ${options?.backfill ? 'backfill' : 'incremental'} indexer run...`);
 
-  const { transactions, paysh, unresolved } = await fetchAllX402Transactions(limit, options);
+  const { transactions, paysh, unresolved, coverage, cursorUpdates } = await fetchAllX402Transactions(limit, options);
+  const commitCursors = () => withConcurrency(cursorUpdates, FACILITATOR_CONCURRENCY,
+    async ({ address, signature }) => { options?.signal?.throwIfAborted(); await upsertCursor(address, signature); });
+  options?.signal?.throwIfAborted();
   if (transactions.length === 0 && paysh.length === 0) {
     // Decoding nothing while owing `unresolved` signatures is precisely the
     // silent case — carry the count out rather than reporting an empty clean run.
     console.log('[indexer] No new transactions found');
-    return { fetched: 0, inserted: 0, scored: 0, payshSignals: 0, operatorsScored: 0, unresolved };
+    await commitCursors();
+    options?.signal?.throwIfAborted();
+    return { fetched: 0, inserted: 0, scored: 0, payshSignals: 0, operatorsScored: 0, unresolved, coverage };
   }
 
   // Ensure wallet records exist before inserting transactions/signal_events
@@ -468,12 +539,15 @@ export async function runIndexer(
   // Insert-if-absent, one batched statement: existing rows keep their live
   // score/tx_count (a plain upsert here used to zero them until re-scoring).
   await ensureWalletsExist(uniqueWallets);
+  options?.signal?.throwIfAborted();
 
   const inserted = await insertTransactions(transactions);
+  options?.signal?.throwIfAborted();
   console.log(`[indexer] Inserted ${inserted}/${transactions.length} transactions`);
 
   // Emit Tier 2 behavioral signals for every payment (idempotent via (agent,kind,tx_ref)).
   const signalsInserted = await insertSignalEvents(buildX402PaymentSignals(transactions));
+  options?.signal?.throwIfAborted();
   if (signalsInserted > 0) console.log(`[indexer] Emitted ${signalsInserted} Tier 2 signal_events`);
 
   // Emit Tier 1 paysh_routed signals (sprint A1, A2-fixed 2026-05-07).
@@ -507,10 +581,17 @@ export async function runIndexer(
       }),
     ]);
     payshSignalsInserted = await insertSignalEvents(payshSignals);
+    options?.signal?.throwIfAborted();
     if (payshSignalsInserted > 0) {
       console.log(`[indexer] Emitted ${payshSignalsInserted} Tier 1 paysh_routed signal_events (consumer+provider pairs)`);
     }
   }
+
+  // Every fetched receipt and its payment signals are now durable. Retries
+  // after an earlier failure upsert those rows before advancing any cursor.
+  // Scoring can be retried independently without losing ingestion evidence.
+  await commitCursors();
+  options?.signal?.throwIfAborted();
 
   // Main scoring loop runs only on wallets that have x402-style transactions.
   // Pay.sh operators have no transactions (they're recipients, not senders)
@@ -522,9 +603,17 @@ export async function runIndexer(
     `${affectedWallets.length} affected wallets...`,
   );
   const allTxsForAffected = await getTransactionsForWallets(affectedWallets);
+  options?.signal?.throwIfAborted();
 
-  // Fetch 8004 attestations for affected wallets
-  const attestations = await readAttestations(affectedWallets);
+  // Match the existing reader's five-wallet batch size, checking cancellation
+  // before each batch so scoring cannot continue queuing RPCs after a deadline.
+  const attestations = new Map<string, number>();
+  for (let i = 0; i < affectedWallets.length; i += 5) {
+    options?.signal?.throwIfAborted();
+    const batch = await readAttestations(affectedWallets.slice(i, i + 5));
+    options?.signal?.throwIfAborted();
+    for (const [address, score] of batch) attestations.set(address, score);
+  }
   if (attestations.size > 0) {
     console.log(`[indexer] Found ${attestations.size} 8004 attestations`);
   }
@@ -556,16 +645,19 @@ export async function runIndexer(
   }
   if (cadenceSignals.length > 0) {
     await insertSignalEvents(cadenceSignals, { overwrite: true });
+    options?.signal?.throwIfAborted();
     console.log(`[indexer] Emitted ${cadenceSignals.length} cadence signals`);
   }
   if (autonomySignals.length > 0) {
     await insertSignalEvents(autonomySignals, { overwrite: true });
+    options?.signal?.throwIfAborted();
     console.log(`[indexer] Emitted ${autonomySignals.length} autonomy signals`);
   }
 
   // Load Tier 3 manifest scores (Phase H1) — already-resolved manifests contribute
   // to the blended score; wallets with no manifest get null and weight redistributes.
   const manifestScores = await getLatestSignalValues(affectedWallets, 'manifest');
+  options?.signal?.throwIfAborted();
 
   // NOTE: payshRoutedCount was previously passed here, but the legacy
   // attribution credited the payer's provider face — wrong direction (the
@@ -577,6 +669,7 @@ export async function runIndexer(
 
   let scored = 0;
   for (const [address, walletScore] of scores) {
+    options?.signal?.throwIfAborted();
     const autonomy = autonomyByWallet.get(address);
     await upsertWallet(address, walletScore.score, walletScore.trustTier, walletScore.txCount, {
       providerScore: walletScore.providerScore,
@@ -590,6 +683,7 @@ export async function runIndexer(
       metricAge:         walletScore.metrics.age,
       metricCadence:     walletScore.metrics.cadence,
     });
+    options?.signal?.throwIfAborted();
     await insertScoreSnapshot(
       address,
       walletScore.score,
@@ -610,8 +704,10 @@ export async function runIndexer(
   let operatorsScored = 0;
   const operatorsToScore = operatorAddresses;
   if (operatorsToScore.length > 0) {
+    options?.signal?.throwIfAborted();
     const operatorStats = await getPayshOperatorReceiptStats(operatorsToScore);
     for (const operator of operatorsToScore) {
+      options?.signal?.throwIfAborted();
       const stats = operatorStats.get(operator);
       if (!stats || stats.receiptCount === 0) continue;
       const op = calculateOperatorScore({
@@ -630,6 +726,7 @@ export async function runIndexer(
     }
   }
 
+  options?.signal?.throwIfAborted();
   return {
     fetched: transactions.length,
     inserted,
@@ -637,6 +734,7 @@ export async function runIndexer(
     payshSignals: payshSignalsInserted,
     operatorsScored,
     unresolved,
+    coverage,
   };
 }
 

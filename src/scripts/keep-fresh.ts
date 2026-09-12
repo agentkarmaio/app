@@ -36,10 +36,10 @@
 import { checkOnce } from '../lib/helius-watchdog';
 import { runIndexer } from '../indexer/index';
 import { drainOnce } from './rescore-dirty';
-import { getRecentTransactions } from '../db/client';
+import { createIndexingJob, runIndexingJob, runManagedIndexingTask, readLatestSolanaTransaction, coverageOutcome } from '../lib/indexing-jobs';
 import { runKeepFresh } from '../lib/keep-fresh';
 import { requireEnv } from '../lib/require-env';
-import { makeArcAdapter } from '../chain-adapters/arc';
+
 
 // DB writes are mandatory; without them the floor cannot ingest. Fail at line 1
 // with a clear message (the 2026-06-23 outage: secrets unset → cryptic crash 8
@@ -67,14 +67,24 @@ async function main() {
   const outcome = await runKeepFresh(
     {
       syncWebhook: () => checkOnce(),
-      index: () => runIndexer(limit, { backfill }),
-      // No-op until ARC_JOBS_START_BLOCK / ARC_TRANSFERS_START_BLOCK are set.
-      indexArc: () => makeArcAdapter().indexReceipts(),
-      drainOnce: () => drainOnce(drainLimit, 5000),
-      readLastTxIso: async () => {
-        const latest = (await getRecentTransactions(undefined, 1))[0];
-        return latest ? new Date(latest.timestamp as string | Date).toISOString() : null;
+      index: async () => {
+        let result: Awaited<ReturnType<typeof runIndexer>> | undefined;
+        const job = createIndexingJob('solana', 'payments');
+        const managed = await runManagedIndexingTask({ ...job, run: async (signal) => {
+          result = await runIndexer(limit, { backfill, signal });
+          return coverageOutcome(result.coverage, result.inserted);
+        }});
+        if (managed.status === 'failed' || managed.status === 'lease_lost' || ('gapCount' in managed && (managed.gapCount ?? 0) > 0)) throw Error('solana_scan_failed');
+        return result ?? { fetched: 0, inserted: 0, scored: 0, payshSignals: 0, operatorsScored: 0, unresolved: 0, skipped: 'already_running' };
       },
+      // No-op until ARC_JOBS_START_BLOCK / ARC_TRANSFERS_START_BLOCK are set.
+      indexArc: async () => {
+        const result = await runIndexingJob('arc', 'escrow');
+        if (result.status === 'failed' || result.status === 'lease_lost' || ('gapCount' in result && (result.gapCount ?? 0) > 0)) throw Error('arc_scan_failed');
+        return { fetched: 0, inserted: 'insertedCount' in result ? result.insertedCount ?? 0 : 0 };
+      },
+      drainOnce: () => drainOnce(drainLimit, 5000),
+      readLastTxIso: readLatestSolanaTransaction,
     },
     { drainBatches },
   );
@@ -89,7 +99,7 @@ async function main() {
     console.error('[keep-fresh] STILL CRITICAL after run — ingest did not recover');
     process.exit(1);
   }
-  if ((outcome.indexer?.unresolved ?? 0) > 0) {
+  if ((outcome.indexer?.unresolved ?? 0) > 0 || ((outcome.indexer as {coverage?:{gaps?:number}} | null)?.coverage?.gaps ?? 0) > 0) {
     console.error(
       `[keep-fresh] DEGRADED — ${outcome.indexer?.unresolved} signature(s) unserved by every RPC`,
     );

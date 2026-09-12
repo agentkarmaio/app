@@ -40,7 +40,7 @@
 
 import { createPublicClient, http, parseAbiItem, type Log } from 'viem';
 import type { Chain, Transaction } from '@/db/schema';
-import type { IndexRunResult } from '@/chain-adapters/types';
+import { readArcLogRange, withArcLogRetry, isArcLogRangeError, arcIndexCoverage, ARC_LOG_BUDGET_EXHAUSTED, type ArcIndexRunResult, type ArcIndexCoverage } from './arc-log-range';
 import { arcTestnet } from '@/config/arc-chain';
 import {
   insertTransactions as dbInsertTransactions,
@@ -340,6 +340,7 @@ export function buildArcSeedSet(input: SeedSetInput = {}): Set<string> {
 // ─── DI core ──────────────────────────────────────────────────────────────────
 
 export interface ArcTransfersIndexerDeps {
+  signal?: AbortSignal;
   usdcContract: string;
   /**
    * Everything AK cares about — REQUIRED, never optional. An optional seed
@@ -387,7 +388,9 @@ export function arcTransfersCursorKey(usdcContract: string): string {
  * arcJobsIndexer's shape (arc-jobs.ts) but with no pairing step (a Transfer is
  * self-contained).
  */
-export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promise<IndexRunResult> {
+export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promise<ArcIndexRunResult> {
+  const assertActive = () => deps.signal?.throwIfAborted();
+  assertActive();
   const cursors = new Map<string, string>();
   const windowSize = deps.windowSize ?? ARC_TRANSFERS_MAX_LOG_WINDOW;
   const maxWindows = deps.maxWindows ?? Number.POSITIVE_INFINITY;
@@ -400,18 +403,20 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
   // not that they are clean.
   if (deps.seed.size === 0) {
     console.warn('[arc-transfers] seed set is empty — skipping run (no RPC calls, no cursor move)');
-    return { fetched: 0, inserted: 0, cursors };
+    return { fetched: 0, inserted: 0, cursors, coverage: { complete: false, head: '', checkpoint: null, checked: 0, pending: 0, unresolved: 0, reason: 'empty_seed' } };
   }
 
   let startBlock = BigInt(GENESIS_FALLBACK_BLOCK);
   const cursor = await deps.getCursor(cursorKey);
+  assertActive();
   if (cursor?.last_slot != null) startBlock = BigInt(cursor.last_slot) + BigInt(1);
 
   const head = await deps.getHead();
+  assertActive();
 
   if (startBlock > head) {
-    cursors.set(cursorKey, String(head));
-    return { fetched: 0, inserted: 0, cursors };
+    if (cursor?.last_slot != null) cursors.set(cursorKey, String(cursor.last_slot));
+    return { fetched: 0, inserted: 0, cursors, coverage: arcIndexCoverage(head, startBlock, startBlock - 1n, cursor?.last_slot ?? null) };
   }
 
   const rows: Omit<Transaction, 'id'>[] = [];
@@ -429,15 +434,17 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
 
   let maxBlock = startBlock - BigInt(1);
   let windowsProcessed = 0;
+  let stopped: ArcIndexCoverage['reason'];
   let fetched = 0;
 
   const now = deps.now ?? Date.now;
   const deadline = deps.timeBudgetMs != null ? now() + deps.timeBudgetMs : Number.POSITIVE_INFINITY;
 
   for (let from = startBlock; from <= head; from += BigInt(windowSize)) {
+    assertActive();
     // Checked before the window, so a window is never half-processed: whatever
     // is already read gets banked and the next run picks up from the cursor.
-    if (now() >= deadline) break;
+    if (now() >= deadline || windowsProcessed >= maxWindows) { stopped = 'budget'; break; }
 
     let to = from + BigInt(windowSize) - BigInt(1);
     if (to > head) to = head;
@@ -448,13 +455,22 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
     // that reason.
     let raw: ArcTransfer[];
     try {
-      const [outbound, inbound] = await Promise.all([
-        deps.getLogs(from, to, 'from'),
-        deps.getLogs(from, to, 'to'),
-      ]);
+      // Sequential reads avoid concurrent quota pressure and dangling work
+      // after one face rejects. Each face must cover the entire logical window.
+      const readFace = (face: TransferFace) => readArcLogRange(from, to,
+        (lower, upper) => deps.getLogs(lower, upper, face),
+        (left, right) => [...left, ...right],
+        () => deadline !== Number.POSITIVE_INFINITY && now() >= deadline,
+        deps.signal,
+      );
+      const outbound = await readFace('from');
+      const inbound = await readFace('to');
       raw = [...outbound, ...inbound];
     } catch (err) {
-      if (!isRateLimitedError(err)) throw err;
+      assertActive();
+      if (err === ARC_LOG_BUDGET_EXHAUSTED) stopped = 'budget';
+      else if (!isArcLogRangeError(err) && isRateLimitedError(err)) stopped = 'rate_limited';
+      else throw err;
       break;
     }
 
@@ -501,13 +517,18 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
       ...new Set(kept.map((t) => t.blockNumber.toString()).filter((b) => !tsCache.has(b))),
     ];
     await withConcurrency(needed, BLOCK_TS_CONCURRENCY, async (b) => {
-      tsCache.set(b, await deps.blockTimestamp(BigInt(b)));
+      assertActive();
+      const timestamp = await deps.blockTimestamp(BigInt(b));
+      assertActive();
+      tsCache.set(b, timestamp);
     });
 
     for (const transfer of kept) {
+      assertActive();
       fetched++;
       const observedAt = tsCache.get(transfer.blockNumber.toString())
         ?? await deps.blockTimestamp(transfer.blockNumber);
+      assertActive();
 
       wallets.add(transfer.from);
       wallets.add(transfer.to);
@@ -529,24 +550,32 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
   }
 
   const advanceCursor = async (): Promise<void> => {
+    assertActive();
+    if (maxBlock < startBlock) return;
     await deps.upsertCursor(cursorKey, String(maxBlock), Number(maxBlock));
+    assertActive();
     cursors.set(cursorKey, String(maxBlock));
   };
 
+  const coverage = arcIndexCoverage(head, startBlock, maxBlock, cursor?.last_slot ?? null, 0, stopped);
   if (fetched === 0) {
     await advanceCursor();
-    return { fetched: 0, inserted: 0, cursors };
+    return { fetched: 0, inserted: 0, cursors, coverage };
   }
 
   // FK: transactions references (chain, wallet_address) on wallets.
   // Insert-if-absent — never upsertWallet, which would zero live scores
   // (the 2026-08-02 clobber).
+  assertActive();
   await deps.ensureWallets([...wallets]);
-  await deps.insertTransactions(rows);
-  const inserted = await deps.insertSignalEvents(signals);
+  assertActive();
+  const inserted = await deps.insertTransactions(rows);
+  assertActive();
+  await deps.insertSignalEvents(signals);
+  assertActive();
 
   await advanceCursor();
-  return { fetched, inserted, cursors };
+  return { fetched, inserted, cursors, coverage };
 }
 
 // ─── Production wiring ──────────────────────────────────────────────────────
@@ -646,6 +675,7 @@ export async function loadArcSeedSet(): Promise<Set<string>> {
 }
 
 export interface RunArcTransfersOptions {
+  signal?: AbortSignal;
   usdcContract?: string;
   windowSize?: number;
   maxWindows?: number;
@@ -664,32 +694,36 @@ export interface RunArcTransfersOptions {
  */
 export async function runArcTransfersIndexer(
   opts: RunArcTransfersOptions = {},
-): Promise<IndexRunResult> {
+): Promise<ArcIndexRunResult> {
+  opts.signal?.throwIfAborted();
+  const rpc = <T>(read: () => Promise<T>) => { opts.signal?.throwIfAborted(); return read(); };
   const usdcContract = opts.usdcContract ?? ARC_USDC_CONTRACT;
   const client = makeClient();
   const envStartBlock = resolveTransfersStartBlockEnv();
   const seed = await loadArcSeedSet();
+  opts.signal?.throwIfAborted();
   // Frozen once per run: the array handed to every getLogs call.
   const seedList = [...seed] as `0x${string}`[];
 
   return arcTransfersIndexer({
     usdcContract,
     seed,
+    signal: opts.signal,
     windowSize: opts.windowSize,
     maxWindows: opts.maxWindows ?? ARC_TRANSFERS_DEFAULT_MAX_WINDOWS,
     timeBudgetMs: ARC_RUN_TIME_BUDGET_MS,
-    getHead: async () => withRateLimitRetry(() => client.getBlockNumber(), INGEST_RETRY),
+    getHead: async () => withRateLimitRetry(() => rpc(() => client.getBlockNumber()), INGEST_RETRY),
     getLogs: async (fromBlock, toBlock, face) => {
       // The seed goes into ONE indexed topic position per call. Positions are
       // AND-ed by the node, so `{ from: seed, to: seed }` would mean "both ends
       // seeded" — the union needs the two calls the core makes.
-      const logs = await withRateLimitRetry(() => client.getLogs({
+      const logs = await withArcLogRetry(() => rpc(() => client.getLogs({
         address: usdcContract as `0x${string}`,
         event: TRANSFER_EVENT,
         args: face === 'from' ? { from: seedList } : { to: seedList },
         fromBlock,
         toBlock,
-      }), INGEST_RETRY);
+      })), INGEST_RETRY);
       const out: ArcTransfer[] = [];
       for (const log of logs) {
         const rec = parseTransfer(log);
@@ -698,7 +732,7 @@ export async function runArcTransfersIndexer(
       return out;
     },
     blockTimestamp: async (blockNumber) => {
-      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }), INGEST_RETRY);
+      const block = await withRateLimitRetry(() => rpc(() => client.getBlock({ blockNumber })), INGEST_RETRY);
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
     insertTransactions: dbInsertTransactions,

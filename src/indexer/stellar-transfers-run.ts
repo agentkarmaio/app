@@ -15,6 +15,9 @@
  *
  */
 
+import { runIndexerCli } from './managed-cli';
+import { coverageOutcome } from '@/lib/indexing-jobs';
+
 import type { Transaction } from '@/db/schema';
 import { requireEnv } from '@/lib/require-env';
 import {
@@ -41,6 +44,7 @@ function dryRunOverrides(sink: {
     insertSignalEvents: async (s) => { sink.signals += s.length; return s.length; },
     ensureWallets: async (addresses) => { for (const a of addresses) sink.wallets.add(a); },
     upsertCursor: async () => { /* never advance a cursor in a dry run */ },
+    writeTargetCheckpoint: async () => { /* no scheduling writes in a dry run */ },
   };
 }
 
@@ -51,12 +55,22 @@ console.log(`[stellar-transfers] Mode: ${DRY_RUN ? 'DRY RUN — no writes' : 'li
 
 const start = Date.now();
 
-runStellarTransfersIndexer(DRY_RUN ? { overrides: dryRunOverrides(sink) } : {})
-  .then((result) => {
+runIndexerCli({
+  chain: 'stellar', path: 'transfers', dryRun: DRY_RUN,
+  run: async (signal) => runStellarTransfersIndexer({ signal, ...(DRY_RUN ? { overrides: dryRunOverrides(sink) } : {}) }),
+  summarize: (result) => coverageOutcome(result.coverage, result.inserted),
+})
+  .then(({ result, status, exitCode, errorCode }) => {
+    if (!result) {
+      console.log(`[indexer] ${status}${errorCode ? ` (${errorCode})` : ''} — no scan result`);
+      process.exit(exitCode);
+    }
+    console.log(`[indexer] managed status: ${status}`);
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     console.log(`\n[stellar-transfers] Done in ${elapsed}s`);
     console.log(`[stellar-transfers] Fetched: ${result.fetched} | Inserted: ${result.inserted}`);
 
+    console.log(`[stellar-transfers] coverage: ${JSON.stringify(result.coverage)}`);
     if (result.absent.length > 0) {
       // Expected steady state, not an error: a registry agent can reference an
       // account never funded on mainnet (2026-08-26 incident).
@@ -96,7 +110,7 @@ runStellarTransfersIndexer(DRY_RUN ? { overrides: dryRunOverrides(sink) } : {})
       );
       process.exit(1);
     }
-    process.exit(0);
+    process.exit(exitCode);
   })
   .catch((err) => {
     console.error('[stellar-transfers] Fatal error:', err);

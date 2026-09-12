@@ -19,6 +19,9 @@
  *
  */
 
+import { runIndexerCli } from './managed-cli';
+import { coverageOutcome } from '@/lib/indexing-jobs';
+
 import type { Transaction } from '@/db/schema';
 import { requireEnv } from '@/lib/require-env';
 import {
@@ -106,11 +109,17 @@ if (startBlock !== undefined) console.log(`[arc-transfers] Sampling from block $
 
 const start = Date.now();
 
-runArcTransfersIndexer({
-  maxWindows,
-  ...(DRY_RUN ? { overrides: dryRunOverrides(sink) } : {}),
+runIndexerCli({
+  chain: 'arc', path: 'transfers', dryRun: DRY_RUN,
+  run: async (signal) => runArcTransfersIndexer({ signal, maxWindows, ...(DRY_RUN ? { overrides: dryRunOverrides(sink) } : {}) }),
+  summarize: (result) => coverageOutcome(result.coverage, result.inserted),
 })
-  .then((result) => {
+  .then(({ result, status, exitCode, errorCode }) => {
+    if (!result) {
+      console.log(`[arc-transfers] ${status}${errorCode ? ` (${errorCode})` : ''} — no scan result`);
+      process.exit(exitCode);
+    }
+    console.log(`[arc-transfers] managed status: ${status}`);
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     console.log(`\n[arc-transfers] Done in ${elapsed}s`);
     console.log(`[arc-transfers] Fetched: ${result.fetched} | Inserted: ${result.inserted}`);
@@ -135,7 +144,7 @@ runArcTransfersIndexer({
         process.exit(1);
       }
     }
-    process.exit(0);
+    process.exit(exitCode);
   })
   .catch((err) => {
     console.error('[arc-transfers] Fatal error:', err);

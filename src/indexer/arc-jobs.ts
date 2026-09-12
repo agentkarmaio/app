@@ -31,7 +31,7 @@
 
 import { createPublicClient, http, parseAbiItem, type Log } from "viem";
 import type { Transaction, Chain } from "@/db/schema";
-import type { IndexRunResult } from "@/chain-adapters/types";
+import { readArcLogRange, withArcLogRetry, isArcLogRangeError, arcIndexCoverage, ARC_LOG_BUDGET_EXHAUSTED, type ArcIndexRunResult, type ArcIndexCoverage } from "./arc-log-range";
 import { arcTestnet } from "@/config/arc-chain";
 import {
   insertTransactions as dbInsertTransactions,
@@ -206,6 +206,7 @@ export interface GetLogsWindow {
 }
 
 export interface ArcJobsIndexerDeps {
+  signal?: AbortSignal;
   /** ERC-8183 AgenticCommerce escrow address whose events we read. */
   jobsContract: string;
   /** Current chain head block number. Bounds the pagination loop. */
@@ -313,7 +314,9 @@ export function arcJobsCursorKey(jobsContract: string): string {
  */
 export async function arcJobsIndexer(
   deps: ArcJobsIndexerDeps,
-): Promise<IndexRunResult> {
+): Promise<ArcIndexRunResult> {
+  const assertActive = () => deps.signal?.throwIfAborted();
+  assertActive();
   const cursors = new Map<string, string>();
   const windowSize = deps.windowSize ?? ARC_MAX_LOG_WINDOW;
   const maxWindows = deps.maxWindows ?? Number.POSITIVE_INFINITY;
@@ -322,15 +325,17 @@ export async function arcJobsIndexer(
   // Resolve start block from cursor (last_slot + 1), else genesis fallback.
   let startBlock = BigInt(GENESIS_FALLBACK_BLOCK);
   const cursor = await deps.getCursor(cursorKey);
+  assertActive();
   if (cursor?.last_slot != null)
     startBlock = BigInt(cursor.last_slot) + BigInt(1);
 
   const head = await deps.getHead();
+  assertActive();
 
-  // Nothing new to scan → no-op (cursor already at/after head).
+  // At head is complete; a provider behind the saved cursor is unverified.
   if (startBlock > head) {
-    cursors.set(cursorKey, String(head));
-    return { fetched: 0, inserted: 0, cursors };
+    if (cursor?.last_slot != null) cursors.set(cursorKey, String(cursor.last_slot));
+    return { fetched: 0, inserted: 0, cursors, coverage: arcIndexCoverage(head, startBlock, startBlock - 1n, cursor?.last_slot ?? null) };
   }
 
   const rows: Omit<Transaction, "id">[] = [];
@@ -343,13 +348,17 @@ export async function arcJobsIndexer(
     const key = block.toString();
     const cached = tsCache.get(key);
     if (cached !== undefined) return cached;
+    assertActive();
     const ts = await deps.blockTimestamp(block);
+    assertActive();
     tsCache.set(key, ts);
     return ts;
   };
 
   let maxBlock = startBlock - BigInt(1);
   let windowsProcessed = 0;
+  let unresolved = 0;
+  let stopped: ArcIndexCoverage["reason"];
 
   const now = deps.now ?? Date.now;
   const deadline = deps.timeBudgetMs != null ? now() + deps.timeBudgetMs : Number.POSITIVE_INFINITY;
@@ -357,8 +366,9 @@ export async function arcJobsIndexer(
   // Paginate in <=windowSize windows. `from`/`to` are inclusive; step is
   // windowSize blocks so [from, from+windowSize-1] never exceeds the cap.
   for (let from = startBlock; from <= head; from += BigInt(windowSize)) {
+    assertActive();
     // Checked before the window, so a window is never half-processed.
-    if (now() >= deadline) break;
+    if (now() >= deadline || windowsProcessed >= maxWindows) { stopped = "budget"; break; }
 
     let to = from + BigInt(windowSize) - BigInt(1);
     if (to > head) to = head;
@@ -371,9 +381,16 @@ export async function arcJobsIndexer(
     // entire run's work — Arc ingest logged nothing new for 25 days.
     let window: GetLogsWindow;
     try {
-      window = await deps.getLogs(from, to);
+      window = await readArcLogRange(from, to, deps.getLogs,
+        (left, right) => ({ created: [...left.created, ...right.created], released: [...left.released, ...right.released] }),
+        () => deadline !== Number.POSITIVE_INFINITY && now() >= deadline,
+        deps.signal,
+      );
     } catch (err) {
-      if (!isRateLimitedError(err)) throw err; // a real bug must still fail loudly
+      assertActive();
+      if (err === ARC_LOG_BUDGET_EXHAUSTED) stopped = "budget";
+      else if (!isArcLogRangeError(err) && isRateLimitedError(err)) stopped = "rate_limited";
+      else throw err; // a real bug or irreducible archive denial must fail loudly
       break;
     }
     const { created, released } = window;
@@ -387,14 +404,16 @@ export async function arcJobsIndexer(
     for (const c of created) clientByJob.set(c.jobId.toString(), c.client);
 
     for (const settled of released) {
+      assertActive();
       const jobKey = settled.jobId.toString();
       let client = clientByJob.get(jobKey) ?? null;
       // JobCreated landed in an earlier window → resolve the client lazily.
       if (client === null && deps.resolveJobClient) {
         client = await deps.resolveJobClient(settled.jobId);
+        assertActive();
       }
       // Unmatched settlement → skip (cannot attribute the consumer face).
-      if (client === null) continue;
+      if (client === null) { unresolved++; continue; }
       // `resolveJobClient` is injected, so its return value has not been
       // through parseJobCreated's normalization. Lowercase it here too, or an
       // unmatched-window settlement would reintroduce a checksummed wallet row.
@@ -423,9 +442,11 @@ export async function arcJobsIndexer(
       const clientIsTemplated = deps.isTemplatedCounterparty
         ? await deps.isTemplatedCounterparty(client)
         : false;
+      assertActive();
       const providerIsTemplated = deps.isTemplatedCounterparty
         ? await deps.isTemplatedCounterparty(provider)
         : false;
+      assertActive();
 
       // Tier-1 receipt pair — provider got paid, client settled clean.
       // buildJobSettledSignal never sets `chain` (InsertSignalEventInput.chain
@@ -470,24 +491,31 @@ export async function arcJobsIndexer(
   // Cursor advances to the last scanned block even with zero settlements, so a
   // dry window is never re-scanned.
   const advanceCursor = async (): Promise<void> => {
+    assertActive();
+    if (maxBlock < startBlock) return;
     await deps.upsertCursor(cursorKey, String(maxBlock), Number(maxBlock));
+    assertActive();
     cursors.set(cursorKey, String(maxBlock));
   };
 
+  const coverage = arcIndexCoverage(head, startBlock, maxBlock, cursor?.last_slot ?? null, unresolved, stopped);
   const fetched = rows.length;
   if (fetched === 0) {
     await advanceCursor();
-    return { fetched: 0, inserted: 0, cursors };
+    return { fetched: 0, inserted: 0, cursors, coverage };
   }
 
   // FK pre-create both faces before inserting transactions / signal_events.
+  assertActive();
   await deps.ensureWallets([...wallets]);
-
+  assertActive();
   const inserted = await deps.insertTransactions(rows);
+  assertActive();
   await deps.insertSignalEvents(signals);
+  assertActive();
 
   await advanceCursor();
-  return { fetched, inserted, cursors };
+  return { fetched, inserted, cursors, coverage };
 }
 
 // ─── Production wiring ──────────────────────────────────────────────────────
@@ -535,10 +563,14 @@ export function resolveStartBlockEnv(): number {
  */
 export async function isTemplatedCounterparty(
   address: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  signal?.throwIfAborted();
   const wallet = await dbGetWallet(address.toLowerCase(), ARC_CHAIN);
+  signal?.throwIfAborted();
   if (!wallet?.arc_agent_id) return false;
   const agent = await readAgent(wallet.arc_agent_id);
+  signal?.throwIfAborted();
   if (!agent) return false;
   return isTemplatedIdentity(agent.tokenURI);
 }
@@ -550,41 +582,45 @@ export async function isTemplatedCounterparty(
 export async function runArcJobsIndexer(
   opts: {
     jobsContract?: string;
+    signal?: AbortSignal;
     windowSize?: number;
     maxWindows?: number;
   } = {},
-): Promise<IndexRunResult> {
+): Promise<ArcIndexRunResult> {
+  opts.signal?.throwIfAborted();
+  const rpc = <T>(read: () => Promise<T>) => { opts.signal?.throwIfAborted(); return read(); };
   const jobsContract = opts.jobsContract ?? ARC_JOBS_CONTRACT;
   const client = makeClient();
   const envStartBlock = resolveStartBlockEnv();
 
   return arcJobsIndexer({
     jobsContract,
+    signal: opts.signal,
     windowSize: opts.windowSize,
     maxWindows: opts.maxWindows ?? ARC_DEFAULT_MAX_WINDOWS,
     timeBudgetMs: ARC_RUN_TIME_BUDGET_MS,
-    getHead: async () => withRateLimitRetry(() => client.getBlockNumber(), INGEST_RETRY),
+    getHead: async () => withRateLimitRetry(() => rpc(() => client.getBlockNumber()), INGEST_RETRY),
     getLogs: async (fromBlock, toBlock) => {
       // Sequential, not Promise.all: the public Arc RPC answers -32005 to two
       // concurrent 10k-block getLogs, and keep-fresh swallowed that error in its
       // try/catch — Arc ingest silently no-oped on every green run until
       // 2026-08-10.
-      const createdLogs = await withRateLimitRetry(() =>
+      const createdLogs = await withArcLogRetry(() => rpc(() =>
         client.getLogs({
           address: jobsContract as `0x${string}`,
           event: JOB_CREATED_EVENT,
           fromBlock,
           toBlock,
-        }),
+        })),
         INGEST_RETRY,
       );
-      const releasedLogs = await withRateLimitRetry(() =>
+      const releasedLogs = await withArcLogRetry(() => rpc(() =>
         client.getLogs({
           address: jobsContract as `0x${string}`,
           event: PAYMENT_RELEASED_EVENT,
           fromBlock,
           toBlock,
-        }),
+        })),
         INGEST_RETRY,
       );
       const created: ArcJobCreated[] = [];
@@ -604,7 +640,7 @@ export async function runArcJobsIndexer(
     // skip rather than read storage (the escrow exposes no public client
     // getter by jobId in the canonical ABI). Left undefined → core SKIPs.
     blockTimestamp: async (blockNumber) => {
-      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }), INGEST_RETRY);
+      const block = await withRateLimitRetry(() => rpc(() => client.getBlock({ blockNumber })), INGEST_RETRY);
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
     insertTransactions: dbInsertTransactions,
@@ -627,6 +663,6 @@ export async function runArcJobsIndexer(
     upsertCursor: async (key, last, slot) => {
       await dbUpsertCursor(key, last, slot, ARC_CHAIN);
     },
-    isTemplatedCounterparty,
+    isTemplatedCounterparty: (address) => isTemplatedCounterparty(address, opts.signal),
   });
 }

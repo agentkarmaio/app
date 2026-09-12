@@ -20,6 +20,8 @@
  *      NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (required unless --dry-run).
  */
 
+import { runIndexerCli } from './managed-cli';
+
 import { getStellarRpc } from '@/integrations/erc8004-stellar';
 import { makeStellarRegistryReader, scanStellarRegistry } from '@/indexer/stellar-registry';
 import { requireEnv } from '@/lib/require-env';
@@ -56,20 +58,46 @@ const startedAt = Date.now();
 const reader = makeStellarRegistryReader(getStellarRpc());
 
 let done = 0;
-const result = await scanStellarRegistry({
-  reader,
-  from,
-  to,
-  concurrency,
-  fetchRemote,
-  onProgress: (agentId, outcome) => {
-    done++;
-    if (done % 10 === 0 || outcome === 'error') {
-      const elapsed = ((Date.now() - startedAt) / 1000).toFixed(0);
-      console.log(`[${elapsed.padStart(4)}s] ${String(done).padStart(4)} probed — agent ${agentId} ${outcome}`);
+let written = 0;
+const execution = await runIndexerCli({
+  chain: 'stellar', path: 'registry', dryRun,
+  run: async (signal) => {
+    const scanned = await scanStellarRegistry({
+      signal,
+      reader,
+      from,
+      to,
+      concurrency,
+      fetchRemote,
+      onProgress: (agentId, outcome) => {
+        done++;
+        if (done % 10 === 0 || outcome === 'error') {
+          const elapsed = ((Date.now() - startedAt) / 1000).toFixed(0);
+          console.log(`[${elapsed.padStart(4)}s] ${String(done).padStart(4)} probed — agent ${agentId} ${outcome}`);
+        }
+      },
+    });
+    if (!dryRun) {
+      signal?.throwIfAborted();
+      const { upsertErc8004Agents } = await import('@/db/client');
+      written = await upsertErc8004Agents('stellar', scanned.agents);
     }
+    return scanned;
+  },
+  summarize: (r) => {
+    const unresolved = r.errors.length;
+    const partial = from > 0 || to !== undefined;
+    return { status: unresolved ? 'failed' : partial ? 'catching_up' : 'caught_up',
+      errorCode: unresolved || partial ? 'scan_partial' : undefined,
+      checkedCount: r.attempted, insertedCount: written, unresolvedCount: unresolved };
   },
 });
+if (!execution.result) {
+  console.log(`[stellar-registry] ${execution.status}${execution.errorCode ? ` (${execution.errorCode})` : ''} — no scan result`);
+  process.exit(execution.exitCode);
+}
+const result = execution.result;
+console.log(`[stellar-registry] managed status: ${execution.status}`);
 
 console.log('');
 console.log(`[stellar-registry] attempted: ${result.attempted}`);
@@ -90,13 +118,10 @@ if (result.errors.length > 0) {
 if (dryRun) {
   console.log('');
   console.log('[stellar-registry] dry run — no rows written');
-  process.exit(0);
+  process.exit(execution.exitCode);
 }
 
-// Imported lazily so --dry-run never needs Supabase credentials.
-const { upsertErc8004Agents } = await import('@/db/client');
-const written = await upsertErc8004Agents('stellar', result.agents);
 console.log('');
 console.log(`[stellar-registry] erc8004_agents rows upserted: ${written}`);
 console.log(`[stellar-registry] elapsed: ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
-process.exit(0);
+process.exit(execution.exitCode);

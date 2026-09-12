@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runIndexer } from '@/indexer/index';
-import { getRecentTransactions } from '@/db/client';
+import { createIndexingJob, runManagedIndexingTask, coverageOutcome, readLatestSolanaTransaction } from '@/lib/indexing-jobs';
 import { assessIngestFreshness } from '@/lib/ingest-health';
 
 export const dynamic = 'force-dynamic';
@@ -62,12 +62,14 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const result = await runIndexer(limit, { backfill });
+    let result: Awaited<ReturnType<typeof runIndexer>> | undefined;
+    const managed = await runManagedIndexingTask({ ...createIndexingJob('solana', 'payments'), run: async (signal) => {
+      result = await runIndexer(limit, { backfill, signal });
+      return coverageOutcome(result.coverage, result.inserted);
+    }});
+    if (!result) return NextResponse.json({ status: managed.status }, { status: managed.status === 'busy' ? 202 : 503 });
 
-    const latestTx = (await getRecentTransactions(undefined, 1))[0];
-    const lastTxIso = latestTx
-      ? new Date(latestTx.timestamp as string | Date).toISOString()
-      : null;
+    const lastTxIso = await readLatestSolanaTransaction();
     const freshness = assessIngestFreshness(lastTxIso, Date.now());
 
     if (freshness.severity === 'critical') {
@@ -78,7 +80,7 @@ export async function POST(request: NextRequest) {
     // not read a run that could not obtain transactions as a clean 200. Cursors
     // were held, so nothing is lost yet — but only until those signatures scroll
     // out of the fetched window.
-    const degraded = freshness.severity === 'critical' || result.unresolved > 0;
+    const degraded = freshness.severity === 'critical' || result.unresolved > 0 || managed.status !== 'caught_up';
     if (result.unresolved > 0) {
       console.error(
         `[cron/indexer] DEGRADED: ${result.unresolved} signature(s) served by no RPC ` +
@@ -87,7 +89,7 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json(
-      { ...result, freshness },
+      { ...result, freshness, indexing: managed },
       { status: degraded ? 207 : 200 },
     );
   } catch (err) {

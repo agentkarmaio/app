@@ -6,12 +6,12 @@
     "dev": "bun next dev -p 3737",
     "build": "bun next build",
     "start": "bun next start",
-    "deploy": "bun run db:functions && servel deploy",
+    "deploy": "bun run db:indexing && bun run db:functions && servel deploy",
     "lint": "bun eslint .",
     "db:push": "servel pf @agentkarma-db/db:5432 -- bun drizzle-kit push",
     "db:studio": "servel port-forward @agentkarma-db/db:5432 -- bun drizzle-kit studio",
     "db:sql": "servel infra sql @agentkarma-db --remote KN",
-    "db:functions": "servel infra sql @agentkarma-db --remote KN --service db src/db/sql",
+    "db:functions": "servel infra sql @agentkarma-db --remote KN --service db src/db/sql --no-track",
     "db:generate": "bun drizzle-kit generate",
     "indexer": "bun run src/indexer/run.ts",
     "indexer:full": "bun run src/indexer/run.ts 200",
@@ -40,7 +40,8 @@
     "sync:facilitators:check": "bun run src/scripts/sync-facilitators.ts --check",
     "specimen:server": "bun run specimen/server.ts",
     "specimen:call": "bun run specimen/scripts/call.ts",
-    "specimen:cron": "bun run specimen/scripts/cron.ts"
+    "specimen:cron": "bun run specimen/scripts/cron.ts",
+    "db:indexing": "servel infra sql @agentkarma-db --remote KN --service db drizzle/0018_indexing_state.sql --track"
   },
   "dependencies": {
     "8004-solana": "^0.8.3",

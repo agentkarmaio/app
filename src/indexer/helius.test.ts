@@ -29,6 +29,49 @@ const PAYER_ATA = 'PayerTokenAcct333333333333333333333333333333';
 const FACIL_ATA = 'Faci1TokenAcct44444444444444444444444444444';
 const PAYEE = 'Payee99999999999999999999999999999999999999';
 
+describe('Solana parse cancellation', () => {
+  test('late primary responses cannot start queued provider or archive reads after abort', async () => {
+    const controller = new AbortController();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let primaryCalls = 0;
+    let archiveCalls = 0;
+    const pending = parseWithArchiveFallback(Array.from({ length: 30 }, (_, n) => `sig-${n}`), async () => {
+      primaryCalls++;
+      await gate;
+      return null;
+    }, async () => { archiveCalls++; return null; }, 100, controller.signal);
+    const beforeAbort = primaryCalls;
+    expect(beforeAbort).toBeGreaterThan(0);
+    expect(beforeAbort).toBeLessThan(30);
+    controller.abort(Error('scan_cancelled'));
+    release();
+    await expect(pending).rejects.toThrow('scan_cancelled');
+    expect(primaryCalls).toBe(beforeAbort);
+    expect(archiveCalls).toBe(0);
+  });
+
+  test('an archive request cancelled while queued never calls the provider', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const active = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const first = parseWithArchiveFallback(['first'], async () => null, async () => {
+      started(); await gate; return null;
+    });
+    await active;
+    const controller = new AbortController();
+    let secondCalls = 0;
+    const second = parseWithArchiveFallback(['second'], async () => null, async () => { secondCalls++; return null; }, 100, controller.signal);
+    await Bun.sleep(1);
+    controller.abort(Error('queued_scan_cancelled'));
+    release();
+    await first;
+    await expect(second).rejects.toThrow('queued_scan_cancelled');
+    expect(secondCalls).toBe(0);
+  });
+});
+
 const mkKey = (s: string) => ({ pubkey: { toString: () => s }, signer: true, writable: true });
 
 /** A 1.5-USDC payment from PAYER → FACIL, as a standard getParsedTransaction. */
