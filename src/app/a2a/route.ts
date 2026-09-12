@@ -29,6 +29,7 @@ import {
 import { enforceRateLimit } from '@/lib/rate-limit';
 import { getErc8004Agent } from '@/db/client';
 import { getTrustTier } from '@/scoring/index';
+import { scoreMetadataQuality } from '@/scoring/celo-metadata';
 import type { Chain } from '@/db/schema';
 
 export const runtime = 'nodejs';
@@ -186,7 +187,7 @@ export function summarize(karma: Record<string, unknown>): string {
   const chain = karma.chain;
   const url = karma.profileUrl;
   const prov = karma.provider as { score?: number | null; trustTier?: string; confidenceBadge?: string } | undefined;
-  const provStr = `Provider ${fmtScore(prov?.score)}/100 (${prov?.trustTier}, ${prov?.confidenceBadge})`;
+  const provStr = `Provider ${fmtScore(prov?.score)} (${prov?.trustTier}, ${prov?.confidenceBadge})`;
 
   if ('txCount' in karma) {
     const cons = karma.consumer as { score?: number | null; trustTier?: string } | undefined;
@@ -201,7 +202,7 @@ export function summarize(karma: Record<string, unknown>): string {
 }
 
 function fmtScore(s: number | null | undefined): string {
-  return s == null ? 'Unrated' : String(s);
+  return s == null ? 'Unrated' : `${s}/100`;
 }
 
 // ── message/send handler (exported + injectable for tests) ───────────────────
@@ -209,8 +210,26 @@ export interface MessageSendDeps {
   resolveForChain: typeof resolveForChain;
   fullKarmaJson: typeof fullKarmaJson;
   getErc8004Agent: typeof getErc8004Agent;
+  readRegistryAgent?: (chain: Chain, agentId: number) => Promise<Record<string, unknown> | null>;
 }
-const DEFAULT_DEPS: MessageSendDeps = { resolveForChain, fullKarmaJson, getErc8004Agent };
+const DEFAULT_DEPS: MessageSendDeps = { resolveForChain, fullKarmaJson, getErc8004Agent, readRegistryAgent };
+
+/** A lagging mirror cannot establish that a registered identity does not exist. */
+async function readRegistryAgent(chain: Chain, agentId: number): Promise<Record<string, unknown> | null> {
+  if (chain !== 'celo' && chain !== 'arc') return null;
+  const registry = chain === 'celo'
+    ? await import('@/integrations/erc8004-celo') : await import('@/integrations/erc8004-arc');
+  const agent = await registry.readAgent(BigInt(agentId));
+  if (!agent) return null;
+  const feedback = await registry.aggregateFeedback(BigInt(agentId)).catch(() => null);
+  return {
+    chain, agent_id: agentId, owner: agent.owner, agent_wallet: agent.agentWallet,
+    token_uri: agent.tokenURI, registration: agent.registration ?? null,
+    metadata_score: agent.registration ? scoreMetadataQuality({ registration: agent.registration, agentURI: agent.tokenURI }).score : null,
+    feedback_count: feedback?.count ?? null, feedback_avg: feedback?.average ?? null,
+    source: 'on-chain',
+  };
+}
 
 export async function handleMessageSend(
   id: JsonRpcId,
@@ -234,6 +253,12 @@ export async function handleMessageSend(
   // they don't resolve by address — only by agentId. Chain disambiguated by
   // probing Celo then Arc when not given.
   if (!wallet && agentId != null) {
+    if (chain && !(EVM_CHAINS as readonly string[]).includes(chain)) {
+      return rpcResult(id, agentMessage(
+        'Use the wallet address for Stellar or Solana; numeric agent IDs are supported on Celo and Arc.',
+        { found: false, reason: 'unsupported_agent_id_chain', agentId, chain },
+      ), extraHeaders);
+    }
     return handleAgentIdLookup(id, agentId, chain, extraHeaders, deps);
   }
 
@@ -264,10 +289,10 @@ export async function handleMessageSend(
   let resolved: Awaited<ReturnType<typeof resolveForChain>>;
   try {
     resolved = await deps.resolveForChain(w.data, c.data as Chain | undefined);
-  } catch (err) {
+  } catch {
     // NON-LEAK: a DB/RPC failure can carry connection strings or hostnames.
-    // Log server-side only; return a generic internal error, never the message.
-    console.error('[a2a:message/send] resolution error', err);
+    // Keep both the response and the server log free of upstream details.
+    console.error('[a2a:message/send] resolution failed');
     return rpcError(id, E.INTERNAL, 'Internal error', 200, extraHeaders);
   }
 
@@ -312,11 +337,12 @@ async function handleAgentIdLookup(
   let onChain: Chain | undefined;
   try {
     for (const c of chains) {
-      const r = await deps.getErc8004Agent(c, agentId);
+      const r = (await deps.getErc8004Agent(c, agentId))
+        ?? (await deps.readRegistryAgent?.(c, agentId)) ?? null;
       if (r) { row = r; onChain = c; break; }
     }
-  } catch (err) {
-    console.error('[a2a:message/send] registry lookup error', err);
+  } catch {
+    console.error('[a2a:message/send] registry lookup failed');
     return rpcError(id, E.INTERNAL, 'Internal error', 200, extraHeaders);
   }
   if (!row || !onChain) {
@@ -348,14 +374,15 @@ async function handleAgentIdLookup(
 /** Project a cached erc8004_agents mirror row into a two-faced registry-agent JSON. */
 function registryAgentJson(row: Record<string, unknown>, chain: Chain, agentId: number) {
   const reg = (row.registration ?? {}) as Record<string, unknown>;
-  const score = Number(row.metadata_score ?? 0);
-  const feedbackCount = Number(row.feedback_count ?? 0);
+  const score = row.metadata_score == null ? null : Number(row.metadata_score);
+  const feedbackCount = row.feedback_count == null ? null : Number(row.feedback_count);
   const owner = String(row.owner ?? '');
   const agentWallet = typeof row.agent_wallet === 'string' ? row.agent_wallet : null;
   const address = agentWallet && agentWallet.toLowerCase() !== ZERO_ADDR ? agentWallet : owner;
   const avg = row.feedback_avg;
   return {
     kind: 'registry-agent' as const,
+    registrySource: row.source === 'on-chain' ? 'on-chain' : 'index',
     chain,
     agentId,
     owner,
@@ -363,7 +390,7 @@ function registryAgentJson(row: Record<string, unknown>, chain: Chain, agentId: 
     name: typeof reg.name === 'string' ? reg.name : null,
     // Provider Karma for an ERC-8004 registry agent IS its declared metadata
     // quality (Tier 3). Consumer face is null — EVM agents are declared-tier.
-    provider: { score, trustTier: getTrustTier(score), confidenceBadge: 'declared', hasSignal: feedbackCount > 0 },
+    provider: { score, trustTier: score === null ? 'Unrated' : getTrustTier(score), confidenceBadge: 'declared', hasSignal: score !== null },
     consumer: {
       score: null,
       trustTier: 'Unrated',
@@ -381,10 +408,11 @@ function registryAgentJson(row: Record<string, unknown>, chain: Chain, agentId: 
 function summarizeRegistry(d: ReturnType<typeof registryAgentJson>): string {
   const label = d.name ?? `agentId ${d.agentId}`;
   const fb =
-    d.onChainFeedback.count > 0
+    d.onChainFeedback.count === null ? 'on-chain feedback unavailable' : d.onChainFeedback.count > 0
       ? `${d.onChainFeedback.count} on-chain feedback${d.onChainFeedback.average != null ? ` (avg ${d.onChainFeedback.average})` : ''}`
       : 'no on-chain feedback yet';
-  return `AgentKarma — ${label} (agentId ${d.agentId}) on ${d.chain}: Provider ${d.provider.score}/100 (${d.provider.trustTier}, declared); Consumer Unrated (declared-tier). ${fb}. ${d.profileUrl}`;
+  const provider = d.provider.score === null ? 'Unrated' : `${d.provider.score}/100`;
+  return `AgentKarma — ${label} (agentId ${d.agentId}) on ${d.chain}: Provider ${provider} (${d.provider.trustTier}, declared); Consumer Unrated (declared-tier). ${fb}. ${d.profileUrl}`;
 }
 
 // ── HTTP handlers ────────────────────────────────────────────────────────────

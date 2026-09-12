@@ -23,6 +23,7 @@ import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy } from '@/scoring/autonomy';
 import { readAttestation } from '@/integrations/attestation';
 import { canonicalAddress } from '@/lib/chain-detect';
+import { isStellarAccount } from '@/config/stellar-x402';
 import {
   getRegistryAgentsForAddress,
   getRegistryFeedbackForAgents,
@@ -108,8 +109,11 @@ export async function resolveKarma(rawWallet: string): Promise<KarmaSnapshot | n
   // Public entry point: normalize once so MCP / A2A callers get the same row
   // the v2 route does for a checksummed EVM input (rows are stored lowercase).
   const wallet = canonicalAddress(rawWallet);
+  // Stellar addresses are format-unique. A known Stellar row must not disappear
+  // because the generic DB helper defaults to the Solana composite key.
+  const chain = isStellarAccount(wallet) ? 'stellar' : 'solana';
   const [walletRow, transactions, signalEvents] = await Promise.all([
-    getWallet(wallet),
+    getWallet(wallet, chain),
     getTransactions(wallet, 1000),
     getSignalEventsForWallet(wallet, 200).catch(() => [] as SignalEvent[]),
   ]);
@@ -120,7 +124,12 @@ export async function resolveKarma(rawWallet: string): Promise<KarmaSnapshot | n
   try { feedback = await getFeedbackSummary(wallet); } catch { /* ok */ }
 
   const [attestation, manifestMap] = await Promise.all([
-    readAttestation(wallet).catch(() => 0),
+    // Stellar's aggregate is AK's own published score, not receipt provenance.
+    // Expose that readback separately in MCP/A2A; never recycle it into Tier 1.
+    // Verified receipt signal events still enter calculateScore independently.
+    chain === 'stellar'
+      ? Promise.resolve(0)
+      : readAttestation(wallet).catch(() => 0),
     getLatestSignalValues([wallet], 'manifest').catch(() => new Map<string, number>()),
   ]);
 

@@ -50,6 +50,15 @@ export const AK_STELLAR = {
   keyfile: '.keys/agentkarma-stellar.json',
 } as const;
 
+/** AgentKarma's published Arc TESTNET identity (not an Arc mainnet claim). */
+export const AK_ARC = {
+  chain: 'arc',
+  network: 'testnet',
+  agentId: 72077,
+  controller: '0xeE2a20AEF0f5F9B52FC334806256014F4DDcB8fc',
+  identityRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
+} as const;
+
 /** Every address AK may sign attestations from — used to dedup AK's own ratings. */
 export const AK_RATER_ADDRESSES: readonly string[] = [
   AK_VALIDATOR.controller.toLowerCase(),

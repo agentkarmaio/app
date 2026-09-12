@@ -9,6 +9,7 @@ const NAV_GROUPS: {
     heading: "Product",
     links: [
       { label: "Home", href: "/" },
+      { label: "Meet AgentKarma", href: "/meet-agentkarma" },
       { label: "Explore agents", href: "/explore" },
       { label: "pay.sh providers", href: "/paysh" },
       { label: "Enterprise", href: "/enterprise" },

@@ -27,6 +27,7 @@ const PRIMARY_ITEMS = [
 ];
 
 const MORE_ITEMS = [
+  { href: '/meet-agentkarma', label: 'Meet AgentKarma' },
   { href: '/succession', label: 'Succession' },
   { href: '/bonding', label: 'Bonding' },
   { href: '/estates', label: 'Estates' },

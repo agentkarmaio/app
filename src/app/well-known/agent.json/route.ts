@@ -12,15 +12,12 @@
  * Spec: https://github.com/erc-8004/erc-8004-contracts/blob/master/ERC8004SPEC.md
  */
 
-import { AK_VALIDATOR, AK_STELLAR } from '@/config/ak-validator';
+import { AK_VALIDATOR, AK_STELLAR, AK_ARC } from '@/config/ak-validator';
 import { IDENTITY_REGISTRY_CELO } from '@/integrations/erc8004-celo';
 import { IDENTITY_REGISTRY_ARC } from '@/integrations/erc8004-arc';
 import { STELLAR_IDENTITY_REGISTRY } from '@/integrations/stellar-config';
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io';
-
-/** AK's Arc controller — owns Arc-testnet ERC-8004 agentId 72077. */
-const AK_ARC_CONTROLLER = '0xeE2a20AEF0f5F9B52FC334806256014F4DDcB8fc';
 
 const AGENT_REGISTRATION = {
   type: 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1',
@@ -71,7 +68,7 @@ const AGENT_REGISTRATION = {
   // array asserts what IS on-chain, never what is planned.
   registrations: [
     { agentId: AK_VALIDATOR.agentId, agentRegistry: `eip155:42220:${IDENTITY_REGISTRY_CELO}` },
-    { agentId: 72077, agentRegistry: `eip155:5042002:${IDENTITY_REGISTRY_ARC}` },
+    { agentId: AK_ARC.agentId, agentRegistry: `eip155:5042002:${IDENTITY_REGISTRY_ARC}` },
     ...(AK_STELLAR.agentId != null
       ? [{ agentId: AK_STELLAR.agentId, agentRegistry: `stellar:pubnet:${STELLAR_IDENTITY_REGISTRY}` }]
       : []),
@@ -92,8 +89,8 @@ const AGENT_REGISTRATION = {
       chain: 'arc',
       network: 'testnet',
       status: 'registered',
-      agentId: 72077,
-      address: AK_ARC_CONTROLLER,
+      agentId: AK_ARC.agentId,
+      address: AK_ARC.controller,
       identityRegistry: IDENTITY_REGISTRY_ARC,
     },
     {

@@ -7,7 +7,7 @@
  * mcp-tools.test.ts: a thrown DB error must never reach the caller.
  */
 
-import { describe, test, expect, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach, spyOn } from 'bun:test';
 import { POST, OPTIONS, extractTarget, summarize, handleMessageSend, type MessageSendDeps } from './route';
 import { GET as agentCardGET } from '../well-known/agent-card.json/route';
 import { __resetRateLimitForTests } from '@/lib/rate-limit';
@@ -17,6 +17,73 @@ const SOL = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
 const STELLAR = 'G' + 'A'.repeat(55);
 
 beforeEach(() => __resetRateLimitForTests());
+
+test('explicit non-EVM agent IDs never fall through to Celo or Arc', async () => {
+  for (const chain of ['stellar', 'solana']) {
+    let registryCalls = 0;
+    const response = await handleMessageSend('unsupported-chain', {
+      message: { parts: [{ kind: 'data', data: { agentId: 66, chain } }] },
+    }, {}, stub({ getErc8004Agent: (async () => { registryCalls++; return null; }) as MessageSendDeps['getErc8004Agent'] }));
+    expect(registryCalls).toBe(0);
+    const body = await response.json();
+    expect(body.result.parts[1].data).toMatchObject({ found: false, reason: 'unsupported_agent_id_chain', chain });
+  }
+});
+
+test('resolver and registry exceptions cannot leak private details into logs', async () => {
+  const log = spyOn(console, 'error').mockImplementation(() => {});
+  const privateDetail = 'synthetic-private-connection-string';
+  try {
+    await handleMessageSend('wallet-error', { message: { parts: [{ kind: 'data', data: { wallet: EVM, chain: 'celo' } }] } }, {}, stub({
+      resolveForChain: (async () => { throw new Error(privateDetail); }) as MessageSendDeps['resolveForChain'],
+    }));
+    await handleMessageSend('registry-error', { message: { parts: [{ kind: 'data', data: { agentId: 9058, chain: 'celo' } }] } }, {}, stub({
+      getErc8004Agent: (async () => { throw new Error(privateDetail); }) as MessageSendDeps['getErc8004Agent'],
+    }));
+    expect(log.mock.calls).toHaveLength(2);
+    expect(log.mock.calls.every((args) => args.length === 1 && typeof args[0] === 'string' && !args[0].includes(privateDetail))).toBe(true);
+  } finally { log.mockRestore(); }
+});
+
+test('a registry mirror miss still resolves an existing on-chain Arc identity', async () => {
+  const reads: string[] = [];
+  const response = await handleMessageSend('arc-live', { message: { parts: [{ kind: 'data', data: { agentId: 72077, chain: 'arc' } }] } }, {}, {
+    ...stub(),
+    readRegistryAgent: async (chain: string, id: number) => {
+      reads.push(`${chain}:${id}`);
+      return { chain, agent_id: id, owner: EVM, agent_wallet: EVM, registration: { name: 'AgentKarma' }, metadata_score: 85, feedback_count: null, feedback_avg: null, source: 'on-chain' };
+    },
+  });
+  const body = await response.json();
+  expect(reads).toEqual(['arc:72077']);
+  expect(body.result.parts[1].data).toMatchObject({ chain: 'arc', agentId: 72077, name: 'AgentKarma', registrySource: 'on-chain', onChainFeedback: { count: null }, consumer: { score: null } });
+  expect(body.result.parts[0].text).toContain('feedback unavailable');
+});
+
+test('an on-chain identity with unreadable metadata stays registered but unrated', async () => {
+  const response = await handleMessageSend('arc-unrated', { message: { parts: [{ kind: 'data', data: { agentId: 72077, chain: 'arc' } }] } }, {}, {
+    ...stub(),
+    readRegistryAgent: async () => ({ owner: EVM, agent_wallet: EVM, metadata_score: null, feedback_count: null, source: 'on-chain' }),
+  });
+  const body = await response.json();
+  expect(body.result.parts[1].data).toMatchObject({ registrySource: 'on-chain', provider: { score: null, trustTier: 'Unrated' } });
+});
+
+test('an unrated provider is not formatted as a numeric score denominator', () => {
+  const text = summarize({ ...EVM_KARMA, provider: { score: null, trustTier: 'Unrated', confidenceBadge: 'declared' } });
+  expect(text).toContain('Provider Unrated (');
+  expect(text).not.toContain('Unrated/100');
+});
+
+test('an unavailable chain reader cannot masquerade as a missing registration', async () => {
+  const response = await handleMessageSend('arc-rpc-error', { message: { parts: [{ kind: 'data', data: { agentId: 72077, chain: 'arc' } }] } }, {}, {
+    ...stub(), readRegistryAgent: async () => { throw new Error('upstream unreachable'); },
+  });
+  const body = await response.json();
+  expect(body.error.code).toBe(-32603);
+  expect(body.result).toBeUndefined();
+  expect(JSON.stringify(body)).not.toContain('upstream');
+});
 
 function post(body: unknown, contentType = 'application/json') {
   return new Request('http://localhost/a2a', {

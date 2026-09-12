@@ -4,6 +4,7 @@ import { LiveTicker } from '@/components/karma/live-ticker';
 import { LiveFlow } from '@/components/karma/live-flow';
 import { TrustGraphMini } from '@/components/karma/trust-graph-mini';
 import { cachedStats } from '@/db/cached';
+import { AgentKarmaOnboarding } from '@/components/agentkarma-onboarding';
 
 // Protocols only. The chains used to live here too, which duplicated the "Built
 // on" row directly below and forced a wrapped second line plus an asterisk
@@ -286,6 +287,7 @@ export async function Hero() {
 
 
           <div className="mt-7 space-y-3">
+            <AgentKarmaOnboarding />
             <div className="w-full max-w-md">
               <WalletSearch />
             </div>

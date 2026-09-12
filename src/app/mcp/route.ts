@@ -190,25 +190,25 @@ export async function resolveForChain(
   const addr = canonicalAddress(rawAddr, chainHint ?? null);
   const resolved = await resolveAgentChain(addr, chainHint);
 
-  // An EVM address (0x…) with an explicit Celo/Arc hint that matched NO DB row
-  // resolves to chain=null. Honor the declared chain anyway: route to the EVM
-  // path (→ clean not-found) rather than falling through to the Solana lookup,
-  // which would be a wrong-chain attempt against an address that can't be Solana.
+  // The profile resolver can prefer a sole row on another chain. Explicit API
+  // queries must honor their network even when only a different chain has data.
   const evmChain: 'celo' | 'arc' | null =
-    resolved.chain === 'celo' || resolved.chain === 'arc'
-      ? resolved.chain
-      : resolved.addressClass === 'evm' && (chainHint === 'celo' || chainHint === 'arc')
-        ? chainHint
+    resolved.addressClass === 'evm' && (chainHint === 'celo' || chainHint === 'arc')
+      ? chainHint
+      : resolved.chain === 'celo' || resolved.chain === 'arc'
+        ? resolved.chain
         : null;
 
   // Celo / Arc — declared row + on-chain ERC-8004 read keyed by agentId.
   if (evmChain) {
-    const snap = await resolveEvmKarma(addr, evmChain, resolved.wallet);
+    const walletRow = resolved.wallet?.chain === evmChain
+      ? resolved.wallet : resolved.candidates.find((wallet) => wallet.chain === evmChain) ?? null;
+    const snap = await resolveEvmKarma(addr, evmChain, walletRow);
     if (!snap) return null;
     const enrichment = await resolveKarmaEnrichment({
       address: addr,
       chain: evmChain,
-      walletRow: resolved.wallet,
+      walletRow,
       core: {
         provider: snap.provider,
         consumerHasSignal: false,
@@ -929,8 +929,8 @@ function registerTools(server: McpServer): void {
 
 function faceJson(b: { score: number; trustTier: string; confidenceBadge: string; hasSignal: boolean; metrics: Record<string, number> | null; tierAggregates: Record<string, number | null> | null }) {
   return {
-    score: b.score,
-    trustTier: b.trustTier,
+    score: b.hasSignal ? b.score : null,
+    trustTier: b.hasSignal ? b.trustTier : 'Unrated',
     confidenceBadge: b.confidenceBadge,
     hasSignal: b.hasSignal,
     metrics: b.metrics,
