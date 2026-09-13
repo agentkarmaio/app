@@ -35,7 +35,12 @@ export const walletsTable = pgTable('wallets', {
   chain:           text('chain').notNull().default('solana').$type<Chain>(),
   address:         text('address').notNull(),
   first_seen:      timestamp('first_seen', { withTimezone: true }).notNull().defaultNow(),
-  last_seen:       timestamp('last_seen',  { withTimezone: true }).notNull().defaultNow(),
+  // Timestamp of the most recent on-chain event we OBSERVED for this address
+  // (MAX over the rows `tx_count` counts). NULL when nothing was observed —
+  // nullable on purpose: this column used to default to now() on every write,
+  // which made it a record of our own indexer cadence. See
+  // docs/superpowers/specs/2026-09-13-observed-liveness.md.
+  last_seen:       timestamp('last_seen',  { withTimezone: true }),
   tx_count:        integer('tx_count').notNull().default(0),
   score:           numeric('score', { precision: 6, scale: 2 }).notNull().default('0'),
   trust_tier:      text('trust_tier').notNull().default('Unrated'),
@@ -83,7 +88,7 @@ export const walletsTable = pgTable('wallets', {
   // restarts; a generated column sidesteps that and can never drift from
   // `score`. Derived from `score` because the scorer sets `providerScore` to
   // the same value (src/scoring/index.ts) — revisit if those ever diverge.
-  // Spec: (design notes, kept out of this repo)
+  // Spec: docs/superpowers/specs/2026-08-25-evidence-weighted-leaderboard-ranking.md
   rank_score: numeric('rank_score', { precision: 6, scale: 2 }).generatedAlwaysAs(
     sql`score * CASE WHEN confidence_badge = 'declared' THEN 0.7 ELSE 1.0 END`,
   ),
@@ -180,6 +185,39 @@ export const transactionsTable = pgTable('transactions', {
   chain:          text('chain').notNull().default('solana').$type<Chain>(),
   wallet_address: text('wallet_address').notNull(),
   facilitator:    text('facilitator').notNull(),
+  /**
+   * USDC credited to `counterparty` by this transaction — the value of ONE
+   * payer→payee relationship, NOT the payer's total outlay.
+   *
+   * The two differ whenever a payment splits. A pay.sh/MPP settlement sends the
+   * provider its fee and the gateway its cut in the same transaction; this
+   * column records the provider's leg only. `tx_signature` is UNIQUE and every
+   * indexer except `celo-x402.ts` writes one row per transaction, so the other
+   * legs are not stored anywhere. Measured live: a 0.25 payment stores 0.229384
+   * with 0.020616 (8.2%) going to the operator and appearing in no row.
+   *
+   * Consumers that want the payer's outlay and currently get this instead:
+   * `avgDealSize` (scoring/index.ts — both karma faces score a wallet on rows
+   * where it is the PAYER) and `SUM(amount)` in get_transaction_stats /
+   * get_facilitator_stats. `scoring/reciprocity.ts` is the one consumer that
+   * genuinely wants this leg. Both readings cannot be served by one column.
+   *
+   * Two known-bad subsets, both wrong under every reading:
+   *  - Rows written before 2026-06-19 by the Helius Enhanced decoder store only
+   *    the FIRST instruction leg of a multi-leg payment — short even of the
+   *    credit to `counterparty`.
+   *  - `extractX402PaymentCore` picks the first credit the decoder yields, in
+   *    `preTokenBalances` order rather than by value. When a fee account sorts
+   *    first, the row records the GATEWAY's cut as the payment AND THE GATEWAY
+   *    AS `counterparty`, while the provider that earned the rest appears in no
+   *    row. Confirmed live (0.007489 stored against a 0.25 payment whose
+   *    provider leg was 0.242511). So `counterparty` on a Solana x402 row is not
+   *    guaranteed to be the payee — treat it as "an address credited by this
+   *    transaction" until the decoder is fixed.
+   *
+   * Spec (incl. the pending canonical-meaning decision):
+   * docs/superpowers/specs/2026-09-11-transaction-amount-semantics.md
+   */
   amount:         numeric('amount', { precision: 20, scale: 6 }).notNull().default('0'),
   timestamp:      timestamp('timestamp', { withTimezone: true }).notNull(),
   success:        boolean('success').notNull().default(true),
@@ -654,7 +692,16 @@ export interface CeloX402Payee {
   last_seen_at: string;
 }
 
-export type LivenessStatus = 'Active' | 'Recent' | 'Dormant' | 'Inactive';
+/**
+ * Liveness spectrum. `Unobserved` is a first-class state, not the far end of
+ * the decay curve: an agent we have never seen transact is unmeasured, not
+ * dead. Every renderer keys off this list so a new state cannot render blank.
+ */
+export const LIVENESS_STATUSES = [
+  'Active', 'Recent', 'Dormant', 'Inactive', 'Unobserved',
+] as const;
+
+export type LivenessStatus = (typeof LIVENESS_STATUSES)[number];
 
 export type AgentCategory = 'ai' | 'data' | 'defi' | 'infra' | 'social' | 'utility' | 'other';
 
@@ -666,7 +713,8 @@ export interface Wallet {
   chain: Chain;
   address: string;
   first_seen: string;
-  last_seen: string;
+  /** Most recent OBSERVED on-chain activity; null when nothing was observed. */
+  last_seen: string | null;
   tx_count: number;
   score: number;
   trust_tier: TrustTier;
@@ -898,9 +946,19 @@ export interface BondUnderwriter {
   created_at: string;
 }
 
-/** Derive liveness status from last_seen timestamp */
-export function getLivenessStatus(lastSeen: string | Date): LivenessStatus {
-  const ms = Date.now() - new Date(lastSeen).getTime();
+/**
+ * Derive liveness from the last OBSERVED activity timestamp.
+ *
+ * The single derivation point — callers must not re-implement the absent case.
+ * Absent (or unparseable) means we have no evidence either way, which is
+ * `Unobserved`; answering `Inactive` there asserts death from no evidence and
+ * is exactly the 2026-09-13 defect this function exists to prevent.
+ */
+export function getLivenessStatus(lastSeen: string | Date | null | undefined): LivenessStatus {
+  if (lastSeen == null) return 'Unobserved';
+  const seenMs = new Date(lastSeen).getTime();
+  if (Number.isNaN(seenMs)) return 'Unobserved';
+  const ms = Date.now() - seenMs;
   const hours = ms / (1000 * 60 * 60);
   if (hours <= 24) return 'Active';
   if (hours <= 7 * 24) return 'Recent';

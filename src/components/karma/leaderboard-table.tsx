@@ -27,7 +27,8 @@ export interface LeaderboardEntry {
   autonomyScore?: number | null;
   autonomyLabel?: AutonomyLabel | null;
   txCount: number;
-  lastSeen: string;
+  /** Last OBSERVED activity; null when nothing was observed. */
+  lastSeen: string | null;
   delivery?: { total: number; deliveryRate: number } | null;
   trend?: number[];
 }

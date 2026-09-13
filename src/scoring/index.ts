@@ -266,6 +266,12 @@ export interface WalletScore {
   /** Consumer-face breakout — null when txs are absent. */
   consumerFace: ConsumerFaceScore | null;
   txCount: number;
+  /**
+   * MAX(tx.timestamp) over the scored transactions — the most recent OBSERVED
+   * activity. This is the value `wallets.last_seen` is written from; the column
+   * used to be stamped with the scoring run's own clock instead. See
+   * docs/superpowers/specs/2026-09-13-observed-liveness.md.
+   */
   lastActive: Date;
 }
 

@@ -174,7 +174,11 @@ async function processAgent(id: number): Promise<Outcome> {
     provider_score: quality.score,
     trust_tier: trustTier,
     confidence_badge: 'declared',
-    last_seen: nowIso,
+    // No last_seen: these agents are declared-only (tx_count 0) and we have
+    // observed no activity for them. Stamping now() here is what made 309
+    // registry agents read "Inactive" 90 days later — see
+    // docs/superpowers/specs/2026-09-13-observed-liveness.md. updated_at IS
+    // write time and stays.
     updated_at: nowIso,
   };
   if (name) walletRow.display_name = name;

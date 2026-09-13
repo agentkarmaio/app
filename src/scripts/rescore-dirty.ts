@@ -93,6 +93,8 @@ async function rescoreOne(
   );
 
   await upsertWallet(address, walletScore.score, walletScore.trustTier, walletScore.txCount, {
+    // Observed activity, not this run's clock (spec 2026-09-13-observed-liveness).
+    lastSeen: walletScore.lastActive.toISOString(),
     providerScore: walletScore.providerScore,
     consumerScore: walletScore.consumerScore,
     confidenceBadge: walletScore.confidenceBadge,

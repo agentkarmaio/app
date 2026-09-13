@@ -89,9 +89,7 @@ export async function GET(
   const confidenceBadge: ConfidenceBadge = (liveScore?.confidenceBadge
     ?? walletRow?.confidence_badge ?? 'declared');
   const displayName = walletRow?.display_name ?? null;
-  const liveness: LivenessStatus = walletRow?.last_seen
-    ? getLivenessStatus(walletRow.last_seen)
-    : 'Inactive';
+  const liveness: LivenessStatus = getLivenessStatus(walletRow?.last_seen);
   const txCount = liveScore?.txCount ?? walletRow?.tx_count ?? 0;
 
   if (format === 'json') {
@@ -150,6 +148,8 @@ const LIVENESS_COLORS: Record<LivenessStatus, string> = {
   Recent: '#f5a623',
   Dormant: '#62666d',
   Inactive: '#e5484d',
+  // Same gray as the ⚪ declared confidence dot: no measurement, no verdict.
+  Unobserved: '#8a8f98',
 };
 
 const CONFIDENCE_DOT_COLOR: Record<ConfidenceBadge, string> = {

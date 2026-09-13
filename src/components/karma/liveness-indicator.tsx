@@ -4,7 +4,7 @@ import type { LivenessStatus } from '@/db/schema';
 import { getLivenessStatus } from '@/db/schema';
 import { formatRelativePastLong } from '@/lib/succession-format';
 
-const LIVENESS_CONFIG: Record<LivenessStatus, { label: string; dotClass: string; textClass: string }> = {
+export const LIVENESS_CONFIG: Record<LivenessStatus, { label: string; dotClass: string; textClass: string }> = {
   Active: {
     label: 'Active',
     dotClass: 'bg-[#30a46c]',
@@ -25,6 +25,13 @@ const LIVENESS_CONFIG: Record<LivenessStatus, { label: string; dotClass: string;
     dotClass: 'bg-[#e5484d]',
     textClass: 'text-[#e5484d]',
   },
+  // No observed activity: a hollow dot, deliberately not a filled one. The
+  // other four report a measurement; this one reports its absence.
+  Unobserved: {
+    label: 'Unobserved',
+    dotClass: 'bg-transparent border border-[#62666d]',
+    textClass: 'text-[#62666d]',
+  },
 };
 
 export function LivenessIndicator({
@@ -34,16 +41,21 @@ export function LivenessIndicator({
   showRelative = false,
   className,
 }: {
-  lastSeen?: string | Date;
+  /** Most recent OBSERVED activity; null/undefined renders `Unobserved`. */
+  lastSeen?: string | Date | null;
   status?: LivenessStatus;
   size?: 'sm' | 'default';
   /** Append the precise "last active" time (e.g. "· 4h ago") after the status label. */
   showRelative?: boolean;
   className?: string;
 }) {
-  const status = statusOverride ?? (lastSeen ? getLivenessStatus(lastSeen) : 'Inactive');
+  const status = statusOverride ?? getLivenessStatus(lastSeen);
   const config = LIVENESS_CONFIG[status];
-  const relativeIso = lastSeen == null ? null : typeof lastSeen === 'string' ? lastSeen : lastSeen.toISOString();
+  // `Unobserved` has no timestamp to narrate — suppress the relative time even
+  // when the caller asked for it, rather than printing "Last active never".
+  const relativeIso = lastSeen == null || status === 'Unobserved'
+    ? null
+    : typeof lastSeen === 'string' ? lastSeen : lastSeen.toISOString();
 
   return (
     <span className={cn('inline-flex items-center gap-1.5', className)}>

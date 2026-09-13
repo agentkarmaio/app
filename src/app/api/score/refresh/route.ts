@@ -54,6 +54,8 @@ export async function POST(request: NextRequest) {
       signalEvents,
     );
     await upsertWallet(wallet, score.score, score.trustTier, score.txCount, {
+      // Observed activity, not this run's clock (spec 2026-09-13-observed-liveness).
+      lastSeen: score.lastActive.toISOString(),
       providerScore: score.providerScore,
       consumerScore: score.consumerScore,
       confidenceBadge: score.confidenceBadge,

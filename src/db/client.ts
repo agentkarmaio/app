@@ -154,6 +154,12 @@ export async function getWalletsByAddressAnyChain(address: string): Promise<Wall
 }
 
 export interface UpsertWalletOpts {
+  /**
+   * Most recent OBSERVED on-chain activity for this address, or null when the
+   * caller observed none. Omit the key entirely to leave the stored value
+   * untouched — a rescore that saw nothing new must not look like activity.
+   */
+  lastSeen?: string | null;
   providerScore?: number;
   consumerScore?: number | null;
   confidenceBadge?: ConfidenceBadge;
@@ -188,9 +194,12 @@ export async function upsertWallet(
     confidence_badge: confidenceBadge,
     trust_tier: trustTier,
     tx_count: txCount,
-    last_seen: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
+  // `last_seen` is observed activity, never write time — see
+  // docs/superpowers/specs/2026-09-13-observed-liveness.md. Only the caller
+  // knows what it observed, so the column moves only when it says so.
+  if ('lastSeen' in opts) row.last_seen = opts.lastSeen;
   if ('consumerScore' in opts) row.consumer_score = opts.consumerScore;
   if ('autonomyScore' in opts) row.autonomy_score = opts.autonomyScore;
   if ('autonomyLabel' in opts) row.autonomy_label = opts.autonomyLabel;
@@ -362,6 +371,36 @@ export interface LeaderboardPage {
   total: number;
 }
 
+/** The subset of the PostgREST builder a liveness filter needs. */
+interface LivenessFilterable {
+  gte(column: string, value: string): this;
+  lt(column: string, value: string): this;
+  is(column: string, value: null): this;
+}
+
+/**
+ * Translate a `LivenessStatus` into `last_seen` predicates. One definition for
+ * all three agent-list paths (leaderboard, explore-wallets, explore-view) —
+ * they used to carry three copies of this switch, which is how those lists
+ * drift apart.
+ *
+ * `last_seen` is the last OBSERVED activity and is NULL when there was none.
+ * SQL comparisons never match NULL, so the four dated buckets exclude
+ * unobserved rows for free; `Unobserved` is the explicit `IS NULL` bucket.
+ * See docs/superpowers/specs/2026-09-13-observed-liveness.md.
+ */
+function applyLivenessFilter<Q extends LivenessFilterable>(q: Q, status: LivenessStatus): Q {
+  const now = Date.now();
+  const iso = (hoursAgo: number) => new Date(now - hoursAgo * 3600_000).toISOString();
+  switch (status) {
+    case 'Active':     return q.gte('last_seen', iso(24));
+    case 'Recent':     return q.lt('last_seen', iso(24)).gte('last_seen', iso(7 * 24));
+    case 'Dormant':    return q.lt('last_seen', iso(7 * 24)).gte('last_seen', iso(90 * 24));
+    case 'Inactive':   return q.lt('last_seen', iso(90 * 24));
+    case 'Unobserved': return q.is('last_seen', null);
+  }
+}
+
 export async function getLeaderboard(
   limit = 25,
   offset = 0,
@@ -380,24 +419,7 @@ export async function getLeaderboard(
 
   if (filters.tier) q = q.eq('trust_tier', filters.tier);
 
-  if (filters.status) {
-    const now = Date.now();
-    const iso = (hoursAgo: number) => new Date(now - hoursAgo * 3600_000).toISOString();
-    switch (filters.status) {
-      case 'Active':
-        q = q.gte('last_seen', iso(24));
-        break;
-      case 'Recent':
-        q = q.lt('last_seen', iso(24)).gte('last_seen', iso(7 * 24));
-        break;
-      case 'Dormant':
-        q = q.lt('last_seen', iso(7 * 24)).gte('last_seen', iso(90 * 24));
-        break;
-      case 'Inactive':
-        q = q.lt('last_seen', iso(90 * 24));
-        break;
-    }
-  }
+  if (filters.status) q = applyLivenessFilter(q, filters.status);
 
   const { data, error, count } = await q
     // `rank_score`, not `score` — the raw score mixes signal tiers, and the
@@ -520,7 +542,11 @@ function registryRowToWallet(
     chain,
     address,
     first_seen: (row.first_indexed_at as string) ?? indexedAt,
-    last_seen: indexedAt,
+    // NULL, not `last_indexed_at`: the mirror stores when WE scanned the
+    // registry, so using it here made every declared agent read "Active" on
+    // /explore while the same agent read "Inactive" on the leaderboard. We have
+    // observed no activity for these addresses — say so.
+    last_seen: null,
     tx_count: 0,
     score,
     trust_tier: getTrustTier(score),
@@ -602,6 +628,10 @@ async function getRegistryAgentsPage(
   if (filters.minCadence != null || filters.minDiversity != null || filters.minSuccessRate != null) {
     return { wallets: [], total: 0 };
   }
+  // Every registry row is Unobserved (tx_count 0, last_seen NULL). A dated
+  // liveness bucket therefore matches none of them — this used to ignore
+  // `status` entirely and return the full list for "Active".
+  if (filters.status && filters.status !== 'Unobserved') return { wallets: [], total: 0 };
 
   let q = supabase
     .from('erc8004_agents')
@@ -634,9 +664,11 @@ async function getRegistryAgentsPage(
 
   // Sort: map the wallet-oriented sort fields onto registry columns. Unmappable
   // fields fall back to metadata_score (the registry's headline metric).
+  // `last_seen` is deliberately unmapped: `last_indexed_at` is our scan clock,
+  // and ordering "Last active" by it ranked registry agents on indexer cadence.
+  // They have no observed activity, so fall through to the headline metric.
   const col =
-    sort.field === 'last_seen' ? 'last_indexed_at'
-    : sort.field === 'tx_count' ? 'feedback_count'
+    sort.field === 'tx_count' ? 'feedback_count'
     : 'metadata_score';
   const { data, error, count } = await q
     .order(col, { ascending: sort.direction === 'asc', nullsFirst: false })
@@ -677,16 +709,7 @@ async function getUnifiedAgentsPage(
   if (filters.minDiversity != null) q = q.gte('metric_diversity', filters.minDiversity);
   if (filters.minSuccessRate != null) q = q.gte('metric_success_rate', filters.minSuccessRate);
 
-  if (filters.status) {
-    const now = Date.now();
-    const iso = (hoursAgo: number) => new Date(now - hoursAgo * 3600_000).toISOString();
-    switch (filters.status) {
-      case 'Active':   q = q.gte('last_seen', iso(24)); break;
-      case 'Recent':   q = q.lt('last_seen', iso(24)).gte('last_seen', iso(7 * 24)); break;
-      case 'Dormant':  q = q.lt('last_seen', iso(7 * 24)).gte('last_seen', iso(90 * 24)); break;
-      case 'Inactive': q = q.lt('last_seen', iso(90 * 24)); break;
-    }
-  }
+  if (filters.status) q = applyLivenessFilter(q, filters.status);
 
   if (filters.search) {
     const term = escapeSearchTerm(filters.search);
@@ -757,16 +780,7 @@ export async function getAgents(
   if (filters.minDiversity != null) q = q.gte('metric_diversity', filters.minDiversity);
   if (filters.minSuccessRate != null) q = q.gte('metric_success_rate', filters.minSuccessRate);
 
-  if (filters.status) {
-    const now = Date.now();
-    const iso = (hoursAgo: number) => new Date(now - hoursAgo * 3600_000).toISOString();
-    switch (filters.status) {
-      case 'Active':   q = q.gte('last_seen', iso(24)); break;
-      case 'Recent':   q = q.lt('last_seen', iso(24)).gte('last_seen', iso(7 * 24)); break;
-      case 'Dormant':  q = q.lt('last_seen', iso(7 * 24)).gte('last_seen', iso(90 * 24)); break;
-      case 'Inactive': q = q.lt('last_seen', iso(90 * 24)); break;
-    }
-  }
+  if (filters.status) q = applyLivenessFilter(q, filters.status);
 
   if (filters.search) {
     // escapeSearchTerm also strips commas/parens that would otherwise break the

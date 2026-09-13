@@ -4,6 +4,7 @@ import {
   type AgentsExploreFilters, type AgentsExploreSort, type AgentSortField,
 } from '@/db/client';
 import type { TrustTier, LivenessStatus, ConfidenceBadge, AutonomyLabel, Chain } from '@/db/schema';
+import { LIVENESS_STATUSES } from '@/db/schema';
 import { isChain } from '@/db/schema';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
@@ -14,7 +15,7 @@ export async function OPTIONS() {
 const TIERS: TrustTier[] = ['Unrated', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'];
 const BADGES: ConfidenceBadge[] = ['receipt-backed', 'behavior-inferred', 'declared'];
 const AUTONOMY: AutonomyLabel[] = ['agent-like', 'mixed', 'human-like'];
-const STATUS: LivenessStatus[] = ['Active', 'Recent', 'Dormant', 'Inactive'];
+const STATUS: LivenessStatus[] = [...LIVENESS_STATUSES];
 const SORT_FIELDS: AgentSortField[] = [
   'provider_score', 'consumer_score', 'tx_count', 'last_seen', 'autonomy_score',
   'metric_cadence', 'metric_success_rate', 'metric_diversity', 'metric_volume', 'metric_age',

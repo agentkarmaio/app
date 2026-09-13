@@ -30,7 +30,7 @@ ALTER TABLE wallets ADD COLUMN IF NOT EXISTS image_url text;
 -- behavioral score tops out around 80 — so an unweighted sort put 0-tx declared
 -- registrations above every observed agent. GENERATED, never written by the app
 -- (PostgREST's write cache is stale on this cluster; see
--- (design notes, kept out of this repo)).
+-- docs/superpowers/specs/2026-08-25-evidence-weighted-leaderboard-ranking.md).
 -- Keep the weight in sync with drizzle/0017_evidence_weighted_rank.sql and with
 -- the registry branch of the view below.
 ALTER TABLE wallets ADD COLUMN IF NOT EXISTS rank_score numeric(6,2)
@@ -76,7 +76,12 @@ CREATE OR REPLACE VIEW explore_agents AS
     NULL::numeric                        AS autonomy_score,
     NULL::text                           AS autonomy_label,
     0                                    AS tx_count,
-    last_indexed_at                      AS last_seen,
+    -- NULL, not last_indexed_at: that column is when WE scanned the registry.
+    -- Projecting it as last_seen made every declared agent read "Active" here
+    -- (refreshed each scan) while the leaderboard read "Inactive" for the same
+    -- agent. tx_count is 0, so last_seen must be NULL — the invariant in
+    -- docs/superpowers/specs/2026-09-13-observed-liveness.md.
+    NULL::timestamptz                    AS last_seen,
     NULL::numeric AS metric_success_rate,
     NULL::numeric AS metric_diversity,
     NULL::numeric AS metric_volume,

@@ -579,6 +579,9 @@ export async function runIndexer(
   for (const [address, walletScore] of scores) {
     const autonomy = autonomyByWallet.get(address);
     await upsertWallet(address, walletScore.score, walletScore.trustTier, walletScore.txCount, {
+      // Observed activity, not the time of this run — see
+      // docs/superpowers/specs/2026-09-13-observed-liveness.md.
+      lastSeen: walletScore.lastActive.toISOString(),
       providerScore: walletScore.providerScore,
       consumerScore: walletScore.consumerScore,
       confidenceBadge: walletScore.confidenceBadge,
@@ -620,6 +623,9 @@ export async function runIndexer(
         lastSeen: stats.lastSeen,
       });
       await upsertWallet(operator, op.score, op.trustTier, stats.receiptCount, {
+        // Operators have no `transactions` rows; their observed activity is the
+        // newest paysh_routed receipt. Same column, same meaning.
+        lastSeen: stats.lastSeen,
         providerScore: op.score,
         confidenceBadge: op.confidenceBadge,
       });

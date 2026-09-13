@@ -5,6 +5,7 @@ import {
   getScoreHistoriesForWallets,
 } from '@/db/client';
 import type { LivenessStatus, TrustTier } from '@/db/schema';
+import { LIVENESS_STATUSES } from '@/db/schema';
 import { parseChain } from '@/lib/leaderboard-params';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
@@ -12,7 +13,7 @@ export async function OPTIONS() {
   return corsPreflight();
 }
 
-const STATUSES: LivenessStatus[] = ['Active', 'Recent', 'Dormant', 'Inactive'];
+const STATUSES: LivenessStatus[] = [...LIVENESS_STATUSES];
 const TIERS: TrustTier[] = ['Unrated', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'];
 
 function parseStatus(v: string | null): LivenessStatus | undefined {

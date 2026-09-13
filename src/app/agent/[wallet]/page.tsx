@@ -94,7 +94,9 @@ async function synthesizeRegistryWalletRow(
     chain,
     address,
     first_seen: (row?.first_indexed_at as string) ?? nowIso,
-    last_seen: (row?.last_indexed_at as string) ?? nowIso,
+    // Registry scan time is not activity — tx_count is 0, so nothing was
+    // observed. See docs/superpowers/specs/2026-09-13-observed-liveness.md.
+    last_seen: null,
     tx_count: 0,
     score,
     trust_tier: getTrustTier(score),
@@ -921,9 +923,7 @@ export default async function AgentProfilePage({
               <ExternalLink className="size-3.5" />
             </a>
             <BadgeButton wallet={wallet} chain={chain} />
-            {walletRow?.last_seen && (
-              <LivenessIndicator lastSeen={walletRow.last_seen} size="sm" showRelative />
-            )}
+            <LivenessIndicator lastSeen={walletRow?.last_seen} size="sm" showRelative />
           </div>
           {agentDescription && (
             <p className="text-[14px] text-[#8a8f98] leading-relaxed max-w-lg">
@@ -1187,10 +1187,7 @@ async function SolanaProfileBody({
               <div className="flex justify-between">
                 <dt className="text-muted-foreground">Status</dt>
                 <dd>
-                  {walletRow?.last_seen
-                    ? <LivenessIndicator lastSeen={walletRow.last_seen} size="sm" />
-                    : <span className="text-muted-foreground">Unknown</span>
-                  }
+                  <LivenessIndicator lastSeen={walletRow?.last_seen} size="sm" />
                 </dd>
               </div>
               <Separator />

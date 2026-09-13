@@ -76,7 +76,7 @@ interface ApiEntry {
   autonomyScore: number | null;
   autonomyLabel: AutonomyLabel | null;
   txCount: number;
-  lastSeen: string;
+  lastSeen: string | null;
   metrics: {
     successRate: number | null;
     diversity: number | null;

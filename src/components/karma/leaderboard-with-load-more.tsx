@@ -6,6 +6,7 @@ import { ChainFilterPill, type ChainFilter } from './chain-filter-pill';
 import type {
   LivenessStatus, TrustTier, ConfidenceBadge, AutonomyLabel, Chain,
 } from '@/db/schema';
+import { LIVENESS_STATUSES } from '@/db/schema';
 
 const PAGE_SIZE = 25;
 
@@ -21,7 +22,7 @@ interface ApiEntry {
   autonomyScore?: number | null;
   autonomyLabel?: AutonomyLabel | null;
   txCount: number;
-  lastSeen: string;
+  lastSeen: string | null;
   delivery: { total: number; deliveryRate: number } | null;
   trend: number[];
 }
@@ -29,7 +30,7 @@ interface ApiEntry {
 type StatusFilter = 'All' | LivenessStatus;
 type TierFilter = 'All' | TrustTier;
 
-const STATUS_OPTIONS: StatusFilter[] = ['All', 'Active', 'Recent', 'Dormant', 'Inactive'];
+const STATUS_OPTIONS: StatusFilter[] = ['All', ...LIVENESS_STATUSES];
 const TIER_OPTIONS: TierFilter[] = ['All', 'Excellent', 'Very Good', 'Good', 'Fair', 'Poor', 'Unrated'];
 
 export function LeaderboardWithLoadMore({

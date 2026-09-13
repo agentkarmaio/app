@@ -341,11 +341,7 @@ function MemberCard({
           <TierBadge tier={tier} size="sm" />
           <ConfidenceBadge badge={badge} size="sm" withDot />
         </div>
-        {hasData && wallet?.last_seen ? (
-          <LivenessIndicator lastSeen={wallet.last_seen} size="sm" showRelative />
-        ) : (
-          <span className="text-[10px] text-[#62666d]">Idle</span>
-        )}
+        <LivenessIndicator lastSeen={hasData ? wallet?.last_seen : null} size="sm" showRelative />
       </div>
     </Link>
   );

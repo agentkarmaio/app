@@ -19,6 +19,7 @@ import {
   withTransientDbRetry,
   insertSignalEvents,
   getRecentTransactionsForWallet,
+  upsertWallet,
 } from './client';
 import type { Transaction } from './schema';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
@@ -1319,4 +1320,122 @@ describe('registry-chain search matches the declared name, not just addresses', 
 
     expect(fake.__orFilters.some((f) => f.includes('ilike'))).toBe(false);
   });
+});
+
+describe('upsertWallet last_seen — observed activity only', () => {
+  let captured: Captured[];
+  beforeEach(() => { captured = []; __setSupabaseForTest(makeFakeSupabase(captured)); });
+
+  const payload = () => captured[0].rows as Record<string, unknown>;
+
+  // The defect lived BETWEEN two correct modules: upsertWallet stamped
+  // `new Date()` unconditionally, so a rescore that observed nothing still
+  // looked like fresh activity. Assert on the payload KEYS, not a timestamp.
+  test('omits last_seen entirely when the caller observed nothing', async () => {
+    await upsertWallet('W1', 50, 'Fair', 0, {}, 'arc');
+    expect(Object.keys(payload())).not.toContain('last_seen');
+  });
+
+  test('writes the observed timestamp the caller passes', async () => {
+    await upsertWallet('W2', 70, 'Good', 12, { lastSeen: '2026-09-01T00:00:00Z' }, 'solana');
+    expect(payload().last_seen).toBe('2026-09-01T00:00:00Z');
+  });
+
+  test('an explicit null clears it — the address has no observed activity', async () => {
+    await upsertWallet('W3', 100, 'Excellent', 0, { lastSeen: null }, 'celo');
+    expect(Object.keys(payload())).toContain('last_seen');
+    expect(payload().last_seen).toBeNull();
+  });
+
+  test('updated_at still tracks the write — that is what it is for', async () => {
+    await upsertWallet('W4', 50, 'Fair', 0, {}, 'arc');
+    expect(typeof payload().updated_at).toBe('string');
+  });
+});
+
+// ── Liveness filtering ───────────────────────────────────────────────────────
+//
+// Three agent-list paths used to carry three copies of the status switch, which
+// is how those lists drift apart (leaderboard said "Inactive" for the same Arc
+// agents /explore said "Active"). One helper now serves all three.
+describe('liveness status filters read observed activity', () => {
+  type Pred = { method: string; column: string; value: unknown };
+
+  function makePredicateRecordingFake(rows: unknown[] = []) {
+    const preds: Pred[] = [];
+    return {
+      __preds: preds,
+      from() {
+        const b: Record<string, unknown> = {};
+        for (const m of ['select', 'or', 'in', 'limit', 'order']) b[m] = () => b;
+        for (const m of ['eq', 'gt', 'gte', 'lt', 'is', 'not']) {
+          b[m] = (column: string, value: unknown) => {
+            preds.push({ method: m, column, value });
+            return b;
+          };
+        }
+        b.range = async () => ({ data: rows, error: null, count: rows.length });
+        return b;
+      },
+    };
+  }
+
+  const lastSeenPreds = (preds: Pred[]) => preds.filter((p) => p.column === 'last_seen');
+
+  test('Unobserved asks for IS NULL, not an old date', async () => {
+    const fake = makePredicateRecordingFake();
+    __setSupabaseForTest(fake);
+
+    await getLeaderboard(25, 0, { status: 'Unobserved' });
+
+    expect(lastSeenPreds(fake.__preds)).toEqual([
+      { method: 'is', column: 'last_seen', value: null },
+    ]);
+  });
+
+  test('Inactive stays a date bucket — it must not absorb the unobserved', async () => {
+    const fake = makePredicateRecordingFake();
+    __setSupabaseForTest(fake);
+
+    await getLeaderboard(25, 0, { status: 'Inactive' });
+
+    const preds = lastSeenPreds(fake.__preds);
+    expect(preds).toHaveLength(1);
+    expect(preds[0].method).toBe('lt');
+    // SQL comparisons never match NULL, so this excludes unobserved rows for
+    // free — no `.is(null)` guard needed, and none should appear.
+    expect(preds.some((p) => p.method === 'is')).toBe(false);
+  });
+
+  test('the explore wallets path uses the same helper', async () => {
+    const fake = makePredicateRecordingFake();
+    __setSupabaseForTest(fake);
+
+    await getAgents(25, 0, { chain: 'solana', status: 'Unobserved' }, { field: 'provider_score', direction: 'desc' });
+
+    expect(lastSeenPreds(fake.__preds)).toEqual([
+      { method: 'is', column: 'last_seen', value: null },
+    ]);
+  });
+});
+
+describe('registry chains cannot satisfy a dated liveness bucket', () => {
+  // Registry rows are declared-only: tx_count 0, last_seen NULL. This path used
+  // to ignore `status` entirely, so filtering "Active" on Celo returned the full
+  // declared list — a liveness claim for agents we have never observed.
+  function makeThrowingFake() {
+    return {
+      from() {
+        throw new Error('registry page must short-circuit before querying');
+      },
+    };
+  }
+
+  for (const status of ['Active', 'Recent', 'Dormant', 'Inactive'] as const) {
+    test(`${status} on a registry chain returns empty without querying`, async () => {
+      __setSupabaseForTest(makeThrowingFake());
+      const page = await getAgents(25, 0, { chain: 'celo', status }, { field: 'provider_score', direction: 'desc' });
+      expect(page).toEqual({ wallets: [], total: 0 });
+    });
+  }
 });
