@@ -137,7 +137,8 @@ function publicIssue(row: HealthStateRow | undefined, now: number): IndexingIssu
   if ((row.gaps_count ?? 0) > 0 || row.error_code === 'archive_gap') return 'history_gap';
   if (stateStatus(row, now) === 'running') return null;
   if (row.error_code === 'rpc_rate_limited' || row.error_code === 'rate_limited') return 'rate_limited';
-  if (row.error_code === 'registry_read_failure') return 'registry_retry';
+  if (row.error_code === 'registry_read_failure' || row.error_code === 'retry_backlog')
+    return 'registry_retry';
   return null;
 }
 /** A small explicit projection: never serialize the private worker row. */

@@ -106,3 +106,10 @@ test('public issue reasons distinguish throttling, retrying records, and unverif
   expect(result.chains.find(c => c.chain === 'solana')?.paths.find(p => p.path === 'payments')?.issue).toBe('history_gap');
   expect(JSON.stringify(result)).not.toContain('SECRET');
 });
+
+test('a retained registry retry backlog stays disclosed even though it no longer pages', () => {
+  const result = buildIndexingHealth([
+    row('arc', 'registry', { status: 'catching_up', error_code: 'retry_backlog', unresolved_count: 1397 }),
+  ], now);
+  expect(result.chains.find(c => c.chain === 'arc')?.paths.find(p => p.path === 'registry')?.issue).toBe('registry_retry');
+});

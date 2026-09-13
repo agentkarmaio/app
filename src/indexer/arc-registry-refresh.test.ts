@@ -209,6 +209,57 @@ test('removed failed members remain unresolved without widening scans', async ()
   expect(result.coverage).toMatchObject({ complete: false, pending: 0, unresolved: 1 });
 });
 
+test('a retained ledger that this run did not add to is retry backlog, not a read failure', async () => {
+  const f = fixture({ maxIds: 2, batchSize: 1 });
+  await f.deps.writeCheckpoint(0, { version: 1, position: 0, retryAfter: 0, retryNext: true,
+    failures: [{ agentId: 2, stages: ['registration'] }, { agentId: 845000, stages: ['registration'] }] });
+  const result = await arcRegistryRefresh(f.deps);
+  expect(result.errors).toBe(0);
+  // Unreachable member metadata stays disclosed, but a ledger the rotation is
+  // still working through must not read as a fault — it can never empty faster
+  // than it fills, so calling it `failed` paged on every schedule (2026-09-12).
+  expect(result.coverage.unresolved).toBeGreaterThan(0);
+  expect(result.coverage.reason).toBe('retry_backlog');
+});
+
+function alwaysFailing(stage: 'registration' | 'identity' | 'feedback') {
+  return async (ids: number[]) => ({
+    chain: 'arc' as const, tip: ids.at(-1) ?? 0, agentsScanned: ids.length, agentsPersisted: 0,
+    feedbackScanned: 0, feedbackPersisted: 0, errors: ids.length,
+    failedMembers: ids.map(id => ({ agentId: id, stages: [stage] })),
+  });
+}
+
+test('members whose off-chain metadata stays unreachable are backlog, not a read failure', async () => {
+  const f = fixture({ maxIds: 2, batchSize: 1, scanIds: alwaysFailing('registration') });
+  // `errors` counts one per unreachable registration URI, so it is non-zero on
+  // every run in steady state — the count alone cannot classify the run.
+  const result = await arcRegistryRefresh(f.deps);
+  expect(result.errors).toBeGreaterThan(0);
+  expect(result.coverage.reason).toBe('retry_backlog');
+});
+
+test('a failed on-chain identity read is a fault even when the ledger is unchanged', async () => {
+  const f = fixture({ maxIds: 2, batchSize: 1, scanIds: alwaysFailing('identity') });
+  await arcRegistryRefresh(f.deps);
+  const result = await arcRegistryRefresh(f.deps);
+  expect(result.coverage.reason).toBe('registry_read_failure');
+});
+
+test('a failed on-chain feedback read is a fault', async () => {
+  const f = fixture({ maxIds: 2, batchSize: 1, scanIds: alwaysFailing('feedback') });
+  const result = await arcRegistryRefresh(f.deps);
+  expect(result.coverage.reason).toBe('registry_read_failure');
+});
+
+test('an unidentifiable partial error summary is conservatively a read failure', async () => {
+  const f = fixture({ maxIds: 1, batchSize: 1,
+    scanIds: async (ids) => ({ chain: 'arc', tip: ids.at(-1) ?? 0, agentsScanned: ids.length, agentsPersisted: 0,
+      feedbackScanned: 0, feedbackPersisted: 0, errors: 1, failedMembers: [] }) });
+  const result = await arcRegistryRefresh(f.deps);
+  expect(result.coverage.reason).toBe('registry_read_failure');
+});
+
 test('a newly approved member below the scheduling position restarts the rotation', async () => {
   let ids = [2, 70, 845000];
   const f = fixture({ loadKnownIds: async () => ids, maxIds: 1 });

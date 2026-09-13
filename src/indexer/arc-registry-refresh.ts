@@ -121,6 +121,10 @@ export async function arcRegistryRefresh(deps: ArcRegistryRefreshDeps): Promise<
   let freshBudget = maxIds - retryBudget;
   let freshOffset = 0;
   let retryOffset = 0;
+  // A `registration` failure is an unreachable off-chain metadata URI — upstream
+  // content debt this scan cannot repair. Every other stage is a chain read we
+  // own, so only those make the run a fault.
+  let readFailure = false;
   const result: ArcRegistryRefreshResult = {
     chain: 'arc', tip: head, agentsScanned: 0, agentsPersisted: 0,
     feedbackScanned: 0, feedbackPersisted: 0, errors: 0,
@@ -156,6 +160,7 @@ export async function arcRegistryRefresh(deps: ArcRegistryRefreshDeps): Promise<
       && Array.isArray(member.stages) && member.stages.length > 0 && member.stages.every(stage => STAGES.includes(stage)))
       && (scanned.errors === 0 || details.length > 0);
     if (exhaustive) {
+      if (details.some(member => member.stages.some(stage => stage !== 'registration'))) readFailure = true;
       const failedIds = new Set(details.map(member => member.agentId));
       for (const id of batch) if (!failedIds.has(id)) failures.delete(id);
       for (const member of details) {
@@ -166,6 +171,7 @@ export async function arcRegistryRefresh(deps: ArcRegistryRefreshDeps): Promise<
     } else if (scanned.errors > 0 || details !== undefined) {
       // A legacy/partial error summary cannot identify successful members. Keep
       // every candidate, together with any earlier known failing stages.
+      readFailure = true;
       for (const id of batch) {
         const stages = failures.get(id) ?? new Set<RegistryFailureStage>();
         stages.add('unknown');
@@ -194,7 +200,12 @@ export async function arcRegistryRefresh(deps: ArcRegistryRefreshDeps): Promise<
   result.coverage.pending = remaining.length - freshOffset;
   result.coverage.unresolved = state.failures.length;
   result.coverage.complete = result.coverage.pending === 0 && state.failures.length === 0;
-  if (state.failures.length > 0) result.coverage.reason = 'registry_read_failure';
+  // A retained ledger is a backlog the rotation is still working through: it
+  // retries a quarter of each budget against members whose metadata is hosted
+  // elsewhere, so a population this large keeps entries indefinitely. Reporting
+  // that as `failed` paged every hour and could never clear (2026-09-12).
+  if (readFailure) result.coverage.reason = 'registry_read_failure';
+  else if (state.failures.length > 0) result.coverage.reason ??= 'retry_backlog';
   else if (!result.coverage.complete && !result.coverage.reason) result.coverage.reason = 'batch_limit';
   return result;
 }

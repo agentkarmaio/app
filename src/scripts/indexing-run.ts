@@ -1,4 +1,5 @@
 import { runIndexingJob } from '@/lib/indexing-jobs';
+import { shouldPageIndexingOutcome } from '@/lib/indexing-exit';
 import { INDEXING_PATHS } from '@/lib/indexing-health';
 import { requireEnv } from '@/lib/require-env';
 requireEnv(['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']);
@@ -22,14 +23,7 @@ try {
     fromOffset: intFlag('--from-offset'),
   });
   console.log(JSON.stringify({ chain: job.chain, path: job.path, ...result }));
-  process.exit(
-    result.status === 'failed' ||
-      result.status === 'lease_lost' ||
-      ('gapCount' in result && (result.gapCount ?? 0) > 0) ||
-      ('unresolvedCount' in result && (result.unresolvedCount ?? 0) > 0)
-      ? 1
-      : 0,
-  );
+  process.exit(shouldPageIndexingOutcome(result) ? 1 : 0);
 } catch {
   console.error(`[indexing] ${job.chain}/${job.path} run_failed`);
   process.exit(1);

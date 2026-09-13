@@ -329,8 +329,12 @@ export async function fetchTransactionsForFacilitator(
   // policy can advance past older activity; never call that complete history.
   const limitReached = signatures.length >= limit;
   const unknownHistory = cursorReset || limitReached;
-  const gaps = parsed.undecodable + (unknownHistory ? 1 : 0);
-  const incomplete = parsed.unresolved.length > 0 || gaps > 0;
+  // A bounded page means "more may exist", which is pending work — NOT missing
+  // history. Only a re-anchored cursor or permanently undecodable metadata is a
+  // gap, because `gaps` is a ledger that survives successful scans: counting a
+  // full page there made every busy facilitator poison it on every run.
+  const gaps = parsed.undecodable + (cursorReset ? 1 : 0);
+  const incomplete = parsed.unresolved.length > 0 || gaps > 0 || unknownHistory;
 
   // The cursor may only pass signatures we actually obtained. Log the SIGNATURES,
   // not a count: recovery is a targeted archive re-parse, which needs them.

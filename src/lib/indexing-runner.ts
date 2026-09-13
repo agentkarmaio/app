@@ -57,6 +57,7 @@ const ERROR_CODES = new Set([
   'window_limit',
   'batch_limit',
   'registry_read_failure',
+  'retry_backlog',
   'address_failure',
   'head_behind_cursor',
   'archive_gap',

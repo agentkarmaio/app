@@ -138,9 +138,9 @@ export async function runKeepFresh(
     }
   }
 
-  // 2b. Arc — job-escrow settlements + plain USDC transfers. Runs regardless of
-  //     step 2's outcome: the chains share nothing but this script, and Arc's
-  //     only ingest path is this step (no webhook, no second cron).
+  // 2b. Arc — optional extra floor. Scheduled keep-fresh skips the RPC work
+  //     (hourly indexing-recovery already owns those paths). Tests still inject
+  //     a real step so a crashed Solana indexer cannot cancel Arc.
   const arc = await step('arc', deps.indexArc);
   if (arc && arc.inserted > 0) {
     console.log(`[keep-fresh] arc: fetched=${arc.fetched} inserted=${arc.inserted}`);

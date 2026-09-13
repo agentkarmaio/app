@@ -14,7 +14,7 @@
  * Steps (each reuses existing logic — no duplicated ingest/scoring code):
  *   1. Re-enable + auth-sync the Helius webhook            (checkOnce)
  *   2. Poll facilitators and ingest new txs                (runIndexer)
- *   2b. Arc job-escrow settlements + USDC transfers        (arc adapter)
+ *   2b. Arc ingest — skipped; hourly indexing-recovery owns it
  *   3. Drain the deferred-scoring backlog, bounded         (drainOnce)
  *   4. Report post-run ingest freshness                    (assessIngestFreshness)
  *
@@ -36,8 +36,9 @@
 import { checkOnce } from '../lib/helius-watchdog';
 import { runIndexer } from '../indexer/index';
 import { drainOnce } from './rescore-dirty';
-import { createIndexingJob, runIndexingJob, runManagedIndexingTask, readLatestSolanaTransaction, coverageOutcome } from '../lib/indexing-jobs';
+import { createIndexingJob, runManagedIndexingTask, readLatestSolanaTransaction, coverageOutcome } from '../lib/indexing-jobs';
 import { runKeepFresh } from '../lib/keep-fresh';
+import { shouldPageIndexingOutcome } from '../lib/indexing-exit';
 import { requireEnv } from '../lib/require-env';
 
 
@@ -74,14 +75,19 @@ async function main() {
           result = await runIndexer(limit, { backfill, signal });
           return coverageOutcome(result.coverage, result.inserted);
         }});
-        if (managed.status === 'failed' || managed.status === 'lease_lost' || ('gapCount' in managed && (managed.gapCount ?? 0) > 0)) throw Error('solana_scan_failed');
+        // `unresolved` is rewritten each run for this path rather than retained like
+        // `gaps`, so paging on it cannot loop — and a signature no endpoint served
+        // is only recoverable while it stays inside the next fetched window.
+        const unserved = 'unresolvedCount' in managed ? managed.unresolvedCount ?? 0 : 0;
+        if (shouldPageIndexingOutcome(managed) || unserved > 0) throw Error('solana_scan_failed');
         return result ?? { fetched: 0, inserted: 0, scored: 0, payshSignals: 0, operatorsScored: 0, unresolved: 0, skipped: 'already_running' };
       },
-      // No-op until ARC_JOBS_START_BLOCK / ARC_TRANSFERS_START_BLOCK are set.
+      // Hourly `indexing-recovery` already runs arc/escrow, transfers, and
+      // registry. Re-running escrow here duplicated that page every 6h
+      // (2026-09-12) without adding a floor the hourly job does not already own.
       indexArc: async () => {
-        const result = await runIndexingJob('arc', 'escrow');
-        if (result.status === 'failed' || result.status === 'lease_lost' || ('gapCount' in result && (result.gapCount ?? 0) > 0)) throw Error('arc_scan_failed');
-        return { fetched: 0, inserted: 'insertedCount' in result ? result.insertedCount ?? 0 : 0 };
+        console.log('[keep-fresh] arc: skipped — covered by hourly indexing-recovery');
+        return { fetched: 0, inserted: 0 };
       },
       drainOnce: () => drainOnce(drainLimit, 5000),
       readLastTxIso: readLatestSolanaTransaction,
@@ -99,12 +105,11 @@ async function main() {
     console.error('[keep-fresh] STILL CRITICAL after run — ingest did not recover');
     process.exit(1);
   }
-  if ((outcome.indexer?.unresolved ?? 0) > 0 || ((outcome.indexer as {coverage?:{gaps?:number}} | null)?.coverage?.gaps ?? 0) > 0) {
-    console.error(
-      `[keep-fresh] DEGRADED — ${outcome.indexer?.unresolved} signature(s) unserved by every RPC`,
-    );
-    process.exit(1);
-  }
+  // Unserved signatures already failed the indexer step above. Retained gaps are
+  // a ledger that survives successful scans by design, so they are disclosed on
+  // the health surface rather than paged (2026-09-12).
+  const gaps = (outcome.indexer as { coverage?: { gaps?: number } } | null)?.coverage?.gaps ?? 0;
+  if (gaps > 0) console.warn(`[keep-fresh] ${gaps} retained coverage gap(s) — disclosed, not paged`);
 }
 
 main().catch((err) => {

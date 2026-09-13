@@ -128,10 +128,24 @@ describe('Solana run coverage', () => {
     const parser = spyOn(helius, 'parseTransactionsBatch').mockResolvedValue({ transactions: [], requested: 1, unresolved: [], undecodable: 0, recoveredFromArchive: 0 });
     try {
       const result = await fetchTransactionsForFacilitator(address, 1, { until: 'old-sig' });
-      expect(result.coverage).toEqual({ complete: false, checked: 1, pending: 1, unresolved: 0, gaps: 1, reason: 'scan_limit' });
+      // Bounded, so pending — but NOT a gap. A busy facilitator fills a page on
+      // every run, so counting that as missing history made the retained
+      // gaps ledger unclearable and paged forever (2026-09-12).
+      expect(result.coverage).toEqual({ complete: false, checked: 1, pending: 1, unresolved: 0, gaps: 0, reason: 'scan_limit' });
       // This health change reports the existing policy without silently
       // rewriting historical cursors or extending parsing behavior.
       expect(result.cursor).toBe('sig-1');
+    } finally { signatures.mockRestore(); parser.mockRestore(); }
+  });
+
+  test('every facilitator filling its page leaves the run bounded but gap-free', async () => {
+    const signatures = spyOn(Connection.prototype, 'getSignaturesForAddress').mockResolvedValue([signature]);
+    const parser = spyOn(helius, 'parseTransactionsBatch').mockResolvedValue({ transactions: [], requested: 1, unresolved: [], undecodable: 0, recoveredFromArchive: 0 });
+    try {
+      const result = await runIndexer(1, { backfill: true });
+      expect(result.coverage.gaps).toBe(0);
+      expect(result.coverage.pending).toBeGreaterThan(0);
+      expect(result.coverage.reason).toBe('scan_limit');
     } finally { signatures.mockRestore(); parser.mockRestore(); }
   });
 

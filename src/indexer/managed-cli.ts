@@ -36,6 +36,10 @@ export async function runIndexerCli<T>(
     return { createJob: createIndexingJob, execute: runManagedIndexingTask };
   },
 ): Promise<ManagedCliResult<T>> {
+  // Deliberately stricter than the scheduled exit policy in `indexing-exit.ts`:
+  // an operator running one path by hand wants a non-zero code for ANY residual
+  // incompleteness. Only the scheduled workflows must stay quiet about retained
+  // debt, because only they repeat on a timer.
   const exitCode = (outcome: {
     status: ManagedStatus;
     unresolvedCount?: number;

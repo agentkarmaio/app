@@ -13,6 +13,7 @@ import {
 } from '@/db/indexing-state';
 import { runWithIndexingContext } from '@/db/indexing-context';
 import { INDEXING_PATHS, type IndexingPath } from './indexing-health';
+import { isIndexingStalled } from './indexing-exit';
 import {
   executeIndexingJob,
   type IndexingJob,
@@ -228,17 +229,37 @@ export async function runIndexingJob(
 ) {
   return runManagedIndexingTask(createIndexingJob(chain, path, options));
 }
-export async function runManagedIndexingTask(job: IndexingJob) {
+/** The state store, injectable so the lease/stall wiring is testable. */
+export interface ManagedTaskStore {
+  acquire: typeof acquireIndexingLease;
+  renew: typeof renewIndexingLease;
+  finish: typeof finishIndexingRun;
+  withContext: typeof runWithIndexingContext;
+}
+export async function runManagedIndexingTask(
+  job: IndexingJob,
+  store: Partial<ManagedTaskStore> = {},
+) {
+  const {
+    acquire = acquireIndexingLease,
+    renew = renewIndexingLease,
+    finish = finishIndexingRun,
+    withContext = runWithIndexingContext,
+  } = store;
   const { chain, path } = job;
   let normalized: ScanOutcome | undefined;
   let previousGaps = 0;
+  let previous: { checkpoint: string | null } | null = null;
+  let stalled = false;
   const execution = await executeIndexingJob(job, {
     acquire: async (input) => {
-      const state = await acquireIndexingLease(input);
+      const state = await acquire(input);
       previousGaps = state?.gaps_count ?? 0;
+      // Only a path that has finished before has a cursor worth comparing.
+      previous = state?.last_finished_at ? { checkpoint: state.checkpoint } : null;
       return Boolean(state);
     },
-    renew: renewIndexingLease,
+    renew,
     finish: async (input) => {
       // Historical coverage gaps survive later successful incremental scans;
       // retriable decode failures clear when a subsequent scan actually succeeds.
@@ -255,18 +276,19 @@ export async function runManagedIndexingTask(job: IndexingJob) {
         unresolvedCount: input.unresolvedCount,
         gapCount: gaps,
       };
-      return finishIndexingRun({
+      stalled = isIndexingStalled(previous, normalized);
+      return finish({
         ...normalized,
         ...{ chain, path, owner: input.owner },
         checkpoint: normalized.checkpoint ?? undefined,
         head: normalized.head ?? undefined,
       });
     },
-    withContext: runWithIndexingContext,
+    withContext,
   });
   if (execution.status === 'busy' || execution.status === 'lease_lost')
     return execution;
-  return normalized ?? execution;
+  return normalized ? { ...normalized, stalled } : execution;
 }
 /** Reuse the same ownership contract from app workers, manual recovery and CI. */
 export function startIndexingWorkers() {
