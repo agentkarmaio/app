@@ -55,3 +55,26 @@ export function feeCeilingError(
 export function isFeeCeilingError(err: unknown): err is FeeCeilingError {
   return err instanceof Error && (err as Partial<FeeCeilingError>).code === 'fee_ceiling';
 }
+
+/**
+ * How a finished attestation batch should be reported.
+ *
+ * `blocked` is the case the alerting got wrong: a gate refused BEFORE signing,
+ * so nothing was sent and nothing can be half-landed. On 2026-09-13 Soroban
+ * priced `give_feedback` at 53.89 XLM against a 1 XLM ceiling, and the daily
+ * job paged for weeks over a network price nobody could act on — while telling
+ * the reader to go check Horizon for a submission that provably never existed.
+ *
+ * Only `failed` — a write that was sent and did not confirm — earns a page.
+ * A real failure outranks a blocked one: the unconfirmed write needs the human.
+ */
+export type AttestRunVerdict = 'ok' | 'blocked' | 'failed';
+
+export function attestRunVerdict(counts: {
+  failed: number;
+  blocked: number;
+}): AttestRunVerdict {
+  if (counts.failed > 0) return 'failed';
+  if (counts.blocked > 0) return 'blocked';
+  return 'ok';
+}
