@@ -42,7 +42,7 @@ import {
   MAX_FEE_CELO,
   MIN_CELO_BALANCE,
 } from '../src/integrations/erc8004-celo-attest';
-import { ATTEST_MIN_SCORE, isFeeCeilingError } from '../src/lib/attest-policy';
+import { ATTEST_MIN_SCORE, attestRunVerdict, isFeeCeilingError } from '../src/lib/attest-policy';
 import { supabase } from '../src/db/client';
 import { formatEther } from 'viem';
 
@@ -211,6 +211,8 @@ interface Outcome {
   score?: number;
   txHash?: string;
   detail?: string;
+  /** Refused by a gate before signing — nothing was sent, nothing to reconcile. */
+  blocked?: true;
 }
 
 const outcomes: Outcome[] = [];
@@ -311,7 +313,7 @@ for (let t = 0; t < targets.length; t++) {
       // Network-wide, not this agent's fault — every remaining target would be
       // refused identically, so stop and say it once.
       console.log(`fee ${formatEther(BigInt(err.feeUnits))} CELO > ceiling — refusing (nothing signed)`);
-      outcomes.push({ agentId: id, decision: 'error', detail: msg });
+      outcomes.push({ agentId: id, decision: 'error', detail: msg, blocked: true });
       break;
     }
     console.log(`error: ${msg.slice(0, 60)}`);
@@ -348,10 +350,26 @@ if (!execute) {
 // A scheduled drip that errors and exits 0 is indistinguishable from a healthy
 // one that had nothing to do. Expected outcomes (already_rated, unresolved,
 // below_threshold) stay green; real errors page.
-const errored = outcomes.filter((o) => o.decision === 'error');
-if (errored.length > 0) {
+//
+// A fee-ceiling refusal is not a real error: the gate stopped the run before
+// signing, so no transaction exists. Warn, do not page.
+const blockedOutcomes = outcomes.filter((o) => o.blocked);
+const errored = outcomes.filter((o) => o.decision === 'error' && !o.blocked);
+const verdict = attestRunVerdict({
+  failed: errored.length,
+  blocked: blockedOutcomes.length,
+});
+
+if (verdict === 'failed') {
   console.error('');
   console.error(`FAILED: ${errored.length} target(s) errored:`);
   for (const o of errored) console.error(`  agent ${o.agentId}: ${o.detail?.slice(0, 160) ?? ''}`);
   process.exit(1);
+}
+if (verdict === 'blocked') {
+  console.warn('');
+  console.warn(
+    `BLOCKED: ${blockedOutcomes.length} target(s) refused before signing — nothing was sent.`,
+  );
+  for (const o of blockedOutcomes) console.warn(`  agent ${o.agentId}: ${o.detail?.slice(0, 160) ?? ''}`);
 }

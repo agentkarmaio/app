@@ -24,6 +24,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { feeCeilingError } from '@/lib/attest-policy';
+import { AK_VALIDATOR } from '@/config/ak-validator';
 
 export const REPUTATION_REGISTRY_CELO = '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63' as const;
 
@@ -103,14 +104,30 @@ function loadKeypair() {
   return privateKeyToAccount(privateKey);
 }
 
-/** Public address of the wallet that will sign attestations (no key exposure). */
+/**
+ * Public address of the wallet that will sign attestations (no key exposure).
+ *
+ * Reading the address must NOT require the private key. The unarmed scheduled
+ * run simulates the whole path — preflight, target selection, gates — and needs
+ * only an address to do it. Until 2026-09-13 this fell straight through to the
+ * keyfile, which does not exist on a CI runner, so every scheduled celo-attest
+ * died on a raw ENOENT before it reached the simulation it was there to run.
+ *
+ * Precedence: signing key → local keyfile → the disclosed validator constant.
+ * The constant is public and already published on chain, so the fallback can
+ * only ever name the account AK really signs with.
+ */
 export function activeSignerAddress(): `0x${string}` {
   const fromEnv = process.env.CELO_VALIDATOR_PRIVATE_KEY;
   if (fromEnv) return privateKeyToAccount(fromEnv as `0x${string}`).address;
-  const { address } = JSON.parse(readFileSync(resolveKeyfile(), 'utf-8')) as {
-    address: `0x${string}`;
-  };
-  return address;
+  const keyfile = resolveKeyfile();
+  if (existsSync(keyfile)) {
+    const { address } = JSON.parse(readFileSync(keyfile, 'utf-8')) as {
+      address: `0x${string}`;
+    };
+    return address;
+  }
+  return AK_VALIDATOR.validator as `0x${string}`;
 }
 
 function makePublic() {

@@ -114,6 +114,11 @@ jobs:
       # Reasons this pages: the fee account cannot pay, the RPC is unusable, or
       # a submitted write did not confirm. The last one needs a human — the run
       # deliberately does not retry, because a resend can double-publish.
+      #
+      # A fee-ceiling refusal is NOT one of them. The gate stops before signing,
+      # so nothing was sent; the script logs "[attest] BLOCKED" and exits 0.
+      # It paged nightly from 2026-08 over a Soroban price nobody could act on,
+      # while telling the reader to go reconcile a submission that never existed.
       - name: Page on failure
         if: failure()
         uses: ./.github/actions/telegram-alert
@@ -122,6 +127,7 @@ jobs:
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           text: |
             🛟 <b>AgentKarma stellar-attest FAILED</b>
-            Either the fee account cannot pay, or a give_feedback write did not confirm.
-            Check the account sequence on Horizon BEFORE re-running — a blackholed submission may already have landed.
+            Read the "[attest] FAILED:" line in the log — it names each target and its state.
+            If any state is `indeterminate` or `sent`, a write may have landed: check the
+            account sequence on Horizon BEFORE re-running, because a resend can double-publish.
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
