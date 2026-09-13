@@ -39,9 +39,10 @@
  */
 
 import { createPublicClient, http, parseAbiItem, type Log } from 'viem';
-import type { Chain, Transaction } from '@/db/schema';
-import type { IndexRunResult } from '@/chain-adapters/types';
+import type { Chain } from '@/db/schema';
+import { readArcLogRange, withArcLogRetry, isArcLogRangeError, arcIndexCoverage, ARC_LOG_BUDGET_EXHAUSTED, type ArcIndexRunResult, type ArcIndexCoverage } from './arc-log-range';
 import { arcTestnet } from '@/config/arc-chain';
+import { ARC_MAINNET_TRANSFER_EMITTER, ARC_MAINNET_TRANSFER_EXCLUSIONS, ARC_MAINNET_TRANSFER_DECIMALS, ARC_MAINNET_USDC_CONTRACT } from '@/config/arc-mainnet';
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
@@ -50,9 +51,11 @@ import {
   upsertCursor as dbUpsertCursor,
   supabase,
   type InsertSignalEventInput,
+  type TransactionInsert,
 } from '@/db/client';
 import { INGEST_RETRY, isRateLimitedError, withRateLimitRetry } from '@/lib/rpc-retry';
 import { withConcurrency } from '@/lib/concurrency';
+import { createArcRpcGate } from './arc-rpc-gate';
 import { buildUsdcTransferSignal } from '@/scoring/signals';
 import { ARC_JOBS_CONTRACT, ARC_RUN_TIME_BUDGET_MS, GENESIS_FALLBACK_BLOCK } from './arc-jobs';
 
@@ -79,7 +82,7 @@ export const ARC_TRANSFERS_DEFAULT_MAX_WINDOWS = 200;
  * handful. The prefetch stays because a dense backfill window still benefits
  * and the bound costs nothing when there is nothing to fetch.
  */
-export const BLOCK_TS_CONCURRENCY = 20;
+export const BLOCK_TS_CONCURRENCY = 2;
 
 /** Arc Testnet USDC ERC-20 token — same contract used as the ERC-8183 payment token. */
 export const ARC_USDC_CONTRACT = '0x3600000000000000000000000000000000000000' as const;
@@ -99,6 +102,7 @@ const USDC_SCALE = 10 ** ARC_USDC_DECIMALS;
 export const ARC_ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 
 const ARC_CHAIN = 'arc' as Chain;
+export type ArcTransferChain = 'arc' | 'arc-mainnet';
 
 /**
  * Addresses that are asset or protocol INFRASTRUCTURE, never a payment
@@ -155,6 +159,12 @@ export interface ArcTransfer {
   amount: number;
   blockNumber: bigint;
   txHash: `0x${string}`;
+  /** Mainnet uses one receipt per system event; testnet keeps legacy tx identity. */
+  logIndex?: number;
+  emitter?: `0x${string}`;
+  decimals?: number;
+  /** Exact mainnet native USDC amount, never rounded through a JS number. */
+  amountDecimal?: string;
 }
 
 /**
@@ -210,17 +220,37 @@ export function toTransactionRow(
   transfer: ArcTransfer,
   usdcContract: string,
   observedAt: string,
-): Omit<Transaction, 'id'> {
+  chain: ArcTransferChain = 'arc',
+): TransactionInsert {
   return {
-    chain: ARC_CHAIN,
+    chain,
     wallet_address: transfer.from,
     facilitator: usdcContract,
     counterparty: transfer.to,
-    amount: transfer.amount,
+    amount: chain === 'arc-mainnet' ? exactMainnetAmount(transfer) : transfer.amount,
     timestamp: observedAt,
     success: true,
-    tx_signature: transfer.txHash,
+    tx_signature: arcTransferReceiptKey(transfer, chain),
   };
+}
+
+/** Mainnet event identity preserves multiple payments inside one EVM transaction. */
+export function arcTransferReceiptKey(transfer: ArcTransfer, chain: ArcTransferChain): string {
+  if (chain === 'arc') return transfer.txHash;
+  if (!Number.isSafeInteger(transfer.logIndex) || transfer.logIndex! < 0 || !/^0x[0-9a-fA-F]{64}$/.test(transfer.txHash)
+    || transfer.emitter?.toLowerCase() !== ARC_MAINNET_TRANSFER_EMITTER || transfer.decimals !== ARC_MAINNET_TRANSFER_DECIMALS) {
+    throw new Error('arc_mainnet_transfer_invalid');
+  }
+  return `${transfer.txHash.toLowerCase()}:${transfer.logIndex}`;
+}
+function exactMainnetAmount(transfer: ArcTransfer): string {
+  const raw = transfer.rawAmount;
+  if (raw <= 0n || raw >= 10n ** 38n) throw new Error('arc_mainnet_transfer_invalid');
+  const integer = raw / 10n ** 18n;
+  const fraction = (raw % (10n ** 18n)).toString().padStart(18, '0').replace(/0+$/, '');
+  const amount = fraction ? `${integer}.${fraction}` : String(integer);
+  if (transfer.amountDecimal !== amount || transfer.amount !== Number(amount)) throw new Error('arc_mainnet_transfer_invalid');
+  return amount;
 }
 
 // ─── Seed set ─────────────────────────────────────────────────────────────────
@@ -340,6 +370,8 @@ export function buildArcSeedSet(input: SeedSetInput = {}): Set<string> {
 // ─── DI core ──────────────────────────────────────────────────────────────────
 
 export interface ArcTransfersIndexerDeps {
+  chain?: ArcTransferChain;
+  signal?: AbortSignal;
   usdcContract: string;
   /**
    * Everything AK cares about — REQUIRED, never optional. An optional seed
@@ -355,7 +387,7 @@ export interface ArcTransfersIndexerDeps {
    */
   getLogs: (fromBlock: bigint, toBlock: bigint, face: TransferFace) => Promise<ArcTransfer[]>;
   blockTimestamp: (blockNumber: bigint) => Promise<string>;
-  insertTransactions: (rows: Omit<Transaction, 'id'>[]) => Promise<number>;
+  insertTransactions: (rows: TransactionInsert[]) => Promise<number>;
   insertSignalEvents: (inputs: InsertSignalEventInput[]) => Promise<number>;
   /** Batched — see arc-jobs.ts. One round trip for the whole run's wallet set. */
   ensureWallets: (addresses: string[]) => Promise<void>;
@@ -377,8 +409,8 @@ export interface ArcTransfersIndexerDeps {
 }
 
 /** Cursor key namespaced by the USDC contract, distinct from arc-jobs's key. */
-export function arcTransfersCursorKey(usdcContract: string): string {
-  return `arc-transfers:${usdcContract}`;
+export function arcTransfersCursorKey(usdcContract: string, chain: ArcTransferChain = 'arc'): string {
+  return `${chain}-transfers:${usdcContract}`;
 }
 
 /**
@@ -387,11 +419,16 @@ export function arcTransfersCursorKey(usdcContract: string): string {
  * arcJobsIndexer's shape (arc-jobs.ts) but with no pairing step (a Transfer is
  * self-contained).
  */
-export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promise<IndexRunResult> {
+export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promise<ArcIndexRunResult> {
+  const assertActive = () => deps.signal?.throwIfAborted();
+  assertActive();
   const cursors = new Map<string, string>();
   const windowSize = deps.windowSize ?? ARC_TRANSFERS_MAX_LOG_WINDOW;
   const maxWindows = deps.maxWindows ?? Number.POSITIVE_INFINITY;
-  const cursorKey = arcTransfersCursorKey(deps.usdcContract);
+  const chain = deps.chain ?? 'arc';
+  if (chain === 'arc-mainnet' && deps.usdcContract.toLowerCase() !== ARC_MAINNET_USDC_CONTRACT) throw new Error('arc_mainnet_transfer_invalid');
+  const cursorKey = arcTransfersCursorKey(deps.usdcContract, chain);
+  const exclusions = chain === 'arc-mainnet' ? ARC_MAINNET_TRANSFER_EXCLUSIONS : ARC_TRANSFER_EXCLUSIONS;
 
   // EMPTY SEED = NO-OP, BEFORE ANY IO. It is unverified what a node does with
   // an empty topic OR-array and "match everything" is a plausible answer — the
@@ -400,21 +437,23 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
   // not that they are clean.
   if (deps.seed.size === 0) {
     console.warn('[arc-transfers] seed set is empty — skipping run (no RPC calls, no cursor move)');
-    return { fetched: 0, inserted: 0, cursors };
+    return { fetched: 0, inserted: 0, cursors, coverage: { complete: false, head: '', checkpoint: null, checked: 0, pending: 0, unresolved: 0, reason: 'empty_seed' } };
   }
 
   let startBlock = BigInt(GENESIS_FALLBACK_BLOCK);
   const cursor = await deps.getCursor(cursorKey);
+  assertActive();
   if (cursor?.last_slot != null) startBlock = BigInt(cursor.last_slot) + BigInt(1);
 
   const head = await deps.getHead();
+  assertActive();
 
   if (startBlock > head) {
-    cursors.set(cursorKey, String(head));
-    return { fetched: 0, inserted: 0, cursors };
+    if (cursor?.last_slot != null) cursors.set(cursorKey, String(cursor.last_slot));
+    return { fetched: 0, inserted: 0, cursors, coverage: arcIndexCoverage(head, startBlock, startBlock - 1n, cursor?.last_slot ?? null) };
   }
 
-  const rows: Omit<Transaction, 'id'>[] = [];
+  const rows: TransactionInsert[] = [];
   const signals: InsertSignalEventInput[] = [];
   const wallets = new Set<string>();
   const tsCache = new Map<string, string>();
@@ -429,15 +468,17 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
 
   let maxBlock = startBlock - BigInt(1);
   let windowsProcessed = 0;
+  let stopped: ArcIndexCoverage['reason'];
   let fetched = 0;
 
   const now = deps.now ?? Date.now;
   const deadline = deps.timeBudgetMs != null ? now() + deps.timeBudgetMs : Number.POSITIVE_INFINITY;
 
   for (let from = startBlock; from <= head; from += BigInt(windowSize)) {
+    assertActive();
     // Checked before the window, so a window is never half-processed: whatever
     // is already read gets banked and the next run picks up from the cursor.
-    if (now() >= deadline) break;
+    if (now() >= deadline || windowsProcessed >= maxWindows) { stopped = 'budget'; break; }
 
     let to = from + BigInt(windowSize) - BigInt(1);
     if (to > head) to = head;
@@ -448,24 +489,28 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
     // that reason.
     let raw: ArcTransfer[];
     try {
-      const [outbound, inbound] = await Promise.all([
-        deps.getLogs(from, to, 'from'),
-        deps.getLogs(from, to, 'to'),
-      ]);
+      // Sequential reads avoid concurrent quota pressure and dangling work
+      // after one face rejects. Each face must cover the entire logical window.
+      const readFace = (face: TransferFace) => readArcLogRange(from, to,
+        (lower, upper) => deps.getLogs(lower, upper, face),
+        (left, right) => [...left, ...right],
+        () => deadline !== Number.POSITIVE_INFINITY && now() >= deadline,
+        deps.signal,
+      );
+      const outbound = await readFace('from');
+      const inbound = await readFace('to');
       raw = [...outbound, ...inbound];
     } catch (err) {
-      if (!isRateLimitedError(err)) throw err;
+      assertActive();
+      if (err === ARC_LOG_BUDGET_EXHAUSTED) stopped = 'budget';
+      else if (!isArcLogRangeError(err) && isRateLimitedError(err)) stopped = 'rate_limited';
+      else throw err;
       break;
     }
 
-    // ONLY after BOTH reads succeeded — see arc-jobs.ts for why advancing
-    // maxBlock past an unread window silently drops those blocks. A window
-    // whose second call failed has been read on one face only, which is worse
-    // than not read at all.
-    if (to > maxBlock) maxBlock = to;
-
     // Decide what to keep BEFORE spending a round trip on block timestamps.
     const kept: ArcTransfer[] = [];
+    const windowReceiptKeys = new Set<string>();
     for (const record of raw) {
       // Normalize at the DB boundary as well as in parseTransfer. `getLogs` is
       // an injected dep, so decoded records can reach this loop without passing
@@ -480,15 +525,17 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
 
       // Infrastructure on either side: mint/burn, the token predeploy, or the
       // ERC-8183 escrow (already covered by arc-jobs.ts at full strength).
-      if (touchesExcluded(transfer)) continue;
+      const receiptKey = arcTransferReceiptKey(transfer, chain);
+      if (chain === 'arc-mainnet') exactMainnetAmount(transfer);
+      if (touchesExcluded(transfer, exclusions)) continue;
       // Self-transfer: normalizeCounterparty() would null the counterparty,
       // producing exactly the row that degrades the independence read.
       if (transfer.from === transfer.to) continue;
       // Seed scope. NOT redundant with the topic filter: `getLogs` is a DI seam
       // and the core must not trust that a record reaching it was filtered.
       if (!deps.seed.has(transfer.from) && !deps.seed.has(transfer.to)) continue;
-      if (seenTxHashes.has(transfer.txHash)) continue;
-      seenTxHashes.add(transfer.txHash);
+      if (seenTxHashes.has(receiptKey) || windowReceiptKeys.has(receiptKey)) continue;
+      windowReceiptKeys.add(receiptKey);
 
       kept.push(transfer);
     }
@@ -500,53 +547,110 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
     const needed = [
       ...new Set(kept.map((t) => t.blockNumber.toString()).filter((b) => !tsCache.has(b))),
     ];
+    // Stop admitting queued reads on failure, but drain the other in-flight
+    // call before banking previous windows. Do not abort the lease signal:
+    // it also protects the persistence needed to retain completed work.
+    let timestampFailed = false;
+    let timestampError: unknown;
     await withConcurrency(needed, BLOCK_TS_CONCURRENCY, async (b) => {
-      tsCache.set(b, await deps.blockTimestamp(BigInt(b)));
+      if (timestampFailed) return;
+      try {
+        assertActive();
+        if (now() >= deadline) throw ARC_LOG_BUDGET_EXHAUSTED;
+        const timestamp = await deps.blockTimestamp(BigInt(b));
+        assertActive();
+        if (!Number.isFinite(Date.parse(timestamp))) throw Error('Invalid Arc block timestamp');
+        tsCache.set(b, timestamp);
+      } catch (error) {
+        if (!timestampFailed) { timestampFailed = true; timestampError = error; }
+      }
     });
-
-    for (const transfer of kept) {
-      fetched++;
-      const observedAt = tsCache.get(transfer.blockNumber.toString())
-        ?? await deps.blockTimestamp(transfer.blockNumber);
-
-      wallets.add(transfer.from);
-      wallets.add(transfer.to);
-
-      rows.push(toTransactionRow(transfer, deps.usdcContract, observedAt));
-      signals.push(
-        buildUsdcTransferSignal({
-          walletAddress: transfer.to, face: 'provider', chain: ARC_CHAIN,
-          txHash: transfer.txHash, amount: transfer.amount, counterparty: transfer.from, observedAt,
-        }),
-        buildUsdcTransferSignal({
-          walletAddress: transfer.from, face: 'consumer', chain: ARC_CHAIN,
-          txHash: transfer.txHash, amount: transfer.amount, counterparty: transfer.to, observedAt,
-        }),
-      );
+    if (timestampFailed) {
+      assertActive();
+      if (timestampError === ARC_LOG_BUDGET_EXHAUSTED) stopped = 'budget';
+      else if (!isArcLogRangeError(timestampError) && isRateLimitedError(timestampError)) stopped = 'rate_limited';
+      else throw timestampError;
+      break;
     }
 
+    const windowRows: TransactionInsert[] = [];
+    const windowSignals: InsertSignalEventInput[] = [];
+    const windowWallets = new Set<string>();
+    for (const transfer of kept) {
+      assertActive();
+      const observedAt = tsCache.get(transfer.blockNumber.toString());
+      if (observedAt === undefined) throw Error('Missing Arc block timestamp');
+      assertActive();
+
+      windowWallets.add(transfer.from);
+      windowWallets.add(transfer.to);
+
+      const receiptKey = arcTransferReceiptKey(transfer, chain);
+      windowRows.push(toTransactionRow(transfer, deps.usdcContract, observedAt, chain));
+      const receiptSignals = [
+        buildUsdcTransferSignal({
+          walletAddress: transfer.to, face: 'provider', chain,
+          txHash: receiptKey, amount: transfer.amount, counterparty: transfer.from, observedAt,
+        }),
+        buildUsdcTransferSignal({
+          walletAddress: transfer.from, face: 'consumer', chain,
+          txHash: receiptKey, amount: transfer.amount, counterparty: transfer.to, observedAt,
+        }),
+      ];
+      if (chain === 'arc-mainnet') {
+        for (const signal of receiptSignals) {
+          // Native value movement is observed behavior, not a signed attestation.
+          signal.tier = 2;
+          signal.signedBy = null;
+          signal.payload = {
+            ...signal.payload, source: 'arc_native_usdc_transfer',
+            rawTxHash: transfer.txHash, logIndex: transfer.logIndex,
+            rawAmount: String(transfer.rawAmount), emitter: transfer.emitter, decimals: transfer.decimals,
+            amountDecimal: transfer.amountDecimal,
+          };
+        }
+      }
+      windowSignals.push(...receiptSignals);
+    }
+
+    // Both event faces, timestamps, and receipt conversions are complete.
+    // Only this boundary can admit a window into the eventual DB checkpoint.
+    rows.push(...windowRows);
+    signals.push(...windowSignals);
+    for (const wallet of windowWallets) wallets.add(wallet);
+    for (const key of windowReceiptKeys) seenTxHashes.add(key);
+    fetched += windowRows.length;
+    maxBlock = to;
     if (++windowsProcessed >= maxWindows) break;
   }
 
   const advanceCursor = async (): Promise<void> => {
+    assertActive();
+    if (maxBlock < startBlock) return;
     await deps.upsertCursor(cursorKey, String(maxBlock), Number(maxBlock));
+    assertActive();
     cursors.set(cursorKey, String(maxBlock));
   };
 
+  const coverage = arcIndexCoverage(head, startBlock, maxBlock, cursor?.last_slot ?? null, 0, stopped);
   if (fetched === 0) {
     await advanceCursor();
-    return { fetched: 0, inserted: 0, cursors };
+    return { fetched: 0, inserted: 0, cursors, coverage };
   }
 
   // FK: transactions references (chain, wallet_address) on wallets.
   // Insert-if-absent — never upsertWallet, which would zero live scores
   // (the 2026-08-02 clobber).
+  assertActive();
   await deps.ensureWallets([...wallets]);
-  await deps.insertTransactions(rows);
-  const inserted = await deps.insertSignalEvents(signals);
+  assertActive();
+  const inserted = await deps.insertTransactions(rows);
+  assertActive();
+  await deps.insertSignalEvents(signals);
+  assertActive();
 
   await advanceCursor();
-  return { fetched, inserted, cursors };
+  return { fetched, inserted, cursors, coverage };
 }
 
 // ─── Production wiring ──────────────────────────────────────────────────────
@@ -557,8 +661,10 @@ function getRpcUrl(): string {
   return url;
 }
 
-function makeClient() {
-  return createPublicClient({ chain: arcTestnet, transport: http(getRpcUrl()) });
+export function createArcTransfersClient(url = getRpcUrl()) {
+  // Job-level retries are paced and budgeted. Transport retries would multiply
+  // those attempts invisibly and keep a throttled window alive past its budget.
+  return createPublicClient({ chain: arcTestnet, transport: http(url, { retryCount: 0, timeout: 15_000 }) });
 }
 
 export function resolveTransfersStartBlockEnv(): number {
@@ -646,6 +752,7 @@ export async function loadArcSeedSet(): Promise<Set<string>> {
 }
 
 export interface RunArcTransfersOptions {
+  signal?: AbortSignal;
   usdcContract?: string;
   windowSize?: number;
   maxWindows?: number;
@@ -664,32 +771,36 @@ export interface RunArcTransfersOptions {
  */
 export async function runArcTransfersIndexer(
   opts: RunArcTransfersOptions = {},
-): Promise<IndexRunResult> {
+): Promise<ArcIndexRunResult> {
+  opts.signal?.throwIfAborted();
+  const rpc = createArcRpcGate({ signal: opts.signal, deadline: Date.now() + ARC_RUN_TIME_BUDGET_MS });
   const usdcContract = opts.usdcContract ?? ARC_USDC_CONTRACT;
-  const client = makeClient();
+  const client = createArcTransfersClient();
   const envStartBlock = resolveTransfersStartBlockEnv();
   const seed = await loadArcSeedSet();
+  opts.signal?.throwIfAborted();
   // Frozen once per run: the array handed to every getLogs call.
   const seedList = [...seed] as `0x${string}`[];
 
   return arcTransfersIndexer({
     usdcContract,
     seed,
+    signal: opts.signal,
     windowSize: opts.windowSize,
     maxWindows: opts.maxWindows ?? ARC_TRANSFERS_DEFAULT_MAX_WINDOWS,
     timeBudgetMs: ARC_RUN_TIME_BUDGET_MS,
-    getHead: async () => withRateLimitRetry(() => client.getBlockNumber(), INGEST_RETRY),
+    getHead: async () => withRateLimitRetry(() => rpc(() => client.getBlockNumber()), INGEST_RETRY),
     getLogs: async (fromBlock, toBlock, face) => {
       // The seed goes into ONE indexed topic position per call. Positions are
       // AND-ed by the node, so `{ from: seed, to: seed }` would mean "both ends
       // seeded" — the union needs the two calls the core makes.
-      const logs = await withRateLimitRetry(() => client.getLogs({
+      const logs = await withArcLogRetry(() => rpc(() => client.getLogs({
         address: usdcContract as `0x${string}`,
         event: TRANSFER_EVENT,
         args: face === 'from' ? { from: seedList } : { to: seedList },
         fromBlock,
         toBlock,
-      }), INGEST_RETRY);
+      })), INGEST_RETRY);
       const out: ArcTransfer[] = [];
       for (const log of logs) {
         const rec = parseTransfer(log);
@@ -698,7 +809,7 @@ export async function runArcTransfersIndexer(
       return out;
     },
     blockTimestamp: async (blockNumber) => {
-      const block = await withRateLimitRetry(() => client.getBlock({ blockNumber }), INGEST_RETRY);
+      const block = await withRateLimitRetry(() => rpc(() => client.getBlock({ blockNumber })), INGEST_RETRY);
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
     insertTransactions: dbInsertTransactions,

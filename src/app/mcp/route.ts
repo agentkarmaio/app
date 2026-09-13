@@ -89,9 +89,9 @@ export const walletSchema = z
  * to Celo. Mirrors the web's `?chain=` query param on `/agent/[wallet]`.
  */
 export const chainSchema = z
-  .enum(['solana', 'celo', 'stellar', 'arc'])
+  .enum(['solana', 'celo', 'stellar', 'arc', 'arc-mainnet'])
   .optional()
-  .describe('Declare the chain for EVM-ambiguous 0x addresses (Celo vs Arc); inferred from address format otherwise.');
+  .describe('Declare the network for EVM addresses: celo, arc (testnet), or arc-mainnet. Solana and Stellar are inferred from address format.');
 
 const walletShape: { wallet: typeof walletSchema; chain: typeof chainSchema } = {
   wallet: walletSchema,
@@ -105,9 +105,9 @@ const walletShape: { wallet: typeof walletSchema; chain: typeof chainSchema } = 
  * to span every chain.
  */
 export const chainFilterSchema = z
-  .enum(['solana', 'celo', 'stellar', 'arc'])
+  .enum(['solana', 'celo', 'stellar', 'arc', 'arc-mainnet'])
   .optional()
-  .describe('Restrict results to a single chain (solana / celo / stellar / arc). Omit to span all chains.');
+  .describe('Restrict results to solana / celo / stellar / arc (testnet) / arc-mainnet. Omit to span all networks.');
 
 /**
  * Coercing integer param. LLM clients and test playgrounds routinely pass
@@ -163,6 +163,7 @@ function readOnly() {
 // the shared orchestrator so MCP and A2A carry exactly what the v2 route does.
 export type ResolvedKarma =
   | { kind: 'solana'; snap: KarmaSnapshot; enrichment?: KarmaEnrichment }
+  | { kind: 'arc-mainnet'; snap: KarmaSnapshot; enrichment?: KarmaEnrichment }
   | { kind: 'stellar'; snap: KarmaSnapshot; onChainAttestation: number; enrichment?: KarmaEnrichment }
   | { kind: 'evm'; snap: EvmKarmaSnapshot; enrichment?: KarmaEnrichment };
 
@@ -189,6 +190,16 @@ export async function resolveForChain(
   // must hit the same lowercase (chain,address) row the v2 route resolves.
   const addr = canonicalAddress(rawAddr, chainHint ?? null);
   const resolved = await resolveAgentChain(addr, chainHint);
+
+  // Mainnet is a separate receipt network. Its registry is not enabled, so
+  // never dispatch it through the generic Celo/Arc-testnet on-chain readers.
+  if (chainHint === 'arc-mainnet' || resolved.chain === 'arc-mainnet') {
+    const snap = await resolveKarma(addr, 'arc-mainnet');
+    if (!snap) return null;
+    const walletRow = resolved.wallet?.chain === 'arc-mainnet' ? resolved.wallet : null;
+    const enrichment = await enrichSnapshot(snap, 'arc-mainnet', walletRow);
+    return { kind: 'arc-mainnet', snap, enrichment };
+  }
 
   // The profile resolver can prefer a sole row on another chain. Explicit API
   // queries must honor their network even when only a different chain has data.
@@ -244,7 +255,7 @@ export function fullKarmaJson(r: ResolvedKarma, addr: string) {
   if (r.kind === 'evm') return { ...evmKarmaJson(r.snap), ...(r.enrichment ?? {}) };
   const { snap } = r;
   const base = {
-    chain: r.kind === 'stellar' ? ('stellar' as const) : ('solana' as const),
+    chain: r.kind,
     address: snap.address,
     provider: faceJson(snap.provider),
     consumer: faceJson(snap.consumer),
@@ -253,7 +264,8 @@ export function fullKarmaJson(r: ResolvedKarma, addr: string) {
     identity: snap.identity,
     txCount: snap.txCount,
     lastActive: snap.lastActive,
-    profileUrl: profileUrl(addr),
+    ...(snap.receiptEvidence ? { receiptEvidence: snap.receiptEvidence } : {}),
+    profileUrl: profileUrl(addr, r.kind),
     ...(r.enrichment ?? {}),
   };
   if (r.kind === 'stellar') {
@@ -363,7 +375,7 @@ function registerTools(server: McpServer): void {
         autonomy: snap.autonomy,
         txCount: snap.txCount,
         lastActive: snap.lastActive,
-        profileUrl: profileUrl(addr),
+        profileUrl: profileUrl(addr, resolved.kind),
       });
     }),
   );
@@ -407,7 +419,7 @@ function registerTools(server: McpServer): void {
         autonomy: snap.autonomy,
         txCount: snap.txCount,
         lastActive: snap.lastActive,
-        profileUrl: profileUrl(addr),
+        profileUrl: profileUrl(addr, resolved.kind),
       });
     }),
   );
@@ -483,7 +495,7 @@ function registerTools(server: McpServer): void {
           score: r.score,
           trustTier: r.trustTier,
           txCount: r.txCount,
-          profileUrl: profileUrl(r.address),
+          profileUrl: profileUrl(r.address, r.chain as Chain),
         })),
       });
     }),
@@ -562,7 +574,7 @@ function registerTools(server: McpServer): void {
       title: 'Get Stellar agent Karma (both faces)',
       description:
         'Look up the full Karma snapshot for a Stellar agent wallet (G… StrKey address): provider score, consumer score, confidence badge, autonomy, plus the on-chain ERC-8004 attestation value read from the Soroban ReputationRegistry. Same primitive as get_karma (Solana) — Stellar rails. Use BEFORE paying a Stellar agent.',
-      inputSchema: walletShape,
+      inputSchema: { wallet: walletSchema, chain: z.literal('stellar').optional() },
       annotations: readOnly(),
     },
     async ({ wallet: addr }) => runTool('get_stellar_karma', async () => {
@@ -581,7 +593,7 @@ function registerTools(server: McpServer): void {
         };
       }
       const onChainAttestation = await stellar.readAttestation(addr).catch(() => 0);
-      const snap = await resolveKarma(addr);
+      const snap = await resolveKarma(addr, 'stellar');
       if (!snap) return notFound(addr);
       return jsonResult({
         chain: 'stellar',
@@ -610,10 +622,14 @@ function registerTools(server: McpServer): void {
       title: 'Get Arc agent Karma (both faces)',
       description:
         'Look up the full Karma snapshot for an Arc agent wallet (EVM 0x… address): provider score, consumer score, confidence badge, and autonomy. Arc is Circle\'s USDC-native L1; AgentKarma indexes its ERC-8183 agentic-commerce job settlements as Tier-1 receipt-grade signals. Same primitive as get_karma (Solana) / get_stellar_karma — Arc rails. Use BEFORE paying an Arc agent.',
-      inputSchema: walletShape,
+      inputSchema: { wallet: walletSchema, chain: z.enum(['arc', 'arc-mainnet']).optional() },
       annotations: readOnly(),
     },
-    async ({ wallet: addr }) => runTool('get_arc_karma', async () => {
+    async ({ wallet: addr, chain }) => runTool('get_arc_karma', async () => {
+      if (chain === 'arc-mainnet') {
+        const resolved = await resolveForChain(addr, chain);
+        return resolved ? jsonResult(fullKarmaJson(resolved, addr)) : notFound(addr);
+      }
       const arc = getAdapter('arc');
       if (!arc.validateAddress(addr)) {
         return {
@@ -629,7 +645,7 @@ function registerTools(server: McpServer): void {
         };
       }
       const onChainAttestation = await arc.readAttestation(addr).catch(() => 0);
-      const snap = await resolveKarma(addr);
+      const snap = await resolveKarma(addr, 'arc');
       if (!snap) return notFound(addr);
       return jsonResult({
         chain: 'arc',
@@ -673,7 +689,7 @@ function registerTools(server: McpServer): void {
       // an explicit EVM chain hint even when no DB row matched (chain=null).
       const resolved = await resolveAgentChain(addr, chain);
       const evmChain: 'celo' | 'arc' | null =
-        resolved.chain === 'celo' || resolved.chain === 'arc'
+        chain === 'arc-mainnet' ? null : resolved.chain === 'celo' || resolved.chain === 'arc'
           ? resolved.chain
           : resolved.addressClass === 'evm' && (chain === 'celo' || chain === 'arc')
             ? chain
@@ -695,8 +711,9 @@ function registerTools(server: McpServer): void {
           explorerUrls: snap.explorerUrls,
         });
       }
-      const bundle = await resolveAttestations(addr, limit ?? 50);
-      return jsonResult(bundle);
+      const network = chain ?? resolved.chain ?? 'solana';
+      const bundle = await resolveAttestations(canonicalAddress(addr, network), limit ?? 50, network);
+      return jsonResult({ ...bundle, chain: network });
     }),
   );
 
@@ -716,18 +733,17 @@ function registerTools(server: McpServer): void {
       annotations: readOnly(),
     },
     async ({ wallet: addr, chain, limit }) => runTool('get_score_history', async () => {
-      // Validate/resolve the chain (also rejects junk addresses cleanly). The
-      // scores table is keyed by wallet_address only (chain-agnostic), so the
-      // resolved chain is surfaced for context but not used to scope the read.
+      // Score snapshots share addresses across EVM networks: always scope them.
       const resolved = await resolveAgentChain(addr, chain);
-      const history = await getScoreHistory(addr, limit ?? 30);
+      const network = chain ?? resolved.chain ?? 'solana';
+      const history = await getScoreHistory(canonicalAddress(addr, network), limit ?? 30, network);
       if (history.length === 0) return notFound(addr);
       return jsonResult({
-        chain: resolved.chain,
+        chain: network,
         address: addr,
         count: history.length,
         points: history.map((p) => ({ score: p.score, calculatedAt: p.calculated_at })),
-        profileUrl: profileUrl(addr),
+        profileUrl: profileUrl(addr, network),
       });
     }),
   );
@@ -749,13 +765,14 @@ function registerTools(server: McpServer): void {
     async ({ chain, limit }) => runTool('get_leaderboard', async () => {
       const take = limit ?? 10;
       const { wallets, total } = await getLeaderboard(take, 0, { chain });
-      const deliveryMap = await getFeedbackSummariesForWallets(wallets.map((w) => w.address));
+      const deliveries = new Map(await Promise.all([...new Set(wallets.map(w => w.chain))].map(async network =>
+        [network, await getFeedbackSummariesForWallets(wallets.filter(w => w.chain === network).map(w => w.address), network)] as const)));
       return jsonResult({
         chain: chain ?? null,
         total,
         count: wallets.length,
         agents: wallets.map((w, i) => {
-          const delivery = deliveryMap.get(w.address) ?? null;
+          const delivery = deliveries.get(w.chain)?.get(w.address) ?? null;
           return {
             rank: i + 1,
             address: w.address,
@@ -771,7 +788,7 @@ function registerTools(server: McpServer): void {
             delivery: delivery
               ? { total: delivery.total, deliveryRate: delivery.deliveryRate }
               : null,
-            profileUrl: profileUrl(w.address),
+            profileUrl: profileUrl(w.address, w.chain),
           };
         }),
       });
@@ -845,7 +862,7 @@ function registerTools(server: McpServer): void {
       // recent matters. Empty for chains/agents without indexed txs.
       let lastTxAt: string | null = null;
       try {
-        const recent = await getRecentTransactionsForWallet(addr, 1);
+        const recent = await getRecentTransactionsForWallet(addr, 1, resolvedChain);
         lastTxAt = recent[0]?.timestamp ?? null;
       } catch {
         lastTxAt = null;
@@ -860,7 +877,7 @@ function registerTools(server: McpServer): void {
         chain: resolvedChain,
         address: addr,
         succession: buildSuccessionView(succession, liveness),
-        profileUrl: profileUrl(addr),
+        profileUrl: profileUrl(addr, resolvedChain),
       });
     }),
   );
@@ -921,7 +938,7 @@ function registerTools(server: McpServer): void {
           hasDemo,
         },
         surety,
-        profileUrl: profileUrl(addr),
+        profileUrl: profileUrl(addr, resolvedChain),
       });
     }),
   );
@@ -938,9 +955,9 @@ function faceJson(b: { score: number; trustTier: string; confidenceBadge: string
   };
 }
 
-function profileUrl(addr: string): string {
+function profileUrl(addr: string, chain?: Chain): string {
   const origin = process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io';
-  return `${origin}/agent/${addr}`;
+  return `${origin}/agent/${addr}${chain === 'arc-mainnet' ? '?chain=arc-mainnet' : ''}`;
 }
 
 function jsonResult(payload: unknown) {

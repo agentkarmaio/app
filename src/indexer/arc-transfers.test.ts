@@ -34,6 +34,10 @@ import {
 } from './arc-transfers';
 import { ARC_JOBS_CONTRACT } from './arc-jobs';
 import type { Log } from 'viem';
+import type { InsertSignalEventInput, TransactionInsert } from '@/db/client';
+import { __setSupabaseForTest } from '@/db/client';
+import { resolveAttestations } from '@/lib/karma-resolver';
+import type { SignalEvent } from '@/db/schema';
 
 const FROM = '0x1111111111111111111111111111111111111111' as const;
 const TO = '0x2222222222222222222222222222222222222222' as const;
@@ -67,8 +71,8 @@ function makeDeps(
   transfers: ArcTransfer[],
   overrides: Partial<Parameters<typeof arcTransfersIndexer>[0]> = {},
 ) {
-  const inserted: unknown[] = [];
-  const signals: unknown[] = [];
+  const inserted: TransactionInsert[] = [];
+  const signals: InsertSignalEventInput[] = [];
   const ensured: string[] = [];
   const cursors: Array<[string, string, number | undefined]> = [];
   const faces: TransferFace[] = [];
@@ -83,8 +87,8 @@ function makeDeps(
       return transfers;
     },
     blockTimestamp: async () => TS,
-    insertTransactions: async (rows: unknown[]) => { inserted.push(...rows); return rows.length; },
-    insertSignalEvents: async (s: unknown[]) => { signals.push(...s); return s.length; },
+    insertTransactions: async (rows: TransactionInsert[]) => { inserted.push(...rows); return rows.length; },
+    insertSignalEvents: async (s: InsertSignalEventInput[]) => { signals.push(...s); return s.length; },
     ensureWallets: async (addresses: string[]) => { ensured.push(...addresses); },
     getCursor: async () => null,
     upsertCursor: async (key: string, last: string, slot?: number) => { cursors.push([key, last, slot]); },
@@ -492,25 +496,32 @@ describe('arcTransfersIndexer', () => {
     const result = await arcTransfersIndexer(deps);
 
     expect(result.fetched).toBe(1);
-    expect(result.inserted).toBe(2);
+    expect(result.inserted).toBe(1);
     expect(state.signals).toHaveLength(2);
     expect(state.ensured).toEqual(expect.arrayContaining([FROM, TO]));
 
     expect(state.inserted).toHaveLength(1);
-    const row = state.inserted[0] as any;
+    const row = state.inserted[0];
     expect(row.wallet_address).toBe(FROM);
     expect(row.counterparty).toBe(TO);
     expect(row.facilitator).toBe(ARC_USDC_CONTRACT);
     expect(row.amount).toBe(1);
 
-    const provider = state.signals.find((s: any) => s.face === 'provider') as any;
-    const consumer = state.signals.find((s: any) => s.face === 'consumer') as any;
+    const provider = state.signals.find((s) => s.face === 'provider');
+    const consumer = state.signals.find((s) => s.face === 'consumer');
+    expect(provider).toBeDefined();
+    expect(consumer).toBeDefined();
+    if (!provider || !consumer) throw new Error('Missing provider or consumer signal');
     expect(provider.agentWallet).toBe(TO);
     expect(provider.chain).toBe('arc');
     expect(provider.kind).toBe('usdc_transfer_settled');
     expect(provider.weight).toBe(0.6);
+    expect(provider.tier).toBe(1);
+    expect(provider.signedBy).toBe(FROM);
     expect(consumer.agentWallet).toBe(FROM);
     expect(consumer.chain).toBe('arc');
+    expect(consumer.tier).toBe(1);
+    expect(consumer.signedBy).toBe(TO);
   });
 
   test('skips a transfer where the escrow contract is either side (arc-jobs already covers it)', async () => {
@@ -525,7 +536,7 @@ describe('arcTransfersIndexer', () => {
 
     expect(result.fetched).toBe(1); // only the genuine transfer counts
     expect(state.signals).toHaveLength(2);
-    expect((state.signals[0] as any).payload.amount).toBe(2);
+    expect(state.signals[0].payload?.amount).toBe(2);
   });
 
   test('skips mint and burn by a seeded agent', async () => {
@@ -538,7 +549,7 @@ describe('arcTransfersIndexer', () => {
 
     expect(result.fetched).toBe(1);
     expect(state.inserted).toHaveLength(1);
-    expect((state.inserted[0] as any).tx_signature).toBe('0xgenuine');
+    expect(state.inserted[0].tx_signature).toBe('0xgenuine');
   });
 
   test('no-op when cursor already at head', async () => {
@@ -585,8 +596,8 @@ describe('arcTransfersIndexer', () => {
     // Nothing banked for the window whose second call failed: the cursor must
     // stay behind block 1, not jump to 50.
     expect(result.fetched).toBe(0);
-    expect(state.cursors).toHaveLength(1);
-    expect(Number(state.cursors[0][1])).toBeLessThan(1);
+    expect(state.cursors).toHaveLength(0);
+    expect(result.coverage.checkpoint).toBe('0');
   });
 });
 
@@ -596,4 +607,296 @@ describe('arcTransfersCursorKey', () => {
     expect(key).toBe(`arc-transfers:${ARC_USDC_CONTRACT}`);
     expect(key).not.toContain(ARC_JOBS_CONTRACT);
   });
+});
+
+describe('Arc transfer ingestion reliability', () => {
+  test('splits provider result limits on both faces and preserves deduplication', async () => {
+    const ranges: Array<[bigint, bigint, TransferFace]> = [];
+    const { deps, state } = makeDeps([], {
+      getHead: async () => 99n,
+      getLogs: async (from, to, face) => {
+        ranges.push([from, to, face]);
+        if (to - from >= 50n) throw Object.assign(new Error('query returned more than 20000 results'), { code: -32005 });
+        return from === 0n ? [transfer({ rawAmount: 1n, block: 20n })] : [];
+      },
+    });
+    const result = await arcTransfersIndexer(deps);
+    expect(ranges).toHaveLength(6);
+    expect(state.inserted).toHaveLength(1);
+    expect(state.signals).toHaveLength(2);
+    expect(result.coverage).toEqual({ complete: true, head: '99', checkpoint: '99', checked: 100, pending: 0, unresolved: 0 });
+  });
+
+  test('second-face failure banks only a preceding complete window', async () => {
+    const { deps, state } = makeDeps([], {
+      getHead: async () => 199n,
+      windowSize: 100,
+      getLogs: async (from, _to, face) => {
+        if (from === 100n && face === 'to') throw new Error('429');
+        return [transfer({ rawAmount: 1n, block: from, txHash: `0x${from}` })];
+      },
+    });
+    const result = await arcTransfersIndexer(deps);
+    expect(state.inserted).toHaveLength(1);
+    expect(state.cursors[0][1]).toBe('99');
+    expect(result.coverage).toEqual({ complete: false, head: '199', checkpoint: '99', checked: 100, pending: 100, unresolved: 0, reason: 'rate_limited' });
+  });
+
+  test('empty seed reports incomplete coverage without querying head', async () => {
+    const { deps, state } = makeDeps([], { seed: new Set() });
+    expect((await arcTransfersIndexer(deps)).coverage).toEqual({ complete: false, head: '', checkpoint: null, checked: 0, pending: 0, unresolved: 0, reason: 'empty_seed' });
+    expect(state.getHeadCalls).toBe(0);
+  });
+
+  test('signal failure leaves the cursor unchanged for idempotent replay', async () => {
+    const { deps, state } = makeDeps([transfer({ rawAmount: 1n })], { insertSignalEvents: async () => { throw new Error('signal write failed'); } });
+    await expect(arcTransfersIndexer(deps)).rejects.toThrow('signal write failed');
+    expect(state.cursors).toEqual([]);
+    expect(state.inserted).toHaveLength(1);
+  });
+});
+
+test('budget expiry between transfer faces leaves the logical window unread', async () => {
+  let clock = 0;
+  const faces: TransferFace[] = [];
+  const { deps, state } = makeDeps([], {
+    timeBudgetMs: 100,
+    now: () => clock,
+    getLogs: async (_from, _to, face) => {
+      faces.push(face);
+      clock = 100;
+      return [transfer({ rawAmount: 1n })];
+    },
+  });
+  const result = await arcTransfersIndexer(deps);
+  expect(faces).toEqual(['from']);
+  expect(state.cursors).toEqual([]);
+  expect(state.inserted).toEqual([]);
+  expect(result.coverage).toEqual({ complete: false, head: '100', checkpoint: null, checked: 0, pending: 101, unresolved: 0, reason: 'budget' });
+});
+
+test('a provider head behind the saved transfers cursor cannot report complete coverage', async () => {
+  const { deps, state } = makeDeps([], {
+    getHead: async () => 100n,
+    getCursor: async () => ({ last_signature: '120', last_slot: 120 }),
+  });
+  const result = await arcTransfersIndexer(deps);
+  expect(result.coverage).toEqual({ complete: false, head: '100', checkpoint: '120', checked: 0, pending: 0, unresolved: 1, reason: 'head_behind_cursor' });
+  expect(result.cursors.get(arcTransfersCursorKey(ARC_USDC_CONTRACT))).toBe('120');
+  expect(state.getLogsCalls).toBe(0);
+  expect(state.cursors).toEqual([]);
+});
+
+test('late timestamp responses cannot start queued block RPCs after cancellation', async () => {
+  const controller = new AbortController();
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => { started = resolve; });
+  let timestampCalls = 0;
+  const transfers = Array.from({ length: 25 }, (_, i) => transfer({ rawAmount: 1n, block: BigInt(i), txHash: `0x${i}` }));
+  const { deps, state } = makeDeps(transfers, {
+    signal: controller.signal,
+    blockTimestamp: async () => {
+      if (++timestampCalls === 2) started();
+      await pending;
+      return TS;
+    },
+  });
+  const run = arcTransfersIndexer(deps);
+  await ready;
+  controller.abort(new Error('scan cancelled'));
+  release();
+  await expect(run).rejects.toThrow('scan cancelled');
+  expect(timestampCalls).toBe(2);
+  expect(state.cursors).toEqual([]);
+  expect(state.inserted).toEqual([]);
+});
+
+test('cancellation during a log read is never reported as a partial rate-limited success', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const { deps, state } = makeDeps([], {
+    signal: controller.signal,
+    getLogs: async () => { calls++; controller.abort(new Error('scan cancelled')); throw new Error('429'); },
+  });
+  await expect(arcTransfersIndexer(deps)).rejects.toThrow('scan cancelled');
+  expect(calls).toBe(1);
+  expect(state.cursors).toEqual([]);
+});
+
+
+test('replaying an existing transaction reports zero inserts even when its signal pair is repaired', async () => {
+  const { deps, state } = makeDeps([transfer({ rawAmount: 1n })], {
+    insertTransactions: async () => 0,
+  });
+  const result = await arcTransfersIndexer(deps);
+  expect(result.fetched).toBe(1);
+  expect(result.inserted).toBe(0);
+  expect(state.signals).toHaveLength(2);
+});
+
+describe('Arc transfer engine network separation', () => {
+  const rawHash = `0x${'a'.repeat(64)}` as const;
+  const native = (index: number): ArcTransfer => ({
+    ...transfer({ rawAmount: 1n, txHash: rawHash }),
+    logIndex: index, emitter: '0xfffffffffffffffffffffffffffffffffffffffe', decimals: 18,
+    amountDecimal: '0.000000000000000001', amount: 1e-18,
+  });
+  test('mainnet writes independent cursor, exact native value, and two signals per movement', async () => {
+    const { deps, state } = makeDeps([native(0), native(1)], { chain: 'arc-mainnet' });
+    const result = await arcTransfersIndexer(deps);
+    expect(result.fetched).toBe(2);
+    expect(result.inserted).toBe(2);
+    expect(state.inserted.map((row) => row.chain)).toEqual(['arc-mainnet', 'arc-mainnet']);
+    expect(state.inserted.map((row) => row.tx_signature)).toEqual([`${rawHash}:0`, `${rawHash}:1`]);
+    expect(state.inserted.map((row) => row.amount)).toEqual(['0.000000000000000001', '0.000000000000000001']);
+    expect(state.cursors[0][0]).toBe(`arc-mainnet-transfers:${ARC_USDC_CONTRACT}`);
+    expect(state.signals).toHaveLength(4);
+    for (const signal of state.signals) {
+      expect(signal.chain).toBe('arc-mainnet');
+      expect(signal.tier).toBe(2);
+      expect(signal.signedBy).toBeNull();
+      expect(signal.payload?.source).toBe('arc_native_usdc_transfer');
+      expect(signal.payload?.rawTxHash).toBe(rawHash);
+      expect(signal.payload?.rawAmount).toBe('1');
+      expect(signal.payload?.decimals).toBe(18);
+    }
+  });
+  test('emitted mainnet movement evidence is excluded from voluntary attestations', async () => {
+    const { deps, state } = makeDeps([native(0)], { chain: 'arc-mainnet' });
+    await arcTransfersIndexer(deps);
+    const rows: SignalEvent[] = state.signals.map((signal, index) => ({
+      id: String(index), chain: signal.chain!, agent_wallet: signal.agentWallet,
+      tier: signal.tier, kind: signal.kind, face: signal.face ?? 'provider', weight: signal.weight ?? 1,
+      value: signal.value ?? null, payload: signal.payload ?? null,
+      signed_by: signal.signedBy ?? null, tx_ref: signal.txRef ?? null,
+      observed_at: new Date(signal.observedAt!).toISOString(), created_at: TS,
+    }));
+    const filters = new Map<string, unknown>();
+    const query = {
+      select: () => query,
+      eq: (key: string, value: unknown) => { filters.set(key, value); return query; },
+      order: () => query,
+      limit: async () => ({ data: rows.filter(row => row.chain === filters.get('chain')
+        && row.agent_wallet === filters.get('agent_wallet')), error: null }),
+    };
+    __setSupabaseForTest({ from: () => query });
+    try {
+      const result = await resolveAttestations(TO, 50, 'arc-mainnet');
+      expect(result.voluntary).toEqual([]);
+      expect(result.erc8004.averageScore).toBeNull();
+    } finally { __setSupabaseForTest(null); }
+  });
+  test('mainnet does not reuse a testnet escrow exclusion', async () => {
+    const { deps, state } = makeDeps([{ ...native(0), to: ARC_JOBS_CONTRACT }], { chain: 'arc-mainnet' });
+    await arcTransfersIndexer(deps);
+    expect(state.inserted).toHaveLength(1);
+    expect(state.inserted[0].counterparty).toBe(ARC_JOBS_CONTRACT.toLowerCase());
+  });
+  test('mainnet refuses injected testnet-style records before any receipt or cursor write', async () => {
+    const { deps, state } = makeDeps([transfer({ rawAmount: 1n })], { chain: 'arc-mainnet' });
+    await expect(arcTransfersIndexer(deps)).rejects.toThrow('arc_mainnet_transfer_invalid');
+    expect(state.inserted).toEqual([]);
+    expect(state.cursors).toEqual([]);
+  });
+  test('identical event replay remains idempotent while retaining both signals', async () => {
+    const stored = new Set<string>();
+    const { deps, state } = makeDeps([native(0), native(1)], {
+      chain: 'arc-mainnet',
+      insertTransactions: async (rows) => {
+        let inserted = 0;
+        for (const row of rows) {
+          const key = `${row.chain}:${row.tx_signature}`;
+          if (!stored.has(key)) { stored.add(key); inserted++; }
+        }
+        return inserted;
+      },
+    });
+    expect((await arcTransfersIndexer(deps)).inserted).toBe(2);
+    expect((await arcTransfersIndexer(deps)).inserted).toBe(0);
+    expect(stored.size).toBe(2);
+    expect(state.signals).toHaveLength(8);
+  });
+});
+
+test('mainnet refuses mismatched token configuration or numeric evidence before writes', async () => {
+  const native: ArcTransfer = { ...transfer({ rawAmount: 1n, txHash: `0x${'a'.repeat(64)}` }), logIndex: 0, emitter: '0xfffffffffffffffffffffffffffffffffffffffe', decimals: 18, amountDecimal: '0.000000000000000001', amount: 1e-18 };
+  const wrongToken = makeDeps([native], { chain: 'arc-mainnet', usdcContract: ARC_JOBS_CONTRACT });
+  await expect(arcTransfersIndexer(wrongToken.deps)).rejects.toThrow('arc_mainnet_transfer_invalid');
+  const wrongAmount = makeDeps([{ ...native, amount: 999 }], { chain: 'arc-mainnet' });
+  await expect(arcTransfersIndexer(wrongAmount.deps)).rejects.toThrow('arc_mainnet_transfer_invalid');
+});
+
+describe('timestamp-stage recovery', () => {
+  function windows(timestamp: (block: bigint) => Promise<string>) {
+    return makeDeps([], {
+      getHead: async () => 20n, windowSize: 10,
+      getCursor: async () => ({ last_signature: '0', last_slot: 0 }),
+      getLogs: async (from) => [transfer({ rawAmount: 1_000_000n, block: from, txHash: `0x${from}` })],
+      blockTimestamp: timestamp,
+    });
+  }
+  test('a timestamp throttle in window two banks only the complete first window', async () => {
+    const f = windows(async block => { if (block === 11n) throw Error('429 rate limit'); return TS; });
+    const result = await arcTransfersIndexer(f.deps);
+    expect(f.state.inserted.map(row => row.tx_signature)).toEqual(['0x1']);
+    expect(f.state.signals).toHaveLength(2);
+    expect(f.state.cursors.map(row => row[1])).toEqual(['10']);
+    expect(result.coverage).toMatchObject({ complete: false, checked: 10, pending: 10, checkpoint: '10', reason: 'rate_limited' });
+  });
+  test('first-window timestamp throttle leaves the previous checkpoint and real backlog visible', async () => {
+    const f = windows(async () => { throw Error('429 rate limit'); });
+    const result = await arcTransfersIndexer(f.deps);
+    expect(f.state.inserted).toEqual([]);
+    expect(f.state.cursors).toEqual([]);
+    expect(result.coverage).toMatchObject({ complete: false, checked: 0, pending: 20, checkpoint: '0', head: '20', reason: 'rate_limited' });
+  });
+  test('a failed timestamp batch drains in-flight work and never launches the remaining queue', async () => {
+    const called: bigint[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const f = makeDeps([], {
+      getHead: async () => 10n, windowSize: 10,
+      getCursor: async () => ({ last_signature: '0', last_slot: 0 }),
+      getLogs: async () => Array.from({ length: 8 }, (_, i) => transfer({ rawAmount: 1n, block: BigInt(i + 1), txHash: `0x${i + 1}` })),
+      blockTimestamp: async block => {
+        called.push(block);
+        if (block === 1n) throw Error('429 rate limit');
+        await gate; return TS;
+      },
+    });
+    let settled = false;
+    const run = arcTransfersIndexer(f.deps).finally(() => { settled = true; });
+    await Bun.sleep(10);
+    expect(called.length).toBeLessThanOrEqual(2);
+    expect(settled).toBe(false);
+    release();
+    const result = await run;
+    expect(called.length).toBeLessThanOrEqual(2);
+    expect(result.coverage.checked).toBe(0);
+    expect(f.state.inserted).toEqual([]);
+  });
+  test('a non-throttle timestamp error still fails instead of implying a checked window', async () => {
+    const f = windows(async () => { throw Error('invalid block'); });
+    await expect(arcTransfersIndexer(f.deps)).rejects.toThrow('invalid block');
+    expect(f.state.cursors).toEqual([]);
+  });
+});
+
+test('timestamp queue budget expiry banks the previous complete window', async () => {
+  let time = 0;
+  const timestampCalls: bigint[] = [];
+  const f = makeDeps([], {
+    getHead: async () => 20n, windowSize: 10, now: () => time, timeBudgetMs: 10,
+    getCursor: async () => ({ last_signature: '0', last_slot: 0 }),
+    getLogs: async from => (from === 1n ? [1n] : [11n, 12n, 13n]).map(block =>
+      transfer({ rawAmount: 1n, block, txHash: `0x${block}` })),
+    blockTimestamp: async block => { timestampCalls.push(block); if (block === 11n) time = 10; return TS; },
+  });
+  const result = await arcTransfersIndexer(f.deps);
+  expect(timestampCalls).toEqual([1n, 11n]);
+  expect(f.state.inserted.map(row => row.tx_signature)).toEqual(['0x1']);
+  expect(f.state.cursors.map(row => row[1])).toEqual(['10']);
+  expect(result.coverage).toMatchObject({ checked: 10, pending: 10, checkpoint: '10', reason: 'budget', complete: false });
 });

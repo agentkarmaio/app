@@ -19,7 +19,10 @@
  *
  */
 
-import type { Transaction } from '@/db/schema';
+import { runIndexerCli } from './managed-cli';
+import { coverageOutcome } from '@/lib/indexing-jobs';
+
+import type { TransactionInsert } from '@/db/client';
 import { requireEnv } from '@/lib/require-env';
 import {
   buildArcSeedSet,
@@ -64,7 +67,7 @@ if (startBlock !== undefined && !DRY_RUN) {
 
 /** Counting no-ops: exercise the real read path, write nothing. */
 function dryRunOverrides(sink: {
-  rows: Omit<Transaction, 'id'>[];
+  rows: TransactionInsert[];
   signals: number;
   wallets: Set<string>;
 }): Partial<ArcTransfersIndexerDeps> {
@@ -83,7 +86,7 @@ function dryRunOverrides(sink: {
   return overrides;
 }
 
-const sink = { rows: [] as Omit<Transaction, 'id'>[], signals: 0, wallets: new Set<string>() };
+const sink = { rows: [] as TransactionInsert[], signals: 0, wallets: new Set<string>() };
 
 console.log(`[arc-transfers] Network: arc testnet`);
 console.log(`[arc-transfers] Mode: ${DRY_RUN ? 'DRY RUN — no writes' : 'live'}`);
@@ -106,11 +109,17 @@ if (startBlock !== undefined) console.log(`[arc-transfers] Sampling from block $
 
 const start = Date.now();
 
-runArcTransfersIndexer({
-  maxWindows,
-  ...(DRY_RUN ? { overrides: dryRunOverrides(sink) } : {}),
+runIndexerCli({
+  chain: 'arc', path: 'transfers', dryRun: DRY_RUN,
+  run: async (signal) => runArcTransfersIndexer({ signal, maxWindows, ...(DRY_RUN ? { overrides: dryRunOverrides(sink) } : {}) }),
+  summarize: (result) => coverageOutcome(result.coverage, result.inserted),
 })
-  .then((result) => {
+  .then(({ result, status, exitCode, errorCode }) => {
+    if (!result) {
+      console.log(`[arc-transfers] ${status}${errorCode ? ` (${errorCode})` : ''} — no scan result`);
+      process.exit(exitCode);
+    }
+    console.log(`[arc-transfers] managed status: ${status}`);
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     console.log(`\n[arc-transfers] Done in ${elapsed}s`);
     console.log(`[arc-transfers] Fetched: ${result.fetched} | Inserted: ${result.inserted}`);
@@ -135,7 +144,7 @@ runArcTransfersIndexer({
         process.exit(1);
       }
     }
-    process.exit(0);
+    process.exit(exitCode);
   })
   .catch((err) => {
     console.error('[arc-transfers] Fatal error:', err);

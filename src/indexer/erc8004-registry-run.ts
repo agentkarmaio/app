@@ -26,6 +26,8 @@
  *      NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (required unless --dry-run).
  */
 
+import { runIndexerCli } from './managed-cli';
+
 import { getRegistryConfig } from '@/config/erc8004-registries';
 import {
   runRegistryScan,
@@ -84,41 +86,62 @@ const sharedOpts = {
 };
 
 const start = Date.now();
-let result;
+const execution = await runIndexerCli({
+  chain: chain as Chain, path: 'registry', dryRun,
+  run: async (signal) => {
+    let scanned;
 
-if (dryRun) {
-  persistAgents = async (_c, a) => a.length;
-  persistFeedback = async (_c, f) => f.length;
-  result = await runRegistryScan(config, persistAgents, persistFeedback, {
-    ...sharedOpts,
-    fromId,
-    toId: numArg('to'),
-  });
-} else {
-  // Fail loudly at line 1 if DB secrets are unset (GitHub injects unset secrets
-  // as empty strings) — same preflight as keep-fresh/heartbeat so a scheduled
-  // run can't sail past checkout and crash deep in the write path unnoticed.
-  requireEnv(['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']);
-  const db = await import('@/db/client');
-  persistAgents = db.upsertErc8004Agents;
-  persistFeedback = db.upsertErc8004Feedback;
-  if (incremental) {
-    result = await runIncrementalRegistryScan(
-      config,
-      persistAgents,
-      persistFeedback,
-      (c) => db.getRegistryCursorTip(c as Chain),
-      (c, tip) => db.setRegistryCursorTip(c as Chain, tip),
-      { ...sharedOpts, rescanWindow: numArg('rescan-window') },
-    );
-  } else {
-    result = await runRegistryScan(config, persistAgents, persistFeedback, {
-      ...sharedOpts,
-      fromId,
-      toId: numArg('to'),
-    });
-  }
+    if (dryRun) {
+      persistAgents = async (_c, a) => a.length;
+      persistFeedback = async (_c, f) => f.length;
+      scanned = await runRegistryScan(config, persistAgents, persistFeedback, {
+        ...sharedOpts, signal,
+        fromId,
+        toId: numArg('to'),
+      });
+    } else {
+      // Fail loudly at line 1 if DB secrets are unset (GitHub injects unset secrets
+      // as empty strings) — same preflight as keep-fresh/heartbeat so a scheduled
+      // run can't sail past checkout and crash deep in the write path unnoticed.
+      requireEnv(['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']);
+      const db = await import('@/db/client');
+      persistAgents = db.upsertErc8004Agents;
+      persistFeedback = db.upsertErc8004Feedback;
+      if (incremental) {
+        scanned = await runIncrementalRegistryScan(
+          config,
+          persistAgents,
+          persistFeedback,
+          (c) => db.getRegistryCursorTip(c as Chain),
+          (c, tip) => db.setRegistryCursorTip(c as Chain, tip),
+          { ...sharedOpts, signal, rescanWindow: numArg('rescan-window') },
+        );
+      } else {
+        scanned = await runRegistryScan(config, persistAgents, persistFeedback, {
+          ...sharedOpts, signal,
+          fromId,
+          toId: numArg('to'),
+        });
+      }
+    }
+    signal?.throwIfAborted();
+    return scanned;
+  },
+  summarize: (r) => {
+    // Explicit subranges remain partial evidence for the chain-level path.
+    const partial = !incremental && (fromId !== undefined || numArg('to') !== undefined);
+    return { status: r.errors ? 'failed' : partial ? 'catching_up' : 'caught_up',
+      errorCode: r.errors || partial ? 'scan_partial' : undefined,
+      checkedCount: r.agentsScanned, insertedCount: r.agentsPersisted, unresolvedCount: r.errors,
+      checkpoint: r.errors ? undefined : String(r.tip), head: String(r.tip) };
+  },
+});
+if (!execution.result) {
+  console.log(`[registry] ${execution.status}${execution.errorCode ? ` (${execution.errorCode})` : ''} — no scan result`);
+  process.exit(execution.exitCode);
 }
+const result = execution.result;
+console.log(`[registry] managed status: ${execution.status}`);
 
 const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 console.log('');
@@ -131,4 +154,4 @@ console.log(`feedback scanned:    ${result.feedbackScanned}`);
 console.log(`feedback persisted:  ${result.feedbackPersisted}`);
 console.log(`errors:              ${result.errors}`);
 console.log(`elapsed:             ${elapsed}s`);
-process.exit(0);
+process.exit(execution.exitCode);

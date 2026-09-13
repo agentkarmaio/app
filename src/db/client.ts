@@ -7,6 +7,7 @@
  */
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { makeIndexingFetch } from './indexing-fetch';
 import type {
   Wallet, Transaction, TrustTier, IndexerCursor, Feedback, FeedbackRating, LivenessStatus,
   ConfidenceBadge, SignalEvent, SignalTier, KarmaFace, AutonomyLabel,
@@ -107,7 +108,7 @@ function getSupabase(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error('NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set');
-  _client = createClient(url, key);
+  _client = createClient(url, key, { global: { fetch: makeIndexingFetch() } });
   return _client;
 }
 
@@ -1255,8 +1256,11 @@ export function normalizeCounterparty(
   return counterparty;
 }
 
+/** Exact decimal strings avoid rounding mainnet's 18-decimal native transfers. */
+export type TransactionInsert = Omit<Transaction, 'id' | 'amount'> & { amount: number | string };
+
 export async function insertTransaction(
-  tx: Omit<Transaction, 'id'>,
+  tx: TransactionInsert,
 ): Promise<void> {
   const { error } = await supabase
     .from('transactions')
@@ -1269,13 +1273,13 @@ export async function insertTransaction(
       timestamp: typeof tx.timestamp === 'string' ? tx.timestamp : new Date(tx.timestamp).toISOString(),
       success: tx.success,
       tx_signature: tx.tx_signature,
-    }, { onConflict: 'tx_signature', ignoreDuplicates: true });
+    }, { onConflict: 'chain,tx_signature', ignoreDuplicates: true });
 
   if (error) throw error;
 }
 
 export async function insertTransactions(
-  txs: Omit<Transaction, 'id'>[],
+  txs: TransactionInsert[],
 ): Promise<number> {
   if (txs.length === 0) return 0;
 
@@ -1297,7 +1301,7 @@ export async function insertTransactions(
   return withTransientDbRetry(async () => {
     const { data, error } = await supabase
       .from('transactions')
-      .upsert(rows, { onConflict: 'tx_signature', ignoreDuplicates: true })
+      .upsert(rows, { onConflict: 'chain,tx_signature', ignoreDuplicates: true })
       .select('id');
 
     if (error) throw error;
@@ -1309,10 +1313,12 @@ export async function getTransactions(
   walletAddress: string,
   limit = 50,
   offset = 0,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<Transaction[]> {
   const { data, error } = await supabase
     .from('transactions')
     .select('*')
+    .eq('chain', chain)
     .eq('wallet_address', walletAddress)
     .order('timestamp', { ascending: false })
     .range(offset, offset + limit - 1);
@@ -1321,10 +1327,11 @@ export async function getTransactions(
   return (data ?? []) as Transaction[];
 }
 
-export async function getTransactionCount(walletAddress: string): Promise<number> {
+export async function getTransactionCount(walletAddress: string, chain: Chain = DEFAULT_CHAIN): Promise<number> {
   const { count, error } = await supabase
     .from('transactions')
     .select('*', { count: 'exact', head: true })
+    .eq('chain', chain)
     .eq('wallet_address', walletAddress);
 
   if (error) throw error;
@@ -1352,6 +1359,7 @@ export async function getTransactionCount(walletAddress: string): Promise<number
 export async function getTransactionsForWallets(
   walletAddresses: string[],
   txWindow: number = DEFAULT_TX_WINDOW,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<Transaction[]> {
   if (walletAddresses.length === 0) return [];
 
@@ -1361,7 +1369,7 @@ export async function getTransactionsForWallets(
   for (let i = 0; i < walletAddresses.length; i += WALLET_HISTORY_CONCURRENCY) {
     const slice = walletAddresses.slice(i, i + WALLET_HISTORY_CONCURRENCY);
     const results = await Promise.all(
-      slice.map((address) => getRecentTransactionsForWallet(address, txWindow)),
+      slice.map((address) => getRecentTransactionsForWallet(address, txWindow, chain)),
     );
     for (const rows of results) all.push(...rows);
   }
@@ -1383,10 +1391,11 @@ export async function getTransactionsForWallets(
  * getTransactionsForWallets) for anything that scores wallets. This exists for
  * one-off whole-history backfills, and at current table size those need paging.
  */
-export async function getAllTransactions(limit: number): Promise<Transaction[]> {
+export async function getAllTransactions(limit: number, chain: Chain = DEFAULT_CHAIN): Promise<Transaction[]> {
   const { data, error } = await supabase
     .from('transactions')
     .select('*')
+    .eq('chain', chain)
     .order('timestamp', { ascending: false })
     .limit(limit);
 
@@ -1411,6 +1420,7 @@ export async function getAllTransactions(limit: number): Promise<Transaction[]> 
 export async function getRecentTransactionsForWallet(
   address: string,
   limit = DEFAULT_TX_WINDOW,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<Transaction[]> {
   // Reads are idempotent by construction, and this one runs once per affected
   // wallet against the largest table in the schema — the 2026-08-11 keep-fresh
@@ -1419,6 +1429,7 @@ export async function getRecentTransactionsForWallet(
     const { data, error } = await supabase
       .from('transactions')
       .select('*')
+      .eq('chain', chain)
       .eq('wallet_address', address)
       .order('timestamp', { ascending: false })
       .limit(limit);
@@ -1771,10 +1782,12 @@ export async function insertScoreSnapshot(
 export async function getScoreHistory(
   walletAddress: string,
   limit = 30,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<{ score: number; calculated_at: string }[]> {
   const { data, error } = await supabase
     .from('scores')
     .select('score, calculated_at')
+    .eq('chain', chain)
     .eq('wallet_address', walletAddress)
     .order('calculated_at', { ascending: true })
     .limit(limit);
@@ -1804,12 +1817,15 @@ export async function cleanupOldScoreSnapshots(days = 90): Promise<number> {
 // fires the external "counters regressed" monitor, and is indistinguishable
 // from real data. Reset when the client is swapped (test seam).
 let staleStats: {
-  tx?: { totalTransactions: number; totalVolumeUsdc: number };
-  agents?: { totalAgents: number; tierDistribution: Record<string, number> };
+  tx?: { totalTransactions: number; totalVolumeUsdc: number; updatedAt: string };
+  agents?: { totalAgents: number; tierDistribution: Record<string, number>; updatedAt: string };
   registries?: { chain: string; agents: number; feedbacks: number }[];
 } = {};
 
 export async function getStats() {
+  let countsStale = false;
+  let transactionsUpdatedAt: string | null = null;
+  let agentsUpdatedAt: string | null = null;
   // Every figure comes from a SQL aggregate RPC — NEVER from streaming the full
   // transactions (~850k) or agent (~103k) tables. The old row-streaming
   // fallbacks (`select amount` / `select trust_tier`) blew the 8s statement
@@ -1825,8 +1841,11 @@ export async function getStats() {
     const stats = txStatsRes.data as Record<string, unknown>;
     totalTransactions = Number(stats.total_count ?? 0);
     totalVolumeUsdc = Number(stats.total_volume ?? 0);
-    staleStats.tx = { totalTransactions, totalVolumeUsdc };
+    transactionsUpdatedAt = new Date().toISOString();
+    staleStats.tx = { totalTransactions, totalVolumeUsdc, updatedAt: transactionsUpdatedAt };
   } else if (staleStats.tx) {
+    countsStale = true;
+    transactionsUpdatedAt = staleStats.tx.updatedAt;
     console.warn('[db] get_transaction_stats failed, serving stale figures:', txStatsRes.error?.message);
     ({ totalTransactions, totalVolumeUsdc } = staleStats.tx);
   } else {
@@ -1848,7 +1867,8 @@ export async function getStats() {
       tierDistribution[row.trust_tier] = n;
       totalAgents += n;
     }
-    staleStats.agents = { totalAgents, tierDistribution };
+    agentsUpdatedAt = new Date().toISOString();
+    staleStats.agents = { totalAgents, tierDistribution, updatedAt: agentsUpdatedAt };
   } else {
     if (tierRes.error) console.warn('[db] get_tier_distribution unavailable:', tierRes.error.message);
     // Cheap degradation: a HEAD count (no row scan) so totalAgents survives —
@@ -1856,7 +1876,10 @@ export async function getStats() {
     const headRes = await supabase.from('explore_agents').select('*', { count: 'exact', head: true });
     if (headRes.count != null) {
       totalAgents = headRes.count;
+      agentsUpdatedAt = new Date().toISOString();
     } else if (staleStats.agents) {
+      countsStale = true;
+      agentsUpdatedAt = staleStats.agents.updatedAt;
       ({ totalAgents, tierDistribution } = staleStats.agents);
     } else {
       throw new Error(`agent count failed with no stale figures to serve: ${headRes.error?.message}`);
@@ -1875,7 +1898,8 @@ export async function getStats() {
     registries = staleStats.registries ?? [];
   }
 
-  return { totalAgents, totalTransactions, totalVolumeUsdc, tierDistribution, registries };
+  return { totalAgents, totalTransactions, totalVolumeUsdc, tierDistribution, registries,
+    freshness: { stale: countsStale, transactionsUpdatedAt, agentsUpdatedAt } };
 }
 
 // --- Explore Queries ---------------------------------------------------------
@@ -2253,16 +2277,52 @@ export async function insertSignalEvents(
 export async function getSignalEventsForWallet(
   agentWallet: string,
   limit = 200,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<SignalEvent[]> {
   const { data, error } = await supabase
     .from('signal_events')
     .select('*')
+    .eq('chain', chain)
     .eq('agent_wallet', agentWallet)
     .order('observed_at', { ascending: false })
     .limit(limit);
 
   if (error) throw error;
   return (data ?? []) as SignalEvent[];
+}
+
+/** Actual bounded mainnet receipt window, beyond PostgREST's per-response cap.
+ * Keyset pagination keeps tied timestamps stable and avoids offset shifts from
+ * new inserts. One lookahead distinguishes an exact-size window from truncation.
+ * A page error invalidates the whole read rather than presenting a partial score. */
+export async function getArcMainnetReceiptEvents(
+  agentWallet: string, limit = 10_000,
+): Promise<{ events: SignalEvent[]; saturated: boolean }> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) throw new Error('invalid_receipt_window_limit');
+  const events: SignalEvent[] = [];
+  let cursor: { observedAt: string; id: string } | null = null;
+  while (events.length <= limit) {
+    const take = Math.min(1000, limit + 1 - events.length);
+    let query = supabase.from('signal_events').select('*')
+      .eq('chain', 'arc-mainnet').eq('agent_wallet', agentWallet)
+      .eq('kind', 'usdc_transfer_settled')
+      .order('observed_at', { ascending: false }).order('id', { ascending: false });
+    if (cursor) query = query.or(`observed_at.lt.${cursor.observedAt},and(observed_at.eq.${cursor.observedAt},id.lt.${cursor.id})`);
+    const { data, error } = await query.range(0, take - 1);
+    if (error) throw error;
+    const page = (data ?? []) as SignalEvent[];
+    events.push(...page);
+    if (events.length > limit) return { events: events.slice(0, limit), saturated: true };
+    if (page.length < take) return { events, saturated: false };
+    const last = page[page.length - 1];
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(last.id)
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(last.observed_at)
+      || !Number.isFinite(Date.parse(last.observed_at))) throw new Error('invalid_receipt_window_cursor');
+    // Preserve PostgreSQL microseconds; Date.toISOString would truncate them
+    // and skip rows sharing the actual cursor timestamp on the following page.
+    cursor = { observedAt: last.observed_at, id: last.id };
+  }
+  return { events, saturated: false };
 }
 
 /**
@@ -2273,6 +2333,7 @@ export async function getSignalEventsForWallet(
 export async function getLatestSignalValues(
   agentWallets: string[],
   kind: string,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   if (agentWallets.length === 0) return out;
@@ -2285,6 +2346,7 @@ export async function getLatestSignalValues(
     const { data, error } = await supabase
       .from('signal_events')
       .select('agent_wallet, value, observed_at')
+      .eq('chain', chain)
       .eq('kind', kind)
       .in('agent_wallet', chunk)
       .order('observed_at', { ascending: false });
@@ -2306,6 +2368,7 @@ export async function getLatestSignalValues(
 export async function countSignalEventsByKind(
   agentWallets: string[],
   kind: string,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   if (agentWallets.length === 0) return out;
@@ -2315,6 +2378,7 @@ export async function countSignalEventsByKind(
     const { data, error } = await supabase
       .from('signal_events')
       .select('agent_wallet')
+      .eq('chain', chain)
       .eq('kind', kind)
       .in('agent_wallet', chunk);
 
@@ -2392,6 +2456,7 @@ export async function getPayshOperatorReceiptStats(
 
 export async function getSignalEventsForWallets(
   agentWallets: string[],
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<Map<string, SignalEvent[]>> {
   const out = new Map<string, SignalEvent[]>();
   if (agentWallets.length === 0) return out;
@@ -2401,6 +2466,7 @@ export async function getSignalEventsForWallets(
     const { data, error } = await supabase
       .from('signal_events')
       .select('*')
+      .eq('chain', chain)
       .in('agent_wallet', chunk)
       .order('observed_at', { ascending: false });
 
@@ -2573,6 +2639,7 @@ export async function insertFeedback(
   const { error } = await supabase
     .from('feedback')
     .insert({
+      chain: 'solana',
       agent_wallet: agentWallet,
       consumer_wallet: consumerWallet,
       rating,
@@ -2585,10 +2652,12 @@ export async function insertFeedback(
 export async function getFeedbackForAgent(
   agentWallet: string,
   limit = 50,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<Feedback[]> {
   const { data, error } = await supabase
     .from('feedback')
     .select('*')
+    .eq('chain', chain)
     .eq('agent_wallet', agentWallet)
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -2599,10 +2668,12 @@ export async function getFeedbackForAgent(
 
 export async function getFeedbackSummary(
   agentWallet: string,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<{ total: number; delivered: number; failed: number; deliveryRate: number }> {
   const { data, error } = await supabase
     .from('feedback')
     .select('rating')
+    .eq('chain', chain)
     .eq('agent_wallet', agentWallet);
 
   if (error) throw error;
@@ -2618,6 +2689,7 @@ export async function getFeedbackSummary(
 
 export async function getFeedbackRatingsForSignatures(
   txSignatures: string[],
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<Map<string, 'delivered' | 'failed'>> {
   const out = new Map<string, 'delivered' | 'failed'>();
   if (txSignatures.length === 0) return out;
@@ -2627,6 +2699,7 @@ export async function getFeedbackRatingsForSignatures(
     const { data, error } = await supabase
       .from('feedback')
       .select('tx_signature, rating')
+      .eq('chain', chain)
       .in('tx_signature', chunk);
 
     if (error) throw error;
@@ -2641,6 +2714,7 @@ export async function getFeedbackRatingsForSignatures(
 
 export async function getFeedbackSummariesForWallets(
   agentWallets: string[],
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<Map<string, { total: number; delivered: number; failed: number; deliveryRate: number }>> {
   const out = new Map<string, { total: number; delivered: number; failed: number; deliveryRate: number }>();
   if (agentWallets.length === 0) return out;
@@ -2650,6 +2724,7 @@ export async function getFeedbackSummariesForWallets(
     const { data, error } = await supabase
       .from('feedback')
       .select('agent_wallet, rating')
+      .eq('chain', chain)
       .in('agent_wallet', chunk);
 
     if (error) throw error;
@@ -2669,6 +2744,7 @@ export async function getScoreHistoriesForWallets(
   walletAddresses: string[],
   sincesDaysAgo = 30,
   maxPerWallet = 30,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<Map<string, { score: number; calculated_at: string }[]>> {
   const out = new Map<string, { score: number; calculated_at: string }[]>();
   if (walletAddresses.length === 0) return out;
@@ -2680,6 +2756,7 @@ export async function getScoreHistoriesForWallets(
     const { data, error } = await supabase
       .from('scores')
       .select('wallet_address, score, calculated_at')
+      .eq('chain', chain)
       .in('wallet_address', chunk)
       .gte('calculated_at', since)
       .order('calculated_at', { ascending: true });
@@ -2706,6 +2783,7 @@ export async function hasFeedbackForTx(txSignature: string): Promise<boolean> {
   const { data, error } = await supabase
     .from('feedback')
     .select('id')
+    .eq('chain', 'solana')
     .eq('tx_signature', txSignature)
     .limit(1);
 
@@ -2713,10 +2791,11 @@ export async function hasFeedbackForTx(txSignature: string): Promise<boolean> {
   return (data?.length ?? 0) > 0;
 }
 
-export async function getTransactionBySig(txSignature: string): Promise<Transaction | null> {
+export async function getTransactionBySig(txSignature: string, chain: Chain = DEFAULT_CHAIN): Promise<Transaction | null> {
   const { data, error } = await supabase
     .from('transactions')
     .select('*')
+    .eq('chain', chain)
     .eq('tx_signature', txSignature)
     .single();
 

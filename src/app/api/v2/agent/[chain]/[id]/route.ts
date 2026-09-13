@@ -37,6 +37,9 @@ export async function GET(
     return NextResponse.json({ error: `unknown chain '${chainParam}'` }, { status: 400, headers });
   }
   const chain = chainParam as Chain;
+  if (chain === 'arc-mainnet') {
+    return NextResponse.json({ error: 'Arc mainnet registry lookup is not enabled; look up by address instead' }, { status: 501, headers });
+  }
   if (chain === 'solana') {
     return NextResponse.json(
       { error: 'Solana agents have no ERC-8004 agentId; look up by address instead' },

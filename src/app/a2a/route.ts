@@ -103,16 +103,16 @@ const ADDR_RE = {
   stellar: /\bG[A-Z2-7]{55}\b/,
   solana: /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/,
 };
-const CHAIN_WORD_RE = /\b(solana|sol|celo|stellar|xlm|arc)\b/i;
+const CHAIN_WORD_RE = /\b(arc[- ]mainnet|solana|sol|celo|stellar|xlm|arc)\b/i;
 // "agentId 9604", "agent id 9604", "agent #9604", "agent 9604" — digits must
 // closely follow the keyword so "agentkarma 9604" / bare numbers don't match.
 const AGENT_ID_RE = /\bagent(?:\s*-?\s*id)?\s*#?\s*(\d{1,9})\b/i;
 
 function normalizeChain(s: string): Chain | undefined {
-  const v = s.toLowerCase();
+  const v = s.toLowerCase().replace('arc mainnet', 'arc-mainnet');
   if (v === 'sol') return 'solana';
   if (v === 'xlm') return 'stellar';
-  if (v === 'solana' || v === 'celo' || v === 'stellar' || v === 'arc') return v;
+  if (v === 'solana' || v === 'celo' || v === 'stellar' || v === 'arc' || v === 'arc-mainnet') return v;
   return undefined;
 }
 

@@ -27,7 +27,12 @@ import type { Erc8004RegistryConfig } from '@/config/erc8004-registries';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
 import type { Erc8004RegistrationStatus } from '@/db/schema';
 import { scoreMetadataQuality } from '@/scoring/celo-metadata';
-import { safeFetchJson, type DnsLookup } from '@/lib/ssrf-guard';
+import {
+  safeFetchJson,
+  InvalidJsonError,
+  isRetryableFetchError,
+  type DnsLookup,
+} from '@/lib/ssrf-guard';
 import { isRateLimitedError, withRateLimitRetry } from '@/lib/rpc-retry';
 
 const ONE = BigInt(1);
@@ -84,6 +89,9 @@ export interface ScannedFeedback {
   revoked: boolean;
 }
 
+export type RegistryFailureStage = 'identity' | 'registration' | 'feedback' | 'unknown';
+export interface RegistryFailedMember { agentId: number; stages: RegistryFailureStage[] }
+
 export interface RegistryScanResult {
   chain: string;
   tip: number;
@@ -92,6 +100,8 @@ export interface RegistryScanResult {
   feedbackScanned: number;
   feedbackPersisted: number;
   errors: number;
+  /** Exhaustive failed members for explicit agentIds scans; absent for discovery. */
+  failedMembers?: RegistryFailedMember[];
 }
 
 export type PersistAgents = (chain: string, agents: ScannedAgent[]) => Promise<number>;
@@ -144,6 +154,21 @@ export function incrementalScanRange(
 }
 
 /**
+ * ipfs.io retired its path gateway on 2026-09-13 and now answers every request
+ * with 429, which banked 1,949 agents across arc/celo/solana as `unreachable`
+ * (48% of a sampled 52 were valid registrations). Filebase serves the same CIDs
+ * in ~100ms. Overridable so a dedicated gateway can be swapped in without a
+ * release.
+ */
+export const DEFAULT_IPFS_GATEWAY = 'https://ipfs.filebase.io/ipfs/';
+
+function defaultIpfsGateway(): string {
+  const configured = process.env.IPFS_GATEWAY_URL?.trim();
+  if (!configured) return DEFAULT_IPFS_GATEWAY;
+  return configured.endsWith('/') ? configured : `${configured}/`;
+}
+
+/**
  * Decode an ERC-8004 registration tokenURI. Handles every scheme seen in the
  * wild on Celo: inline data: URIs (base64 / gzip / utf8), bare raw JSON, http(s),
  * and ipfs://. `fetchRemote=false` skips network schemes (marks 'pending') for a
@@ -151,9 +176,10 @@ export function incrementalScanRange(
  */
 export async function decodeRegistration(
   uri: string | null | undefined,
-  opts: { fetchRemote?: boolean; timeoutMs?: number; ipfsGateway?: string; lookup?: DnsLookup } = {},
-): Promise<{ registration: AgentRegistrationFile | null; status: Erc8004RegistrationStatus }> {
-  const { fetchRemote = true, timeoutMs = 6000, ipfsGateway = 'https://ipfs.io/ipfs/', lookup } = opts;
+  opts: { fetchRemote?: boolean; timeoutMs?: number; ipfsGateway?: string; lookup?: DnsLookup; signal?: AbortSignal } = {},
+): Promise<{ registration: AgentRegistrationFile | null; status: Erc8004RegistrationStatus; retryable?: boolean }> {
+  opts.signal?.throwIfAborted();
+  const { fetchRemote = true, timeoutMs = 6000, ipfsGateway = defaultIpfsGateway(), lookup } = opts;
   if (!uri || uri.trim().length === 0) return { registration: null, status: 'empty' };
 
   // Inline, fully on-chain metadata: data:application/json[;base64][;enc=gzip],…
@@ -195,10 +221,23 @@ export async function decodeRegistration(
   // SSRF guard: validate host (incl. every redirect hop) is public before any
   // request and cap the body — tokenURIs are attacker-controlled on-chain data.
   try {
+    opts.signal?.throwIfAborted();
     const json = (await safeFetchJson(fetchUrl, { timeoutMs, lookup })) as AgentRegistrationFile;
-    return { registration: json, status: 'fetched' };
-  } catch {
-    return { registration: null, status: 'unreachable' };
+    opts.signal?.throwIfAborted();
+    return { registration: json, status: 'fetched', retryable: false };
+  } catch (error) {
+    opts.signal?.throwIfAborted();
+    // A served body that is not JSON is usually a verdict about the content
+    // (a README, an image) — retrying can only produce the same bytes. An HTML
+    // body is the exception: that is a gateway error page wearing a 200, and
+    // settling it would erase a registration that read fine yesterday.
+    if (error instanceof InvalidJsonError && !isRetryableFetchError(error))
+      return { registration: null, status: 'invalid', retryable: false };
+    return {
+      registration: null,
+      status: 'unreachable',
+      retryable: isRetryableFetchError(error),
+    };
   }
 }
 
@@ -254,18 +293,23 @@ export function makeRegistryClient(config: Erc8004RegistryConfig): PublicClient 
 export async function findRegistryTip(
   client: Pick<PublicClient, 'readContract'>,
   identityRegistry: `0x${string}`,
+  signal?: AbortSignal,
 ): Promise<number> {
   // A throttled probe must NOT read as "no such agent": swallowing a rate limit
   // silently converges the binary search on a wrong tip, and every caller then
   // samples garbage ids with no signal that anything went wrong. Retry
   // throttles; treat only real errors (reverts) as non-existence.
   const exists = async (id: bigint): Promise<boolean> => {
+    signal?.throwIfAborted();
     try {
-      await withRateLimitRetry(() =>
-        client.readContract({ address: identityRegistry, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [id] }),
-      );
+      await withRateLimitRetry(() => {
+        signal?.throwIfAborted();
+        return client.readContract({ address: identityRegistry, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [id] });
+      });
+      signal?.throwIfAborted();
       return true;
     } catch (err) {
+      signal?.throwIfAborted();
       if (isRateLimitedError(err)) throw err; // budget exhausted — fail loud, don't guess a tip
       return false;
     }
@@ -283,6 +327,9 @@ export async function findRegistryTip(
 // ─── Orchestrator ──────────────────────────────────────────────────────────────
 
 export interface RegistryScanOptions {
+  signal?: AbortSignal;
+  /** Refresh this exact membership, without tip discovery or filling ID gaps. */
+  agentIds?: readonly number[];
   fromId?: number;            // default 1
   toId?: number;              // default = discovered tip
   identityBatch?: number;     // ids per identity multicall (default 250)
@@ -301,6 +348,7 @@ export async function runRegistryScan(
   persistFeedback: PersistFeedback,
   opts: RegistryScanOptions = {},
 ): Promise<RegistryScanResult> {
+  opts.signal?.throwIfAborted();
   const client = opts.client ?? makeRegistryClient(config);
   const log = opts.onProgress ?? (() => {});
   const identityBatch = opts.identityBatch ?? 250;
@@ -308,7 +356,13 @@ export async function runRegistryScan(
   const fetchRemote = opts.fetchRemote ?? true;
   const scanFeedback = opts.scanFeedback ?? true;
 
-  const tip = opts.toId ?? (await findRegistryTip(client, config.identityRegistry));
+  const explicitIds = opts.agentIds === undefined ? undefined : [...new Set(opts.agentIds)].sort((a, b) => a - b);
+  if (explicitIds?.some((id) => !Number.isSafeInteger(id) || id < 1)) {
+    throw new Error('registry agent IDs must be positive safe integers');
+  }
+  const tip = explicitIds ? (explicitIds.at(-1) ?? 0)
+    : opts.toId ?? (await findRegistryTip(client, config.identityRegistry, opts.signal));
+  opts.signal?.throwIfAborted();
   const from = Math.max(1, opts.fromId ?? 1);
   log(`tip=${tip} scanning ids ${from}..${tip}`);
 
@@ -316,12 +370,22 @@ export async function runRegistryScan(
     chain: config.chain, tip, agentsScanned: 0, agentsPersisted: 0,
     feedbackScanned: 0, feedbackPersisted: 0, errors: 0,
   };
+  if (explicitIds) result.failedMembers = [];
+  const failed = (agentIds: number[], stage: RegistryFailureStage) => {
+    if (!result.failedMembers) return;
+    for (const agentId of agentIds) {
+      const previous = result.failedMembers.find(member => member.agentId === agentId);
+      if (previous) { if (!previous.stages.includes(stage)) previous.stages.push(stage); }
+      else result.failedMembers.push({ agentId, stages: [stage] });
+    }
+  };
   if (tip < from) return result;
 
-  const ids: number[] = [];
-  for (let i = from; i <= tip; i++) ids.push(i);
+  const ids: number[] = explicitIds ?? [];
+  if (!explicitIds) for (let i = from; i <= tip; i++) ids.push(i);
 
   for (const batch of chunk(ids, identityBatch)) {
+    opts.signal?.throwIfAborted();
     // ── Identity multicall: ownerOf + getAgentWallet + tokenURI per id ──
     const calls = batch.flatMap((id) => [
       { address: config.identityRegistry, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [BigInt(id)] } as const,
@@ -331,8 +395,11 @@ export async function runRegistryScan(
     let reads: { status: 'success' | 'failure'; result?: unknown }[];
     try {
       reads = await client.multicall({ contracts: calls, allowFailure: true });
+      opts.signal?.throwIfAborted();
     } catch (err) {
+      opts.signal?.throwIfAborted();
       result.errors++;
+      failed(batch, 'identity');
       log(`identity multicall failed for ${batch[0]}..${batch[batch.length - 1]}: ${errMsg(err)}`);
       continue;
     }
@@ -340,19 +407,33 @@ export async function runRegistryScan(
     const live: ScannedAgent[] = [];
     const remoteQueue: ScannedAgent[] = [];
     for (let i = 0; i < batch.length; i++) {
+      opts.signal?.throwIfAborted();
       const id = batch[i];
       const ownerR = reads[i * 3], walletR = reads[i * 3 + 1], uriR = reads[i * 3 + 2];
-      if (ownerR.status !== 'success') continue; // unminted / burned id
+      if (explicitIds && (ownerR?.status !== 'success' || walletR?.status !== 'success' || uriR?.status !== 'success')) {
+        // Membership is already known: a failed read cannot be silently treated
+        // as a hole in a discovered range or allowed to clear saved metadata.
+        result.errors++;
+        failed([id], 'identity');
+        continue;
+      }
+      if (ownerR?.status !== 'success') continue; // unminted / burned id
       const owner = (ownerR.result as string).toLowerCase();
       const agentWallet = walletR.status === 'success' ? (walletR.result as string).toLowerCase() : null;
       const tokenURI = uriR.status === 'success' ? (uriR.result as string) : null;
 
-      const dec = await decodeRegistration(tokenURI, { fetchRemote: false });
+      const dec = await decodeRegistration(tokenURI, { fetchRemote: false, signal: opts.signal });
       const agent: ScannedAgent = {
         agentId: id, owner, agentWallet, tokenURI,
         registration: dec.registration,
         registrationStatus: dec.status,
-        metadataScore: scoreMetadataQuality({ registration: dec.registration }).score,
+        // tokenURI carries the tamper-resistance credit (10/100) for a
+        // content-addressed pointer — omitting it under-scored every
+        // ipfs:/data: agent by enough to cross ATTEST_MIN_SCORE.
+        metadataScore: scoreMetadataQuality({
+          registration: dec.registration,
+          tokenURI: tokenURI ?? undefined,
+        }).score,
       };
       if (dec.status === 'pending' && fetchRemote) remoteQueue.push(agent);
       live.push(agent);
@@ -361,21 +442,39 @@ export async function runRegistryScan(
     // ── Bounded remote-registration enrichment for http/ipfs agents ──
     if (remoteQueue.length > 0) {
       await mapWithConcurrency(remoteQueue, opts.remoteConcurrency ?? 16, async (agent) => {
-        const dec = await decodeRegistration(agent.tokenURI, { fetchRemote: true });
+        const dec = await decodeRegistration(agent.tokenURI, { fetchRemote: true, signal: opts.signal });
         agent.registration = dec.registration;
         agent.registrationStatus = dec.status;
-        agent.metadataScore = scoreMetadataQuality({ registration: dec.registration }).score;
-      });
+        agent.metadataScore = scoreMetadataQuality({
+          registration: dec.registration,
+          tokenURI: agent.tokenURI ?? undefined,
+        }).score;
+        if (explicitIds && dec.status === 'unreachable') {
+          result.errors++;
+          failed([agent.agentId], 'registration');
+        }
+      }, opts.signal);
+    }
+
+    // An outage is not evidence that previously saved registration disappeared.
+    // Retain the whole stored identity until all its metadata reads succeed.
+    if (explicitIds) {
+      for (let i = live.length - 1; i >= 0; i--) {
+        if (live[i].registrationStatus === 'unreachable') live.splice(i, 1);
+      }
     }
 
     // Persist identities first so the feedback FK target (chain, agent_id) exists.
+    opts.signal?.throwIfAborted();
     result.agentsScanned += live.length;
     result.agentsPersisted += await persistAgents(config.chain, live);
+    opts.signal?.throwIfAborted();
 
     // ── Feedback pass for this batch's live agents ──
     if (scanFeedback && live.length > 0) {
       const enriched: ScannedAgent[] = [];
       for (const fbIds of chunk(live.map((a) => a.agentId), feedbackBatch)) {
+        opts.signal?.throwIfAborted();
         const fbCalls = fbIds.map((id) => ({
           address: config.reputationRegistry, abi: REPUTATION_ABI,
           functionName: 'readAllFeedback' as const,
@@ -384,20 +483,41 @@ export async function runRegistryScan(
         let fbReads: { status: 'success' | 'failure'; result?: unknown }[];
         try {
           fbReads = await client.multicall({ contracts: fbCalls, allowFailure: true });
+          opts.signal?.throwIfAborted();
         } catch {
+          opts.signal?.throwIfAborted();
           result.errors++;
+          failed(fbIds, 'feedback');
           continue;
         }
         const records: ScannedFeedback[] = [];
         const aggById = new Map<number, FeedbackAgg>();
         for (let i = 0; i < fbIds.length; i++) {
-          if (fbReads[i].status !== 'success') continue;
-          const recs = parseFeedbackArrays(fbIds[i], fbReads[i].result as readonly unknown[]);
+          if (fbReads[i]?.status !== 'success') {
+            if (explicitIds) { result.errors++; failed([fbIds[i]], 'feedback'); }
+            continue;
+          }
+          let recs: ScannedFeedback[];
+          try {
+            const values = fbReads[i].result;
+            if (explicitIds && (!Array.isArray(values) || values.length !== 7
+              || !values.every(Array.isArray) || values.some(array => array.length !== values[0].length))) {
+              throw Error('Invalid registry feedback arrays');
+            }
+            recs = parseFeedbackArrays(fbIds[i], values as readonly unknown[]);
+          } catch (error) {
+            if (!explicitIds) throw error;
+            result.errors++;
+            failed([fbIds[i]], 'feedback');
+            continue;
+          }
           records.push(...recs);
           aggById.set(fbIds[i], aggregateAgentFeedback(recs));
         }
         result.feedbackScanned += records.length;
+        opts.signal?.throwIfAborted();
         if (records.length > 0) result.feedbackPersisted += await persistFeedback(config.chain, records);
+        opts.signal?.throwIfAborted();
         // Attach aggregate to the in-memory agent for the re-upsert.
         for (const a of live) {
           const agg = aggById.get(a.agentId);
@@ -405,12 +525,15 @@ export async function runRegistryScan(
         }
       }
       // Re-upsert only the agents that gained a feedback aggregate.
+      opts.signal?.throwIfAborted();
       if (enriched.length > 0) await persistAgents(config.chain, enriched);
     }
 
     log(`progress: ${result.agentsScanned} agents, ${result.feedbackScanned} feedback (id ${batch[batch.length - 1]}/${tip})`);
   }
 
+  opts.signal?.throwIfAborted();
+  result.failedMembers?.sort((a, b) => a.agentId - b.agentId);
   return result;
 }
 
@@ -443,12 +566,15 @@ export async function runIncrementalRegistryScan(
   setCursorTip: SetCursorTip,
   opts: IncrementalScanOptions = {},
 ): Promise<RegistryScanResult> {
+  opts.signal?.throwIfAborted();
   const client = opts.client ?? makeRegistryClient(config);
   const log = opts.onProgress ?? (() => {});
   const window = opts.rescanWindow ?? DEFAULT_RESCAN_WINDOW;
 
-  const currentTip = await findRegistryTip(client, config.identityRegistry);
+  const currentTip = await findRegistryTip(client, config.identityRegistry, opts.signal);
+  opts.signal?.throwIfAborted();
   const lastTip = await getCursorTip(config.chain);
+  opts.signal?.throwIfAborted();
   const { from, to } = incrementalScanRange(lastTip, currentTip, window);
   log(`incremental: lastTip=${lastTip} currentTip=${currentTip} window=${window} → scan ${from}..${to}`);
 
@@ -467,8 +593,10 @@ export async function runIncrementalRegistryScan(
   });
 
   // Advance the cursor only on a clean run so error-skipped ids are retried.
+  opts.signal?.throwIfAborted();
   if (result.errors === 0) {
     await setCursorTip(config.chain, currentTip);
+    opts.signal?.throwIfAborted();
     log(`incremental: cursor advanced to ${currentTip}`);
   } else {
     log(`incremental: ${result.errors} error(s) — cursor held at ${lastTip} for retry`);
@@ -480,12 +608,14 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message.split('\n')[0] : String(err);
 }
 
-async function mapWithConcurrency<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
+async function mapWithConcurrency<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>, signal?: AbortSignal): Promise<void> {
   let cursor = 0;
   const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
     while (cursor < items.length) {
+      signal?.throwIfAborted();
       const i = cursor++;
       await fn(items[i]);
+      signal?.throwIfAborted();
     }
   });
   await Promise.all(workers);

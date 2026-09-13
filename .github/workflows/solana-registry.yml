@@ -72,7 +72,7 @@ jobs:
           case "$offset" in
             ''|*[!0-9]*) echo "::error::from-offset must be a non-negative integer, got '$offset'"; exit 1 ;;
           esac
-          bun run registry:scan:solana --from-offset "$offset"
+          bun run src/scripts/indexing-run.ts solana registry --from-offset "$offset"
 
       # A stalled mirror must page, not rot silently (2026-06-23 lesson).
       - name: Page on failure

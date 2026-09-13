@@ -14,6 +14,7 @@
 import { detectChain } from '@/lib/chain-detect';
 import { getWallet, getWalletsByAddressAnyChain } from '@/db/client';
 import { isChain, type Chain, type Wallet } from '@/db/schema';
+import { isEvmChain } from '@/lib/chain-meta';
 
 export type AddressClass = 'solana' | 'stellar' | 'evm' | 'unknown';
 
@@ -89,6 +90,11 @@ export async function resolveAgentChain(
 
   // EVM — Celo and Arc both possible. One DB read across both.
   const candidates = await getWalletsByAddressAnyChain(address).catch(() => []);
+  // A pin identifies a network even when that network has no wallet row yet.
+  // Falling back here would turn an empty mainnet profile into testnet evidence.
+  if (hint && isEvmChain(hint)) {
+    return { addressClass, chain: hint, wallet: candidates.find(w => w.chain === hint) ?? null, candidates };
+  }
   if (candidates.length === 0) {
     return { addressClass, chain: null, wallet: null, candidates: [] };
   }

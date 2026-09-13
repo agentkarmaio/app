@@ -8,6 +8,7 @@ import { getLivenessStatus } from '@/db/schema';
 import type { TrustTier, LivenessStatus, ConfidenceBadge } from '@/db/schema';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 import { canonicalAddress } from '@/lib/chain-detect';
+import { resolveKarma } from '@/lib/karma-resolver';
 
 export async function OPTIONS() {
   return corsPreflight();
@@ -46,10 +47,40 @@ export async function GET(
   const resolved = await resolveAgentChain(wallet, chainHint);
   const walletRow = resolved.wallet;
 
+  if (resolved.chain === 'arc-mainnet') {
+    const snapshot = await resolveKarma(wallet, 'arc-mainnet');
+    if (!snapshot) return NextResponse.json({ error: 'Wallet not found' }, { status: 404 });
+    const provider = snapshot.provider;
+    const score = provider.hasSignal ? provider.score : null;
+    const tier = provider.trustTier as TrustTier;
+    const confidenceBadge = provider.confidenceBadge;
+    const displayName = snapshot.identity.displayName ?? null;
+    const liveness = snapshot.lastActive ? getLivenessStatus(snapshot.lastActive) : 'Inactive';
+    const autonomyScore = snapshot.autonomy.score;
+    const autonomyLabel = snapshot.autonomy.label;
+    const headers = {
+      ...gate.headers, ...corsHeaders(),
+      'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+    };
+    if (format === 'json') return NextResponse.json({
+      address: wallet, chain: 'arc-mainnet', score,
+      providerScore: provider.hasSignal ? score : null,
+      consumerScore: snapshot.consumer.hasSignal ? snapshot.consumer.score : null,
+      provider: { ...provider, score },
+      consumer: { ...snapshot.consumer, score: snapshot.consumer.hasSignal ? snapshot.consumer.score : null },
+      confidenceBadge, trustTier: tier, displayName, liveness,
+      autonomyScore, autonomyLabel, txCount: snapshot.txCount,
+      feedbackCount: 0, deliveryRate: null, receiptEvidence: snapshot.receiptEvidence,
+    }, { headers });
+    return new NextResponse(renderBadgeSVG({
+      score, tier, confidenceBadge, displayName, liveness, wallet, autonomyScore, autonomyLabel,
+    }), { headers: { ...headers, 'Content-Type': 'image/svg+xml' } });
+  }
+
   // Receipt-based live scoring only applies to Solana — the only chain with
   // indexed x402 transactions. Other chains render off the stored row.
   const transactions = resolved.chain === 'solana'
-    ? await getTransactions(wallet, 1000)
+    ? await getTransactions(wallet, 1000, 0, resolved.chain)
     : [];
 
   if (!walletRow && transactions.length === 0) {
@@ -57,7 +88,7 @@ export async function GET(
   }
 
   let feedback = { deliveryRate: 0, total: 0 };
-  try { feedback = await getFeedbackSummary(wallet); } catch { /* ok */ }
+  try { feedback = await getFeedbackSummary(wallet, resolved.chain ?? 'solana'); } catch { /* ok */ }
 
   const cadence = transactions.length > 0
     ? computeCadence(transactions.map((tx) => new Date(tx.timestamp)))
@@ -70,13 +101,14 @@ export async function GET(
   const autonomyScore = autonomy?.score
     ?? (walletRow?.autonomy_score != null ? Number(walletRow.autonomy_score) : null);
   const autonomyLabel = autonomy?.label ?? walletRow?.autonomy_label ?? null;
-  const manifestMap = await getLatestSignalValues([wallet], 'manifest')
+  const manifestMap = await getLatestSignalValues([wallet], 'manifest', resolved.chain ?? 'solana')
     .catch(() => new Map<string, number>());
   const liveScore = transactions.length > 0
     ? calculateScore(
         transactions, 0, feedback.deliveryRate, feedback.total,
         cadence?.automationScore ?? null,
         manifestMap.get(wallet) ?? null,
+        null,
       )
     : null;
 
@@ -176,7 +208,7 @@ function renderBadgeSVG({
   autonomyScore,
   autonomyLabel,
 }: {
-  score: number;
+  score: number | null;
   tier: TrustTier;
   confidenceBadge: ConfidenceBadge;
   displayName: string | null;
@@ -189,11 +221,11 @@ function renderBadgeSVG({
   const livenessColor = LIVENESS_COLORS[liveness];
   const confidenceColor = CONFIDENCE_DOT_COLOR[confidenceBadge];
   const label = displayName ?? `${wallet.slice(0, 4)}...${wallet.slice(-4)}`;
-  const scoreText = score.toFixed(1);
+  const scoreText = score == null ? '—' : score.toFixed(1);
 
   const ringR = 18;
   const ringC = 2 * Math.PI * ringR;
-  const ringOffset = ringC - (score / 100) * ringC;
+  const ringOffset = ringC - ((score ?? 0) / 100) * ringC;
 
   const width = 240;
   const hasAutonomy = autonomyScore != null;

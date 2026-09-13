@@ -103,9 +103,16 @@ jobs:
           echo "running: celo-batch-feedback --count $COUNT $EXEC"
           bun run scripts/celo-batch-feedback.ts --count "$COUNT" $EXEC
 
-      # Reasons this pages: the validator wallet is running dry, gas is priced
-      # out of band, or a target errored. None of them should rot silently —
-      # a drip nobody notices has stopped is the failure this job exists to fix.
+      # Reasons this pages: the validator wallet is running dry, the RPC is
+      # unusable, or a giveFeedback target errored. None of them should rot
+      # silently — a drip nobody notices has stopped is what this job exists to
+      # catch.
+      #
+      # Gas above the fee ceiling is NOT one of them: that gate refuses before
+      # signing, so the script logs "BLOCKED" and exits 0. Nor is a missing
+      # signing key — the unarmed run only simulates, and resolves the signer
+      # address from the disclosed validator constant (2026-09-13: it used to
+      # die on a raw ENOENT here, so this job had never once passed on cron).
       - name: Page on failure
         if: failure()
         uses: ./.github/actions/telegram-alert
@@ -114,6 +121,6 @@ jobs:
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           text: |
             🛟 <b>AgentKarma celo-attest FAILED</b>
-            Either the validator wallet cannot pay gas, gas is above the fee ceiling, or a giveFeedback target errored.
-            Celo writes get a receipt, so a failure here means nothing landed — but check the run before re-running.
+            Read the "FAILED:" line in the log — it names each target and its error.
+            Celo writes get a receipt, so nothing half-landed: it is safe to re-run once the cause is fixed.
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

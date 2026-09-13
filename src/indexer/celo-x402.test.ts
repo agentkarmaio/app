@@ -308,3 +308,68 @@ describe('celoX402Indexer — DI core', () => {
     expect(res.cursors.get(CELO_CURSOR_KEY)).toBe('100');
   });
 });
+
+describe('coverage is separate from payment count', () => {
+  test('a bounded zero-match run reports the unscanned blocks', async () => {
+    const { deps } = makeDeps([], { getHead: async () => BigInt(120), windowSize: 10, maxWindows: 2 });
+    const result = await celoX402Indexer(deps);
+    expect(result.coverage).toEqual({ complete: false, head: '120', checkpoint: '19', checked: 20, pending: 101, unresolved: 0, reason: 'window_limit' });
+  });
+  test('an empty seed is dormant, not a completed network scan', async () => {
+    const { deps, state } = makeDeps([], { facilitators: new Set() });
+    const result = await celoX402Indexer(deps);
+    expect(result.coverage).toMatchObject({ complete: false, checked: 0, pending: 0, unresolved: 0, reason: 'empty_seed' });
+    expect(state.getHeadCalls).toBe(0);
+  });
+  test('a zero-match scan to head is complete', async () => {
+    const { deps } = makeDeps([]);
+    const result = await celoX402Indexer(deps);
+    expect(result.coverage).toMatchObject({ complete: true, head: '120', checkpoint: '120', checked: 121, pending: 0, unresolved: 0 });
+  });
+});
+
+describe('bounded Celo coverage', () => {
+  test('banks only completed windows when its time budget expires', async () => {
+    let clock = 0;
+    const { deps, state } = makeDeps([], {
+      windowSize: 10, timeBudgetMs: 10, now: () => clock,
+      getLogs: async () => { clock = 10; return []; },
+    });
+    const result = await celoX402Indexer(deps);
+    expect(state.cursors[0][1]).toBe('9');
+    expect(result.coverage).toMatchObject({ complete: false, checked: 10, pending: 111, checkpoint: '9', reason: 'time_budget' });
+  });
+  test('expiry before any read does not invent a persisted checkpoint', async () => {
+    const { deps, state } = makeDeps([], { timeBudgetMs: 0, now: () => 0 });
+    const result = await celoX402Indexer(deps);
+    expect(state.cursors).toEqual([]);
+    expect(result.coverage).toMatchObject({ complete: false, checked: 0, pending: 121, checkpoint: null, reason: 'time_budget' });
+  });
+  test('a saved cursor ahead of the observed head is not healthy', async () => {
+    const { deps } = makeDeps([], { getCursor: async () => ({ last_signature: '130', last_slot: 130 }) });
+    const result = await celoX402Indexer(deps);
+    expect(result.coverage).toMatchObject({ complete: false, checkpoint: '130', head: '120', unresolved: 1, reason: 'head_behind_cursor' });
+  });
+});
+
+describe('Celo scan cancellation', () => {
+  test('late log response after abort cannot start timestamp reads or writes', async () => {
+    const controller = new AbortController(); let timestamps = 0;
+    const { deps, state } = makeDeps([], {
+      signal: controller.signal,
+      getLogs: async () => { controller.abort(Error('scan_cancelled')); return [transfer({})]; },
+      blockTimestamp: async () => { timestamps++; return '2026-09-12T00:00:00Z'; },
+    });
+    await expect(celoX402Indexer(deps)).rejects.toThrow('scan_cancelled');
+    expect(timestamps).toBe(0); expect(state.inserted).toEqual([]); expect(state.cursors).toEqual([]);
+  });
+  test('abort during one timestamp prevents later queued detail reads', async () => {
+    const controller = new AbortController(); let timestamps = 0;
+    const { deps, state } = makeDeps([transfer({ block: 10n }), transfer({ block: 11n, txHash: '0xnext' })], {
+      signal: controller.signal,
+      blockTimestamp: async () => { timestamps++; controller.abort(Error('scan_cancelled')); return '2026-09-12T00:00:00Z'; },
+    });
+    await expect(celoX402Indexer(deps)).rejects.toThrow('scan_cancelled');
+    expect(timestamps).toBe(1); expect(state.inserted).toEqual([]); expect(state.cursors).toEqual([]);
+  });
+});

@@ -10,6 +10,8 @@ import { supabase } from '../db/client';
 import { calculateScore } from '../scoring';
 import { ALL_FACILITATOR_ADDRESSES, getFacilitatorName } from '../config/facilitators';
 
+const SEED_CHAIN = 'solana' as const;
+
 const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 function randomBase58(len: number): string {
@@ -150,17 +152,19 @@ async function seed() {
     if (facAddrs.length === 0) facAddrs.push(sigs[0].facilitator);
 
     const { error: walletErr } = await supabase.from('wallets').upsert({
+      chain: SEED_CHAIN,
       address: wallet,
       first_seen: daysAgo(ageDays),
       last_seen: daysAgo(Math.floor(rand(0, 2))),
       tx_count: sigs.length,
       score: 0,
       trust_tier: 'Unrated',
-    }, { onConflict: 'address' });
+    }, { onConflict: 'chain,address' });
 
     if (walletErr) { console.error(`wallet err:`, walletErr.message); continue; }
 
     const txRows = sigs.map((s, i) => ({
+      chain: SEED_CHAIN,
       wallet_address: wallet,
       facilitator: facAddrs[i % facAddrs.length],
       amount: parseFloat(rand(0.05, 60).toFixed(6)),
@@ -175,7 +179,7 @@ async function seed() {
       const batch = txRows.slice(i, i + 200);
       const { error: txErr } = await supabase
         .from('transactions')
-        .upsert(batch, { onConflict: 'tx_signature', ignoreDuplicates: true });
+        .upsert(batch, { onConflict: 'chain,tx_signature', ignoreDuplicates: true });
       if (txErr) { console.error(`tx err:`, txErr.message); break; }
     }
 
@@ -185,9 +189,10 @@ async function seed() {
       score: score.score,
       trust_tier: score.trustTier,
       tx_count: sigs.length,
-    }).eq('address', wallet);
+    }).eq('chain', SEED_CHAIN).eq('address', wallet);
 
     await supabase.from('scores').insert({
+      chain: SEED_CHAIN,
       wallet_address: wallet,
       score: score.score,
       success_rate: score.metrics.successRate,

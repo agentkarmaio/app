@@ -21,6 +21,11 @@ interface CopyVariant {
 
 function copyFor(chain: SupportedChain): CopyVariant {
   switch (chain) {
+    case 'arc-mainnet':
+      return {
+        title: 'Not indexed yet on Arc mainnet',
+        body: <><p>No Arc mainnet receipts have been indexed for this address. Mainnet coverage follows independently verified agent addresses.</p><p><Link href="/arc/mainnet" className="underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">View mainnet coverage</Link></p></>,
+      };
     case 'solana':
       return {
         title: 'Not indexed yet',

@@ -68,6 +68,8 @@ export const ADDRESS_CONCURRENCY = 4;
 
 /** Wall-clock ceiling for a run. Mirrors ARC_RUN_TIME_BUDGET_MS. */
 export const STELLAR_RUN_TIME_BUDGET_MS = 120_000;
+/** Account scheduling only; never used as a Horizon historical paging token. */
+export const STELLAR_TARGET_ROTATION_CURSOR_KEY = 'stellar-transfers:rotation';
 
 // ─── Horizon record shapes ────────────────────────────────────────────────────
 //
@@ -224,6 +226,7 @@ export function walkTargets(seed: ReadonlySet<string>): string[] {
 // ─── DI core ──────────────────────────────────────────────────────────────────
 
 export interface StellarTransfersDeps {
+  signal?: AbortSignal;
   /** Everything AK cares about — matched against both sides of a transfer. */
   seed: ReadonlySet<string>;
   /** Accounts whose Horizon feed is walked. Usually walkTargets(seed). */
@@ -241,6 +244,9 @@ export interface StellarTransfersDeps {
   ensureWallets: (addresses: string[]) => Promise<void>;
   getCursor: (key: string) => Promise<{ last_signature: string; last_slot: number | null } | null>;
   upsertCursor: (key: string, lastSignature: string, lastSlot?: number) => Promise<void>;
+  /** Fair scheduling checkpoint, separate from each account's history cursor. */
+  readTargetCheckpoint?: () => Promise<string | null>;
+  writeTargetCheckpoint?: (address: string) => Promise<void>;
   pageLimit?: number;
   maxPagesPerAddress?: number;
   concurrency?: number;
@@ -251,6 +257,15 @@ export interface StellarTransfersDeps {
 }
 
 export interface StellarTransfersRunResult extends IndexRunResult {
+  coverage: {
+    complete: boolean;
+    head?: string;
+    checkpoint?: string | null;
+    checked: number;
+    pending: number;
+    unresolved: number;
+    reason?: string;
+  };
   /** Seed addresses Horizon 404s on — a permanent, expected steady state. */
   absent: string[];
   /** Seed addresses whose walk errored for any other reason. */
@@ -266,7 +281,10 @@ export function stellarTransfersCursorKey(address: string): string {
 
 interface AddressOutcome {
   address: string;
-  status: 'ok' | 'absent' | 'failed';
+  status: 'ok' | 'absent' | 'failed' | 'pending';
+  /** True once a request or cursor read was attempted. */
+  checked: boolean;
+  complete: boolean;
   fetched: number;
   inserted: number;
   cursor?: string;
@@ -288,6 +306,10 @@ async function walkAddress(
   now: () => number,
   seenTxHashes: Set<string>,
 ): Promise<AddressOutcome> {
+  deps.signal?.throwIfAborted();
+  if (now() >= deadline) {
+    return { address, status: 'pending', checked: false, complete: false, fetched: 0, inserted: 0 };
+  }
   const pageLimit = deps.pageLimit ?? PAGE_LIMIT;
   const maxPages = deps.maxPagesPerAddress ?? MAX_PAGES_PER_ADDRESS;
   const cursorKey = stellarTransfersCursorKey(address);
@@ -295,39 +317,48 @@ async function walkAddress(
   let cursor: string | null = null;
   try {
     const persisted = await deps.getCursor(cursorKey);
+    deps.signal?.throwIfAborted();
     if (persisted?.last_signature) cursor = persisted.last_signature;
   } catch (err) {
+    deps.signal?.throwIfAborted();
     console.error(`[stellar-transfers] cursor read failed for ${address}:`, err);
-    return { address, status: 'failed', fetched: 0, inserted: 0 };
+    return { address, status: 'failed', checked: true, complete: false, fetched: 0, inserted: 0 };
   }
 
   const rows: Omit<Transaction, 'id'>[] = [];
   const signals: InsertSignalEventInput[] = [];
   const wallets = new Set<string>();
   let lastProcessedToken: string | null = null;
+  let complete = false;
+  let checked = false;
 
   for (let page = 0; page < maxPages; page++) {
+    deps.signal?.throwIfAborted();
     if (now() >= deadline) break;
 
     let records: HorizonPaymentRecord[];
     try {
+      checked = true;
       const result = await deps.fetchPayments(address, cursor, pageLimit);
+      deps.signal?.throwIfAborted();
       records = result.records;
     } catch (err) {
+      deps.signal?.throwIfAborted();
       if (isHorizonNotFound(err)) {
         // A registry agent can reference an account never funded on mainnet.
         // A permanent 404 is an expected steady state, not a failure — paging
         // on it every 6h forever was the 2026-08-26 incident.
-        return { address, status: 'absent', fetched: 0, inserted: 0 };
+        return { address, status: 'absent', checked: true, complete: true, fetched: 0, inserted: 0 };
       }
       console.error(`[stellar-transfers] page fetch failed for ${address}:`, err);
       // Keep nothing banked for this address: the cursor stays where it was.
-      return { address, status: 'failed', fetched: 0, inserted: 0 };
+      return { address, status: 'failed', checked: true, complete: false, fetched: 0, inserted: 0 };
     }
 
-    if (records.length === 0) break;
+    if (records.length === 0) { complete = true; break; }
 
     for (const record of records) {
+      deps.signal?.throwIfAborted();
       // Processed — whether or not it produced a row.
       lastProcessedToken = record.paging_token;
 
@@ -360,11 +391,11 @@ async function walkAddress(
 
     cursor = records[records.length - 1].paging_token;
     // A short page means the feed is exhausted.
-    if (records.length < pageLimit) break;
+    if (records.length < pageLimit) { complete = true; break; }
   }
 
   if (lastProcessedToken === null) {
-    return { address, status: 'ok', fetched: 0, inserted: 0 };
+    return { address, status: complete ? 'ok' : 'pending', checked, complete, fetched: 0, inserted: 0 };
   }
 
   let inserted = 0;
@@ -373,21 +404,34 @@ async function walkAddress(
       // FK: transactions references (chain, wallet_address) on wallets.
       // Insert-if-absent — never upsertWallet, which would zero live scores
       // (the 2026-08-02 clobber).
+      deps.signal?.throwIfAborted();
       await deps.ensureWallets([...wallets]);
+      deps.signal?.throwIfAborted();
       inserted = await deps.insertTransactions(rows);
+      deps.signal?.throwIfAborted();
       await deps.insertSignalEvents(signals);
+      deps.signal?.throwIfAborted();
     }
   } catch (err) {
+    deps.signal?.throwIfAborted();
     console.error(`[stellar-transfers] write failed for ${address}:`, err);
     // Cursor NOT advanced — the next run re-reads these records.
-    return { address, status: 'failed', fetched: 0, inserted: 0 };
+    return { address, status: 'failed', checked: true, complete: false, fetched: 0, inserted: 0 };
   }
 
   // last_slot stays undefined: a paging_token (~2.7e17) exceeds both an INTEGER
   // column and Number.MAX_SAFE_INTEGER, so storing it there would corrupt it.
-  await deps.upsertCursor(cursorKey, lastProcessedToken);
+  try {
+    deps.signal?.throwIfAborted();
+    await deps.upsertCursor(cursorKey, lastProcessedToken);
+    deps.signal?.throwIfAborted();
+  } catch (err) {
+    deps.signal?.throwIfAborted();
+    console.error(`[stellar-transfers] cursor write failed for ${address}:`, err);
+    return { address, status: 'failed', checked, complete: false, fetched: rows.length, inserted };
+  }
 
-  return { address, status: 'ok', fetched: rows.length, inserted, cursor: lastProcessedToken };
+  return { address, status: complete ? 'ok' : 'pending', checked, complete, fetched: rows.length, inserted, cursor: lastProcessedToken };
 }
 
 /**
@@ -397,10 +441,20 @@ async function walkAddress(
 export async function stellarTransfersIndexer(
   deps: StellarTransfersDeps,
 ): Promise<StellarTransfersRunResult> {
+  deps.signal?.throwIfAborted();
   const cursors = new Map<string, string>();
   const now = deps.now ?? Date.now;
   const deadline = deps.timeBudgetMs != null ? now() + deps.timeBudgetMs : Number.POSITIVE_INFINITY;
   const concurrency = deps.concurrency ?? ADDRESS_CONCURRENCY;
+  let targets = deps.walkTargets;
+  if (deps.readTargetCheckpoint) {
+    const checkpoint = await deps.readTargetCheckpoint();
+    deps.signal?.throwIfAborted();
+    const sorted = [...new Set(targets)].sort();
+    const next = checkpoint == null ? 0 : sorted.findIndex((address) => address > checkpoint);
+    const pivot = next < 0 ? 0 : next;
+    targets = [...sorted.slice(pivot), ...sorted.slice(0, pivot)];
+  }
 
   /**
    * Run-level, deliberately not per-address. `tx_signature` is UNIQUE, so at
@@ -417,11 +471,12 @@ export async function stellarTransfersIndexer(
   const seenTxHashes = new Set<string>();
 
   const outcomes = await withConcurrency(
-    deps.walkTargets,
+    targets,
     concurrency,
     (address) => walkAddress(deps, address, deadline, now, seenTxHashes),
   );
 
+  deps.signal?.throwIfAborted();
   let fetched = 0;
   let inserted = 0;
   const absent: string[] = [];
@@ -435,17 +490,40 @@ export async function stellarTransfersIndexer(
     if (outcome.cursor) cursors.set(stellarTransfersCursorKey(outcome.address), outcome.cursor);
   }
 
-  return { fetched, inserted, cursors, absent, failed, walked: deps.walkTargets.length };
+  // Scheduling is independent of historical progress: an attempted account
+  // rotates even when it failed, so one slow broken feed cannot starve the
+  // others. Failure stays explicit and its historical cursor stays held.
+  // An unattempted account never becomes a scheduling checkpoint.
+  const lastChecked = outcomes.filter((o) => o.checked).at(-1);
+  if (lastChecked && deps.writeTargetCheckpoint) await deps.writeTargetCheckpoint(lastChecked.address);
+  deps.signal?.throwIfAborted();
+  const checked = outcomes.filter((o) => o.checked).length;
+  const pending = outcomes.filter((o) => o.status === 'pending').length;
+  const allAbsent = checked > 0 && absent.length === checked && pending === 0;
+  const unresolved = allAbsent ? absent.length : failed.length;
+  const reason = targets.length === 0 ? 'empty_seed'
+    : allAbsent ? 'all_absent'
+      : failed.length > 0 ? 'address_failure'
+        : pending > 0 ? 'scan_limit' : undefined;
+  return {
+    fetched, inserted, cursors, absent, failed, walked: checked,
+    coverage: {
+      complete: targets.length > 0 && pending === 0 && unresolved === 0,
+      checked, pending, unresolved, ...(lastChecked ? { checkpoint: lastChecked.address } : {}), ...(reason ? { reason } : {}),
+    },
+  };
 }
 
 // ─── Production wiring ────────────────────────────────────────────────────────
 
 /** Read the seed set's two DB sources. Mainnet chain key only. */
-export async function loadStellarSeedSet(): Promise<Set<string>> {
+export async function loadStellarSeedSet(signal?: AbortSignal): Promise<Set<string>> {
+  signal?.throwIfAborted();
   const { data: registryRows, error: registryErr } = await supabase
     .from('erc8004_agents')
     .select('owner,agent_wallet')
     .eq('chain', STELLAR_CHAIN);
+  signal?.throwIfAborted();
   if (registryErr) throw registryErr;
 
   // The two marker columns come back with the address so buildStellarSeedSet
@@ -454,6 +532,7 @@ export async function loadStellarSeedSet(): Promise<Set<string>> {
     .from('wallets')
     .select('address,claimed,stellar_agent_id')
     .eq('chain', STELLAR_CHAIN);
+  signal?.throwIfAborted();
   if (walletErr) throw walletErr;
 
   return buildStellarSeedSet({
@@ -467,7 +546,9 @@ async function horizonFetchPayments(
   address: string,
   cursor: string | null,
   limit: number,
+  signal?: AbortSignal,
 ): Promise<{ records: HorizonPaymentRecord[] }> {
+  signal?.throwIfAborted();
   const base = resolveHorizonUrl();
   const url = new URL(`${base}/accounts/${address}/payments`);
   url.searchParams.set('limit', String(limit));
@@ -476,8 +557,9 @@ async function horizonFetchPayments(
 
   const res = await fetch(url.toString(), {
     headers: { accept: 'application/json' },
-    signal: AbortSignal.timeout(15_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
   });
+  signal?.throwIfAborted();
   if (!res.ok) {
     // Status-tagged so isHorizonNotFound() can branch on 404 without matching
     // message text (the 2026-08-26 fix).
@@ -486,10 +568,12 @@ async function horizonFetchPayments(
     });
   }
   const body = (await res.json()) as { _embedded?: { records?: HorizonPaymentRecord[] } };
+  signal?.throwIfAborted();
   return { records: body._embedded?.records ?? [] };
 }
 
 export interface RunStellarTransfersOptions {
+  signal?: AbortSignal;
   maxPagesPerAddress?: number;
   concurrency?: number;
   /** Swap in counting no-ops for a read-only dry run. */
@@ -505,10 +589,12 @@ export interface RunStellarTransfersOptions {
 export async function runStellarTransfersIndexer(
   opts: RunStellarTransfersOptions = {},
 ): Promise<StellarTransfersRunResult> {
+  opts.signal?.throwIfAborted();
   const sac = getStellarUsdcSac('pubnet');
-  const seed = await loadStellarSeedSet();
+  const seed = await loadStellarSeedSet(opts.signal);
 
   return stellarTransfersIndexer({
+    signal: opts.signal,
     seed,
     walkTargets: walkTargets(seed),
     asset: { code: 'USDC', issuer: USDC_ISSUER.pubnet },
@@ -516,7 +602,7 @@ export async function runStellarTransfersIndexer(
     maxPagesPerAddress: opts.maxPagesPerAddress,
     concurrency: opts.concurrency,
     timeBudgetMs: STELLAR_RUN_TIME_BUDGET_MS,
-    fetchPayments: horizonFetchPayments,
+    fetchPayments: (address, cursor, limit) => horizonFetchPayments(address, cursor, limit, opts.signal),
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
     // Insert-if-absent: never zeroes an existing wallet's live score.
@@ -526,6 +612,8 @@ export async function runStellarTransfersIndexer(
       return c ? { last_signature: c.last_signature, last_slot: c.last_slot } : null;
     },
     upsertCursor: async (key, last, slot) => { await dbUpsertCursor(key, last, slot, STELLAR_CHAIN); },
+    readTargetCheckpoint: async () => (await dbGetCursor(STELLAR_TARGET_ROTATION_CURSOR_KEY, STELLAR_CHAIN))?.last_signature ?? null,
+    writeTargetCheckpoint: (address) => dbUpsertCursor(STELLAR_TARGET_ROTATION_CURSOR_KEY, address, undefined, STELLAR_CHAIN),
     ...opts.overrides,
   });
 }

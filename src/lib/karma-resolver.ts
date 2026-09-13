@@ -21,6 +21,8 @@ import { calculateScore } from '@/scoring/index';
 import { hasProviderSignal, storedProviderHasSignal, storedConsumerHasSignal } from '@/lib/face-signal';
 import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy } from '@/scoring/autonomy';
+import { computeAgentLiveBundle } from '@/scoring/live-agent-score';
+import type { ArcMainnetReceiptScore } from '@/scoring/arc-mainnet-receipts';
 import { readAttestation } from '@/integrations/attestation';
 import { canonicalAddress } from '@/lib/chain-detect';
 import { isStellarAccount } from '@/config/stellar-x402';
@@ -95,6 +97,7 @@ export interface KarmaSnapshot {
   // Top-level convenience badge — mirrors `provider.confidenceBadge` because
   // the provider face is the canonical "is this agent trustworthy" surface.
   found: boolean;
+  receiptEvidence?: ArcMainnetReceiptScore['evidence'];
 }
 
 export const SNAPSHOT_NOT_FOUND = Symbol('karma_not_found');
@@ -105,32 +108,50 @@ export const SNAPSHOT_NOT_FOUND = Symbol('karma_not_found');
  * Returns `null` when the wallet has neither a `wallets` row NOR any indexed
  * transactions. Callers should treat that as 404.
  */
-export async function resolveKarma(rawWallet: string): Promise<KarmaSnapshot | null> {
+export async function resolveKarma(rawWallet: string, network?: Chain): Promise<KarmaSnapshot | null> {
   // Public entry point: normalize once so MCP / A2A callers get the same row
   // the v2 route does for a checksummed EVM input (rows are stored lowercase).
   const wallet = canonicalAddress(rawWallet);
   // Stellar addresses are format-unique. A known Stellar row must not disappear
   // because the generic DB helper defaults to the Solana composite key.
-  const chain = isStellarAccount(wallet) ? 'stellar' : 'solana';
+  const chain = network ?? (isStellarAccount(wallet) ? 'stellar' : 'solana');
+  if (chain === 'arc-mainnet') {
+    const [walletRow, bundle] = await Promise.all([getWallet(wallet, chain), computeAgentLiveBundle(wallet, chain)]);
+    const receipt = bundle.receiptScore!;
+    if (!walletRow && !receipt.txCount) return null;
+    const autonomy = bundle.autonomy;
+    return {
+      address: wallet, found: true,
+      identity: walletRow?.claimed ? { claimed: true, displayName: walletRow.display_name,
+        description: walletRow.description, website: walletRow.website, category: walletRow.category } : { claimed: false },
+      txCount: receipt.txCount, lastActive: receipt.lastActive,
+      provider: receipt.provider, consumer: receipt.consumer,
+      confidenceBadge: receipt.provider.confidenceBadge, receiptEvidence: receipt.evidence,
+      autonomy: { score: autonomy?.score ?? null, label: autonomy?.label ?? null,
+        signals: autonomy?.components as unknown as Record<string, number | null> ?? null,
+        effectiveWeights: autonomy?.effectiveWeights as unknown as Record<string, number> ?? null,
+        txCount: autonomy?.txCount ?? 0, lastUpdated: receipt.lastActive },
+    };
+  }
   const [walletRow, transactions, signalEvents] = await Promise.all([
     getWallet(wallet, chain),
-    getTransactions(wallet, 1000),
-    getSignalEventsForWallet(wallet, 200).catch(() => [] as SignalEvent[]),
+    getTransactions(wallet, 1000, 0, chain),
+    getSignalEventsForWallet(wallet, 200, chain).catch(() => [] as SignalEvent[]),
   ]);
 
   if (!walletRow && transactions.length === 0) return null;
 
   let feedback = { deliveryRate: 0, total: 0 };
-  try { feedback = await getFeedbackSummary(wallet); } catch { /* ok */ }
+  try { feedback = await getFeedbackSummary(wallet, chain); } catch { /* ok */ }
 
   const [attestation, manifestMap] = await Promise.all([
     // Stellar's aggregate is AK's own published score, not receipt provenance.
     // Expose that readback separately in MCP/A2A; never recycle it into Tier 1.
     // Verified receipt signal events still enter calculateScore independently.
-    chain === 'stellar'
+    chain !== 'solana'
       ? Promise.resolve(0)
       : readAttestation(wallet).catch(() => 0),
-    getLatestSignalValues([wallet], 'manifest').catch(() => new Map<string, number>()),
+    getLatestSignalValues([wallet], 'manifest', chain).catch(() => new Map<string, number>()),
   ]);
 
   const cadence = transactions.length > 0
@@ -382,10 +403,10 @@ export interface AttestationsBundle {
   }>;
 }
 
-export async function resolveAttestations(wallet: string, limit = 50): Promise<AttestationsBundle> {
+export async function resolveAttestations(wallet: string, limit = 50, chain: Chain = 'solana'): Promise<AttestationsBundle> {
   const [erc8004Score, events] = await Promise.all([
-    readAttestation(wallet).catch(() => 0),
-    getSignalEventsForWallet(wallet, limit).catch(() => [] as SignalEvent[]),
+    chain === 'solana' ? readAttestation(wallet).catch(() => 0) : Promise.resolve(0),
+    getSignalEventsForWallet(wallet, limit, chain).catch(() => [] as SignalEvent[]),
   ]);
 
   // Tier 1 + Tier 3 = the attested signal surface. Tier 2 is behavioral, Tier 4
@@ -546,6 +567,7 @@ export async function resolveEvmKarma(
   chain: 'celo' | 'arc',
   walletRow: Wallet | null,
 ): Promise<EvmKarmaSnapshot | null> {
+  if (chain !== 'celo' && chain !== 'arc') return null;
   if (!walletRow) return null;
   const address = canonicalAddress(rawAddress, chain);
 

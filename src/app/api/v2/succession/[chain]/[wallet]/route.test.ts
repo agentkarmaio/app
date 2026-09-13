@@ -19,12 +19,12 @@ function req(): NextRequest {
 const params = (chain: string, wallet: string) =>
   ({ params: Promise.resolve({ chain, wallet }) });
 
-function makeFake(succession: unknown, txs: unknown[]) {
+function makeFake(succession: unknown, txs: unknown[], filters: string[] = []) {
   return {
     from(table: string) {
       const builder: Record<string, unknown> = {};
       builder.select = () => builder;
-      builder.eq = () => builder;
+      builder.eq = (column: string, value: unknown) => { filters.push(`${table}.${column}=${value}`); return builder; };
       builder.order = () => builder;
       builder.limit = async () => ({ data: txs, error: null });
       builder.maybeSingle = async () => ({ data: succession, error: null });
@@ -48,6 +48,14 @@ describe('GET /api/v2/succession/[chain]/[wallet] guard', () => {
 });
 
 describe('GET /api/v2/succession/[chain]/[wallet] behavior', () => {
+  test('heartbeat reads are isolated to the requested EVM network', async () => {
+    const filters: string[] = [];
+    __setSupabaseForTest(makeFake({ chain: 'arc-mainnet', interval_seconds: 86400, status: 'declared', heirs: [], last_heartbeat_at: null }, [], filters));
+    await GET(req(), params('arc-mainnet', '0x558e7bfaf2cf1a494f44e50d92431afc060c9d12'));
+    expect(filters).toContain('transactions.chain=arc-mainnet');
+    expect(filters).not.toContain('transactions.chain=solana');
+    __setSupabaseForTest(null);
+  });
   test('no declared will → 404', async () => {
     __setSupabaseForTest(makeFake(null, []));
     const res = await GET(req(), params('solana', SOLANA));

@@ -2,7 +2,7 @@
  * Read-only liveness census: how many wallets fall in each `LivenessStatus`
  * bucket, per chain, plus the observed-liveness invariant check.
  *
- * Run this BEFORE and AFTER `drizzle/0019_backfill_observed_last_seen.sql` so
+ * Run this BEFORE and AFTER `drizzle/0022_backfill_observed_last_seen.sql` so
  * the re-bucketing is a measured fact rather than an expectation. Before the
  * backfill the buckets describe indexer cadence; after, they describe agents.
  *

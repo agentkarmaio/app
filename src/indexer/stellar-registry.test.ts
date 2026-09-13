@@ -226,3 +226,26 @@ describe('scanStellarRegistry', () => {
     expect(res.errors[0].agentId).toBe(1);
   });
 });
+
+describe('registry cancellation', () => {
+  test('an already aborted scan makes no registry RPC request', async () => {
+    const controller = new AbortController(); controller.abort(Error('stop_registry'));
+    let calls = 0;
+    const base = fakeReader({});
+    await expect(scanStellarRegistry({ signal: controller.signal, reader: {
+      ...base, totalAgents: async () => { calls++; return 1; },
+    } })).rejects.toThrow('stop_registry');
+    expect(calls).toBe(0);
+  });
+  test('abort after an existence read is not swallowed as a missing agent', async () => {
+    const controller = new AbortController();
+    const base = fakeReader({});
+    let exists = 0; let reads = 0;
+    await expect(scanStellarRegistry({ signal: controller.signal, concurrency: 1, to: 10, reader: {
+      ...base,
+      exists: async () => { exists++; controller.abort(Error('stop_registry')); return false; },
+      read: async (id) => { reads++; return base.read(id); },
+    } })).rejects.toThrow('stop_registry');
+    expect(exists).toBe(1); expect(reads).toBe(0);
+  });
+});

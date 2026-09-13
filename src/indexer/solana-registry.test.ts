@@ -215,3 +215,40 @@ describe('scanSolanaRegistry', () => {
     expect(seen).toEqual([2, 4, 6, 6]);
   });
 });
+
+describe('registry cancellation and finite failure budget', () => {
+  test('persistent page failures stop after three offsets rather than walking forever', async () => {
+    let calls = 0;
+    const result = await scanSolanaRegistry({
+      reader: { page: async () => { if (++calls <= 10) throw new Error('upstream 503'); return []; } },
+      retries: 0,
+    });
+    expect(calls).toBe(3);
+    expect(result.errors).toHaveLength(3);
+    expect(result.pagesFetched).toBe(3);
+  });
+  test('an already aborted scan makes no page request', async () => {
+    const controller = new AbortController(); controller.abort(Error('stop_registry'));
+    let calls = 0;
+    await expect(scanSolanaRegistry({ signal: controller.signal, reader: { page: async () => { calls++; return []; } } })).rejects.toThrow('stop_registry');
+    expect(calls).toBe(0);
+  });
+  test('abort during a page read prevents mapping and subsequent page requests', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    await expect(scanSolanaRegistry({
+      signal: controller.signal, pageSize: 1,
+      reader: { page: async () => { calls++; controller.abort(Error('stop_registry')); return calls === 1 ? [row()] : []; } },
+    })).rejects.toThrow('stop_registry');
+    expect(calls).toBe(1);
+  });
+  test('abort during a throttled request prevents another retry request', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    await expect(scanSolanaRegistry({
+      signal: controller.signal, retries: 2, baseMs: 1, jitter: false,
+      reader: { page: async () => { calls++; if (calls > 1) return []; controller.abort(Error('stop_registry')); throw Error('429'); } },
+    })).rejects.toThrow('stop_registry');
+    expect(calls).toBe(1);
+  });
+});

@@ -8,7 +8,7 @@
 import { sql } from 'drizzle-orm';
 import {
   pgTable, text, timestamp, integer, numeric, boolean, uuid, index, uniqueIndex, jsonb,
-  primaryKey, foreignKey, bigint,
+  primaryKey, foreignKey, bigint, check,
 } from 'drizzle-orm/pg-core';
 
 // ─── Chain dimension ─────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ import {
 // the durable correctness guarantee — never auto-detect an EVM chain from the
 // address (see lib/chain-detect.ts).
 
-export const CHAINS = ['solana', 'celo', 'stellar', 'arc'] as const;
+export const CHAINS = ['solana', 'celo', 'stellar', 'arc', 'arc-mainnet'] as const;
 export type Chain = (typeof CHAINS)[number];
 export const DEFAULT_CHAIN: Chain = 'solana';
 
@@ -218,10 +218,10 @@ export const transactionsTable = pgTable('transactions', {
    * Spec (incl. the pending canonical-meaning decision):
    * docs/superpowers/specs/2026-09-11-transaction-amount-semantics.md
    */
-  amount:         numeric('amount', { precision: 20, scale: 6 }).notNull().default('0'),
+  amount:         numeric('amount', { precision: 38, scale: 18 }).notNull().default('0'),
   timestamp:      timestamp('timestamp', { withTimezone: true }).notNull(),
   success:        boolean('success').notNull().default(true),
-  tx_signature:   text('tx_signature').unique().notNull(),
+  tx_signature:   text('tx_signature').notNull(),
   // Payee / resource-server address (the actual counterparty), distinct from the
   // facilitator that routed the payment. Nullable: legacy rows + chains where the
   // payee is not yet extracted fall back to `facilitator` in scoring. Populated
@@ -233,6 +233,7 @@ export const transactionsTable = pgTable('transactions', {
     foreignColumns: [walletsTable.chain, walletsTable.address],
     name: 'transactions_chain_wallet_address_fkey',
   }).onDelete('cascade'),
+  uniqueIndex('transactions_chain_tx_signature_unique').on(table.chain, table.tx_signature),
   index('idx_transactions_chain_wallet_address').on(table.chain, table.wallet_address),
   index('idx_transactions_facilitator').on(table.facilitator),
   index('idx_transactions_counterparty').on(table.counterparty),
@@ -1009,3 +1010,37 @@ export interface IndexerCursor {
   last_slot: number | null;
   updated_at: string;
 }
+
+// Operational state only. indexer_cursors remains authoritative for ingestion
+// progress; a failed run must not replace the last successful health checkpoint.
+export const indexingStateTable = pgTable('indexing_state', {
+  chain: text('chain').notNull().$type<Chain>(),
+  path: text('path').notNull().$type<'payments' | 'escrow' | 'transfers' | 'registry'>(),
+  enabled: boolean('enabled').notNull().default(true),
+  status: text('status').$type<'caught_up' | 'catching_up' | 'dormant' | 'failed'>(),
+  last_attempt_at: timestamp('last_attempt_at', { withTimezone: true }),
+  last_success_at: timestamp('last_success_at', { withTimezone: true }),
+  last_finished_at: timestamp('last_finished_at', { withTimezone: true }),
+  error_code: text('error_code'),
+  checkpoint: text('checkpoint'),
+  head: text('head'),
+  checked_count: integer('checked_count').notNull().default(0),
+  pending_count: integer('pending_count').notNull().default(0),
+  inserted_count: integer('inserted_count').notNull().default(0),
+  unresolved_count: integer('unresolved_count').notNull().default(0),
+  gaps_count: integer('gaps_count').notNull().default(0),
+  interval_ms: integer('interval_ms').notNull(),
+  owner: uuid('owner'),
+  lease_until: timestamp('lease_until', { withTimezone: true }),
+  generation: integer('generation').notNull().default(0),
+}, (table) => [
+  primaryKey({ columns: [table.chain, table.path], name: 'indexing_state_pkey' }),
+  check('indexing_state_chain_check', sql`${table.chain} IN ('solana', 'arc', 'celo', 'stellar', 'arc-mainnet')`),
+  check('indexing_state_path_check', sql`${table.path} IN ('payments', 'escrow', 'transfers', 'registry')`),
+  check('indexing_state_status_check', sql`${table.status} IS NULL OR ${table.status} IN ('caught_up', 'catching_up', 'dormant', 'failed')`),
+  check('indexing_state_counts_check', sql`${table.checked_count} >= 0 AND ${table.pending_count} >= 0 AND ${table.inserted_count} >= 0 AND ${table.unresolved_count} >= 0 AND ${table.gaps_count} >= 0 AND ${table.generation} >= 0`),
+  check('indexing_state_interval_check', sql`${table.interval_ms} BETWEEN 1000 AND 604800000`),
+  check('indexing_state_owner_check', sql`(${table.owner} IS NULL) = (${table.lease_until} IS NULL)`),
+  check('indexing_state_error_check', sql`${table.error_code} IS NULL OR ${table.error_code} ~ '^[a-z][a-z0-9_]{0,63}$'`),
+  check('indexing_state_checkpoint_check', sql`length(${table.checkpoint}) <= 512 AND length(${table.head}) <= 512`),
+]).enableRLS();

@@ -38,6 +38,10 @@ export async function POST(request: NextRequest) {
     message?: string;
   };
 
+  if (chain === 'arc-mainnet') {
+    return NextResponse.json({ error: 'Arc mainnet ownership changes are not enabled' }, { status: 501 });
+  }
+
   if (!address || !chain || !signature || !message) {
     return NextResponse.json(
       { error: 'Missing required fields: address, chain, signature, message' },

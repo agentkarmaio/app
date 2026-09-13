@@ -8,6 +8,9 @@
  *   --backfill  Ignore stored cursors and fetch historical data
  */
 
+import { runIndexerCli } from './managed-cli';
+import { coverageOutcome } from '@/lib/indexing-jobs';
+
 import { runIndexer } from './index';
 
 const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
@@ -21,12 +24,21 @@ console.log(`[indexer] RPC: ${process.env.HELIUS_RPC_URL ? 'Helius' : process.en
 
 const start = Date.now();
 
-runIndexer(limit, { backfill })
-  .then((result) => {
+runIndexerCli({
+  chain: 'solana', path: 'payments', dryRun: false,
+  run: async (signal) => runIndexer(limit, { backfill, signal }),
+  summarize: (result) => coverageOutcome(result.coverage, result.inserted),
+})
+  .then(({ result, status, exitCode, errorCode }) => {
+    if (!result) {
+      console.log(`[indexer] ${status}${errorCode ? ` (${errorCode})` : ''} — no scan result`);
+      process.exit(exitCode);
+    }
+    console.log(`[indexer] managed status: ${status}`);
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     console.log(`\n[indexer] Done in ${elapsed}s`);
     console.log(`[indexer] Fetched: ${result.fetched} | Inserted: ${result.inserted} | Scored: ${result.scored}`);
-    process.exit(0);
+    process.exit(exitCode);
   })
   .catch((err) => {
     console.error('[indexer] Fatal error:', err);

@@ -27,7 +27,7 @@ import {
   getOrganizationMembers,
 } from './client';
 import { CacheTags, type CacheTag } from './cache-tags';
-import type { TrustTier } from './schema';
+import type { TrustTier, Chain } from './schema';
 import { computeAgentLiveBundle, type AgentLiveBundle } from '@/scoring/live-agent-score';
 import { resolveAgentCardFields } from '@/lib/agent-card-fields';
 import {
@@ -80,14 +80,17 @@ export const cachedLeaderboardEntries = defineCache(
   async () => {
     const page = await getLeaderboard(25, 0, {}, { withCount: false });
     const wallets = page.wallets;
-    const addresses = wallets.map((w) => w.address);
-    const [deliveryMap, historyMap] = await Promise.all([
-      getFeedbackSummariesForWallets(addresses),
-      getScoreHistoriesForWallets(addresses),
-    ]);
+    const perNetwork = new Map(await Promise.all([...new Set(wallets.map(w => w.chain))].map(async chain => {
+      const addresses = wallets.filter(w => w.chain === chain).map(w => w.address);
+      const [delivery, history] = await Promise.all([
+        getFeedbackSummariesForWallets(addresses, chain),
+        getScoreHistoriesForWallets(addresses, 30, 30, chain),
+      ]);
+      return [chain, { delivery, history }] as const;
+    })));
     return wallets.map((w, i) => {
-      const delivery = deliveryMap.get(w.address) ?? null;
-      const history = historyMap.get(w.address) ?? [];
+      const delivery = perNetwork.get(w.chain)?.delivery.get(w.address) ?? null;
+      const history = perNetwork.get(w.chain)?.history.get(w.address) ?? [];
       return {
         rank: i + 1,
         address: w.address,
@@ -108,7 +111,7 @@ export const cachedLeaderboardEntries = defineCache(
       };
     });
   },
-  { key: 'leaderboard-entries-v2', tag: CacheTags.Leaderboard, revalidate: 30 },
+  { key: 'leaderboard-entries-v3-network', tag: CacheTags.Leaderboard, revalidate: 30 },
 );
 
 export const cachedFacilitatorStats = defineCache(() => getFacilitatorStats(), {
@@ -146,15 +149,15 @@ export async function getCachedWalletTierMap(
  * /agent/[wallet]; caching it per-wallet is what makes profile navigation
  * fast on repeat visits. 60s matches the leaderboard/stats staleness budget.
  */
-export const cachedAgentLiveBundle: (wallet: string) => Promise<AgentLiveBundle> = defineCache(
-  (wallet: string) => computeAgentLiveBundle(wallet),
-  { key: 'agent-live-bundle', tag: CacheTags.AgentProfile, revalidate: 60 },
+export const cachedAgentLiveBundle: (wallet: string, chain?: Chain) => Promise<AgentLiveBundle> = defineCache(
+  (wallet: string, chain: Chain = 'solana') => computeAgentLiveBundle(wallet, chain),
+  { key: 'agent-live-bundle-v2-network', tag: CacheTags.AgentProfile, revalidate: 60 },
 );
 
 /** Shared unfurl fields for generateMetadata + the OG image (2-3 DB reads). */
 export const cachedAgentCardFields = defineCache(
-  (wallet: string, agentId: number | null) => resolveAgentCardFields(wallet, { agentId }),
-  { key: 'agent-card-fields', tag: CacheTags.AgentProfile, revalidate: 60 },
+  (wallet: string, agentId: number | null, chain?: Chain) => resolveAgentCardFields(wallet, { agentId, chain }),
+  { key: 'agent-card-fields-v2-network', tag: CacheTags.AgentProfile, revalidate: 60 },
 );
 
 // --- EVM on-chain profile reads (Celo/Arc) -----------------------------------
@@ -178,6 +181,7 @@ interface EvmOnchainJson {
 
 const cachedEvmAgentOnchainJson = defineCache(
   async (chain: 'celo' | 'arc', agentId: number): Promise<EvmOnchainJson> => {
+    if (chain !== 'celo' && chain !== 'arc') throw new Error('Registry network unsupported');
     const [agent, feedback] = chain === 'celo'
       ? await Promise.all([
           readCeloAgent(BigInt(agentId)).catch(() => null),

@@ -573,3 +573,148 @@ describe('resilience', () => {
     expect(state.signals.map((s) => s.face).sort()).toEqual(['consumer', 'provider']);
   });
 });
+
+// Regression: expiry before an account's first request was counted as walked.
+describe('coverage describes the accounts actually checked', () => {
+  test('a spent budget leaves unvisited accounts pending, never walked', async () => {
+    let elapsed = 0;
+    const { deps, state } = makeDeps({}, {
+      concurrency: 1,
+      timeBudgetMs: 10,
+      now: () => elapsed,
+      fetchPayments: async () => { elapsed = 10; return { records: [] }; },
+    });
+    const result = await stellarTransfersIndexer(deps);
+    expect(result.walked).toBe(1);
+    expect(result.coverage).toMatchObject({ complete: false, checked: 1, pending: 2, unresolved: 0 });
+    expect(state.cursors).toEqual([]);
+  });
+
+  test('a full final page is incomplete until a later run exhausts the feed', async () => {
+    const { deps } = makeDeps({ [AGENT_A]: [CLASSIC_PAYMENT] }, {
+      walkTargets: [AGENT_A], pageLimit: 1, maxPagesPerAddress: 1,
+    });
+    const result = await stellarTransfersIndexer(deps);
+    expect(result.coverage).toMatchObject({ complete: false, checked: 1, pending: 1, unresolved: 0 });
+    expect(result.cursors.get(stellarTransfersCursorKey(AGENT_A))).toBe(CLASSIC_PAYMENT.paging_token);
+  });
+
+  test('empty feeds are checked and complete without inventing a cursor', async () => {
+    const { deps, state } = makeDeps({});
+    const result = await stellarTransfersIndexer(deps);
+    expect(result.coverage).toMatchObject({ complete: true, checked: 3, pending: 0, unresolved: 0 });
+    expect(state.cursors).toEqual([]);
+  });
+
+  test('failed cursor persistence is local to an address; remaining targets run', async () => {
+    const { deps } = makeDeps({ [AGENT_A]: [CLASSIC_PAYMENT] }, {
+      upsertCursor: async () => { throw new Error('cursor unavailable'); },
+    });
+    const result = await stellarTransfersIndexer(deps);
+    expect(result.failed).toEqual([AGENT_A]);
+    expect(result.coverage).toMatchObject({ complete: false, checked: 3, pending: 0, unresolved: 1 });
+  });
+});
+
+describe('fair persistent account rotation', () => {
+  test('a slow early account does not starve later targets on subsequent runs', async () => {
+    let elapsed = 0;
+    let checkpoint: string | null = null;
+    const visited: string[] = [];
+    const { deps } = makeDeps({}, {
+      walkTargets: [AGENT_A, AGENT_B], concurrency: 1, timeBudgetMs: 10, now: () => elapsed,
+      readTargetCheckpoint: async () => checkpoint,
+      writeTargetCheckpoint: async (address) => { checkpoint = address; },
+      fetchPayments: async (address) => { visited.push(address); elapsed = 10; return { records: [] }; },
+    });
+    const first = await stellarTransfersIndexer(deps);
+    expect(first.coverage.pending).toBe(1);
+    elapsed = 0;
+    await stellarTransfersIndexer(deps);
+    expect(visited).toEqual([AGENT_A, AGENT_B]);
+    expect(await deps.readTargetCheckpoint!()).toBe(AGENT_B);
+  });
+  test('rotation is keyed by address so removing the previous target cannot shift the next one', async () => {
+    let elapsed = 0;
+    const visited: string[] = [];
+    const { deps } = makeDeps({}, {
+      // AGENT_C sorts before A; B after A. A was removed since the last run.
+      walkTargets: [AGENT_C, AGENT_B], concurrency: 1, timeBudgetMs: 10, now: () => elapsed,
+      readTargetCheckpoint: async () => AGENT_A, writeTargetCheckpoint: async () => {},
+      fetchPayments: async (address) => { visited.push(address); elapsed = 10; return { records: [] }; },
+    });
+    await stellarTransfersIndexer(deps);
+    expect(visited).toEqual([AGENT_B]);
+  });
+  test('new targets before the checkpoint are included after wrapping', async () => {
+    const visited: string[] = [];
+    const { deps } = makeDeps({}, {
+      walkTargets: [AGENT_C, AGENT_A, AGENT_B], concurrency: 1,
+      readTargetCheckpoint: async () => AGENT_A, writeTargetCheckpoint: async () => {},
+      fetchPayments: async (address) => { visited.push(address); return { records: [] }; },
+    });
+    await stellarTransfersIndexer(deps);
+    expect(visited).toEqual([AGENT_B, AGENT_C, AGENT_A]);
+  });
+  test('a failed attempted account rotates fairly while its history stays unadvanced', async () => {
+    const checkpoints: string[] = [];
+    const { deps } = makeDeps({ [AGENT_A]: [CLASSIC_PAYMENT] }, {
+      walkTargets: [AGENT_A],
+      readTargetCheckpoint: async () => null,
+      writeTargetCheckpoint: async (address) => { checkpoints.push(address); },
+      insertTransactions: async () => { throw new Error('write unavailable'); },
+    });
+    const result = await stellarTransfersIndexer(deps);
+    expect(result.failed).toEqual([AGENT_A]);
+    expect(checkpoints).toEqual([AGENT_A]);
+    expect(result.cursors.size).toBe(0);
+    expect(result.coverage.unresolved).toBe(1);
+  });
+});
+
+
+test('a consistently failing first account cannot starve healthy later accounts', async () => {
+  let elapsed = 0;
+  let checkpoint: string | null = null;
+  const visited: string[] = [];
+  const { deps, state } = makeDeps({}, {
+    walkTargets: [AGENT_A, AGENT_B], concurrency: 1, timeBudgetMs: 10, now: () => elapsed,
+    readTargetCheckpoint: async () => checkpoint,
+    writeTargetCheckpoint: async (address) => { checkpoint = address; },
+    fetchPayments: async (address) => {
+      visited.push(address); elapsed = 10;
+      if (address === AGENT_A) throw new Error('Horizon unavailable for A');
+      return { records: [] };
+    },
+  });
+  const first = await stellarTransfersIndexer(deps);
+  expect(first.failed).toEqual([AGENT_A]);
+  expect(first.coverage).toMatchObject({ complete: false, unresolved: 1, pending: 1 });
+  expect(state.cursors).toEqual([]);
+  elapsed = 0;
+  await stellarTransfersIndexer(deps);
+  expect(visited).toEqual([AGENT_A, AGENT_B]);
+  expect(await deps.readTargetCheckpoint!()).toBe(AGENT_B);
+});
+
+describe('Stellar transfer cancellation', () => {
+  test('late Horizon page after abort starts no further account calls or writes', async () => {
+    const controller = new AbortController(); let calls = 0;
+    const { deps, state } = makeDeps({}, {
+      signal: controller.signal, concurrency: 1,
+      fetchPayments: async () => { calls++; controller.abort(Error('scan_cancelled')); return { records: [CLASSIC_PAYMENT] }; },
+    });
+    await expect(stellarTransfersIndexer(deps)).rejects.toThrow('scan_cancelled');
+    expect(calls).toBe(1); expect(state.inserted).toEqual([]); expect(state.cursors).toEqual([]);
+  });
+  test('abort plus 404 is cancellation, never an absent account or successful rotation', async () => {
+    const controller = new AbortController(); const rotations: string[] = [];
+    const { deps } = makeDeps({}, {
+      signal: controller.signal, concurrency: 1,
+      writeTargetCheckpoint: async (address) => { rotations.push(address); },
+      fetchPayments: async () => { controller.abort(Error('scan_cancelled')); throw Object.assign(Error('404'), { status: 404 }); },
+    });
+    await expect(stellarTransfersIndexer(deps)).rejects.toThrow('scan_cancelled');
+    expect(rotations).toEqual([]);
+  });
+});

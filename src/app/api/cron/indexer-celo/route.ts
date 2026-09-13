@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runCeloX402Indexer } from '@/indexer/celo-x402';
+import { createIndexingJob, runManagedIndexingTask, coverageOutcome } from '@/lib/indexing-jobs';
 import { celoX402FacilitatorSetWithDiscovered } from '@/config/celo-x402';
 
 export const dynamic = 'force-dynamic';
@@ -70,14 +71,20 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const result = await runCeloX402Indexer({ windowSize, maxWindows });
+    let result: Awaited<ReturnType<typeof runCeloX402Indexer>> | undefined;
+    const indexing = await runManagedIndexingTask({ ...createIndexingJob('celo','payments'), run: async (signal) => {
+      result = await runCeloX402Indexer({windowSize,maxWindows,signal});
+      return coverageOutcome(result.coverage,result.inserted);
+    }});
+    if (!result) return NextResponse.json({status:indexing.status},{status:indexing.status==='busy'?202:503});
     return NextResponse.json(
       {
         fetched: result.fetched,
         inserted: result.inserted,
         cursors: Object.fromEntries(result.cursors),
+        indexing,
       },
-      { status: 200 },
+      { status: indexing.status === 'caught_up' ? 200 : 207 },
     );
   } catch (err) {
     console.error('[cron/indexer-celo] Error:', err);

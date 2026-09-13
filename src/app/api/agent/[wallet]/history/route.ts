@@ -5,7 +5,7 @@ import {
   getFeedbackRatingsForSignatures,
 } from '@/db/client';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
-import { canonicalAddress } from '@/lib/chain-detect';
+import { canonicalAddress, resolveChainParam } from '@/lib/chain-detect';
 
 export async function OPTIONS() {
   return corsPreflight();
@@ -26,20 +26,24 @@ export async function GET(
   }
 
   const { searchParams } = request.nextUrl;
+  const chain = resolveChainParam(searchParams.get('chain'), wallet);
+  if (!chain) return NextResponse.json({ error: 'An explicit valid chain is required for EVM history' }, { status: 400 });
   const limit = Math.min(parseInt(searchParams.get('limit') ?? '50', 10), 200);
   const offset = parseInt(searchParams.get('offset') ?? '0', 10);
 
   const [transactions, total] = await Promise.all([
-    getTransactions(wallet, limit, offset),
-    getTransactionCount(wallet),
+    getTransactions(wallet, limit, offset, chain),
+    getTransactionCount(wallet, chain),
   ]);
 
   const feedbackMap = await getFeedbackRatingsForSignatures(
     transactions.map((tx) => tx.tx_signature),
+    chain,
   );
 
   return NextResponse.json({
     address: wallet,
+    chain,
     total,
     limit,
     offset,

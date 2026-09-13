@@ -67,6 +67,7 @@ import {
   MIN_XLM_BALANCE,
   type AttestDecision,
 } from '../src/integrations/erc8004-stellar-attest';
+import { attestRunVerdict, ciWarningPrefix } from '../src/lib/attest-policy';
 import { scoreMetadataQuality } from '../src/scoring/celo-metadata';
 import { AK_STELLAR } from '../src/config/ak-validator';
 import { supabase } from '../src/db/client';
@@ -216,6 +217,8 @@ interface Outcome {
   state?: string;
   txId?: string;
   detail?: string;
+  /** Refused by a gate before signing — nothing was sent, nothing to reconcile. */
+  blocked?: true;
 }
 const outcomes: Outcome[] = [];
 
@@ -302,7 +305,7 @@ for (let t = 0; t < targets.length; t++) {
       // charging more than policy allows, so every remaining target would be
       // refused identically. Stop and say so once.
       console.log(`fee ${(Number(err.feeUnits) / 1e7).toFixed(4)} XLM > ceiling — refusing (nothing signed)`);
-      outcomes.push({ agentId: id, decision: 'error', detail: msg });
+      outcomes.push({ agentId: id, decision: 'error', detail: msg, blocked: true });
       const left = targets.slice(t + 1);
       if (left.length > 0) console.log(`  stopping — ${left.length} target(s) untouched: ${left.join(', ')}`);
       break;
@@ -335,12 +338,29 @@ if (execute) {
 // An attempt that did not resolve to `confirmed` must page. `indeterminate`
 // especially: the write probably landed, and an operator needs to look rather
 // than let the next run guess. It is still never resent automatically.
+//
+// A fee-ceiling refusal is deliberately NOT in that set: the gate stopped the
+// run before signing, so no submission exists to reconcile. Reporting it as a
+// failure paged nightly over a Soroban price nobody could act on.
+const blocked = outcomes.filter((o) => o.blocked);
 const unresolved = outcomes.filter(
-  (o) => o.decision === 'error' || (o.state !== undefined && !['confirmed', 'simulated'].includes(o.state)),
+  (o) =>
+    !o.blocked &&
+    (o.decision === 'error' || (o.state !== undefined && !['confirmed', 'simulated'].includes(o.state))),
 );
-if (unresolved.length > 0) {
+const verdict = attestRunVerdict({ failed: unresolved.length, blocked: blocked.length });
+
+if (verdict === 'failed') {
   console.error('');
   console.error(`[attest] FAILED: ${unresolved.length} attempt(s) did not confirm:`);
   for (const o of unresolved) console.error(`  agent ${o.agentId}: ${o.state ?? o.decision} — ${o.detail ?? ''}`);
   process.exit(1);
+}
+if (verdict === 'blocked') {
+  console.warn('');
+  console.warn(
+    `${ciWarningPrefix()}[attest] BLOCKED: ${blocked.length} target(s) refused before signing — nothing was sent.`,
+  );
+  for (const o of blocked) console.warn(`  agent ${o.agentId}: ${o.detail ?? ''}`);
+  console.warn('[attest] No operator action is possible until the network fee drops.');
 }

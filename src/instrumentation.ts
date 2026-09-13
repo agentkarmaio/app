@@ -127,53 +127,8 @@ async function registerWalletScanWorker() {
 }
 
 async function registerIndexerWorker() {
-  if (process.env.INDEXER_WORKER_DISABLED === '1') {
-    console.log('[indexer-worker] disabled via env');
-    return;
-  }
-
-  const intervalMs = Number(process.env.INDEXER_WORKER_INTERVAL_MS) || 3_600_000;
-  const limit      = Number(process.env.INDEXER_WORKER_LIMIT)       || 200;
-
-  // The Helius push webhook is the real-time ingest path; this incremental
-  // poll is the webhook-independent FLOOR. Without it, a disabled webhook =
-  // total ingest stop with no fallback (the 17-day 2026-05/06 stall). Mirrors
-  // the external /api/cron/indexer + keep-fresh for the app-healthy fast path.
-  const { runIndexer } = await import('./indexer/index');
-
-  let running = false;
-
-  const tick = async () => {
-    if (running) return; // skip if previous run still going
-    running = true;
-    try {
-      const result = await runIndexer(limit, {});
-      if (result.inserted > 0 || result.scored > 0) {
-        console.log(
-          `[indexer-worker] fetched=${result.fetched} inserted=${result.inserted} ` +
-          `scored=${result.scored} operatorsScored=${result.operatorsScored}`,
-        );
-      }
-      // Logged unconditionally: a tick that decodes nothing WHILE owing
-      // signatures is exactly the case the counters above would hide.
-      if (result.unresolved > 0) {
-        console.error(
-          `[indexer-worker] DEGRADED: ${result.unresolved} signature(s) served by no RPC ` +
-          '— cursors held, see [indexer] warnings for the signatures',
-        );
-      }
-    } catch (err) {
-      console.error('[indexer-worker] run failed:', err instanceof Error ? err.message : err);
-    } finally {
-      running = false;
-    }
-  };
-
-  const timer = setInterval(() => { void tick(); }, intervalMs);
-  if (typeof timer.unref === 'function') timer.unref();
-
-  console.log(`[indexer-worker] registered · interval=${intervalMs}ms limit=${limit}`);
-  void tick();
+  const { startIndexingWorkers } = await import('./lib/indexing-jobs');
+  startIndexingWorkers();
 }
 
 async function registerHeartbeatWorker() {

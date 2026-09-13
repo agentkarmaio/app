@@ -496,10 +496,15 @@ describe('arcJobsIndexer — DI core', () => {
     let clock = 1_000;
     const { deps, state } = makeDeps(window, {
       getHead: async () => BigInt(50_000),
-      timeBudgetMs: 5_000,
-      // Each window "costs" 2s; the budget allows two, then expires.
-      now: () => { clock += 2_000; return clock; },
+      timeBudgetMs: 4_000,
+      now: () => clock,
     });
+    const read = deps.getLogs;
+    deps.getLogs = async (from, to) => {
+      const logs = await read(from, to);
+      clock += 2_000;
+      return logs;
+    };
 
     await arcJobsIndexer(deps);
 
@@ -614,7 +619,7 @@ describe('arcJobsIndexer — DI core', () => {
     expect(state.cursors[0][1]).toBe('120');
   });
 
-  test('cursor already at/after head → no getLogs call, returns fetched:0', async () => {
+  test('cursor ahead of head performs no read and preserves its reported checkpoint', async () => {
     const window: GetLogsWindow = { created: [], released: [] };
     const { deps, state } = makeDeps(window, {
       getHead: async () => BigInt(100),
@@ -624,7 +629,7 @@ describe('arcJobsIndexer — DI core', () => {
 
     expect(res.fetched).toBe(0);
     expect(state.getLogsCalls).toBe(0); // skipped: nothing new to scan
-    expect(res.cursors.get(arcJobsCursorKey(ARC_JOBS_CONTRACT))).toBe('100');
+    expect(res.cursors.get(arcJobsCursorKey(ARC_JOBS_CONTRACT))).toBe('120');
   });
 
   test('GENESIS_FALLBACK_BLOCK is the start when no cursor exists', async () => {
@@ -633,4 +638,139 @@ describe('arcJobsIndexer — DI core', () => {
     await arcJobsIndexer(deps);
     expect(state.windows[0][0]).toBe(BigInt(GENESIS_FALLBACK_BLOCK));
   });
+});
+
+describe('Arc ingestion reliability', () => {
+  test('splits range denials without splitting logical creation/settlement attribution', async () => {
+    const ranges: Array<[bigint, bigint]> = [];
+    const { deps, state } = makeDeps({ created: [], released: [] }, {
+      getHead: async () => 99n,
+      windowSize: 100,
+      getLogs: async (from, to) => {
+        ranges.push([from, to]);
+        if (to - from >= 50n) throw Object.assign(new Error('block range is too large'), { code: 35 });
+        return {
+          created: from === 0n ? [created({ jobId: 1n, block: 20n })] : [],
+          released: to === 99n ? [released({ jobId: 1n, rawAmount: 1_000_000n, block: 80n })] : [],
+        };
+      },
+    });
+    const result = await arcJobsIndexer(deps);
+    expect(ranges).toEqual([[0n, 99n], [0n, 49n], [50n, 99n]]);
+    expect(state.inserted).toHaveLength(1);
+    expect(state.inserted[0].wallet_address).toBe(CLIENT);
+    expect(state.signals).toHaveLength(2);
+    expect(result.coverage).toEqual({ complete: true, head: '99', checkpoint: '99', checked: 100, pending: 0, unresolved: 0 });
+  });
+
+  test('single-block archive denial fails without moving a checkpoint', async () => {
+    const ranges: Array<[bigint, bigint]> = [];
+    const { deps, state } = makeDeps({ created: [], released: [] }, {
+      getHead: async () => 4n,
+      getCursor: async () => ({ last_signature: '0', last_slot: 0 }),
+      getLogs: async (from, to) => {
+        ranges.push([from, to]);
+        throw Object.assign(new Error('block range is too large'), { code: 35 });
+      },
+    });
+    await expect(arcJobsIndexer(deps)).rejects.toThrow('block range');
+    expect(ranges).toEqual([[1n, 4n], [1n, 2n], [1n, 1n]]);
+    expect(state.cursors).toEqual([]);
+    expect(state.inserted).toEqual([]);
+  });
+
+  test('throttled split discards the partial logical window and reports remaining blocks', async () => {
+    const { deps, state } = makeDeps({ created: [], released: [] }, {
+      getHead: async () => 199n,
+      windowSize: 100,
+      getLogs: async (from, to) => {
+        if (from === 100n && to === 199n) throw new Error('query returned more than 20000 results');
+        if (from === 150n) throw new Error('429 Too Many Requests');
+        return { created: [], released: [] };
+      },
+    });
+    const result = await arcJobsIndexer(deps);
+    expect(state.cursors[0][1]).toBe('99');
+    expect(result.coverage).toEqual({ complete: false, head: '199', checkpoint: '99', checked: 100, pending: 100, unresolved: 0, reason: 'rate_limited' });
+  });
+
+  test('unmatched settlements remain visible after a fully read window', async () => {
+    const { deps } = makeDeps({ created: [], released: [released({ jobId: 1n, rawAmount: 1n })] });
+    const result = await arcJobsIndexer(deps);
+    expect(result.coverage).toEqual({ complete: false, head: '120', checkpoint: '120', checked: 121, pending: 0, unresolved: 1, reason: 'unmatched' });
+  });
+
+  test('a bounded run reports backlog even when it inserted no matching rows', async () => {
+    const { deps } = makeDeps({ created: [], released: [] }, { getHead: async () => 199n, windowSize: 100, maxWindows: 1 });
+    expect((await arcJobsIndexer(deps)).coverage).toEqual({ complete: false, head: '199', checkpoint: '99', checked: 100, pending: 100, unresolved: 0, reason: 'budget' });
+  });
+
+  test('a first-window throttle does not fabricate a genesis cursor', async () => {
+    const { deps, state } = makeDeps({ created: [], released: [] }, { getLogs: async () => { throw new Error('429'); } });
+    const result = await arcJobsIndexer(deps);
+    expect(state.cursors).toEqual([]);
+    expect(result.coverage).toEqual({ complete: false, head: '120', checkpoint: null, checked: 0, pending: 121, unresolved: 0, reason: 'rate_limited' });
+  });
+
+  test('cursor failure rejects after writing replay-safe receipt and signal identities', async () => {
+    const window = { created: [created({ jobId: 1n })], released: [released({ jobId: 1n, rawAmount: 1n })] };
+    const { deps, state } = makeDeps(window, { upsertCursor: async () => { throw new Error('cursor write failed'); } });
+    await expect(arcJobsIndexer(deps)).rejects.toThrow('cursor write failed');
+    const first = JSON.stringify([state.inserted, state.signals]);
+    state.inserted.length = 0;
+    state.signals.length = 0;
+    await expect(arcJobsIndexer(deps)).rejects.toThrow('cursor write failed');
+    expect(JSON.stringify([state.inserted, state.signals])).toBe(first);
+  });
+});
+
+test('a single-block result-size denial is a hard error rather than a healthy throttle', async () => {
+  const { deps, state } = makeDeps({ created: [], released: [] }, {
+    getHead: async () => 0n,
+    getLogs: async () => { throw Object.assign(new Error('query returned more than 20000 results'), { code: -32005 }); },
+  });
+  await expect(arcJobsIndexer(deps)).rejects.toThrow('20000 results');
+  expect(state.cursors).toEqual([]);
+});
+
+test('a provider head behind the saved jobs cursor is incomplete and never rewinds the checkpoint', async () => {
+  const { deps, state } = makeDeps({ created: [], released: [] }, {
+    getHead: async () => 100n,
+    getCursor: async () => ({ last_signature: '120', last_slot: 120 }),
+  });
+  const result = await arcJobsIndexer(deps);
+  expect(result.coverage).toEqual({ complete: false, head: '100', checkpoint: '120', checked: 0, pending: 0, unresolved: 1, reason: 'head_behind_cursor' });
+  expect(result.cursors.get(arcJobsCursorKey(ARC_JOBS_CONTRACT))).toBe('120');
+  expect(state.getLogsCalls).toBe(0);
+  expect(state.cursors).toEqual([]);
+});
+
+test('aborting during a settlement timestamp prevents further identity RPCs and cursor writes', async () => {
+  const controller = new AbortController();
+  let timestampCalls = 0;
+  let identityCalls = 0;
+  const { deps, state } = makeDeps({
+    created: [created({ jobId: 1n }), created({ jobId: 2n })],
+    released: [released({ jobId: 1n, rawAmount: 1n }), released({ jobId: 2n, rawAmount: 1n, block: 121n })],
+  }, {
+    signal: controller.signal,
+    blockTimestamp: async () => { timestampCalls++; controller.abort(new Error('scan cancelled')); return TS; },
+    isTemplatedCounterparty: async () => { identityCalls++; return false; },
+  });
+  await expect(arcJobsIndexer(deps)).rejects.toThrow('scan cancelled');
+  expect(timestampCalls).toBe(1);
+  expect(identityCalls).toBe(0);
+  expect(state.cursors).toEqual([]);
+  expect(state.inserted).toEqual([]);
+});
+
+test('aborting during a templated identity lookup prevents the second lookup', async () => {
+  const controller = new AbortController();
+  let identityCalls = 0;
+  const { deps } = makeDeps({ created: [created({ jobId: 1n })], released: [released({ jobId: 1n, rawAmount: 1n })] }, {
+    signal: controller.signal,
+    isTemplatedCounterparty: async () => { identityCalls++; controller.abort(new Error('scan cancelled')); return false; },
+  });
+  await expect(arcJobsIndexer(deps)).rejects.toThrow('scan cancelled');
+  expect(identityCalls).toBe(1);
 });

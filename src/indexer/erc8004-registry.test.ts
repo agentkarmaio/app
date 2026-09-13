@@ -26,6 +26,7 @@ import {
   type ScannedFeedback,
 } from './erc8004-registry';
 import type { Erc8004RegistryConfig } from '../config/erc8004-registries';
+import { scoreMetadataQuality } from '../scoring/celo-metadata';
 
 const SAMPLE_REG = { type: 'x', name: 'Agent', description: 'd', services: [{ name: 's', endpoint: 'https://e' }] };
 
@@ -227,7 +228,6 @@ describe('aggregateAgentFeedback', () => {
 describe('findRegistryTip', () => {
   function fakeClient(maxId: number) {
     return {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       readContract: (async ({ args }: { args: readonly unknown[] }) => {
         const id = Number(args[0] as bigint);
         if (id >= 1 && id <= maxId) return '0xowner';
@@ -437,5 +437,272 @@ describe('runIncrementalRegistryScan (cursor-driven)', () => {
     expect(result.tip).toBe(0);
     expect(result.agentsScanned).toBe(0);
     expect(saved).toBe(false);
+  });
+});
+
+describe('explicit registry membership', () => {
+  const config = { chain: 'arc', identityRegistry: '0x0', reputationRegistry: '0x0', rpcEnvVar: 'X', viemChain: {} } as unknown as Erc8004RegistryConfig;
+  test('refreshes sparse known IDs without discovering or filling the gap', async () => {
+    const seen: number[] = [];
+    const client = {
+      readContract: (async () => { throw new Error('tip discovery forbidden'); }) as never,
+      multicall: (async ({ contracts }: { contracts: { functionName: string; args: bigint[] }[] }) => contracts.map((c) => {
+        if (c.functionName === 'ownerOf') seen.push(Number(c.args[0]));
+        return { status: 'success', result: c.functionName === 'tokenURI' ? '' : '0xAA' };
+      })) as never,
+    };
+    await runRegistryScan(config, async (_chain, rows) => rows.length, async () => 0, {
+      agentIds: [72, 845_000], scanFeedback: false, fetchRemote: false, client,
+    });
+    expect(seen).toEqual([72, 845_000]);
+  });
+  test('failed read on a known ID is an error, not an assumed unminted gap', async () => {
+    const result = await runRegistryScan(config, async () => 0, async () => 0, {
+      agentIds: [72], scanFeedback: false, client: {
+        readContract: (async () => { throw new Error('tip discovery forbidden'); }) as never,
+        multicall: (async () => [{ status: 'failure' }, { status: 'failure' }, { status: 'failure' }]) as never,
+      },
+    });
+    expect(result.errors).toBe(1);
+    expect(result.failedMembers).toEqual([{ agentId: 72, stages: ['identity'] }]);
+  });
+  test('identity and feedback batch failures name every affected explicit member', async () => {
+    for (const stage of ['identity', 'feedback'] as const) {
+      const result = await runRegistryScan(config, async (_chain, rows) => rows.length, async () => 0, {
+        agentIds: [2, 70], fetchRemote: false, client: {
+          readContract: (async () => { throw Error('tip forbidden'); }) as never,
+          multicall: (async ({ contracts }: { contracts: { functionName: string }[] }) => {
+            if (stage === 'identity' || contracts[0].functionName === 'readAllFeedback') throw Error('RPC failed');
+            return contracts.map(c => ({ status: 'success', result: c.functionName === 'tokenURI' ? '' : '0xAA' }));
+          }) as never,
+        },
+      });
+      expect(result.failedMembers).toEqual([{ agentId: 2, stages: [stage] }, { agentId: 70, stages: [stage] }]);
+    }
+  });
+  test('failed remote metadata keeps prior metadata untouched while valid empty and invalid metadata are observed', async () => {
+    const persisted: ScannedAgent[] = [];
+    const result = await runRegistryScan(config, async (_chain, rows) => { persisted.push(...rows); return rows.length; }, async () => 0, {
+      agentIds: [2, 70, 80], scanFeedback: false, fetchRemote: true,
+      client: {
+        readContract: (async () => { throw Error('tip forbidden'); }) as never,
+        multicall: (async ({ contracts }: { contracts: { functionName: string; args: bigint[] }[] }) => contracts.map(c => ({
+          status: 'success', result: c.functionName !== 'tokenURI' ? '0xAA'
+            : Number(c.args[0]) === 2 ? 'http://127.0.0.1/private.json' : Number(c.args[0]) === 70 ? '' : 'data:application/json,{broken',
+        }))) as never,
+      },
+    });
+    expect(result.failedMembers).toEqual([{ agentId: 2, stages: ['registration'] }]);
+    expect(result.errors).toBe(1);
+    expect(persisted.map(row => [row.agentId, row.registrationStatus])).toEqual([[70, 'empty'], [80, 'invalid']]);
+  });
+  test.each([
+    { reply: [] }, { reply: [[], [], [], [], [], []] }, { reply: [['0xAA'], [], [], [], [], [], []] },
+  ])('a malformed known-member feedback reply %j is retained without blocking later members', async ({ reply }) => {
+    const result = await runRegistryScan(config, async (_chain, rows) => rows.length, async () => 0, {
+      agentIds: [2, 70], fetchRemote: false,
+      client: {
+        readContract: (async () => { throw Error('tip forbidden'); }) as never,
+        multicall: (async ({ contracts }: { contracts: { functionName: string; args: bigint[] }[] }) => contracts.map(c => ({
+          status: 'success', result: c.functionName === 'readAllFeedback'
+            ? (Number(c.args[0]) === 2 ? reply : [[], [], [], [], [], [], []])
+            : c.functionName === 'tokenURI' ? '' : '0xAA',
+        }))) as never,
+      },
+    });
+    expect(result.failedMembers).toEqual([{ agentId: 2, stages: ['feedback'] }]);
+    expect(result.agentsPersisted).toBe(2);
+  });
+});
+
+describe('EVM registry cancellation', () => {
+  test('abort during tip discovery is not swallowed as a missing token', async () => {
+    const controller = new AbortController(); let calls = 0;
+    await expect(findRegistryTip({ readContract: (async () => {
+      calls++; controller.abort(Error('stop_registry')); throw Error('RPC unavailable');
+    }) as never }, '0x0', controller.signal)).rejects.toThrow('stop_registry');
+    expect(calls).toBe(1);
+  });
+  test('abort after identity reads prevents writes, metadata and feedback reads', async () => {
+    const controller = new AbortController(); let reads = 0; let writes = 0;
+    const config = { chain: 'arc', identityRegistry: '0x0', reputationRegistry: '0x0', rpcEnvVar: 'X', viemChain: {} } as unknown as Erc8004RegistryConfig;
+    await expect(runRegistryScan(config, async () => { writes++; return 1; }, async () => { writes++; return 1; }, {
+      agentIds: [72], signal: controller.signal, fetchRemote: false,
+      client: {
+        readContract: (async () => { throw Error('tip forbidden'); }) as never,
+        multicall: (async () => { reads++; controller.abort(Error('stop_registry')); return [
+          { status: 'success', result: '0xAA' }, { status: 'success', result: '0xAA' },
+          { status: 'success', result: 'https://example.com/agent.json' },
+        ]; }) as never,
+      },
+    })).rejects.toThrow('stop_registry');
+    expect(reads).toBe(1); expect(writes).toBe(0);
+  });
+});
+
+/**
+ * 2026-09-13: ipfs.io retired its path gateway and began answering every
+ * request with 429, so 1,949 agents across arc/celo/solana were banked as
+ * `unreachable` — 48% of a 52-CID sample were in fact valid registrations.
+ * The gateway must be configurable, and a throttled read must never be
+ * recorded with the same finality as a 404 or a body that is not JSON.
+ */
+describe('decodeRegistration gateway + failure classification', () => {
+  function spyFetch(handler: (url: string) => Response) {
+    const calls: string[] = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL) => {
+      calls.push(String(input));
+      return handler(String(input));
+    }) as unknown as typeof fetch;
+    return { calls, restore: () => { globalThis.fetch = orig; } };
+  }
+  const publicDns = async () => [{ address: '93.184.216.34', family: 4 }];
+
+  test('ipfs:// resolves through the configured gateway, not the retired ipfs.io', async () => {
+    const { calls, restore } = spyFetch(() => new Response(JSON.stringify(SAMPLE_REG), { status: 200 }));
+    try {
+      const r = await decodeRegistration('ipfs://bafyTEST', {
+        fetchRemote: true, lookup: publicDns,
+        ipfsGateway: 'https://ipfs.filebase.io/ipfs/',
+      });
+      expect(r.status).toBe('fetched');
+      expect(calls[0]).toBe('https://ipfs.filebase.io/ipfs/bafyTEST');
+    } finally { restore(); }
+  });
+
+  test('default gateway is not the retired ipfs.io path gateway', async () => {
+    const { calls, restore } = spyFetch(() => new Response(JSON.stringify(SAMPLE_REG), { status: 200 }));
+    try {
+      await decodeRegistration('ipfs://bafyTEST', { fetchRemote: true, lookup: publicDns });
+      expect(calls[0]).not.toStartWith('https://ipfs.io/');
+    } finally { restore(); }
+  });
+
+  test('HTTP 429 is retryable, never a settled verdict', async () => {
+    const { restore } = spyFetch(() => new Response('rate limited', { status: 429 }));
+    try {
+      const r = await decodeRegistration('https://example.com/a.json', { fetchRemote: true, lookup: publicDns });
+      expect(r.status).toBe('unreachable');
+      expect(r.retryable).toBe(true);
+    } finally { restore(); }
+  });
+
+  test('HTTP 404 is a permanent verdict', async () => {
+    const { restore } = spyFetch(() => new Response('nope', { status: 404 }));
+    try {
+      const r = await decodeRegistration('https://example.com/a.json', { fetchRemote: true, lookup: publicDns });
+      expect(r.status).toBe('unreachable');
+      expect(r.retryable).toBe(false);
+    } finally { restore(); }
+  });
+
+  test('a 200 body that is not JSON is invalid, not unreachable', async () => {
+    // Real case: Arc agent 2's tokenURI serves a JPEG.
+    const { restore } = spyFetch(() => new Response('\xff\xd8\xff\xe0JFIF', { status: 200 }));
+    try {
+      const r = await decodeRegistration('https://example.com/a.json', { fetchRemote: true, lookup: publicDns });
+      expect(r.status).toBe('invalid');
+      expect(r.retryable).toBe(false);
+    } finally { restore(); }
+  });
+
+  test('a 200 HTML error page is retryable, never settled as invalid', async () => {
+    // A gateway answering a throttle with an HTML page must not erase a
+    // registration that decoded fine on an earlier run.
+    const { restore } = spyFetch(
+      () => new Response('<html><body>rate limited</body></html>', {
+        status: 200, headers: { 'content-type': 'text/html; charset=utf-8' },
+      }),
+    );
+    try {
+      const r = await decodeRegistration('https://example.com/a.json', { fetchRemote: true, lookup: publicDns });
+      expect(r.status).toBe('unreachable');
+      expect(r.retryable).toBe(true);
+    } finally { restore(); }
+  });
+
+  test('a served README (text/plain) is a settled invalid', async () => {
+    // Real case: 135 Solana agents point tokenURI at an OpenClaw README.md.
+    const { restore } = spyFetch(
+      () => new Response('# OpenClaw\n\nA readme.', {
+        status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' },
+      }),
+    );
+    try {
+      const r = await decodeRegistration('https://example.com/a.json', { fetchRemote: true, lookup: publicDns });
+      expect(r.status).toBe('invalid');
+      expect(r.retryable).toBe(false);
+    } finally { restore(); }
+  });
+
+  test('a blocked private address stays permanent, not retryable', async () => {
+    const { restore } = spyFetch(() => new Response('{}', { status: 200 }));
+    try {
+      const r = await decodeRegistration('http://169.254.169.254/', { fetchRemote: true });
+      expect(r.status).toBe('unreachable');
+      expect(r.retryable).toBe(false);
+    } finally { restore(); }
+  });
+
+  test('HTTP 503 is retryable', async () => {
+    const { restore } = spyFetch(() => new Response('down', { status: 503 }));
+    try {
+      const r = await decodeRegistration('https://example.com/a.json', { fetchRemote: true, lookup: publicDns });
+      expect(r.retryable).toBe(true);
+    } finally { restore(); }
+  });
+});
+
+/**
+ * `tamperResistance` is worth 10 of 100 and is earned by the tokenURI being
+ * content-addressed (ipfs:/ar:/data:), so the scorer must be given the URI.
+ * The scanner passed only `{ registration }`, scoring every ipfs-hosted agent
+ * 10 points light — enough to cross ATTEST_MIN_SCORE (70) in either direction.
+ */
+describe('scanner metadata score includes the tokenURI', () => {
+  const REG = {
+    type: 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1',
+    name: 'Agent', description: 'a'.repeat(120),
+    image: 'https://e/i.png',
+    services: [{ name: 's', endpoint: 'https://e', description: 'd'.repeat(40) }],
+  };
+
+  test('an ipfs tokenURI scores strictly higher than the same registration without one', () => {
+    const withUri = scoreMetadataQuality({ registration: REG, tokenURI: 'ipfs://bafyX' });
+    const without = scoreMetadataQuality({ registration: REG });
+    expect(withUri.breakdown.tamperResistance).toBe(10);
+    expect(without.breakdown.tamperResistance).toBe(0);
+    expect(withUri.score).toBeGreaterThan(without.score);
+  });
+
+  test('runRegistryScan credits tamper-resistance for an ipfs agent', async () => {
+    const persisted: ScannedAgent[] = [];
+    await runRegistryScan(
+      { chain: 'celo', viemChain: {}, identityRegistry: '0x1', reputationRegistry: '0x2', rpcEnvVar: 'X' } as unknown as Erc8004RegistryConfig,
+      async (_c, agents) => { persisted.push(...agents); return agents.length; },
+      async () => 0,
+      {
+        agentIds: [1],
+        fetchRemote: false,
+        client: {
+          multicall: async ({ contracts }: { contracts: { functionName: string }[] }) =>
+            contracts.map((c) => ({
+              status: 'success',
+              result:
+                c.functionName === 'ownerOf' ? '0xowner'
+                : c.functionName === 'tokenURI' ? `data:application/json,${encodeURIComponent(JSON.stringify(REG))}`
+                : '0xwallet',
+            })),
+          readContract: async () => '0xowner',
+        } as never,
+      },
+    );
+    const agent = persisted.find((a) => a.agentId === 1);
+    expect(agent).toBeDefined();
+    // A data: URI is content-addressed too, so the credit must be present.
+    expect(agent!.metadataScore).toBe(
+      scoreMetadataQuality({ registration: agent!.registration, tokenURI: agent!.tokenURI ?? undefined }).score,
+    );
   });
 });

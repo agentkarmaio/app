@@ -1,0 +1,32 @@
+CREATE TABLE "indexing_state" (
+	"chain" text NOT NULL,
+	"path" text NOT NULL,
+	"enabled" boolean DEFAULT true NOT NULL,
+	"status" text,
+	"last_attempt_at" timestamp with time zone,
+	"last_success_at" timestamp with time zone,
+	"last_finished_at" timestamp with time zone,
+	"error_code" text,
+	"checkpoint" text,
+	"head" text,
+	"checked_count" integer DEFAULT 0 NOT NULL,
+	"pending_count" integer DEFAULT 0 NOT NULL,
+	"inserted_count" integer DEFAULT 0 NOT NULL,
+	"unresolved_count" integer DEFAULT 0 NOT NULL,
+	"gaps_count" integer DEFAULT 0 NOT NULL,
+	"interval_ms" integer NOT NULL,
+	"owner" uuid,
+	"lease_until" timestamp with time zone,
+	"generation" integer DEFAULT 0 NOT NULL,
+	CONSTRAINT "indexing_state_pkey" PRIMARY KEY("chain","path"),
+	CONSTRAINT "indexing_state_chain_check" CHECK ("indexing_state"."chain" IN ('solana', 'arc', 'celo', 'stellar')),
+	CONSTRAINT "indexing_state_path_check" CHECK ("indexing_state"."path" IN ('payments', 'escrow', 'transfers', 'registry')),
+	CONSTRAINT "indexing_state_status_check" CHECK ("indexing_state"."status" IS NULL OR "indexing_state"."status" IN ('caught_up', 'catching_up', 'dormant', 'failed')),
+	CONSTRAINT "indexing_state_counts_check" CHECK ("indexing_state"."checked_count" >= 0 AND "indexing_state"."pending_count" >= 0 AND "indexing_state"."inserted_count" >= 0 AND "indexing_state"."unresolved_count" >= 0 AND "indexing_state"."gaps_count" >= 0 AND "indexing_state"."generation" >= 0),
+	CONSTRAINT "indexing_state_interval_check" CHECK ("indexing_state"."interval_ms" BETWEEN 1000 AND 604800000),
+	CONSTRAINT "indexing_state_owner_check" CHECK (("indexing_state"."owner" IS NULL) = ("indexing_state"."lease_until" IS NULL)),
+	CONSTRAINT "indexing_state_error_check" CHECK ("indexing_state"."error_code" IS NULL OR "indexing_state"."error_code" ~ '^[a-z][a-z0-9_]{0,63}$'),
+	CONSTRAINT "indexing_state_checkpoint_check" CHECK (length("indexing_state"."checkpoint") <= 512 AND length("indexing_state"."head") <= 512)
+);
+--> statement-breakpoint
+ALTER TABLE "indexing_state" ENABLE ROW LEVEL SECURITY;
