@@ -89,13 +89,18 @@ function renderConfigFile(entries: FacilitatorEntry[]): string {
     .filter((e) => e.addresses.length > 0)
     .sort((a, b) => a.id.localeCompare(b.id));
 
+  // Upstream ids are not all valid JS identifiers (`figment-facilitator`,
+  // `three-ws`). An unquoted hyphenated key is a syntax error, so quote
+  // anything that isn't a bare identifier.
+  const key = (id: string) => (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(id) ? id : `'${id}'`);
+
   const body = withAddrs
     .map((e) => {
       if (e.addresses.length === 1) {
-        return `  ${e.id}: ['${e.addresses[0]}'],`;
+        return `  ${key(e.id)}: ['${e.addresses[0]}'],`;
       }
       const lines = e.addresses.map((a) => `    '${a}',`).join('\n');
-      return `  ${e.id}: [\n${lines}\n  ],`;
+      return `  ${key(e.id)}: [\n${lines}\n  ],`;
     })
     .join('\n');
 
@@ -112,6 +117,11 @@ ${body}
 };
 
 export const ALL_FACILITATOR_ADDRESSES = Object.values(SOLANA_FACILITATORS).flat();
+/**
+ * Set view of \`ALL_FACILITATOR_ADDRESSES\` for O(1) membership tests on the
+ * wallet-side regressive scan hot path.
+ */
+export const ALL_FACILITATOR_ADDRESSES_SET: ReadonlySet<string> = new Set(ALL_FACILITATOR_ADDRESSES);
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 export function isX402Payment(recipient: string): boolean {
