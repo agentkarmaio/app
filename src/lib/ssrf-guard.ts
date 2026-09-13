@@ -22,6 +22,38 @@ export class SsrfError extends Error {
   }
 }
 
+/**
+ * The origin answered, but not with success. Carries the status so callers can
+ * tell a throttle (429/5xx — ask again later) from a verdict (404 — it is gone).
+ * Collapsing the two banks a transient outage as a permanent fact.
+ */
+export class HttpStatusError extends SsrfError {
+  constructor(readonly status: number) {
+    super(`HTTP ${status}`);
+    this.name = 'HttpStatusError';
+  }
+}
+
+/** The origin served a body, and that body is not JSON. Never worth a retry. */
+export class InvalidJsonError extends SsrfError {
+  constructor() {
+    super('response body is not JSON');
+    this.name = 'InvalidJsonError';
+  }
+}
+
+/**
+ * Whether another attempt could plausibly succeed. Anything the guard itself
+ * refused (blocked host, bad URL, oversized body) is settled; a throttle,
+ * a server fault or a transport error is not.
+ */
+export function isRetryableFetchError(error: unknown): boolean {
+  if (error instanceof HttpStatusError)
+    return error.status === 429 || error.status >= 500;
+  if (error instanceof SsrfError) return false;
+  return true; // timeout / connection reset / DNS at the socket layer
+}
+
 function v4Octets(ip: string): [number, number, number, number] | null {
   const parts = ip.split('.');
   if (parts.length !== 4) return null;
@@ -169,8 +201,13 @@ export async function safeFetchJson(
       current = new URL(loc, url).toString();
       continue;
     }
-    if (!res.ok) throw new SsrfError(`HTTP ${res.status}`);
-    return JSON.parse(await readCapped(res, maxBytes));
+    if (!res.ok) throw new HttpStatusError(res.status);
+    const body = await readCapped(res, maxBytes);
+    try {
+      return JSON.parse(body);
+    } catch {
+      throw new InvalidJsonError();
+    }
   }
   throw new SsrfError(`exceeded ${maxRedirects} redirects`);
 }

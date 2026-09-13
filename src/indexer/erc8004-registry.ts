@@ -27,7 +27,12 @@ import type { Erc8004RegistryConfig } from '@/config/erc8004-registries';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
 import type { Erc8004RegistrationStatus } from '@/db/schema';
 import { scoreMetadataQuality } from '@/scoring/celo-metadata';
-import { safeFetchJson, type DnsLookup } from '@/lib/ssrf-guard';
+import {
+  safeFetchJson,
+  InvalidJsonError,
+  isRetryableFetchError,
+  type DnsLookup,
+} from '@/lib/ssrf-guard';
 import { isRateLimitedError, withRateLimitRetry } from '@/lib/rpc-retry';
 
 const ONE = BigInt(1);
@@ -149,6 +154,21 @@ export function incrementalScanRange(
 }
 
 /**
+ * ipfs.io retired its path gateway on 2026-09-13 and now answers every request
+ * with 429, which banked 1,949 agents across arc/celo/solana as `unreachable`
+ * (48% of a sampled 52 were valid registrations). Filebase serves the same CIDs
+ * in ~100ms. Overridable so a dedicated gateway can be swapped in without a
+ * release.
+ */
+export const DEFAULT_IPFS_GATEWAY = 'https://ipfs.filebase.io/ipfs/';
+
+function defaultIpfsGateway(): string {
+  const configured = process.env.IPFS_GATEWAY_URL?.trim();
+  if (!configured) return DEFAULT_IPFS_GATEWAY;
+  return configured.endsWith('/') ? configured : `${configured}/`;
+}
+
+/**
  * Decode an ERC-8004 registration tokenURI. Handles every scheme seen in the
  * wild on Celo: inline data: URIs (base64 / gzip / utf8), bare raw JSON, http(s),
  * and ipfs://. `fetchRemote=false` skips network schemes (marks 'pending') for a
@@ -157,9 +177,9 @@ export function incrementalScanRange(
 export async function decodeRegistration(
   uri: string | null | undefined,
   opts: { fetchRemote?: boolean; timeoutMs?: number; ipfsGateway?: string; lookup?: DnsLookup; signal?: AbortSignal } = {},
-): Promise<{ registration: AgentRegistrationFile | null; status: Erc8004RegistrationStatus }> {
+): Promise<{ registration: AgentRegistrationFile | null; status: Erc8004RegistrationStatus; retryable?: boolean }> {
   opts.signal?.throwIfAborted();
-  const { fetchRemote = true, timeoutMs = 6000, ipfsGateway = 'https://ipfs.io/ipfs/', lookup } = opts;
+  const { fetchRemote = true, timeoutMs = 6000, ipfsGateway = defaultIpfsGateway(), lookup } = opts;
   if (!uri || uri.trim().length === 0) return { registration: null, status: 'empty' };
 
   // Inline, fully on-chain metadata: data:application/json[;base64][;enc=gzip],…
@@ -204,10 +224,18 @@ export async function decodeRegistration(
     opts.signal?.throwIfAborted();
     const json = (await safeFetchJson(fetchUrl, { timeoutMs, lookup })) as AgentRegistrationFile;
     opts.signal?.throwIfAborted();
-    return { registration: json, status: 'fetched' };
-  } catch {
+    return { registration: json, status: 'fetched', retryable: false };
+  } catch (error) {
     opts.signal?.throwIfAborted();
-    return { registration: null, status: 'unreachable' };
+    // A served body that is not JSON is a decoded verdict about the content,
+    // not a failure to reach it — retrying can only produce the same bytes.
+    if (error instanceof InvalidJsonError)
+      return { registration: null, status: 'invalid', retryable: false };
+    return {
+      registration: null,
+      status: 'unreachable',
+      retryable: isRetryableFetchError(error),
+    };
   }
 }
 
@@ -397,7 +425,13 @@ export async function runRegistryScan(
         agentId: id, owner, agentWallet, tokenURI,
         registration: dec.registration,
         registrationStatus: dec.status,
-        metadataScore: scoreMetadataQuality({ registration: dec.registration }).score,
+        // tokenURI carries the tamper-resistance credit (10/100) for a
+        // content-addressed pointer — omitting it under-scored every
+        // ipfs:/data: agent by enough to cross ATTEST_MIN_SCORE.
+        metadataScore: scoreMetadataQuality({
+          registration: dec.registration,
+          tokenURI: tokenURI ?? undefined,
+        }).score,
       };
       if (dec.status === 'pending' && fetchRemote) remoteQueue.push(agent);
       live.push(agent);
@@ -409,7 +443,10 @@ export async function runRegistryScan(
         const dec = await decodeRegistration(agent.tokenURI, { fetchRemote: true, signal: opts.signal });
         agent.registration = dec.registration;
         agent.registrationStatus = dec.status;
-        agent.metadataScore = scoreMetadataQuality({ registration: dec.registration }).score;
+        agent.metadataScore = scoreMetadataQuality({
+          registration: dec.registration,
+          tokenURI: agent.tokenURI ?? undefined,
+        }).score;
         if (explicitIds && dec.status === 'unreachable') {
           result.errors++;
           failed([agent.agentId], 'registration');
