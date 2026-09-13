@@ -78,3 +78,12 @@ export function attestRunVerdict(counts: {
   if (counts.blocked > 0) return 'blocked';
   return 'ok';
 }
+
+/**
+ * Prefix that makes a line a GitHub Actions annotation. A blocked run exits 0,
+ * so without this it is a green run with the reason buried in the log — which
+ * is how a silent stall hides. Empty outside CI, where it is just noise.
+ */
+export function ciWarningPrefix(): string {
+  return process.env.GITHUB_ACTIONS === 'true' ? '::warning::' : '';
+}

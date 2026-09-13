@@ -67,7 +67,7 @@ import {
   MIN_XLM_BALANCE,
   type AttestDecision,
 } from '../src/integrations/erc8004-stellar-attest';
-import { attestRunVerdict } from '../src/lib/attest-policy';
+import { attestRunVerdict, ciWarningPrefix } from '../src/lib/attest-policy';
 import { scoreMetadataQuality } from '../src/scoring/celo-metadata';
 import { AK_STELLAR } from '../src/config/ak-validator';
 import { supabase } from '../src/db/client';
@@ -359,7 +359,7 @@ if (verdict === 'failed') {
 if (verdict === 'blocked') {
   console.warn('');
   console.warn(
-    `[attest] BLOCKED: ${blocked.length} target(s) refused before signing — nothing was sent.`,
+    `${ciWarningPrefix()}[attest] BLOCKED: ${blocked.length} target(s) refused before signing — nothing was sent.`,
   );
   for (const o of blocked) console.warn(`  agent ${o.agentId}: ${o.detail ?? ''}`);
   console.warn('[attest] No operator action is possible until the network fee drops.');

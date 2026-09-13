@@ -42,7 +42,7 @@ import {
   MAX_FEE_CELO,
   MIN_CELO_BALANCE,
 } from '../src/integrations/erc8004-celo-attest';
-import { ATTEST_MIN_SCORE, attestRunVerdict, isFeeCeilingError } from '../src/lib/attest-policy';
+import { ATTEST_MIN_SCORE, attestRunVerdict, ciWarningPrefix, isFeeCeilingError } from '../src/lib/attest-policy';
 import { supabase } from '../src/db/client';
 import { formatEther } from 'viem';
 
@@ -369,7 +369,7 @@ if (verdict === 'failed') {
 if (verdict === 'blocked') {
   console.warn('');
   console.warn(
-    `BLOCKED: ${blockedOutcomes.length} target(s) refused before signing — nothing was sent.`,
+    `${ciWarningPrefix()}BLOCKED: ${blockedOutcomes.length} target(s) refused before signing — nothing was sent.`,
   );
   for (const o of blockedOutcomes) console.warn(`  agent ${o.agentId}: ${o.detail?.slice(0, 160) ?? ''}`);
 }

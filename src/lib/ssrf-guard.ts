@@ -34,12 +34,23 @@ export class HttpStatusError extends SsrfError {
   }
 }
 
-/** The origin served a body, and that body is not JSON. Never worth a retry. */
+/**
+ * The origin served a body, and that body is not JSON. Carries the declared
+ * content type, because not every such body is a verdict: an agent really
+ * publishing a README or an image is settled, but a gateway that answers a
+ * throttle with a 200 HTML error page is not — and banking that as final would
+ * erase a registration that was read successfully yesterday.
+ */
 export class InvalidJsonError extends SsrfError {
-  constructor() {
-    super('response body is not JSON');
+  constructor(readonly contentType: string | null) {
+    super(`response body is not JSON (${contentType ?? 'no content-type'})`);
     this.name = 'InvalidJsonError';
   }
+}
+
+/** An HTML body where JSON was expected is an error page, not agent metadata. */
+export function isProbablyErrorPage(contentType: string | null): boolean {
+  return (contentType ?? '').toLowerCase().includes('text/html');
 }
 
 /**
@@ -50,6 +61,8 @@ export class InvalidJsonError extends SsrfError {
 export function isRetryableFetchError(error: unknown): boolean {
   if (error instanceof HttpStatusError)
     return error.status === 429 || error.status >= 500;
+  if (error instanceof InvalidJsonError)
+    return isProbablyErrorPage(error.contentType);
   if (error instanceof SsrfError) return false;
   return true; // timeout / connection reset / DNS at the socket layer
 }
@@ -206,7 +219,7 @@ export async function safeFetchJson(
     try {
       return JSON.parse(body);
     } catch {
-      throw new InvalidJsonError();
+      throw new InvalidJsonError(res.headers.get('content-type'));
     }
   }
   throw new SsrfError(`exceeded ${maxRedirects} redirects`);

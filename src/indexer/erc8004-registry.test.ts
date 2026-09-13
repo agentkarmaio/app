@@ -607,6 +607,35 @@ describe('decodeRegistration gateway + failure classification', () => {
     } finally { restore(); }
   });
 
+  test('a 200 HTML error page is retryable, never settled as invalid', async () => {
+    // A gateway answering a throttle with an HTML page must not erase a
+    // registration that decoded fine on an earlier run.
+    const { restore } = spyFetch(
+      () => new Response('<html><body>rate limited</body></html>', {
+        status: 200, headers: { 'content-type': 'text/html; charset=utf-8' },
+      }),
+    );
+    try {
+      const r = await decodeRegistration('https://example.com/a.json', { fetchRemote: true, lookup: publicDns });
+      expect(r.status).toBe('unreachable');
+      expect(r.retryable).toBe(true);
+    } finally { restore(); }
+  });
+
+  test('a served README (text/plain) is a settled invalid', async () => {
+    // Real case: 135 Solana agents point tokenURI at an OpenClaw README.md.
+    const { restore } = spyFetch(
+      () => new Response('# OpenClaw\n\nA readme.', {
+        status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' },
+      }),
+    );
+    try {
+      const r = await decodeRegistration('https://example.com/a.json', { fetchRemote: true, lookup: publicDns });
+      expect(r.status).toBe('invalid');
+      expect(r.retryable).toBe(false);
+    } finally { restore(); }
+  });
+
   test('a blocked private address stays permanent, not retryable', async () => {
     const { restore } = spyFetch(() => new Response('{}', { status: 200 }));
     try {
