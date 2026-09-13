@@ -227,9 +227,11 @@ export async function decodeRegistration(
     return { registration: json, status: 'fetched', retryable: false };
   } catch (error) {
     opts.signal?.throwIfAborted();
-    // A served body that is not JSON is a decoded verdict about the content,
-    // not a failure to reach it — retrying can only produce the same bytes.
-    if (error instanceof InvalidJsonError)
+    // A served body that is not JSON is usually a verdict about the content
+    // (a README, an image) — retrying can only produce the same bytes. An HTML
+    // body is the exception: that is a gateway error page wearing a 200, and
+    // settling it would erase a registration that read fine yesterday.
+    if (error instanceof InvalidJsonError && !isRetryableFetchError(error))
       return { registration: null, status: 'invalid', retryable: false };
     return {
       registration: null,
