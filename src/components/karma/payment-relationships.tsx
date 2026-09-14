@@ -208,17 +208,15 @@ function FacilitatorStrip({ entries, total }: { entries: RollupEntry[]; total: n
 export async function PaymentRelationships({
   wallet,
   chain,
-  rawReceipts = chain === 'solana',
+  rawReceipts = true,
 }: {
   wallet: string;
   chain: Chain;
   /**
-   * Show the collapsed per-receipt table. Defaults to Solana only, because
-   * `TransactionList` links every row to Solscan and paginates without a
-   * `?chain=` param — on any other chain it would render correct rows behind
-   * wrong links. The rollups above are chain-agnostic and carry the meaning;
-   * the raw table is the audit trail, and a wrong audit trail is worse than
-   * none. Flip this on per chain once that component is chain-aware.
+   * Show the collapsed per-receipt table. On by default on every chain now that
+   * `TransactionList` takes a chain — it links each row through that chain's
+   * explorer and paginates with `?chain=`. Pass `false` for a surface where the
+   * audit trail is noise rather than because a chain would render it wrong.
    */
   rawReceipts?: boolean;
 }) {
@@ -292,6 +290,7 @@ export async function PaymentRelationships({
 
       <RawReceipts count={rawReceipts ? txTotal : 0}>
         <TransactionList
+          chain={chain}
           walletAddress={wallet}
           total={txTotal}
           pageSize={RAW_RECEIPT_PAGE}

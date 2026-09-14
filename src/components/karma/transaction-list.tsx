@@ -6,7 +6,10 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { facilitatorLabel } from '@/lib/payment-rollups';
+import { explorerTxUrl } from '@/lib/explorer-urls';
 import { formatUsdcAmount } from '@/lib/format';
+import { formatRelativePast } from '@/lib/succession-format';
+import type { Chain } from '@/db/schema';
 
 type FeedbackRating = 'delivered' | 'failed' | null;
 
@@ -30,15 +33,6 @@ interface ApiTx {
   feedback?: FeedbackRating;
 }
 
-function relativeTime(iso: string): string {
-  const s = Math.max(1, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  if (s < 2592000) return `${Math.floor(s / 86400)}d ago`;
-  return `${Math.floor(s / 2592000)}mo ago`;
-}
-
 function FeedbackPill({ rating }: { rating: FeedbackRating }) {
   if (!rating) {
     return <span className="text-[11px] text-[#4f5258]">—</span>;
@@ -58,10 +52,10 @@ function FeedbackPill({ rating }: { rating: FeedbackRating }) {
   );
 }
 
-function TxSignature({ signature }: { signature: string }) {
+function TxSignature({ signature, chain }: { signature: string; chain: Chain }) {
   return (
     <a
-      href={`https://solscan.io/tx/${signature}`}
+      href={explorerTxUrl(chain, signature)}
       target="_blank"
       rel="noopener noreferrer"
       className="font-mono text-xs text-[#62666d] hover:text-[#8a8f98] transition-colors"
@@ -73,6 +67,13 @@ function TxSignature({ signature }: { signature: string }) {
 
 interface Props {
   transactions: TxRow[];
+  /**
+   * Which chain these receipts belong to. Required, not defaulted: every caller
+   * knows its chain, and a default is exactly how this component spent its life
+   * linking Arc and Stellar receipts to Solscan and paginating against a route
+   * that rejects EVM history without an explicit chain.
+   */
+  chain: Chain;
   walletAddress?: string;
   total?: number;
   pageSize?: number;
@@ -80,6 +81,7 @@ interface Props {
 
 export function TransactionList({
   transactions: initial,
+  chain,
   walletAddress,
   total,
   pageSize = 25,
@@ -96,7 +98,7 @@ export function TransactionList({
     setLoading(true);
     try {
       const res = await fetch(
-        `/api/agent/${walletAddress}/history?limit=${pageSize}&offset=${rows.length}`,
+        `/api/agent/${walletAddress}/history?chain=${chain}&limit=${pageSize}&offset=${rows.length}`,
       );
       if (!res.ok) throw new Error('history fetch failed');
       const data = (await res.json()) as { transactions: ApiTx[]; total: number };
@@ -119,7 +121,7 @@ export function TransactionList({
     } finally {
       setLoading(false);
     }
-  }, [loading, done, walletAddress, pageSize, rows.length]);
+  }, [loading, done, walletAddress, chain, pageSize, rows.length]);
 
   useEffect(() => {
     if (done || !sentinelRef.current) return;
@@ -160,7 +162,7 @@ export function TransactionList({
       </TableHeader>
       <TableBody>
         {rows.map((tx) => {
-          const facilitatorName = facilitatorLabel(tx.facilitator, 'solana');
+          const facilitatorName = facilitatorLabel(tx.facilitator, chain);
           return (
             <TableRow key={tx.id}>
               <TableCell className="font-medium capitalize">
@@ -214,12 +216,12 @@ export function TransactionList({
                     })}
                   </span>
                   <span className="text-[11px] text-[#4f5258]" suppressHydrationWarning>
-                    {relativeTime(tx.timestamp)}
+                    {formatRelativePast(tx.timestamp)}
                   </span>
                 </div>
               </TableCell>
               <TableCell className="text-right hidden md:table-cell">
-                <TxSignature signature={tx.tx_signature} />
+                <TxSignature signature={tx.tx_signature} chain={chain} />
               </TableCell>
             </TableRow>
           );

@@ -8,6 +8,7 @@
  */
 import { isAddress } from "viem";
 import type { ChainAdapter, IndexRunResult, PublishResult } from "./types";
+import { explorerAddressUrl, explorerTxUrl } from "@/lib/explorer-urls";
 import type { WalletScore } from "@/scoring/index";
 import { aggregateFeedback } from "@/integrations/erc8004-arc";
 import { runArcJobsIndexer } from "@/indexer/arc-jobs";
@@ -81,8 +82,7 @@ export function makeArcAdapter(): ChainAdapter {
       };
     },
 
-    explorerTxUrl: (txId) => `https://testnet.arcscan.app/tx/${txId}`,
-    explorerAddressUrl: (address) =>
-      `https://testnet.arcscan.app/address/${address}`,
+    explorerTxUrl: (txId) => explorerTxUrl("arc", txId),
+    explorerAddressUrl: (address) => explorerAddressUrl("arc", address),
   };
 }

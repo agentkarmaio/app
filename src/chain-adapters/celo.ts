@@ -6,6 +6,7 @@
  */
 import { isAddress } from 'viem';
 import type { ChainAdapter, IndexRunResult, PublishResult } from './types';
+import { explorerAddressUrl, explorerTxUrl } from '@/lib/explorer-urls';
 import type { WalletScore } from '@/scoring/index';
 import { aggregateFeedback } from '@/integrations/erc8004-celo';
 import { runCeloX402Indexer } from '@/indexer/celo-x402';
@@ -57,7 +58,7 @@ export function makeCeloAdapter(): ChainAdapter {
       return { address, dryRun: true, skipped: true, reason: 'no_celo_agent_id' };
     },
 
-    explorerTxUrl: (txId) => `https://celoscan.io/tx/${txId}`,
-    explorerAddressUrl: (address) => `https://celoscan.io/address/${address}`,
+    explorerTxUrl: (txId) => explorerTxUrl('celo', txId),
+    explorerAddressUrl: (address) => explorerAddressUrl('celo', address),
   };
 }

@@ -1,8 +1,8 @@
 import { isAddress } from 'viem';
-import { arcMainnet } from '@/config/arc-chain';
 import { ARC_MAINNET_USDC_CONTRACT } from '@/config/arc-mainnet';
 import { arcTransfersCursorKey } from '@/indexer/arc-transfers';
 import type { ChainAdapter } from './types';
+import { explorerAddressUrl, explorerTxUrl } from '@/lib/explorer-urls';
 
 interface MainnetManagedOutcome { status: string; insertedCount?: number; checkpoint?: string | null }
 async function runManagedMainnet(): Promise<MainnetManagedOutcome> {
@@ -17,7 +17,6 @@ function rawTransactionHash(receiptId: string): string {
 
 /** A separate network; no registry/escrow implementation is borrowed from testnet. */
 export function makeArcMainnetAdapter(run: () => Promise<MainnetManagedOutcome> = runManagedMainnet): ChainAdapter {
-  const explorer = arcMainnet.blockExplorers.default.url;
   return {
     chain: 'arc-mainnet',
     validateAddress: isAddress,
@@ -35,7 +34,8 @@ export function makeArcMainnetAdapter(run: () => Promise<MainnetManagedOutcome> 
     readAttestation: async () => { throw new Error('arc_mainnet_registry_unavailable'); },
     readAttestations: async () => { throw new Error('arc_mainnet_registry_unavailable'); },
     publishAttestation: async (address) => ({ address, dryRun: true, skipped: true, reason: 'arc_mainnet_registry_unavailable' }),
-    explorerTxUrl: (receiptId) => `${explorer}/tx/${rawTransactionHash(receiptId)}`,
-    explorerAddressUrl: (address) => `${explorer}/address/${address}`,
+    // Receipt ids carry a `:logIndex` suffix; strip it before linking out.
+    explorerTxUrl: (receiptId) => explorerTxUrl('arc-mainnet', rawTransactionHash(receiptId)),
+    explorerAddressUrl: (address) => explorerAddressUrl('arc-mainnet', address),
   };
 }

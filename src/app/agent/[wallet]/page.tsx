@@ -40,6 +40,7 @@ import { computeSurety } from '@/scoring/surety';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { MetricBar } from '@/components/karma/metric-bar';
 import { PaymentRelationships } from '@/components/karma/payment-relationships';
+import { explorerAddressUrl } from '@/lib/explorer-urls';
 import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { ClaimBanner } from '@/components/karma/claim-banner';
 import { BadgeButton } from '@/components/karma/badge-button';
@@ -139,7 +140,6 @@ async function probeRegistryChainByAgentId(address: string, agentId: number): Pr
   if (arcOwns && !celoOwns) return 'arc';
   return null;
 }
-import { getAdapter } from '@/chain-adapters/registry';
 
 const CATEGORY_LABELS: Record<string, string> = {
   ai: 'AI / ML',
@@ -168,23 +168,17 @@ function shortAddr(addr: string): string {
  * into the index manually.
  */
 /**
- * Chain-aware block explorer link for an account. When the chain is known we
- * dispatch through the ChainAdapter so each chain owns its explorer URL shape.
- * The legacy fallback keeps Solana/Stellar handling stable for any caller that
- * still doesn't know the chain (e.g. opengraph-image path).
+ * Block explorer link for an account. Every URL shape lives in
+ * `lib/explorer-urls.ts`; this only decides WHICH chain to link as when the
+ * caller doesn't know one (e.g. the opengraph-image path), by reading the
+ * address format.
  */
 function explorerAccountUrl(addr: string, chain?: Chain | null): string {
-  if (chain) {
-    try { return getAdapter(chain).explorerAddressUrl(addr); } catch { /* fall through */ }
-  }
-  if (isStellarAddress(addr)) {
-    return `https://stellar.expert/explorer/public/account/${addr}`;
-  }
-  // EVM 0x address with no chain pin → default to celoscan (richer AK presence).
-  if (/^0x[a-fA-F0-9]{40}$/.test(addr)) {
-    return `https://celoscan.io/address/${addr}`;
-  }
-  return `https://solscan.io/account/${addr}`;
+  if (chain) return explorerAddressUrl(chain, addr);
+  if (isStellarAddress(addr)) return explorerAddressUrl('stellar', addr);
+  // EVM 0x address with no chain pin → default to celo (richer AK presence).
+  if (/^0x[a-fA-F0-9]{40}$/.test(addr)) return explorerAddressUrl('celo', addr);
+  return explorerAddressUrl('solana', addr);
 }
 
 function UnindexedAgentStub({

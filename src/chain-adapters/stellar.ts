@@ -5,6 +5,7 @@
  * Functional factory — NO class (AK hard rule).
  */
 import type { ChainAdapter, IndexRunResult, PublishResult } from './types';
+import { explorerAddressUrl, explorerTxUrl } from '@/lib/explorer-urls';
 import { runStellarIndexer } from '@/indexer/stellar-x402';
 import {
   computeAttestationScore,
@@ -78,7 +79,7 @@ export function makeStellarAdapter(): ChainAdapter {
       });
     },
 
-    explorerTxUrl: (txId) => `https://stellar.expert/explorer/public/tx/${txId}`,
-    explorerAddressUrl: (address) => `https://stellar.expert/explorer/public/account/${address}`,
+    explorerTxUrl: (txId) => explorerTxUrl('stellar', txId),
+    explorerAddressUrl: (address) => explorerAddressUrl('stellar', address),
   };
 }

@@ -5,6 +5,7 @@
  */
 import { PublicKey } from '@solana/web3.js';
 import type { ChainAdapter, IndexRunResult, PublishResult } from './types';
+import { explorerAddressUrl, explorerTxUrl } from '@/lib/explorer-urls';
 import type { WalletScore } from '@/scoring/index';
 import { readAttestation as solReadAttestation, readAttestations as solReadAttestations } from '@/integrations/attestation';
 import { initSDKFromEnv, writeFeedback } from '@/integrations/erc8004';
@@ -37,7 +38,7 @@ export function makeSolanaAdapter(): ChainAdapter {
       return { address, txId: r.signature, dryRun: r.dryRun, skipped: false };
     },
 
-    explorerTxUrl: (txId) => `https://solscan.io/tx/${txId}`,
-    explorerAddressUrl: (address) => `https://solscan.io/account/${address}`,
+    explorerTxUrl: (txId) => explorerTxUrl('solana', txId),
+    explorerAddressUrl: (address) => explorerAddressUrl('solana', address),
   };
 }
