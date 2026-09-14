@@ -10,12 +10,14 @@ import {
   acquireIndexingLease,
   renewIndexingLease,
   finishIndexingRun,
+  releaseIndexingLease,
 } from '@/db/indexing-state';
 import { runWithIndexingContext } from '@/db/indexing-context';
 import { INDEXING_PATHS, type IndexingPath } from './indexing-health';
 import { isIndexingStalled } from './indexing-exit';
 import {
   executeIndexingJob,
+  releaseHeldIndexingLeases,
   type IndexingJob,
   type ScanOutcome,
 } from './indexing-runner';
@@ -234,6 +236,7 @@ export interface ManagedTaskStore {
   acquire: typeof acquireIndexingLease;
   renew: typeof renewIndexingLease;
   finish: typeof finishIndexingRun;
+  release: typeof releaseIndexingLease;
   withContext: typeof runWithIndexingContext;
 }
 export async function runManagedIndexingTask(
@@ -244,6 +247,7 @@ export async function runManagedIndexingTask(
     acquire = acquireIndexingLease,
     renew = renewIndexingLease,
     finish = finishIndexingRun,
+    release = releaseIndexingLease,
     withContext = runWithIndexingContext,
   } = store;
   const { chain, path } = job;
@@ -260,6 +264,7 @@ export async function runManagedIndexingTask(
       return Boolean(state);
     },
     renew,
+    release,
     finish: async (input) => {
       // Historical coverage gaps survive later successful incremental scans;
       // retriable decode failures clear when a subsequent scan actually succeeds.
@@ -290,6 +295,37 @@ export async function runManagedIndexingTask(
     return execution;
   return normalized ? { ...normalized, stalled } : execution;
 }
+/**
+ * A container replaced mid-scan is the common way a lease is orphaned. On a
+ * graceful stop we can still hand back what we hold, so the next boot's health
+ * read sees the truth instead of a phantom owner. A SIGKILL runs nothing —
+ * that case is covered read-side, where an expired lease is not a verdict.
+ */
+let shutdownHandlersInstalled = false;
+function installLeaseShutdownHandlers() {
+  if (shutdownHandlersInstalled) return;
+  shutdownHandlersInstalled = true;
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      // Registering a listener SUPPRESSES Node's default terminate. Inside a
+      // `once` handler this count excludes our own, so zero means we are the
+      // only thing standing between the signal and the exit — release, then
+      // re-raise so the default action runs. Bounded either way: an
+      // unreachable DB must not wedge a container in shutdown.
+      const soleListener = process.listenerCount(signal) === 0;
+      const deadline = new Promise<number>((resolve) => {
+        setTimeout(() => resolve(-1), 2_000).unref?.();
+      });
+      void Promise.race([releaseHeldIndexingLeases(), deadline])
+        .catch(() => -1)
+        .then((released) => {
+          if (released > 0)
+            console.log(`[indexing] released ${released} lease(s) on ${signal}`);
+          if (soleListener) process.kill(process.pid, signal);
+        });
+    });
+  }
+}
 /** Reuse the same ownership contract from app workers, manual recovery and CI. */
 export function startIndexingWorkers() {
   if (
@@ -297,6 +333,7 @@ export function startIndexingWorkers() {
     process.env.INDEXING_WORKER_DISABLED === '1'
   )
     return;
+  installLeaseShutdownHandlers();
   for (const def of INDEXING_PATHS) {
     if (
       def.chain === 'solana' &&

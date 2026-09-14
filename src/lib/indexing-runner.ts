@@ -30,6 +30,8 @@ export interface LeaseDependencies {
   ) => Promise<boolean>;
   renew: (identity: JobIdentity & { leaseMs: number }) => Promise<boolean>;
   finish: (identity: JobIdentity & ScanOutcome) => Promise<boolean>;
+  /** Hand ownership back without a result; works after the lease expired. */
+  release: (identity: JobIdentity) => Promise<boolean>;
   withContext: <T>(
     identity: JobIdentity & { signal: AbortSignal },
     fn: () => Promise<T>,
@@ -76,6 +78,28 @@ export function indexingErrorCode(error: unknown): string {
   if (/rpc|fetch|network|timeout|timed out/i.test(m)) return 'rpc_unavailable';
   return 'scan_failed';
 }
+/**
+ * Leases this process holds right now. A run that ends — however it ends —
+ * removes its own entry, so whatever remains here at shutdown is exactly what
+ * would otherwise be orphaned.
+ */
+const held = new Map<string, { identity: JobIdentity; release: LeaseDependencies['release'] }>();
+const heldKey = (i: JobIdentity) => `${i.chain}/${i.path}/${i.owner}`;
+
+/**
+ * Release every lease still in flight, for a process that is going away.
+ * Returns how many the store actually cleared. Safe to call more than once:
+ * an already-released lease is simply no longer held.
+ */
+export async function releaseHeldIndexingLeases(): Promise<number> {
+  const entries = [...held.values()];
+  held.clear();
+  const results = await Promise.allSettled(
+    entries.map((e) => e.release(e.identity)),
+  );
+  return results.filter((r) => r.status === 'fulfilled' && r.value).length;
+}
+
 /** Ownership is enforced again by DB triggers on every context-bearing write. */
 export async function executeIndexingJob(
   job: IndexingJob,
@@ -92,6 +116,7 @@ export async function executeIndexingJob(
     !(await deps.acquire({ ...identity, leaseMs, intervalMs: job.intervalMs }))
   )
     return { status: 'busy' as const };
+  held.set(heldKey(identity), { identity, release: deps.release });
   const controller = new AbortController();
   let lost = false;
   let renewing = false;
@@ -151,11 +176,38 @@ export async function executeIndexingJob(
     // Blocks later network calls from work that did not honour cancellation.
     controller.abort();
   }
-  if (lost) return { status: 'lease_lost' as const, errorCode: 'lease_lost' };
+  held.delete(heldKey(identity));
+  // Every exit that does NOT go through `finish` must hand the lease back
+  // itself: `finish_indexing_run` is the only other writer that clears
+  // ownership, and it refuses once the lease has expired — exactly when a
+  // lost run needs it. Left undone, the row shows a phantom owner until the
+  // next acquire steals it, a whole interval later.
+  if (lost) {
+    await releaseQuietly(deps, identity);
+    return { status: 'lease_lost' as const, errorCode: 'lease_lost' };
+  }
   if (outcome.errorCode && !ERROR_CODES.has(outcome.errorCode))
     outcome = { ...outcome, errorCode: 'scan_partial' };
   const finished = await deps.finish({ ...identity, ...outcome });
-  return finished
-    ? outcome
-    : { status: 'lease_lost' as const, errorCode: 'lease_lost' };
+  if (finished) return outcome;
+  await releaseQuietly(deps, identity);
+  return { status: 'lease_lost' as const, errorCode: 'lease_lost' };
+}
+
+/**
+ * A lease we failed to give back is the state we were already in, so this never
+ * fails a run. It warns once, though: a missing RPC or a stale PostgREST schema
+ * cache would otherwise make the whole release path silently inert.
+ */
+let releaseFailureLogged = false;
+async function releaseQuietly(deps: LeaseDependencies, identity: JobIdentity) {
+  try {
+    await deps.release(identity);
+  } catch (error) {
+    if (releaseFailureLogged) return;
+    releaseFailureLogged = true;
+    console.warn(
+      `[indexing] lease release unavailable (${indexingErrorCode(error)}); orphans clear on the next acquire`,
+    );
+  }
 }

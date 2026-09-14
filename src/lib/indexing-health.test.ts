@@ -62,7 +62,10 @@ describe('per-path indexing health', () => {
         ?.paths.find((p) => p.path === 'payments')?.status,
     ).toBe('delayed');
   });
-  test('expired worker is delayed and private fields never enter response', () => {
+  // A worker that died without releasing leaves `owner` set until the next
+  // acquire steals it — up to a full interval. That orphan says nothing about
+  // freshness, so only `last_finished_at` may decide it.
+  test('an orphaned lease over fresh data is not delayed, and private fields never enter response', () => {
     const result = buildIndexingHealth(
       [
         row('arc', 'transfers', {
@@ -77,9 +80,43 @@ describe('per-path indexing health', () => {
       result.chains
         .find((c) => c.chain === 'arc')
         ?.paths.find((p) => p.path === 'transfers')?.status,
-    ).toBe('delayed');
+    ).toBe('current');
     expect(JSON.stringify(result)).not.toContain('SECRET');
     expect(JSON.stringify(result)).not.toContain('rpc.invalid');
+  });
+  test('an orphaned lease over stale data is still delayed', () => {
+    const result = buildIndexingHealth(
+      [
+        row('arc', 'transfers', {
+          owner: 'worker-1',
+          lease_until: new Date(now - 1).toISOString(),
+          last_finished_at: new Date(now - 3_600_000).toISOString(),
+        }),
+      ],
+      now,
+    );
+    expect(
+      result.chains
+        .find((c) => c.chain === 'arc')
+        ?.paths.find((p) => p.path === 'transfers')?.status,
+    ).toBe('delayed');
+  });
+  test('a live lease is still running', () => {
+    const result = buildIndexingHealth(
+      [
+        row('arc', 'transfers', {
+          owner: 'worker-1',
+          lease_until: new Date(now + 60_000).toISOString(),
+          last_finished_at: new Date(now - 3_600_000).toISOString(),
+        }),
+      ],
+      now,
+    );
+    expect(
+      result.chains
+        .find((c) => c.chain === 'arc')
+        ?.paths.find((p) => p.path === 'transfers')?.status,
+    ).toBe('running');
   });
   test('a partial run cannot be current despite fresh last_success', () => {
     const result = buildIndexingHealth(

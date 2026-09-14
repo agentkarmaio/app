@@ -63,6 +63,20 @@ export async function renewIndexingLease(input: IndexingLeaseKey & { leaseMs: nu
   return data === true;
 }
 
+/**
+ * Give a lease back without publishing a result. Unlike `finishIndexingRun`
+ * this still works after the lease expired, which is the only case that needs
+ * it: a worker that lost or abandoned a run otherwise leaves ownership set for
+ * a whole interval.
+ */
+export async function releaseIndexingLease(input: IndexingLeaseKey): Promise<boolean> {
+  const { data, error } = await supabase.rpc('release_indexing_lease', {
+    p_chain: input.chain, p_path: input.path, p_owner: input.owner,
+  });
+  if (error) throw error;
+  return data === true;
+}
+
 export async function finishIndexingRun(input: FinishIndexingRunInput): Promise<boolean> {
   const { data, error } = await supabase.rpc('finish_indexing_run', {
     p_chain: input.chain, p_path: input.path, p_owner: input.owner, p_status: input.status,

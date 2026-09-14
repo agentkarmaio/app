@@ -62,6 +62,7 @@ function managed(
     acquire: async () => (state ? (state as IndexingState) : null),
     renew: async () => true,
     finish: async () => true,
+    release: async () => true,
     withContext: (_identity, fn) => fn(),
   };
   return runManagedIndexingTask(job, store);

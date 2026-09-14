@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import {
   executeIndexingJob,
   indexingErrorCode,
+  releaseHeldIndexingLeases,
   type LeaseDependencies,
   type IndexingJob,
 } from './indexing-runner';
@@ -24,13 +25,19 @@ const job: IndexingJob = {
 };
 function deps(over: Partial<LeaseDependencies> = {}) {
   const finishes: unknown[] = [];
+  const releases: unknown[] = [];
   return {
     finishes,
+    releases,
     value: {
       acquire: async () => true,
       renew: async () => true,
       finish: async (v) => {
         finishes.push(v);
+        return true;
+      },
+      release: async (v) => {
+        releases.push(v);
         return true;
       },
       withContext: async (_i, fn) => fn(),
@@ -78,6 +85,48 @@ test('failure is recorded with safe error code, no provider key', async () => {
 test('expired ownership cannot publish successful completion', async () => {
   const d = deps({ finish: async () => false });
   expect((await executeIndexingJob(job, d.value)).status).toBe('lease_lost');
+});
+// `finish_indexing_run` clears ownership itself, so releasing after it would be
+// a second write that could steal a lease a later run already holds.
+test('a completed run does not also release', async () => {
+  const d = deps();
+  await executeIndexingJob(job, d.value);
+  expect(d.releases).toEqual([]);
+});
+test('a rejected finish releases the orphaned lease', async () => {
+  const d = deps({ finish: async () => false });
+  await executeIndexingJob(job, d.value);
+  expect(d.releases).toHaveLength(1);
+  expect(d.releases[0]).toMatchObject({ chain: 'arc', path: 'escrow' });
+});
+test('a lost renewal releases the orphaned lease', async () => {
+  const d = deps({ renew: async () => false });
+  await executeIndexingJob(
+    { ...job, run: async () => new Promise(() => {}) },
+    d.value,
+    { renewMs: 5, timeoutMs: 100 },
+  );
+  expect(d.releases).toHaveLength(1);
+  expect(d.releases[0]).toMatchObject({ chain: 'arc', path: 'escrow' });
+});
+// A SIGTERM'd container is the common orphan source: the run is still in
+// flight, so only an out-of-band release can hand the lease back.
+test('shutdown releases every lease still in flight', async () => {
+  const d = deps();
+  let unblock = () => {};
+  const running = executeIndexingJob(
+    { ...job, run: () => new Promise((resolve) => { unblock = () => resolve({ status: 'caught_up' }); }) },
+    d.value,
+    { timeoutMs: 5_000 },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(await releaseHeldIndexingLeases()).toBe(1);
+  expect(d.releases).toHaveLength(1);
+  expect(d.releases[0]).toMatchObject({ chain: 'arc', path: 'escrow' });
+  unblock();
+  await running;
+  // The run owns no lease after finishing, so a later shutdown releases nothing.
+  expect(await releaseHeldIndexingLeases()).toBe(0);
 });
 test('renewal failure aborts running work and never claims success', async () => {
   let aborted = false;

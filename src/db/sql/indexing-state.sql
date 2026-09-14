@@ -57,6 +57,28 @@ BEGIN
 END;
 $$;
 
+-- Hand a lease back without claiming a result. `finish_indexing_run` refuses
+-- once the lease has expired, so a worker that loses or abandons a run has no
+-- other way to clear its own ownership, and the row advertises a phantom owner
+-- until the next acquire steals it. Ownership is the ONLY thing this clears:
+-- no status, no counters, no timestamps.
+CREATE OR REPLACE FUNCTION public.release_indexing_lease(
+  p_chain text, p_path text, p_owner uuid
+) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+DECLARE state public.indexing_state%ROWTYPE;
+BEGIN
+  SELECT * INTO state FROM public.indexing_state
+    WHERE chain = p_chain AND path = p_path FOR UPDATE;
+  -- Owner match is the whole guard: expiry must NOT block it, and a lease
+  -- already re-acquired by someone else is never stolen back.
+  IF NOT FOUND OR state.owner IS DISTINCT FROM p_owner THEN RETURN false; END IF;
+  UPDATE public.indexing_state SET owner = NULL, lease_until = NULL
+    WHERE chain = p_chain AND path = p_path;
+  RETURN true;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.finish_indexing_run(
   p_chain text, p_path text, p_owner uuid, p_status text,
   p_error_code text DEFAULT NULL, p_checkpoint text DEFAULT NULL, p_head text DEFAULT NULL,
@@ -155,10 +177,12 @@ $$;
 
 REVOKE ALL ON FUNCTION public.acquire_indexing_lease(text,text,uuid,integer,integer,boolean) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.renew_indexing_lease(text,text,uuid,integer) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.release_indexing_lease(text,text,uuid) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.finish_indexing_run(text,text,uuid,text,text,text,text,integer,integer,integer,integer,integer) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.fence_indexing_write() FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.acquire_indexing_lease(text,text,uuid,integer,integer,boolean) TO service_role;
 GRANT EXECUTE ON FUNCTION public.renew_indexing_lease(text,text,uuid,integer) TO service_role;
+GRANT EXECUTE ON FUNCTION public.release_indexing_lease(text,text,uuid) TO service_role;
 GRANT EXECUTE ON FUNCTION public.finish_indexing_run(text,text,uuid,text,text,text,text,integer,integer,integer,integer,integer) TO service_role;
 
 DO $$

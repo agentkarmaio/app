@@ -99,7 +99,11 @@ function stateStatus(
 ): IndexingStatus {
   if (!row) return 'unknown';
   if (!row.enabled) return 'disabled';
-  if (row.owner) return ms(row.lease_until) > now ? 'running' : 'delayed';
+  // Only a LIVE lease proves a run is in flight. An expired one is an orphan
+  // left by a worker that died before releasing, and it survives until the next
+  // acquire steals it — a whole interval of saying "delayed" about data that may
+  // be seconds old. Freshness is `last_finished_at`'s to decide, below.
+  if (row.owner && ms(row.lease_until) > now) return 'running';
   if (row.status === 'failed') return 'failed';
   if (!row.last_finished_at) return 'unknown';
   if (
