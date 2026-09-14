@@ -62,6 +62,7 @@ import {
   extractX402Payment,
   extractPayshPayment,
   getIndexerRpcUrl,
+  getArchiveConnection,
   type HeliusEnhancedTransaction,
   type PayshExtractedPayment,
 } from './helius';
@@ -151,6 +152,14 @@ export async function getSignaturesWithCursorFallback(
   ) => Promise<ConfirmedSignatureInfo[]>,
   opts: { limit: number; until?: string; before?: string },
   signal?: AbortSignal,
+  /**
+   * Deeper-history endpoint for a cursor the primary has pruned. Omit when no
+   * archive is configured (or it resolves to the primary) — re-asking the same
+   * endpoint proves nothing.
+   */
+  fetchFromArchive?: (
+    opts: { limit: number; until?: string; before?: string },
+  ) => Promise<ConfirmedSignatureInfo[]>,
 ): Promise<{ signatures: ConfirmedSignatureInfo[]; cursorReset: boolean }> {
   signal?.throwIfAborted();
   try {
@@ -160,6 +169,23 @@ export async function getSignaturesWithCursorFallback(
   } catch (err) {
     signal?.throwIfAborted();
     if (!opts.until || !isCursorUnresolvable(err)) throw err;
+    // "The primary pruned it" is not "it is gone". Ask the archive for the SAME
+    // cursor first: when it answers, history is continuous and no gap is owed.
+    // Dropping the cursor is what mints a gap, and a pruned cursor is re-minted
+    // every run — 16 of 24 sampled facilitators were sitting in that loop.
+    if (fetchFromArchive) {
+      try {
+        const signatures = await fetchFromArchive(opts);
+        signal?.throwIfAborted();
+        return { signatures, cursorReset: false };
+      } catch {
+        signal?.throwIfAborted();
+        // Any archive failure — pruned there too, throttled, unreachable —
+        // degrades to the cursor-less retry below. Never propagate: holding a
+        // cursor the primary already called dead is the 2026-07-22 72h wedge,
+        // and a gap is recoverable where a wedge is not.
+      }
+    }
     const { until: _dead, ...withoutCursor } = opts;
     void _dead;
     const signatures = await fetchSignatures(withoutCursor);
@@ -287,10 +313,16 @@ export async function fetchTransactionsForFacilitator(
   let signatures: ConfirmedSignatureInfo[];
   let cursorReset = false;
   try {
+    // Bulk signature reads stay on the primary — 31 addresses at
+    // FACILITATOR_CONCURRENCY into a ~0.6 rps archive would trade this gap
+    // problem for a throttling one. The archive is consulted ONLY for a cursor
+    // the primary has pruned, which is at most one call per stuck address.
+    const archive = getArchiveConnection();
     const fetched = await getSignaturesWithCursorFallback(
       (o) => connection.getSignaturesForAddress(pubkey, o),
       sigOpts,
       options?.signal,
+      archive ? (o) => archive.getSignaturesForAddress(pubkey, o) : undefined,
     );
     signatures = fetched.signatures;
     cursorReset = fetched.cursorReset;

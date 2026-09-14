@@ -8,6 +8,20 @@ test('a first-window provider throttle is failed, not successful catch-up', () =
     coverageOutcome({ ...coverage, reason: 'rate_limited' }, 0).status,
   ).toBe('failed');
 });
+// Observed in keep-fresh run 34805594213: 30 facilitators checked, 895 rows
+// landed, freshness "fresh" — and ONE throttled getSignaturesForAddress made the
+// whole run 'failed' and paged, because `rpc_rate_limited` was listed
+// unconditionally while its sibling `rate_limited` was gated on checked === 0.
+test('one throttled call does not fail a run that checked targets and landed rows', () => {
+  expect(
+    coverageOutcome({ ...coverage, checked: 30, reason: 'rpc_rate_limited' }, 895).status,
+  ).not.toBe('failed');
+});
+test('a throttle that checked nothing is still failed', () => {
+  expect(
+    coverageOutcome({ ...coverage, checked: 0, reason: 'rpc_rate_limited' }, 0).status,
+  ).toBe('failed');
+});
 test('bounded completed progress stays visible without claiming full success', () => {
   expect(
     coverageOutcome({ ...coverage, checked: 5, reason: 'budget' }, 2).status,

@@ -361,6 +361,55 @@ describe('getSignaturesWithCursorFallback', () => {
     ).rejects.toThrow('429');
     expect(calls).toBe(1); // circuit breaker owns this case, not the fallback
   });
+
+  // Dropping the cursor is what MAKES the gap: 16 of 24 sampled facilitators sit
+  // on a cursor publicnode has pruned, so each one re-emits a gap every hour.
+  // The archive still holds it — ask there before abandoning history.
+  test('resolves the dead cursor on the archive instead of opening a gap', async () => {
+    const archiveSaw: Record<string, unknown>[] = [];
+    const result = await getSignaturesWithCursorFallback(
+      async () => { throw new Error('failed to get signatures: Transaction old-sig not found'); },
+      { limit: 100, until: 'old-sig' },
+      undefined,
+      async (opts) => { archiveSaw.push(opts as Record<string, unknown>); return [SIG]; },
+    );
+    expect(result.signatures).toEqual([SIG]);
+    expect(result.cursorReset).toBe(false); // no reset ⇒ no gap counted
+    expect(archiveSaw).toEqual([{ limit: 100, until: 'old-sig' }]); // SAME cursor
+  });
+
+  test('falls back to the cursor-less retry when the archive cannot help either', async () => {
+    const primarySaw: Record<string, unknown>[] = [];
+    const result = await getSignaturesWithCursorFallback(
+      async (opts) => {
+        primarySaw.push(opts as Record<string, unknown>);
+        if ('until' in opts) throw new Error('Transaction old-sig not found');
+        return [SIG];
+      },
+      { limit: 100, until: 'old-sig' },
+      undefined,
+      async () => { throw new Error('Transaction old-sig not found'); },
+    );
+    expect(result.cursorReset).toBe(true);
+    expect(primarySaw[1]).not.toHaveProperty('until');
+  });
+
+  // A throttled archive tells us nothing about whether the cursor is alive, and
+  // holding a cursor the primary already called dead is the 2026-07-22 wedge.
+  // Degrade to today's behaviour rather than propagate.
+  test('an archive rate limit degrades to the cursor-less retry, never propagates', async () => {
+    const result = await getSignaturesWithCursorFallback(
+      async (opts) => {
+        if ('until' in opts) throw new Error('Transaction old-sig not found');
+        return [SIG];
+      },
+      { limit: 100, until: 'old-sig' },
+      undefined,
+      async () => { throw new Error('429 Too Many Requests'); },
+    );
+    expect(result.cursorReset).toBe(true);
+    expect(result.signatures).toEqual([SIG]);
+  });
 });
 
 // ─── Cursor hold on unresolvable signatures ──────────────────────────────────

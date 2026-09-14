@@ -98,7 +98,7 @@ export function getArchiveRpcUrl(): string {
 
 let _archiveConn: Connection | null = null;
 /** Null when the archive resolves to the primary — re-asking it proves nothing. */
-function getArchiveConnection(): Connection | null {
+export function getArchiveConnection(): Connection | null {
   if (getArchiveRpcUrl() === getIndexerRpcUrl()) return null;
   if (!_archiveConn) _archiveConn = new Connection(getArchiveRpcUrl(), 'confirmed');
   return _archiveConn;

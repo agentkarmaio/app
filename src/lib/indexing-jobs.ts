@@ -37,14 +37,19 @@ export function coverageOutcome(
   insertedCount: number,
 ): ScanOutcome {
   const dormant = coverage.reason === 'empty_seed';
+  // A throttle is only a failed RUN when it stopped us checking anything. With
+  // targets checked and rows landed, one 429 among hundreds of calls is ordinary
+  // backpressure — reporting it as `failed` pages on a run that did its job, and
+  // that is what made keep-fresh red while ingesting 895 transactions.
+  const throttled =
+    coverage.reason === 'rate_limited' || coverage.reason === 'rpc_rate_limited';
   const failed =
-    (coverage.reason === 'rate_limited' && coverage.checked === 0) ||
+    (throttled && coverage.checked === 0) ||
     [
       'all_absent',
       'head_behind_cursor',
       'address_failure',
       'registry_read_failure',
-      'rpc_rate_limited',
       'rpc_unavailable',
     ].includes(coverage.reason ?? '');
   return {

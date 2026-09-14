@@ -2,12 +2,20 @@
 # and the runtime never need — keeping secrets, local CLI state, and scratch
 # tooling out of the image (smaller, and no keys/seeds baked in).
 #
-# NOTE: do NOT add `.env` or `node_modules` here — the build inlines
-# NEXT_PUBLIC_* from `.env` and reinstalls deps inside the container.
+# NOTE: do NOT add `.env` here — the build inlines NEXT_PUBLIC_* from it.
+#
+# `node_modules` IS excluded (2026-09-14). The note that previously lumped it in
+# with `.env` gave "reinstalls deps inside the container" as the reason, which is
+# an argument for excluding it, not keeping it: there is no Dockerfile, servel
+# auto-detects and runs the install itself, so the 2.9 GB we were uploading was
+# discarded. Two deploys that day died mid-upload with "use of closed network
+# connection" before the build ever started. If a build ever fails for a missing
+# dependency, put it back — a failed build cannot take prod down, the running
+# version keeps serving.
 
 .git
 .next
-node_modules/.cache
+node_modules
 
 # Secrets / local CLI state — must never enter the image.
 .keys
