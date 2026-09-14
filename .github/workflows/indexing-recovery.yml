@@ -18,7 +18,18 @@ jobs:
       matrix:
         include:
           - { chain: arc, path: escrow }
-          - { chain: arc, path: transfers }
+          # arc/transfers is deliberately absent. The lease stops two runs
+          # overlapping, but not the two competing for the same Arc RPC quota,
+          # and on this path that quota is the binding constraint: after
+          # f6a277d the five-minute worker drains ~6M blocks of backlog and
+          # every run it lands is throttle-bound (2026-09-14: per-run yield
+          # fell 50k → 20k → 10k blocks as error_code went budget →
+          # rate_limited). The hourly leg loses that race, reports
+          # checkedCount 0, and pages `stalled` while the worker beside it is
+          # banking rows — so it spent quota to manufacture a false alarm
+          # about the very path it was slowing down. Recovery here means
+          # leaving the worker alone. Restore this entry only if the worker
+          # stops covering the path.
           - { chain: arc, path: registry }
           - { chain: arc-mainnet, path: transfers }
           - { chain: celo, path: payments }
