@@ -112,13 +112,20 @@ function stateStatus(
   )
     return 'delayed';
   if (row.status === 'dormant') return 'dormant';
-  if (
-    row.status === 'catching_up' ||
-    row.pending_count > 0 ||
-    row.unresolved_count > 0 ||
-    (row.gaps_count ?? 0) > 0
-  )
-    return 'catching_up';
+  // Holes in OLD history are not a statement about TODAY's data. `gaps_count` is
+  // a permanent ledger — retained by greatest() and cleared only by operator
+  // recovery — so counting it as backlog pins a path to "catching up" for good,
+  // and `finish_indexing_run` compounds that by rewriting caught_up →
+  // catching_up whenever gaps survive. Gaps are disclosed as `history_gap`
+  // through `publicIssue`; the freshness verdict must not say it a second time.
+  //
+  // Safe to derive: `caught_up` is impossible with outstanding work — the SQL
+  // raises `indexing_coverage_incomplete` when either count is non-zero — so
+  // zero pending AND zero unresolved can only mean the scan finished its window.
+  const backlogged = row.pending_count > 0 || row.unresolved_count > 0;
+  if (backlogged) return 'catching_up';
+  if ((row.gaps_count ?? 0) > 0) return 'current';
+  if (row.status === 'catching_up') return 'catching_up';
   return row.status === 'caught_up' && row.last_success_at
     ? 'current'
     : 'unknown';

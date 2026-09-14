@@ -118,6 +118,47 @@ describe('per-path indexing health', () => {
         ?.paths.find((p) => p.path === 'transfers')?.status,
     ).toBe('running');
   });
+  // `gaps_count` is a permanent ledger entry — retained by greatest(), cleared
+  // only by operator recovery. Letting it drive the freshness verdict means a
+  // path that ever recorded one reads "catching up" forever, which says nothing
+  // about whether today's data is current. It is disclosed as an issue instead.
+  test('a recorded history gap alone does not make fresh data read as behind', () => {
+    const result = buildIndexingHealth(
+      [row('celo', 'payments', { gaps_count: 19, error_code: 'archive_gap' })],
+      now,
+    );
+    const path = result.chains
+      .find((c) => c.chain === 'celo')
+      ?.paths.find((p) => p.path === 'payments');
+    expect(path?.status).toBe('current');
+    expect(path?.issue).toBe('history_gap'); // still disclosed, just not as staleness
+  });
+  test('a history gap with real backlog behind it is still catching up', () => {
+    const result = buildIndexingHealth(
+      [row('celo', 'payments', { gaps_count: 19, pending_count: 7, unresolved_count: 101 })],
+      now,
+    );
+    expect(
+      result.chains
+        .find((c) => c.chain === 'celo')
+        ?.paths.find((p) => p.path === 'payments')?.status,
+    ).toBe('catching_up');
+  });
+  // finish_indexing_run rewrites caught_up → catching_up whenever gaps survive,
+  // so the stored status cannot distinguish "behind" from "complete but holed".
+  test('the SQL gap downgrade does not survive as a freshness verdict', () => {
+    const result = buildIndexingHealth(
+      [row('celo', 'payments', {
+        status: 'catching_up', gaps_count: 3, last_success_at: null,
+      })],
+      now,
+    );
+    expect(
+      result.chains
+        .find((c) => c.chain === 'celo')
+        ?.paths.find((p) => p.path === 'payments')?.status,
+    ).toBe('current');
+  });
   test('a partial run cannot be current despite fresh last_success', () => {
     const result = buildIndexingHealth(
       [row('arc', 'escrow', { pending_count: 8, status: 'catching_up' })],
