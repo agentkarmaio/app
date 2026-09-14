@@ -339,7 +339,10 @@ export async function runWalletScanWorker(batchSize = 1): Promise<void> {
         upsertCursor: async (key, lastSignature, lastSlot) => {
           await dbUpsertCursor(key, lastSignature, lastSlot ?? undefined);
         },
-        markDirty: async (addrs) => { await dbMarkWalletsDirty(addrs); },
+        // Regressive history scans read the Solana signature stream.
+        markDirty: async (addrs) => {
+          await dbMarkWalletsDirty(addrs.map((address) => ({ chain: 'solana' as const, address })));
+        },
       });
       await dbMarkWalletScanComplete(addr, result.hits, result.reachedCap);
       succeeded++;

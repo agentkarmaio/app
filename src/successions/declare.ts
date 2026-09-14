@@ -77,7 +77,9 @@ export async function declareSuccession(
 
   // Queue a rescore so the persisted score + leaderboard reflect the new
   // Tier-3 will_declared signal (the live v2 GET already recomputes with it).
-  await markWalletsDirty([input.agentWallet]);
+  // input.chain, not the default: a Celo/Stellar declaration queued on the
+  // solana key would never be picked up for the right wallet row.
+  await markWalletsDirty([{ chain: input.chain, address: input.agentWallet }]);
 
   return { ok: true, intervalSeconds, heirCount: heirs.length };
 }

@@ -871,7 +871,8 @@ export async function runSolanaTransfersIndexer(
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
     ensureWallets: dbMakeEnsureWallets(SOLANA_CHAIN),
-    markDirty: dbMarkWalletsDirty,
+    markDirty: async (addresses: string[]) =>
+      dbMarkWalletsDirty(addresses.map((address) => ({ chain: SOLANA_CHAIN, address }))),
     getCursor: async (key) =>
       withTransientDbRetry(async () => {
         const cursor = await dbGetCursor(key);

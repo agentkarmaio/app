@@ -99,7 +99,8 @@ for (const address of addresses) {
         await ensureWalletsExist([...new Set(rows.map((r) => r.wallet_address))]);
         return insertTransactions(rows);
       },
-      markDirty: (addrs) => markWalletsDirty(addrs),
+      markDirty: (addrs) =>
+        markWalletsDirty(addrs.map((address) => ({ chain: 'solana' as const, address }))),
       advanceCursor: async (a, s) => { await upsertCursor(a, s); },
     }, { maxSignatures, dryRun: !write });
   } catch (err) {

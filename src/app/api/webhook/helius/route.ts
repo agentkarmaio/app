@@ -84,7 +84,8 @@ export async function POST(request: NextRequest) {
 
   const inserted = await insertTransactions(parsed);
   await insertSignalEvents(buildX402PaymentSignals(parsed));
-  await markWalletsDirty(uniqueWallets);
+  // Helius webhooks are Solana-only by construction.
+  await markWalletsDirty(uniqueWallets.map((address) => ({ chain: 'solana' as const, address })));
 
   // Fire-and-forget regressive scan enqueue for fresh wallets. Bounded by
   // `freshWallets.length` (≤ unique counterparties in this batch). Each call

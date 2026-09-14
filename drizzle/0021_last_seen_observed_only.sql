@@ -18,9 +18,9 @@
 -- Full rationale: docs/superpowers/specs/2026-09-13-observed-liveness.md
 --
 -- Migrations on this cluster are applied out of band (servel.migrations is
--- empty while 0006-0017 are live), so run this by hand:
+-- empty while 0006-0020 are live), so run this by hand:
 --   servel infra sql @agentkarma-db --remote KN --service db \
---     drizzle/0018_last_seen_observed_only.sql
+--     drizzle/0021_last_seen_observed_only.sql
 --
 -- Then backfill the existing 96k rows:
 --   bun run scripts/backfill-observed-last-seen.ts --dry-run

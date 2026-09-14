@@ -239,7 +239,11 @@ describe('stellar_agent_id getter/setter (C2)', () => {
 // request URL overflows. These tests drive a fake that records each `.in()`
 // list and asserts no chunk exceeds the cap while every address is covered.
 describe('dirty-queue chunks address .in() lists to avoid URI-too-long', () => {
-  function fakeRecordingIn(selectRows: { address: string }[], inCalls: string[][]) {
+  function fakeRecordingIn(
+    selectRows: { chain?: string; address: string }[],
+    inCalls: string[][],
+    chainFilters: string[] = [],
+  ) {
     return {
       from() {
         const b: Record<string, unknown> = {};
@@ -247,12 +251,20 @@ describe('dirty-queue chunks address .in() lists to avoid URI-too-long', () => {
         b.not = () => b;
         b.order = () => b;
         b.limit = async () => ({ data: selectRows, error: null });
-        b.update = () => ({
-          in: (_col: string, list: string[]) => {
+        // The clear/mark path is `.update(row).eq('chain', c).in('address', [...])`
+        // — the composite key means the chain filter sits between the two.
+        b.update = () => {
+          const u: Record<string, unknown> = {};
+          u.eq = (col: string, val: string) => {
+            if (col === 'chain') chainFilters.push(val);
+            return u;
+          };
+          u.in = (_col: string, list: string[]) => {
             inCalls.push(list);
             return Promise.resolve({ error: null });
-          },
-        });
+          };
+          return u;
+        };
         return b;
       },
     };
@@ -266,25 +278,53 @@ describe('dirty-queue chunks address .in() lists to avoid URI-too-long', () => {
   test('claimDirtyWallets clears 200 wallets in <=ADDRESS_IN_CHUNK-sized chunks', async () => {
     const addresses = Array.from({ length: 200 }, (_, i) => `Wa11et${String(i).padStart(38, '0')}`);
     const inCalls: string[][] = [];
-    __setSupabaseForTest(fakeRecordingIn(addresses.map((address) => ({ address })), inCalls));
+    const chainFilters: string[] = [];
+    __setSupabaseForTest(
+      fakeRecordingIn(addresses.map((address) => ({ chain: 'solana', address })), inCalls, chainFilters),
+    );
 
     const claimed = await claimDirtyWallets(200);
 
     expect(claimed.length).toBe(200);
+    // The claim carries the chain — a queue of bare addresses silently becomes
+    // solana-only downstream (2026-09-14).
+    expect(claimed[0]).toEqual({ chain: 'solana', address: addresses[0] });
     expect(inCalls.length).toBeGreaterThan(1); // chunked, not one giant .in()
     expect(Math.max(...inCalls.map((c) => c.length))).toBeLessThanOrEqual(ADDRESS_IN_CHUNK);
     expect(inCalls.flat().sort()).toEqual([...addresses].sort()); // every wallet cleared
+    // …and every clear is scoped to the composite key, not address alone.
+    expect(new Set(chainFilters)).toEqual(new Set(['solana']));
+    expect(chainFilters.length).toBe(inCalls.length);
   });
 
   test('markWalletsDirty marks 250 wallets in <=ADDRESS_IN_CHUNK-sized chunks', async () => {
     const addresses = Array.from({ length: 250 }, (_, i) => `Wa11et${String(i).padStart(38, '0')}`);
     const inCalls: string[][] = [];
-    __setSupabaseForTest(fakeRecordingIn([], inCalls));
+    const chainFilters: string[] = [];
+    __setSupabaseForTest(fakeRecordingIn([], inCalls, chainFilters));
 
-    await markWalletsDirty(addresses);
+    await markWalletsDirty(addresses.map((address) => ({ chain: 'solana' as const, address })));
 
     expect(Math.max(...inCalls.map((c) => c.length))).toBeLessThanOrEqual(ADDRESS_IN_CHUNK);
     expect(inCalls.flat().sort()).toEqual([...addresses].sort());
+    expect(new Set(chainFilters)).toEqual(new Set(['solana']));
+  });
+
+  test('a mixed-chain batch is grouped, never flattened onto one chain', async () => {
+    const inCalls: string[][] = [];
+    const chainFilters: string[] = [];
+    __setSupabaseForTest(fakeRecordingIn([], inCalls, chainFilters));
+
+    await markWalletsDirty([
+      { chain: 'solana', address: 'SoL1' },
+      { chain: 'arc', address: '0xa1' },
+      { chain: 'solana', address: 'SoL2' },
+    ]);
+
+    expect(new Set(chainFilters)).toEqual(new Set(['solana', 'arc']));
+    const byChain = new Map(chainFilters.map((c, i) => [c, inCalls[i]]));
+    expect(byChain.get('solana')).toEqual(['SoL1', 'SoL2']);
+    expect(byChain.get('arc')).toEqual(['0xa1']);
   });
 });
 

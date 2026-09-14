@@ -1,8 +1,8 @@
 -- One-time backfill for 0018: rewrite `wallets.last_seen` from write time to
--- OBSERVED activity. Run AFTER 0018 has dropped the NOT NULL / DEFAULT.
+-- OBSERVED activity. Run AFTER 0021 has dropped the NOT NULL / DEFAULT.
 --
 --   servel infra sql @agentkarma-db --remote KN --service db \
---     drizzle/0019_backfill_observed_last_seen.sql
+--     drizzle/0022_backfill_observed_last_seen.sql
 --
 -- Run as SQL, not through PostgREST: supabase-js carries a statement timeout
 -- (the 57014 that has bitten the aggregate reads) and these are 96k-row updates.

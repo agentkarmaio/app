@@ -1445,17 +1445,39 @@ export async function getRecentTransactionsForWallet(
 // Keeps webhook response time bounded so Helius never auto-disables the
 // webhook on 24h failure rate.
 
-export async function markWalletsDirty(addresses: string[]): Promise<void> {
-  if (addresses.length === 0) return;
+/**
+ * A queued wallet. The chain is carried explicitly and never inferred from the
+ * address shape: `wallets` is keyed on (chain, address), and the 2026-09-14
+ * defect was precisely a queue that dropped the chain and let every downstream
+ * read fall back to 'solana'. See
+ * docs/superpowers/specs/2026-09-14-rescore-chain-threading.md.
+ */
+export interface DirtyWallet {
+  chain: Chain;
+  address: string;
+}
+
+export async function markWalletsDirty(wallets: DirtyWallet[]): Promise<void> {
+  if (wallets.length === 0) return;
   const now = new Date().toISOString();
-  // Chunk to respect Kong's ~8KB URI cap on .in() filters (see ADDRESS_IN_CHUNK).
-  for (let i = 0; i < addresses.length; i += ADDRESS_IN_CHUNK) {
-    const chunk = addresses.slice(i, i + ADDRESS_IN_CHUNK);
-    const { error } = await supabase
-      .from('wallets')
-      .update({ scoring_dirty_at: now })
-      .in('address', chunk);
-    if (error) throw error;
+  // Group by chain so the UPDATE matches the composite key, then chunk to
+  // respect Kong's ~8KB URI cap on .in() filters (see ADDRESS_IN_CHUNK).
+  const byChain = new Map<Chain, string[]>();
+  for (const w of wallets) {
+    const list = byChain.get(w.chain) ?? [];
+    list.push(w.address);
+    byChain.set(w.chain, list);
+  }
+  for (const [chain, addresses] of byChain) {
+    for (let i = 0; i < addresses.length; i += ADDRESS_IN_CHUNK) {
+      const chunk = addresses.slice(i, i + ADDRESS_IN_CHUNK);
+      const { error } = await supabase
+        .from('wallets')
+        .update({ scoring_dirty_at: now })
+        .eq('chain', chain)
+        .in('address', chunk);
+      if (error) throw error;
+    }
   }
 }
 
@@ -1490,32 +1512,45 @@ export async function markAllWalletsDirty(): Promise<number> {
  * is a duplicate snapshot row, not corrupt state. `--skip-running` on the
  * Servel cron prevents overlap in practice.
  */
-export async function claimDirtyWallets(limit = 100): Promise<string[]> {
+export async function claimDirtyWallets(limit = 100): Promise<DirtyWallet[]> {
   const { data, error } = await supabase
     .from('wallets')
-    .select('address')
+    // `chain` is selected, not assumed: the caller scores against (chain,
+    // address), and a claim that returns bare addresses silently becomes a
+    // solana-only queue.
+    .select('chain, address')
     .not('scoring_dirty_at', 'is', null)
     .order('scoring_dirty_at', { ascending: true })
     .limit(limit);
 
   if (error) throw error;
-  const addresses = (data ?? []).map((row: { address: string }) => row.address);
-  if (addresses.length === 0) return [];
+  const claimed = (data ?? []) as DirtyWallet[];
+  if (claimed.length === 0) return [];
 
-  // Clear the dirty flag in URI-safe chunks. A single unchunked `.in()` over the
-  // full claimed batch (up to 200) overflowed Kong's ~8KB URI cap → "URI too
-  // long" → the whole drain threw before scoring anything, and since the rows
-  // stayed dirty the next tick re-claimed them: a self-perpetuating stall.
-  for (let i = 0; i < addresses.length; i += ADDRESS_IN_CHUNK) {
-    const chunk = addresses.slice(i, i + ADDRESS_IN_CHUNK);
-    const { error: clearError } = await supabase
-      .from('wallets')
-      .update({ scoring_dirty_at: null })
-      .in('address', chunk);
-    if (clearError) throw clearError;
+  // Clear the dirty flag grouped by chain (composite key) and in URI-safe
+  // chunks. A single unchunked `.in()` over the full claimed batch (up to 200)
+  // overflowed Kong's ~8KB URI cap → "URI too long" → the whole drain threw
+  // before scoring anything, and since the rows stayed dirty the next tick
+  // re-claimed them: a self-perpetuating stall.
+  const byChain = new Map<Chain, string[]>();
+  for (const w of claimed) {
+    const list = byChain.get(w.chain) ?? [];
+    list.push(w.address);
+    byChain.set(w.chain, list);
+  }
+  for (const [chain, addresses] of byChain) {
+    for (let i = 0; i < addresses.length; i += ADDRESS_IN_CHUNK) {
+      const chunk = addresses.slice(i, i + ADDRESS_IN_CHUNK);
+      const { error: clearError } = await supabase
+        .from('wallets')
+        .update({ scoring_dirty_at: null })
+        .eq('chain', chain)
+        .in('address', chunk);
+      if (clearError) throw clearError;
+    }
   }
 
-  return addresses;
+  return claimed;
 }
 
 export async function countDirtyWallets(): Promise<number> {
@@ -1764,10 +1799,14 @@ export async function insertScoreSnapshot(
   diversity: number,
   volume: number,
   age: number,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<void> {
   const { error } = await supabase
     .from('scores')
     .insert({
+      // `scores` carries a composite FK to (chain, wallet_address) — inserting
+      // a non-solana wallet without its chain fails the constraint outright.
+      chain,
       wallet_address: walletAddress,
       score,
       success_rate: successRate,

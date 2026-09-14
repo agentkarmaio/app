@@ -25,6 +25,7 @@
 
 import {
   claimDirtyWallets,
+  type DirtyWallet,
   countDirtyWallets,
   getRecentTransactionsForWallet,
   insertScoreSnapshot,
@@ -54,11 +55,16 @@ export interface RescoreResult {
 }
 
 async function rescoreOne(
-  address: string,
+  wallet: DirtyWallet,
   txWindow: number,
   attestations: Map<string, number>,
 ): Promise<boolean> {
-  const txs = await getRecentTransactionsForWallet(address, txWindow);
+  // Every read and write below is scoped to the wallet's own chain. Omitting it
+  // is not a smaller bug than getting it wrong: the client helpers default to
+  // 'solana', so an arc wallet read 0 transactions, returned "skipped", and was
+  // de-queued having had nothing done — 11,650 of them in one 2026-09-14 drain.
+  const { chain, address } = wallet;
+  const txs = await getRecentTransactionsForWallet(address, txWindow, chain);
   if (txs.length === 0) {
     // Wallet has no txs yet — claimed but nothing to score. Leave defaults.
     return false;
@@ -72,13 +78,13 @@ async function rescoreOne(
 
   // Persist Tier-2 cadence + autonomy signal rows (overwrite keeps latest).
   const signalRows = [];
-  if (cadence) signalRows.push(buildCadenceSignal(address, cadence));
-  if (autonomy) signalRows.push(buildAutonomySignal(address, autonomy));
+  if (cadence) signalRows.push({ ...buildCadenceSignal(address, cadence), chain });
+  if (autonomy) signalRows.push({ ...buildAutonomySignal(address, autonomy), chain });
   if (signalRows.length > 0) await insertSignalEvents(signalRows, { overwrite: true });
 
   const [manifestScores, signalEvents] = await Promise.all([
-    getLatestSignalValues([address], 'manifest'),
-    getSignalEventsForWallet(address, 200).catch(() => []),
+    getLatestSignalValues([address], 'manifest', chain),
+    getSignalEventsForWallet(address, 200, chain).catch(() => []),
   ]);
 
   const walletScore = calculateScore(
@@ -105,7 +111,7 @@ async function rescoreOne(
     metricVolume:      walletScore.metrics.volume,
     metricAge:         walletScore.metrics.age,
     metricCadence:     walletScore.metrics.cadence,
-  });
+  }, chain);
 
   await insertScoreSnapshot(
     address,
@@ -114,6 +120,7 @@ async function rescoreOne(
     walletScore.metrics.diversity,
     walletScore.metrics.volume,
     walletScore.metrics.age,
+    chain,
   );
 
   return true;
@@ -129,7 +136,7 @@ export async function drainOnce(
     return { claimed: 0, scored: 0, skipped: 0, errors: [], remaining: 0, elapsedMs: Date.now() - start };
   }
 
-  const attestations = await readAttestations(claimed);
+  const attestations = await readAttestations(claimed.map((w) => w.address));
 
   const errors: { address: string; message: string }[] = [];
   let scored = 0;
@@ -139,11 +146,11 @@ export async function drainOnce(
   for (let i = 0; i < claimed.length; i += CONCURRENCY) {
     const slice = claimed.slice(i, i + CONCURRENCY);
     const results = await Promise.allSettled(
-      slice.map((addr) => rescoreOne(addr, txWindow, attestations)),
+      slice.map((w) => rescoreOne(w, txWindow, attestations)),
     );
     for (let j = 0; j < results.length; j++) {
       const r = results[j];
-      const addr = slice[j];
+      const addr = slice[j].address;
       if (r.status === 'fulfilled') {
         if (r.value) scored++;
         else skipped++;
@@ -155,7 +162,9 @@ export async function drainOnce(
 
   // Failed wallets keep their dirty flag set so the next run retries them.
   if (errors.length > 0) {
-    await markWalletsDirty(errors.map((e) => e.address));
+    // Re-queue with the chain intact, or the retry lands on the wrong key.
+    const failed = new Set(errors.map((e) => e.address));
+    await markWalletsDirty(claimed.filter((w) => failed.has(w.address)));
   }
 
   const remaining = await countDirtyWallets();
