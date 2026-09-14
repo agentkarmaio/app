@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { ALL_FACILITATOR_ADDRESSES, SOLANA_FACILITATORS, USDC_MINT } from '@/config/facilitators';
+import { ARC_ESCROW_FACILITATOR, ARC_USDC_CONTRACT } from '@/config/arc-facilitators';
 import {
   buildPaymentRollups,
   facilitatorLabel,
@@ -207,15 +208,30 @@ describe('buildPaymentRollups', () => {
 
 describe('facilitatorLabel', () => {
   test('the USDC mint sentinel reads as a direct transfer, not a router', () => {
-    expect(facilitatorLabel(USDC_MINT)).toBe('direct transfer');
+    expect(facilitatorLabel(USDC_MINT, 'solana')).toBe('direct transfer');
   });
 
   test('a tracked facilitator address resolves to its operator name', () => {
-    expect(facilitatorLabel(SOLANA_FACILITATORS.coinbase[0])).toBe('coinbase');
+    expect(facilitatorLabel(SOLANA_FACILITATORS.coinbase[0], 'solana')).toBe('coinbase');
   });
 
   test('an unknown address gets no label', () => {
-    expect(facilitatorLabel('SOME_OTHER_ADDRESS')).toBeNull();
+    expect(facilitatorLabel('SOME_OTHER_ADDRESS', 'solana')).toBeNull();
+  });
+
+  test('Arc names its own sentinel and its own escrow, case-insensitively', () => {
+    expect(facilitatorLabel(ARC_USDC_CONTRACT, 'arc')).toBe('direct transfer');
+    expect(facilitatorLabel(ARC_USDC_CONTRACT.toUpperCase().replace('0X', '0x'), 'arc')).toBe('direct transfer');
+    expect(facilitatorLabel(ARC_ESCROW_FACILITATOR, 'arc')).toBe('Arc job escrow');
+    expect(facilitatorLabel(ARC_ESCROW_FACILITATOR.toLowerCase(), 'arc')).toBe('Arc job escrow');
+  });
+
+  test('labels do not leak across chains', () => {
+    // A Solana facilitator name must never be applied to an EVM address, and
+    // Arc's escrow is only the escrow on Arc.
+    expect(facilitatorLabel(USDC_MINT, 'arc')).toBeNull();
+    expect(facilitatorLabel(ARC_ESCROW_FACILITATOR, 'solana')).toBeNull();
+    expect(facilitatorLabel(ARC_ESCROW_FACILITATOR, 'celo')).toBeNull();
   });
 
   test('plain-transfer receipts fold into one "direct transfer" bucket', () => {

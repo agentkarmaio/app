@@ -205,7 +205,23 @@ function FacilitatorStrip({ entries, total }: { entries: RollupEntry[]; total: n
  * visible rows only, one feedback-rating lookup for the collapsed raw table.
  * The reciprocity verdict is computed from the rows already in hand.
  */
-export async function PaymentRelationships({ wallet, chain }: { wallet: string; chain: Chain }) {
+export async function PaymentRelationships({
+  wallet,
+  chain,
+  rawReceipts = chain === 'solana',
+}: {
+  wallet: string;
+  chain: Chain;
+  /**
+   * Show the collapsed per-receipt table. Defaults to Solana only, because
+   * `TransactionList` links every row to Solscan and paginates without a
+   * `?chain=` param — on any other chain it would render correct rows behind
+   * wrong links. The rollups above are chain-agnostic and carry the meaning;
+   * the raw table is the audit trail, and a wrong audit trail is worse than
+   * none. Flip this on per chain once that component is chain-aware.
+   */
+  rawReceipts?: boolean;
+}) {
   const [{ outbound, inbound, saturated }, txTotal] = await Promise.all([
     getPaymentRollupsForAddress(chain, wallet),
     getTransactionCount(wallet, chain),
@@ -225,7 +241,7 @@ export async function PaymentRelationships({ wallet, chain }: { wallet: string; 
   const paidTop = rollups.paidTo.entries.slice(0, RENDER_PER_DIRECTION);
   const earnedTop = rollups.earnedFrom.entries.slice(0, RENDER_PER_DIRECTION);
 
-  const rawRows = outbound.slice(0, RAW_RECEIPT_PAGE);
+  const rawRows = rawReceipts ? outbound.slice(0, RAW_RECEIPT_PAGE) : [];
   const [profiles, feedbackMap] = await Promise.all([
     getCounterpartyProfiles(chain, [...paidTop, ...earnedTop].map((e) => e.address)),
     getFeedbackRatingsForSignatures(rawRows.map((r) => r.tx_signature), chain),
@@ -274,7 +290,7 @@ export async function PaymentRelationships({ wallet, chain }: { wallet: string; 
         </p>
       </CardContent>
 
-      <RawReceipts count={txTotal}>
+      <RawReceipts count={rawReceipts ? txTotal : 0}>
         <TransactionList
           walletAddress={wallet}
           total={txTotal}

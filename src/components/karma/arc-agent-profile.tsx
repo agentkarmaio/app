@@ -17,6 +17,7 @@ import Link from 'next/link';
 import { ArrowLeft, ExternalLink, Globe, Verified } from 'lucide-react';
 import { getCachedEvmAgentOnchain } from '@/db/cached';
 import { CardSkeleton } from '@/components/karma/card-skeleton';
+import { PaymentRelationships } from '@/components/karma/payment-relationships';
 import { ScoreRing } from '@/components/karma/score-ring';
 import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { TierBadge } from '@/components/karma/tier-badge';
@@ -211,6 +212,13 @@ export function ArcAgentProfile({
 
       <Suspense fallback={<ArcOnchainSectionsSkeleton />}>
         <ArcOnchainSections wallet={wallet} walletRow={walletRow} agentId={agentId} />
+      </Suspense>
+
+      {/* Two windowed DB reads, so it streams in its own boundary rather than
+          sharing the Arc RPC boundary above — a slow registry read must not
+          hold back payment history that needs no chain call. */}
+      <Suspense fallback={<CardSkeleton title="Payment Relationships" rows={6} />}>
+        <PaymentRelationships wallet={walletRow.address} chain="arc" />
       </Suspense>
 
       {deadMansSwitch}

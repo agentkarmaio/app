@@ -160,7 +160,7 @@ export function TransactionList({
       </TableHeader>
       <TableBody>
         {rows.map((tx) => {
-          const facilitatorName = facilitatorLabel(tx.facilitator);
+          const facilitatorName = facilitatorLabel(tx.facilitator, 'solana');
           return (
             <TableRow key={tx.id}>
               <TableCell className="font-medium capitalize">

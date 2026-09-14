@@ -27,6 +27,7 @@
  */
 
 import { ALL_FACILITATOR_ADDRESSES_SET, USDC_MINT, getFacilitatorName } from '@/config/facilitators';
+import { ARC_ESCROW_FACILITATOR, ARC_USDC_CONTRACT } from '@/config/arc-facilitators';
 import { isEvmChain } from '@/lib/chain-meta';
 import type { Chain } from '@/db/schema';
 
@@ -124,18 +125,30 @@ export function isKnownFacilitatorAddress(address: string, chain: Chain): boolea
 }
 
 /**
- * How a facilitator address should be named in the rollup.
+ * How a facilitator address should be named in the rollup, per chain.
  *
- * `solana-transfers.ts` writes {@link USDC_MINT} into `facilitator` as the
- * sentinel for a plain USDC transfer that went through no facilitator at all
- * (toTransactionRow). Rendering the mint address there would claim the payment
- * was routed by a contract that routes nothing; naming it as a direct transfer
- * is both true and the more useful fact — it says this wallet's flow is not
- * x402-routed.
+ * Two indexers write a token contract into `facilitator` as the sentinel for a
+ * payment that went through no facilitator at all — `solana-transfers.ts` uses
+ * {@link USDC_MINT}, `arc-transfers.ts` uses {@link ARC_USDC_CONTRACT}.
+ * Rendering those addresses would claim the payment was routed by a contract
+ * that routes nothing. "Direct transfer" is both true and the more useful fact:
+ * it says this wallet's flow is not facilitator-routed.
+ *
+ * Chain-scoped on purpose. A Solana facilitator address must not name an EVM
+ * address that happens to match, and the Arc escrow is only the escrow on Arc.
  */
-export function facilitatorLabel(address: string): string | null {
-  if (address === USDC_MINT) return 'direct transfer';
-  return getFacilitatorName(address);
+export function facilitatorLabel(address: string, chain: Chain): string | null {
+  if (chain === 'solana') {
+    return address === USDC_MINT ? 'direct transfer' : getFacilitatorName(address);
+  }
+  if (chain === 'arc') {
+    const addr = address.toLowerCase();
+    if (addr === ARC_USDC_CONTRACT.toLowerCase()) return 'direct transfer';
+    // ERC-8183 job escrow — a real router, and the one every recent Arc receipt
+    // goes through, so it earns a name rather than a truncated hex blob.
+    if (addr === ARC_ESCROW_FACILITATOR.toLowerCase()) return 'Arc job escrow';
+  }
+  return null;
 }
 
 function fold(
@@ -240,7 +253,7 @@ export function foldFacilitators(rows: ReadonlyArray<OutboundRow>, chain: Chain)
   return fold(
     rows.map((r) => ({ address: r.facilitator, amount: r.amount, timestamp: r.timestamp })),
     chain,
-    { excludeFacilitators: false, labelOf: facilitatorLabel },
+    { excludeFacilitators: false, labelOf: (addr) => facilitatorLabel(addr, chain) },
   ).entries;
 }
 
