@@ -19,6 +19,9 @@ function deps(overrides: Partial<ArcMainnetTransfersDeps> = {}) {
     getCursor: async () => { calls.push('cursor'); return null; },
     getLogs: async () => { calls.push('logs'); return [parseArcMainnetTransfer(log())!]; },
     blockTimestamp: async () => '2026-09-12T00:00:00Z',
+    // Empty batch ⇒ every block takes the single-block path, which is what
+    // mainnet wires in production until its RPC's batch support is measured.
+    blockTimestamps: async () => new Map<string, string>(),
     ensureWallets: async () => { calls.push('wallets'); },
     insertTransactions: async (rows) => { writes.push(...rows); return rows.length; },
     insertSignalEvents: async (rows) => { signals.push(...rows); return rows.length; },

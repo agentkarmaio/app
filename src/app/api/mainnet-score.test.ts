@@ -22,6 +22,8 @@ async function installIndexedEvidence(subject = receiver) {
       blockNumber: 10n, transactionHash: `0x${'a'.repeat(64)}`, logIndex, removed: false,
     })!),
     blockTimestamp: async () => new Date(Date.now() - 60_000).toISOString(),
+    // Mainnet takes the single-block path; see arc-mainnet-transfers.ts.
+    blockTimestamps: async () => new Map<string, string>(),
     ensureWallets: async () => {}, insertTransactions: async rows => rows.length,
     insertSignalEvents: async rows => { events.push(...rows); return rows.length; },
     upsertCursor: async () => {},

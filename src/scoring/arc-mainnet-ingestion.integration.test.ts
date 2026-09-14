@@ -33,6 +33,8 @@ test('the real mainnet parser and ingestion engine emit both scoreable behavior 
     getCursor: async () => null,
     getLogs: async () => [transfer],
     blockTimestamp: async () => timestamp,
+    // Mainnet takes the single-block path; see arc-mainnet-transfers.ts.
+    blockTimestamps: async () => new Map<string, string>(),
     ensureWallets: async wallets => { wallets.forEach(wallet => ensured.add(wallet)); },
     insertTransactions: async rows => { transactions.push(...rows); return rows.length; },
     insertSignalEvents: async rows => { signals.push(...rows); return rows.length; },

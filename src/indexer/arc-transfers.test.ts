@@ -93,7 +93,14 @@ function makeDeps(
     getCursor: async () => null,
     upsertCursor: async (key: string, last: string, slot?: number) => { cursors.push([key, last, slot]); },
     ...overrides,
-  };
+  } as Parameters<typeof arcTransfersIndexer>[0];
+  // Default to an empty batch so every block falls through to the single-block
+  // path. That keeps tests about cancellation, budget expiry and queue draining
+  // exercising the very queue they were written for — it is still live as the
+  // straggler fallback. Batched-path tests pass `blockTimestamps` explicitly.
+  if (!('blockTimestamps' in overrides)) {
+    deps.blockTimestamps = async () => new Map<string, string>();
+  }
 
   return {
     deps,
@@ -899,4 +906,56 @@ test('timestamp queue budget expiry banks the previous complete window', async (
   expect(f.state.inserted.map(row => row.tx_signature)).toEqual(['0x1']);
   expect(f.state.cursors.map(row => row[1])).toEqual(['10']);
   expect(result.coverage).toMatchObject({ checked: 10, pending: 10, checkpoint: '10', reason: 'budget', complete: false });
+});
+
+// arc/transfers has NEVER succeeded: 524 distinct blocks per window × a 250ms
+// serialized gate = 131s of timestamp warming against a 120s budget, so the
+// first window never finishes and the cursor never advances. Batching makes the
+// warm ~6 round trips instead of 524.
+test('block timestamps are fetched in one batched call, not one per block', async () => {
+  const transfers = Array.from({ length: 40 }, (_, i) =>
+    transfer({ rawAmount: 1n, block: BigInt(i + 1), txHash: `0x${i}` }));
+  const batches: string[][] = [];
+  let singleCalls = 0;
+  const { deps } = makeDeps(transfers, {
+    getHead: async () => 60n,
+    blockTimestamp: async () => { singleCalls++; return TS; },
+    blockTimestamps: async (blocks: bigint[]) => {
+      batches.push(blocks.map(String));
+      return new Map(blocks.map((b) => [b.toString(), TS]));
+    },
+  });
+  await arcTransfersIndexer(deps);
+  expect(batches).toHaveLength(1);
+  expect(batches[0]).toHaveLength(40);
+  expect(singleCalls).toBe(0); // no per-block round trips on the happy path
+});
+
+// The live node answered a 200-item batch with 127 results and NO error, and
+// size did not predict it (400 came back whole). Trusting the count would
+// silently attach missing timestamps to receipts.
+test('a partially answered batch is completed, not silently accepted', async () => {
+  const transfers = Array.from({ length: 10 }, (_, i) =>
+    transfer({ rawAmount: 1n, block: BigInt(i + 1), txHash: `0x${i}` }));
+  const stragglers: string[] = [];
+  const { deps, state } = makeDeps(transfers, {
+    getHead: async () => 60n,
+    // Drops every even block, exactly as the node did.
+    blockTimestamps: async (blocks: bigint[]) =>
+      new Map(blocks.filter((b) => b % 2n === 1n).map((b) => [b.toString(), TS])),
+    blockTimestamp: async (b: bigint) => { stragglers.push(b.toString()); return TS; },
+  });
+  await arcTransfersIndexer(deps);
+  expect(stragglers.sort()).toEqual(['10', '2', '4', '6', '8']); // the dropped ids
+  expect(state.inserted).toHaveLength(10); // every transfer still banked
+});
+
+test('a block no path can resolve raises instead of banking a wrong timestamp', async () => {
+  const transfers = [transfer({ rawAmount: 1n, block: 7n, txHash: '0xdead' })];
+  const { deps } = makeDeps(transfers, {
+    getHead: async () => 60n,
+    blockTimestamps: async () => new Map<string, string>(),
+    blockTimestamp: async () => { throw Error('block unavailable'); },
+  });
+  await expect(arcTransfersIndexer(deps)).rejects.toThrow();
 });

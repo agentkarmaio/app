@@ -177,6 +177,12 @@ export async function runArcMainnetTransfersIndexer(opts: { signal?: AbortSignal
       const block = await rpc(() => client.getBlock({ blockNumber }));
       return new Date(Number(block.timestamp) * 1000).toISOString();
     },
+    // Deliberately empty: every block falls through to the single-block path
+    // above, which is exactly mainnet's behaviour before batching existed.
+    // Testnet batches because its node was measured supporting it; no such
+    // measurement exists for the mainnet endpoint, and this chain is not the
+    // one that was starving on timestamp cost. Wire it once probed.
+    blockTimestamps: async () => new Map<string, string>(),
     ensureWallets: makeEnsureWallets('arc-mainnet'), insertTransactions, insertSignalEvents,
     getCursor: async (key) => {
       const cursor = await getCursor(key, 'arc-mainnet');

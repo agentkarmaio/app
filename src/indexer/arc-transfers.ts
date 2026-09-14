@@ -84,6 +84,14 @@ export const ARC_TRANSFERS_DEFAULT_MAX_WINDOWS = 200;
  */
 export const BLOCK_TS_CONCURRENCY = 2;
 
+/**
+ * Blocks per batched `eth_getBlockByNumber` request. Measured on
+ * rpc.testnet.arc.io 2026-09-14: 50 → 50/50 (216ms), 100 → 100/100 (454ms),
+ * 200 → **127/200**, 400 → 400/400. Size does not predict completeness, so the
+ * caller reconciles by id regardless; 100 is the largest size observed clean.
+ */
+export const ARC_BLOCK_TS_BATCH = 100;
+
 /** Arc Testnet USDC ERC-20 token — same contract used as the ERC-8183 payment token. */
 export const ARC_USDC_CONTRACT = '0x3600000000000000000000000000000000000000' as const;
 
@@ -387,6 +395,14 @@ export interface ArcTransfersIndexerDeps {
    */
   getLogs: (fromBlock: bigint, toBlock: bigint, face: TransferFace) => Promise<ArcTransfer[]>;
   blockTimestamp: (blockNumber: bigint) => Promise<string>;
+  /**
+   * Batched timestamps: one round trip for many blocks. The gated single call
+   * costs 250ms per block, and a window needs ~524 of them — 131s against a
+   * 120s budget, which is why this path never banked anything. MAY return
+   * fewer entries than asked for: the live node answered a 200-item batch with
+   * 127 results and no error. The caller completes the remainder.
+   */
+  blockTimestamps: (blockNumbers: bigint[]) => Promise<Map<string, string>>;
   insertTransactions: (rows: TransactionInsert[]) => Promise<number>;
   insertSignalEvents: (inputs: InsertSignalEventInput[]) => Promise<number>;
   /** Batched — see arc-jobs.ts. One round trip for the whole run's wallet set. */
@@ -552,19 +568,42 @@ export async function arcTransfersIndexer(deps: ArcTransfersIndexerDeps): Promis
     // it also protects the persistence needed to retain completed work.
     let timestampFailed = false;
     let timestampError: unknown;
-    await withConcurrency(needed, BLOCK_TS_CONCURRENCY, async (b) => {
-      if (timestampFailed) return;
-      try {
+    const admit = (b: string, timestamp: string) => {
+      if (!Number.isFinite(Date.parse(timestamp))) throw Error('Invalid Arc block timestamp');
+      tsCache.set(b, timestamp);
+    };
+    try {
+      assertActive();
+      if (now() >= deadline) throw ARC_LOG_BUDGET_EXHAUSTED;
+      if (needed.length > 0) {
+        const batched = await deps.blockTimestamps(needed.map((b) => BigInt(b)));
         assertActive();
-        if (now() >= deadline) throw ARC_LOG_BUDGET_EXHAUSTED;
-        const timestamp = await deps.blockTimestamp(BigInt(b));
-        assertActive();
-        if (!Number.isFinite(Date.parse(timestamp))) throw Error('Invalid Arc block timestamp');
-        tsCache.set(b, timestamp);
-      } catch (error) {
-        if (!timestampFailed) { timestampFailed = true; timestampError = error; }
+        for (const b of needed) {
+          const timestamp = batched.get(b);
+          if (timestamp !== undefined) admit(b, timestamp);
+        }
       }
-    });
+    } catch (error) {
+      timestampFailed = true; timestampError = error;
+    }
+    // Never trust the batch's COUNT — the node returns partial arrays without an
+    // error, and batch size does not predict it. Whatever is still missing gets
+    // the single-block path, which is the pre-batch behaviour for those blocks.
+    const stragglers = timestampFailed ? [] : needed.filter((b) => !tsCache.has(b));
+    if (stragglers.length > 0) {
+      await withConcurrency(stragglers, BLOCK_TS_CONCURRENCY, async (b) => {
+        if (timestampFailed) return;
+        try {
+          assertActive();
+          if (now() >= deadline) throw ARC_LOG_BUDGET_EXHAUSTED;
+          const timestamp = await deps.blockTimestamp(BigInt(b));
+          assertActive();
+          admit(b, timestamp);
+        } catch (error) {
+          if (!timestampFailed) { timestampFailed = true; timestampError = error; }
+        }
+      });
+    }
     if (timestampFailed) {
       assertActive();
       if (timestampError === ARC_LOG_BUDGET_EXHAUSTED) stopped = 'budget';
@@ -775,7 +814,8 @@ export async function runArcTransfersIndexer(
   opts.signal?.throwIfAborted();
   const rpc = createArcRpcGate({ signal: opts.signal, deadline: Date.now() + ARC_RUN_TIME_BUDGET_MS });
   const usdcContract = opts.usdcContract ?? ARC_USDC_CONTRACT;
-  const client = createArcTransfersClient();
+  const arcRpcUrl = getRpcUrl();
+  const client = createArcTransfersClient(arcRpcUrl);
   const envStartBlock = resolveTransfersStartBlockEnv();
   const seed = await loadArcSeedSet();
   opts.signal?.throwIfAborted();
@@ -811,6 +851,40 @@ export async function runArcTransfersIndexer(
     blockTimestamp: async (blockNumber) => {
       const block = await withRateLimitRetry(() => rpc(() => client.getBlock({ blockNumber })), INGEST_RETRY);
       return new Date(Number(block.timestamp) * 1000).toISOString();
+    },
+    blockTimestamps: async (blockNumbers) => {
+      const out = new Map<string, string>();
+      // 100 measured clean (100/100 in 454ms); 200 came back 127/200. One
+      // GATED call per chunk, so the 250ms pacing is paid per chunk rather
+      // than per block — the whole point of the change.
+      for (let i = 0; i < blockNumbers.length; i += ARC_BLOCK_TS_BATCH) {
+        const chunk = blockNumbers.slice(i, i + ARC_BLOCK_TS_BATCH);
+        const body = chunk.map((b, id) => ({
+          jsonrpc: '2.0', id, method: 'eth_getBlockByNumber',
+          params: [`0x${b.toString(16)}`, false],
+        }));
+        const parsed = await withRateLimitRetry(() => rpc(async () => {
+          const res = await fetch(arcRpcUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: opts.signal ?? null,
+          });
+          if (!res.ok) throw Error(`Arc batch getBlockByNumber failed: ${res.status}`);
+          return await res.json() as unknown;
+        }), INGEST_RETRY);
+        // Map BY ID, never by position: a partial response is shorter, so
+        // zipping it against `chunk` would shift every timestamp onto the
+        // wrong block — silent corruption rather than a visible gap.
+        if (!Array.isArray(parsed)) continue;
+        for (const entry of parsed as Array<{ id?: number; result?: { timestamp?: string } }>) {
+          const block = typeof entry?.id === 'number' ? chunk[entry.id] : undefined;
+          const raw = entry?.result?.timestamp;
+          if (block === undefined || raw === undefined) continue;
+          out.set(block.toString(), new Date(Number(BigInt(raw)) * 1000).toISOString());
+        }
+      }
+      return out;
     },
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
