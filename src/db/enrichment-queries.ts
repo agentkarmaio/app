@@ -7,7 +7,7 @@
  * Goes through the `supabase` proxy so the `__setSupabaseForTest` seam applies.
  */
 
-import { supabase } from '@/db/client';
+import { ADDRESS_IN_CHUNK, supabase } from '@/db/client';
 import {
   ENRICH_MAX_AGENTS,
   ENRICH_FEEDBACK_WINDOW,
@@ -17,7 +17,7 @@ import {
   type EnrichmentFeedbackRow,
   type EnrichmentPayeeRow,
 } from '@/lib/karma-enrichment';
-import type { Chain } from '@/db/schema';
+import type { Chain, TrustTier } from '@/db/schema';
 
 const AGENT_COLUMNS =
   'chain, agent_id, owner, agent_wallet, token_uri, registration, registration_status, metadata_score, feedback_count, feedback_avg';
@@ -145,4 +145,153 @@ export async function getPaymentFlowsForAddress(
     inbound: [...byPayer.values()],
     saturated: outRows.length >= ENRICH_FLOW_WINDOW || inRows.length >= ENRICH_FLOW_WINDOW,
   };
+}
+
+/**
+ * Receipt columns the profile's relationship rollups need. Deliberately wider
+ * than {@link getPaymentFlowsForAddress}'s two columns: that read is on the
+ * scoring hot path and gains nothing from the extra bytes, so the two functions
+ * stay separate rather than one growing to serve both. They share the window
+ * bound and the reasons for it.
+ */
+const ROLLUP_OUTBOUND_COLUMNS =
+  'id, counterparty, facilitator, amount, timestamp, success, tx_signature';
+
+export interface RollupOutboundRow {
+  id: string;
+  counterparty: string | null;
+  facilitator: string;
+  amount: number;
+  timestamp: string;
+  success: boolean;
+  tx_signature: string;
+}
+
+export interface RollupInboundRow {
+  wallet_address: string;
+  amount: number;
+  timestamp: string;
+}
+
+/**
+ * The bounded receipt window behind the profile's Payment Relationships card,
+ * in both directions.
+ *
+ * `transactions` is payer-face — every indexer writes `wallet_address` = payer,
+ * `counterparty` = payee — so outbound is a `wallet_address` lookup and inbound
+ * is the reverse lookup on `counterparty` (served by idx_transactions_counterparty).
+ *
+ * Both sides are capped at {@link ENRICH_FLOW_WINDOW}. The cap is not optional:
+ * unbounded per-wallet reads have taken this codebase down twice (57014
+ * statement timeout, `URI too long`), and a popular resource server has tens of
+ * thousands of payers. `saturated` reports that a window came back full, so the
+ * view can say "most recent N receipts" instead of implying lifetime totals.
+ *
+ * Rows are returned unaggregated and folded in TS (`lib/payment-rollups.ts`)
+ * rather than by a PostgREST aggregate RPC — an untracked aggregate function is
+ * what produced the /api/stats PGRST202 outage, and the schema cache cannot be
+ * reloaded from an app deploy on this cluster.
+ */
+export async function getPaymentRollupsForAddress(
+  chain: Chain,
+  address: string,
+): Promise<{
+  outbound: RollupOutboundRow[];
+  inbound: RollupInboundRow[];
+  saturated: boolean;
+}> {
+  const addr = normalizeAddressForChain(address, chain);
+
+  const [outRes, inRes] = await Promise.all([
+    supabase
+      .from('transactions')
+      .select(ROLLUP_OUTBOUND_COLUMNS)
+      .eq('chain', chain)
+      .eq('wallet_address', addr)
+      .order('timestamp', { ascending: false })
+      .limit(ENRICH_FLOW_WINDOW),
+    supabase
+      .from('transactions')
+      .select('wallet_address, amount, timestamp')
+      .eq('chain', chain)
+      .eq('counterparty', addr)
+      .order('timestamp', { ascending: false })
+      .limit(ENRICH_FLOW_WINDOW),
+  ]);
+  if (outRes.error) throw outRes.error;
+  if (inRes.error) throw inRes.error;
+
+  const outRows = (outRes.data ?? []) as unknown as Array<
+    Omit<RollupOutboundRow, 'amount'> & { amount: string | number }
+  >;
+  const inRows = (inRes.data ?? []) as unknown as Array<
+    Omit<RollupInboundRow, 'amount'> & { amount: string | number }
+  >;
+
+  return {
+    // `amount` is numeric(38,18) and arrives as a string; coerce once here so
+    // every consumer downstream works in numbers.
+    outbound: outRows.map((r) => ({ ...r, amount: Number(r.amount) })),
+    inbound: inRows.map((r) => ({ ...r, amount: Number(r.amount) })),
+    saturated: outRows.length >= ENRICH_FLOW_WINDOW || inRows.length >= ENRICH_FLOW_WINDOW,
+  };
+}
+
+export interface CounterpartyProfile {
+  displayName: string | null;
+  score: number | null;
+  trustTier: TrustTier | null;
+}
+
+/**
+ * Name + trust for the handful of addresses a rollup actually renders, so a
+ * counterparty row can read "Acme Search · Very Good" instead of a base58 blob.
+ *
+ * Bounded by the caller to the visible rows (tens, not thousands) and chunked
+ * at {@link ADDRESS_IN_CHUNK} regardless, because PostgREST encodes `.in()`
+ * into the request URL and a long address list overflows Kong's ~8KB URI cap.
+ *
+ * Best-effort: a failed lookup degrades to bare addresses, never a 500 on the
+ * profile. Absent key = an address AgentKarma has no wallet row for.
+ */
+export async function getCounterpartyProfiles(
+  chain: Chain,
+  addresses: string[],
+): Promise<Map<string, CounterpartyProfile>> {
+  const out = new Map<string, CounterpartyProfile>();
+  const unique = [...new Set(addresses.map((a) => normalizeAddressForChain(a, chain)))];
+  if (unique.length === 0) return out;
+
+  const chunks: string[][] = [];
+  for (let i = 0; i < unique.length; i += ADDRESS_IN_CHUNK) {
+    chunks.push(unique.slice(i, i + ADDRESS_IN_CHUNK));
+  }
+
+  const pages = await Promise.all(
+    chunks.map((chunk) =>
+      supabase
+        .from('wallets')
+        .select('address, display_name, score, trust_tier')
+        .eq('chain', chain)
+        .in('address', chunk),
+    ),
+  );
+
+  for (const res of pages) {
+    if (res.error || !res.data) continue; // best-effort: bare addresses still render
+    for (const row of res.data as unknown as Array<{
+      address: string;
+      display_name: string | null;
+      score: string | number | null;
+      trust_tier: TrustTier | null;
+    }>) {
+      out.set(row.address, {
+        displayName: row.display_name,
+        score: row.score == null ? null : Number(row.score),
+        trustTier: row.trust_tier,
+      });
+    }
+  }
+
+  return out;
 }

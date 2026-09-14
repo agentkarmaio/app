@@ -4,9 +4,7 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ArrowLeft, ExternalLink, Globe, Verified } from 'lucide-react';
 import {
-  getTransactions,
   getTransactionCount,
-  getFeedbackRatingsForSignatures,
   getScoreHistory,
   getAgentManifestsForWallet,
   getWalletScanState,
@@ -41,7 +39,7 @@ import { deriveSuccessionLiveness } from '@/scoring/succession';
 import { computeSurety } from '@/scoring/surety';
 import { WalletAddress } from '@/components/karma/wallet-address';
 import { MetricBar } from '@/components/karma/metric-bar';
-import { TransactionList } from '@/components/karma/transaction-list';
+import { PaymentRelationships } from '@/components/karma/payment-relationships';
 import { LivenessIndicator } from '@/components/karma/liveness-indicator';
 import { ClaimBanner } from '@/components/karma/claim-banner';
 import { BadgeButton } from '@/components/karma/badge-button';
@@ -679,41 +677,6 @@ async function ScoreTrendCard({ wallet, tier }: { wallet: string; tier: TrustTie
   );
 }
 
-async function TransactionsCard({ wallet }: { wallet: string }) {
-  const [transactions, txTotal] = await Promise.all([
-    getTransactions(wallet, 25),
-    getTransactionCount(wallet),
-  ]);
-  const feedbackMap = await getFeedbackRatingsForSignatures(
-    transactions.map((tx) => tx.tx_signature),
-  );
-  return (
-    <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]">
-          Recent Transactions
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="p-0">
-        <TransactionList
-          walletAddress={wallet}
-          total={txTotal}
-          pageSize={25}
-          transactions={transactions.map((tx) => ({
-            id: tx.id,
-            facilitator: tx.facilitator,
-            amount: Number(tx.amount),
-            timestamp: tx.timestamp,
-            success: tx.success,
-            tx_signature: tx.tx_signature,
-            feedback: feedbackMap.get(tx.tx_signature) ?? null,
-          }))}
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
 export default async function AgentProfilePage({
   params,
   searchParams,
@@ -1242,8 +1205,8 @@ async function SolanaProfileBody({
         feedbackSummary={feedbackSummary}
       />
 
-      <Suspense fallback={<CardSkeleton title="Recent Transactions" rows={6} />}>
-        <TransactionsCard wallet={wallet} />
+      <Suspense fallback={<CardSkeleton title="Payment Relationships" rows={6} />}>
+        <PaymentRelationships wallet={wallet} chain="solana" />
       </Suspense>
     </>
   );

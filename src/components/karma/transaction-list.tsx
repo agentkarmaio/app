@@ -5,7 +5,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { getFacilitatorName } from '@/config/facilitators';
+import { facilitatorLabel } from '@/lib/payment-rollups';
 import { formatUsdcAmount } from '@/lib/format';
 
 type FeedbackRating = 'delivered' | 'failed' | null;
@@ -160,7 +160,7 @@ export function TransactionList({
       </TableHeader>
       <TableBody>
         {rows.map((tx) => {
-          const facilitatorName = getFacilitatorName(tx.facilitator);
+          const facilitatorName = facilitatorLabel(tx.facilitator);
           return (
             <TableRow key={tx.id}>
               <TableCell className="font-medium capitalize">
