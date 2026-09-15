@@ -66,7 +66,20 @@ const ERROR_CODES = new Set([
   'coverage_gap',
 ]);
 export function indexingErrorCode(error: unknown): string {
-  const m = error instanceof Error ? error.message : String(error);
+  // Supabase/PostgREST and fetch adapters commonly return plain objects rather
+  // than Error instances. String(object) loses the actionable code/message and
+  // turns database timeouts and rate limits into the generic scan_failed label.
+  const structured = error && typeof error === 'object' ? error as {
+    code?: unknown;
+    message?: unknown;
+    details?: unknown;
+  } : null;
+  const code = typeof structured?.code === 'string' ? structured.code : '';
+  const message = typeof structured?.message === 'string' ? structured.message : '';
+  const m = error instanceof Error ? error.message : message || String(error);
+  if (code === '57014') return 'rpc_unavailable';
+  if (/PGRST301|jwt|authentication|unauthorized|forbidden/i.test(`${code} ${m}`)) return 'rpc_authentication_failed';
+  if (/^429$|429|rate.limit|quota|max usage/i.test(`${code} ${m}`)) return 'rpc_rate_limited';
   if (m === 'arc_mainnet_chain_mismatch') return 'rpc_chain_mismatch';
   if (m === 'arc_mainnet_rpc_missing') return 'configuration_missing';
   if (['arc_mainnet_rpc_invalid', 'arc_mainnet_start_invalid', 'arc_mainnet_seed_invalid', 'arc_mainnet_seed_limit'].includes(m)) return 'configuration_invalid';

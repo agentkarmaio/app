@@ -12,6 +12,12 @@ test('mainnet admission failures retain actionable safe classifications', () => 
   expect(indexingErrorCode(Error('arc_mainnet_rpc_missing'))).toBe('configuration_missing');
   expect(indexingErrorCode(Error('arc_mainnet_rpc_invalid'))).toBe('configuration_invalid');
 });
+
+test('structured provider errors retain their actionable classification', () => {
+  expect(indexingErrorCode({ code: '57014', message: 'canceling statement due to statement timeout' })).toBe('rpc_unavailable');
+  expect(indexingErrorCode({ code: 'PGRST301', message: 'JWT expired' })).toBe('rpc_authentication_failed');
+  expect(indexingErrorCode({ code: '429', message: 'rate limit exceeded' })).toBe('rpc_rate_limited');
+});
 const job: IndexingJob = {
   chain: 'arc',
   path: 'escrow',

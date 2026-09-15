@@ -48,6 +48,7 @@ import {
 } from '@/lib/arc-dashboard-stats';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
 import { withRetry, type RetryOpts } from '@/lib/retry';
+import { statsFromSnapshot, type StatsSnapshotPayload, type StatsSnapshotRow } from '@/lib/stats-snapshot';
 
 // Every DB helper that takes a wallet address optionally takes a chain. The
 // default is 'solana' for back-compat with all pre-existing callers — Solana
@@ -1861,7 +1862,33 @@ let staleStats: {
   registries?: { chain: string; agents: number; feedbacks: number }[];
 } = {};
 
-export async function getStats() {
+async function readStatsSnapshot(): Promise<StatsSnapshotPayload | null> {
+  // A deploy can briefly run before the migration reaches the database. Keep
+  // that rollout state compatible with the legacy reader, but once a valid
+  // snapshot exists never run the expensive aggregate on a request.
+  const query = supabase.from('stats_snapshots').select('scope,payload,as_of,completed_at');
+  if (!query || typeof (query as { eq?: unknown }).eq !== 'function') return null;
+  const builder = query as unknown as {
+    eq: (column: string, value: string) => {
+      maybeSingle: () => Promise<{ data: unknown; error: { message?: string } | null }>;
+    };
+  };
+  const { data, error } = await builder.eq('scope', 'core').maybeSingle();
+  const row = data as Partial<StatsSnapshotRow> | null;
+  if (error || !row || !row.completed_at || !row.payload || !row.as_of) return null;
+  try {
+    return statsFromSnapshot(row as Parameters<typeof statsFromSnapshot>[0]);
+  } catch (err) {
+    console.error('[db] invalid stats snapshot ignored:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/**
+ * Live aggregate used only by the off-band snapshot worker and as a migration
+ * fallback before the first successful snapshot is published.
+ */
+export async function getLiveStats() {
   let countsStale = false;
   let transactionsUpdatedAt: string | null = null;
   let agentsUpdatedAt: string | null = null;
@@ -1939,6 +1966,11 @@ export async function getStats() {
 
   return { totalAgents, totalTransactions, totalVolumeUsdc, tierDistribution, registries,
     freshness: { stale: countsStale, transactionsUpdatedAt, agentsUpdatedAt } };
+}
+
+export async function getStats() {
+  const snapshot = await readStatsSnapshot();
+  return snapshot ?? getLiveStats();
 }
 
 // --- Explore Queries ---------------------------------------------------------

@@ -383,6 +383,57 @@ describe('getStats failure contract: stale-on-error, throw-on-cold, no row-strea
     };
   }
 
+  test('reads a completed durable snapshot without calling live aggregate RPCs', async () => {
+    const completedAt = new Date(Date.now() - 1_000).toISOString();
+    const payload = {
+      version: 1,
+      totalAgents: 88,
+      totalTransactions: 144,
+      totalVolumeUsdc: 12.5,
+      tierDistribution: { Good: 88 },
+      registries: [],
+      freshness: {
+        stale: false,
+        transactionsUpdatedAt: completedAt,
+        agentsUpdatedAt: completedAt,
+      },
+    };
+    let aggregateCalled = false;
+    __setSupabaseForTest({
+      from(table: string) {
+        if (table !== 'stats_snapshots') throw new Error(`unexpected table ${table}`);
+        return {
+          select() {
+            return {
+              eq() {
+                return {
+                  maybeSingle: async () => ({
+                    data: {
+                      scope: 'core', payload,
+                      as_of: completedAt,
+                      completed_at: completedAt,
+                    },
+                    error: null,
+                  }),
+                };
+              },
+            };
+          },
+        };
+      },
+      rpc() {
+        aggregateCalled = true;
+        throw new Error('live aggregate must not run for a valid snapshot');
+      },
+    });
+
+    const stats = await getStats();
+    expect(stats.totalAgents).toBe(88);
+    expect(stats.totalTransactions).toBe(144);
+    expect(stats.freshness.stale).toBe(false);
+    expect(aggregateCalled).toBe(false);
+  });
+
   test('reads real figures from the aggregate RPCs when they are deployed', async () => {
     __setSupabaseForTest(makeStatsFake({
       txStats: { total_count: 502474, total_volume: 1234.56 },
