@@ -160,7 +160,13 @@ export async function arcRegistryRefresh(deps: ArcRegistryRefreshDeps): Promise<
       && Array.isArray(member.stages) && member.stages.length > 0 && member.stages.every(stage => STAGES.includes(stage)))
       && (scanned.errors === 0 || details.length > 0);
     if (exhaustive) {
-      if (details.some(member => member.stages.some(stage => stage !== 'registration'))) readFailure = true;
+      // A member the contract itself cannot serve is upstream debt of the same
+      // kind as an unreachable metadata URI: no later run reads it either, so
+      // asserting a broken chain read pins this path to `failed` forever (Arc
+      // id 1's 1,315-client feedback list, 2026-09-17). It stays in the ledger.
+      const unreadable = new Set(scanned.unreadableMembers ?? []);
+      if (details.some(member => !unreadable.has(member.agentId)
+        && member.stages.some(stage => stage !== 'registration'))) readFailure = true;
       const failedIds = new Set(details.map(member => member.agentId));
       for (const id of batch) if (!failedIds.has(id)) failures.delete(id);
       for (const member of details) {
