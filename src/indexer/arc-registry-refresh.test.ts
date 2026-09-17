@@ -252,6 +252,42 @@ test('a failed on-chain feedback read is a fault', async () => {
   expect(result.coverage.reason).toBe('registry_read_failure');
 });
 
+// Arc id 1's 1,315-client feedback list gas-reverts on every call and always
+// will. Retrying it as though an RPC hiccup will clear is what pinned the whole
+// chain card to "Scan failed" (2026-09-17) — the member is still disclosed in
+// the ledger, it just stops asserting a broken read we own.
+test('a member the contract cannot serve is backlog, not a read failure that will heal', async () => {
+  const f = fixture({ maxIds: 2, batchSize: 1, scanIds: async (ids) => ({
+    ...(await alwaysFailing('feedback')(ids)), unreadableMembers: ids,
+  }) });
+  const result = await arcRegistryRefresh(f.deps);
+  expect(result.coverage.unresolved).toBeGreaterThan(0);
+  expect(result.coverage.reason).toBe('retry_backlog');
+});
+
+test('one unreadable member does not excuse a genuine read failure beside it', async () => {
+  const f = fixture({ maxIds: 2, batchSize: 2, scanIds: async (ids) => ({
+    ...(await alwaysFailing('feedback')(ids)), unreadableMembers: [ids[0]],
+  }) });
+  const result = await arcRegistryRefresh(f.deps);
+  expect(result.coverage.reason).toBe('registry_read_failure');
+});
+
+// indexing-recovery.yml runs this path hourly from main against the SAME cursor
+// JSON, and validateState fails closed on an unknown stage. The classification
+// must stay run-scoped: nothing new may reach the persisted shape.
+test('an unreadable member leaves the persisted cursor shape byte-compatible', async () => {
+  const f = fixture({ maxIds: 1, batchSize: 1, scanIds: async (ids) => ({
+    ...(await alwaysFailing('feedback')(ids)), unreadableMembers: ids,
+  }) });
+  await arcRegistryRefresh(f.deps);
+  const saved = await f.deps.readCheckpoint() as ArcRegistryRefreshState;
+  expect(saved.failures).toEqual([{ agentId: 2, stages: ['feedback'] }]);
+  expect(Object.keys(saved).sort()).toEqual(
+    ['failures', 'membership', 'position', 'retryAfter', 'retryNext', 'version'],
+  );
+});
+
 test('an unidentifiable partial error summary is conservatively a read failure', async () => {
   const f = fixture({ maxIds: 1, batchSize: 1,
     scanIds: async (ids) => ({ chain: 'arc', tip: ids.at(-1) ?? 0, agentsScanned: ids.length, agentsPersisted: 0,

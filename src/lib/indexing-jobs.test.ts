@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { coverageOutcome, runManagedIndexingTask, type ManagedTaskStore } from './indexing-jobs';
+import { coverageOutcome, registryScanReason, runManagedIndexingTask, type ManagedTaskStore } from './indexing-jobs';
 import type { IndexingJob, ScanOutcome } from './indexing-runner';
 import type { IndexingState } from '@/db/indexing-state';
 const coverage = { complete: false, checked: 0, pending: 10, unresolved: 0 };
@@ -122,4 +122,29 @@ test('retained gaps still survive a clean scan without inventing a stall', async
     { gaps_count: 1, checkpoint: '61777544', last_finished_at: '2026-09-12T19:18:00Z' },
   );
   expect(result).toMatchObject({ status: 'catching_up', errorCode: 'archive_gap', gapCount: 1, stalled: false });
+});
+
+// A population scan's health is a ratio, not a boolean. stellar/registry went
+// `failed` on 1 unreadable agent out of 68 on 2026-09-17 — a re-run seconds
+// later returned zero errors — and the public card called the whole chain dead.
+test('a membership scan that read its population is backlog, however many members failed', () => {
+  expect(registryScanReason(68, 1, 0)).toBe('retry_backlog');
+  expect(coverageOutcome({ complete: true, checked: 68, pending: 0, unresolved: 1,
+    reason: registryScanReason(68, 1, 0) }, 67).status).toBe('catching_up');
+});
+test('a membership scan that read nothing while work waited is the fault worth paging', () => {
+  expect(registryScanReason(0, 1, 0)).toBe('registry_read_failure');
+  expect(coverageOutcome({ complete: false, checked: 0, pending: 0, unresolved: 1,
+    reason: registryScanReason(0, 1, 0) }, 0).status).toBe('failed');
+  expect(registryScanReason(0, 0, 40)).toBe('registry_read_failure');
+});
+test('a clean membership sweep carries no reason at all', () => {
+  expect(registryScanReason(68, 0, 0)).toBeUndefined();
+  expect(coverageOutcome({ complete: true, checked: 68, pending: 0, unresolved: 0,
+    reason: registryScanReason(68, 0, 0) }, 68).status).toBe('caught_up');
+});
+// An empty population is dormant, not broken: nothing was read because there
+// was nothing to read.
+test('an empty population is not a read failure', () => {
+  expect(registryScanReason(0, 0, 0)).toBeUndefined();
 });

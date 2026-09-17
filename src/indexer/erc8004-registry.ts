@@ -21,7 +21,14 @@
  * orchestrator takes injected persist fns so it runs against a fake in tests.
  */
 
-import { createPublicClient, http, parseAbi, type PublicClient } from 'viem';
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  createPublicClient,
+  http,
+  parseAbi,
+  type PublicClient,
+} from 'viem';
 import { gunzipSync } from 'zlib';
 import type { Erc8004RegistryConfig } from '@/config/erc8004-registries';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
@@ -102,10 +109,37 @@ export interface RegistryScanResult {
   errors: number;
   /** Exhaustive failed members for explicit agentIds scans; absent for discovery. */
   failedMembers?: RegistryFailedMember[];
+  /**
+   * Failed members the contract itself cannot serve, so no later run will read
+   * them either. Run-scoped: callers classify this run's fault with it and MUST
+   * NOT persist it — the Arc refresh cursor's shape is read by deployed code.
+   */
+  unreadableMembers?: number[];
 }
 
 export type PersistAgents = (chain: string, agents: ScannedAgent[]) => Promise<number>;
 export type PersistFeedback = (chain: string, feedback: ScannedFeedback[]) => Promise<number>;
+
+/**
+ * True when the chain answered and the answer was "this call cannot succeed".
+ *
+ * A revert is a property of the call, not of the connection: Arc id 1's
+ * 1,315-client `readAllFeedback` exhausts the eth_call gas limit on every
+ * endpoint, forever (measured 2026-09-17; paging by client address does not
+ * help — 10 of its 14 pages revert too). Retrying it as though an RPC hiccup
+ * will clear is what let one member pin a whole chain to "Scan failed".
+ *
+ * viem's transport retries transport errors, never reverts, so this verdict is
+ * stable rather than a race with a backoff.
+ */
+const MEMBER_RETRY_CONCURRENCY = 4;
+/** Distinct from `undefined`, which a contract may legitimately decode to. */
+const MISSING = Symbol('unread');
+
+export function isUnreadableMember(err: unknown): boolean {
+  return err instanceof BaseError
+    && Boolean(err.walk((cause) => cause instanceof ContractFunctionRevertedError));
+}
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
 
@@ -370,7 +404,8 @@ export async function runRegistryScan(
     chain: config.chain, tip, agentsScanned: 0, agentsPersisted: 0,
     feedbackScanned: 0, feedbackPersisted: 0, errors: 0,
   };
-  if (explicitIds) result.failedMembers = [];
+  if (explicitIds) { result.failedMembers = []; result.unreadableMembers = []; }
+  const unreadable = new Set<number>();
   const failed = (agentIds: number[], stage: RegistryFailureStage) => {
     if (!result.failedMembers) return;
     for (const agentId of agentIds) {
@@ -490,21 +525,43 @@ export async function runRegistryScan(
           failed(fbIds, 'feedback');
           continue;
         }
+        // aggregate3 shares ONE gas budget across its members, so a single
+        // oversized member fails every sibling in the sub-batch — `failure` here
+        // means "not read", not "unreadable". Re-ask each one on its own before
+        // recording a verdict; only a member that fails alone has really failed.
+        // Defending known membership is the whole point, so discovery mode,
+        // where a failure legitimately means unminted, does not pay for this.
+        const values: unknown[] = fbIds.map((_, i) => (fbReads[i]?.status === 'success' ? fbReads[i].result : MISSING));
+        if (explicitIds) {
+          const unread = fbIds.map((_, i) => i).filter((i) => values[i] === MISSING);
+          await mapWithConcurrency(unread, MEMBER_RETRY_CONCURRENCY, async (i) => {
+            try {
+              values[i] = await client.readContract({
+                address: config.reputationRegistry, abi: REPUTATION_ABI,
+                functionName: 'readAllFeedback',
+                args: [BigInt(fbIds[i]), [] as `0x${string}`[], '', '', true],
+              });
+            } catch (err) {
+              if (isUnreadableMember(err)) unreadable.add(fbIds[i]);
+            }
+          }, opts.signal);
+          opts.signal?.throwIfAborted();
+        }
         const records: ScannedFeedback[] = [];
         const aggById = new Map<number, FeedbackAgg>();
         for (let i = 0; i < fbIds.length; i++) {
-          if (fbReads[i]?.status !== 'success') {
+          if (values[i] === MISSING) {
             if (explicitIds) { result.errors++; failed([fbIds[i]], 'feedback'); }
             continue;
           }
           let recs: ScannedFeedback[];
           try {
-            const values = fbReads[i].result;
-            if (explicitIds && (!Array.isArray(values) || values.length !== 7
-              || !values.every(Array.isArray) || values.some(array => array.length !== values[0].length))) {
+            const reply = values[i];
+            if (explicitIds && (!Array.isArray(reply) || reply.length !== 7
+              || !reply.every(Array.isArray) || reply.some(array => array.length !== reply[0].length))) {
               throw Error('Invalid registry feedback arrays');
             }
-            recs = parseFeedbackArrays(fbIds[i], values as readonly unknown[]);
+            recs = parseFeedbackArrays(fbIds[i], reply as readonly unknown[]);
           } catch (error) {
             if (!explicitIds) throw error;
             result.errors++;
@@ -534,6 +591,7 @@ export async function runRegistryScan(
 
   opts.signal?.throwIfAborted();
   result.failedMembers?.sort((a, b) => a.agentId - b.agentId);
+  if (explicitIds) result.unreadableMembers = [...unreadable].sort((a, b) => a - b);
   return result;
 }
 

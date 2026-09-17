@@ -73,6 +73,26 @@ export function coverageOutcome(
     insertedCount,
   };
 }
+/**
+ * How a membership scan's outcome is classified.
+ *
+ * A population scan's health is a ratio, not a boolean: only a sweep that read
+ * NOTHING while work waited is a fault someone must act on. Members that were
+ * read and came back unusable are a retry backlog — disclosed through the
+ * `registry_retry` badge, never as a dead chain. Collapsing the two is what let
+ * one unreadable Arc agent, and a single transient Stellar miss out of 68, put
+ * "Scan failed" on a whole chain while the scan was doing its job (2026-09-17).
+ */
+export function registryScanReason(
+  checked: number,
+  unresolved: number,
+  pending: number,
+): 'registry_read_failure' | 'retry_backlog' | undefined {
+  if (checked > 0) return unresolved > 0 ? 'retry_backlog' : undefined;
+  // Nothing read and nothing waiting is an empty population, not a fault.
+  return unresolved > 0 || pending > 0 ? 'registry_read_failure' : undefined;
+}
+
 export interface JobOptions {
   limit?: number;
   backfill?: boolean;
@@ -154,15 +174,15 @@ export function createIndexingJob(
           (c, tip) => setRegistryCursorTip(c as Chain, tip),
           { rescanWindow: options.rescanWindow ?? 100, signal },
         );
-        return {
-          status: r.errors ? 'failed' : 'caught_up',
-          errorCode: r.errors ? 'scan_partial' : undefined,
-          checkedCount: r.agentsScanned,
-          insertedCount: r.agentsPersisted,
-          unresolvedCount: r.errors,
+        return coverageOutcome({
+          complete: r.errors === 0,
+          checked: r.agentsScanned,
+          pending: 0,
+          unresolved: r.errors,
           checkpoint: String(r.tip),
           head: String(r.tip),
-        };
+          reason: registryScanReason(r.agentsScanned, r.errors, 0),
+        }, r.agentsPersisted);
       }
       if (chain === 'stellar' && path === 'registry') {
         const { getStellarRpc } =
@@ -176,13 +196,13 @@ export function createIndexingJob(
           signal,
         });
         const count = await upsertErc8004Agents('stellar', r.agents);
-        return {
-          status: r.errors.length ? 'failed' : 'caught_up',
-          errorCode: r.errors.length ? 'scan_partial' : undefined,
-          checkedCount: r.attempted,
-          insertedCount: count,
-          unresolvedCount: r.errors.length,
-        };
+        return coverageOutcome({
+          complete: r.errors.length === 0,
+          checked: r.attempted,
+          pending: 0,
+          unresolved: r.errors.length,
+          reason: registryScanReason(r.attempted, r.errors.length, 0),
+        }, count);
       }
       if (chain === 'solana' && path === 'registry') {
         const { SolanaSDK } = await import('8004-solana');
@@ -203,19 +223,15 @@ export function createIndexingJob(
           signal,
         });
         const count = await upsertErc8004Agents('solana', r.agents);
-        return {
-          status:
-            r.errors.length || r.skippedNoAgentId
-              ? 'failed'
-              : options.fromOffset
-                ? 'catching_up'
-                : 'caught_up',
-          errorCode: r.errors.length ? 'scan_partial' : undefined,
-          checkedCount: r.agents.length,
-          pendingCount: options.fromOffset ? options.fromOffset : 0,
-          insertedCount: count,
-          unresolvedCount: r.errors.length + r.skippedNoAgentId,
-        };
+        const unresolved = r.errors.length + r.skippedNoAgentId;
+        const pending = options.fromOffset ?? 0;
+        return coverageOutcome({
+          complete: unresolved === 0 && pending === 0,
+          checked: r.agents.length,
+          pending,
+          unresolved,
+          reason: registryScanReason(r.agents.length, unresolved, pending),
+        }, count);
       }
       if (chain === 'solana' && path === 'payments') {
         const { runIndexer } = await import('@/indexer/index');
