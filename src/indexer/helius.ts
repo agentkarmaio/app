@@ -2,6 +2,7 @@ import { Connection, type ParsedTransactionWithMeta } from '@solana/web3.js';
 import { USDC_MINT } from '../config/facilitators';
 import { detectPayshRouted } from './paysh-fingerprint';
 import { withConcurrency } from '@/lib/concurrency';
+import { heliusApiKeys, heliusRpcUrls } from '@/lib/helius-keys';
 import { optionalEnv } from '@/lib/require-env';
 import type { Transaction } from '../db/schema';
 
@@ -49,13 +50,9 @@ export interface HeliusEnhancedTransaction {
 // ─── API Key ─────────────────────────────────────────────────────────────────
 
 export function getHeliusApiKey(): string {
-  const url = process.env.HELIUS_RPC_URL;
-  if (!url) throw new Error('HELIUS_RPC_URL env var is not set');
-
-  const match = url.match(/api-key=([^&]+)/);
-  if (!match?.[1]) throw new Error('HELIUS_RPC_URL does not contain an api-key parameter');
-
-  return match[1];
+  const [key] = heliusApiKeys();
+  if (!key) throw new Error('no Helius API key configured');
+  return key;
 }
 
 // ─── RPC resolver ────────────────────────────────────────────────────────────
@@ -75,7 +72,7 @@ const DEFAULT_RPC = 'https://api.mainnet-beta.solana.com';
  * the 2026-06-23 floor outage.
  */
 export function getIndexerRpcUrl(): string {
-  return optionalEnv('SOLANA_RPC_URL', optionalEnv('HELIUS_RPC_URL', DEFAULT_RPC));
+  return optionalEnv('SOLANA_RPC_URL', heliusRpcUrls()[0] ?? DEFAULT_RPC);
 }
 
 let _rpcConn: Connection | null = null;
