@@ -12,6 +12,7 @@
 
 import { describe, expect, mock, test } from 'bun:test';
 import { gzipSync } from 'zlib';
+import { ContractFunctionExecutionError, ContractFunctionRevertedError } from 'viem';
 import {
   decodeRegistration,
   parseFeedbackArrays,
@@ -704,5 +705,103 @@ describe('scanner metadata score includes the tokenURI', () => {
     expect(agent!.metadataScore).toBe(
       scoreMetadataQuality({ registration: agent!.registration, tokenURI: agent!.tokenURI ?? undefined }).score,
     );
+  });
+});
+
+describe('a poisoned multicall sub-batch is not a member verdict', () => {
+  const config = { chain: 'arc', identityRegistry: '0x0', reputationRegistry: '0xREP', rpcEnvVar: 'X', viemChain: {} } as unknown as Erc8004RegistryConfig;
+  // aggregate3 shares one gas budget: Arc id 1's 1,315-client feedback list
+  // exhausts it and every member of its sub-batch comes back `failure` —
+  // ids 2 and 3 included, though both read fine on their own (measured against
+  // rpc.testnet.arc.io, 2026-09-17). Re-ask each one before calling it failed.
+  const identity = (functionName: string) => (functionName === 'tokenURI' ? '' : '0xAA');
+  const feedbackReply = (client: string) => [[client], [1n], [100n], [2], [''], [''], [false]];
+
+  function client(overrides: {
+    onFeedbackMulticall?: () => { status: string; result?: unknown }[] | never;
+    onRetry?: (agentId: number) => unknown;
+  }) {
+    const retried: number[] = [];
+    const impl = {
+      readContract: (async ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+        if (functionName !== 'readAllFeedback') throw Error('tip discovery forbidden');
+        const agentId = Number(args[0]);
+        retried.push(agentId);
+        if (!overrides.onRetry) throw Error('unexpected retry');
+        return overrides.onRetry(agentId);
+      }) as never,
+      multicall: (async ({ contracts }: { contracts: { functionName: string; args: readonly unknown[] }[] }) => {
+        if (contracts[0].functionName !== 'readAllFeedback') {
+          return contracts.map((c) => ({ status: 'success', result: identity(c.functionName) }));
+        }
+        return overrides.onFeedbackMulticall?.() ?? contracts.map(() => ({ status: 'failure' }));
+      }) as never,
+    };
+    return { impl, retried };
+  }
+
+  test('a member whose individual retry succeeds is scanned, persisted and not recorded as failed', async () => {
+    const persistedFeedback: ScannedFeedback[] = [];
+    const persistedAgents: ScannedAgent[][] = [];
+    const c = client({
+      onFeedbackMulticall: () => [{ status: 'failure' }, { status: 'success', result: feedbackReply('0xCD') }],
+      onRetry: () => feedbackReply('0xAB'),
+    });
+    const result = await runRegistryScan(
+      config,
+      async (_chain, rows) => { persistedAgents.push([...rows]); return rows.length; },
+      async (_chain, rows) => { persistedFeedback.push(...rows); return rows.length; },
+      { agentIds: [2, 3], fetchRemote: false, client: c.impl },
+    );
+    expect(c.retried).toEqual([2]);
+    expect(result.failedMembers).toEqual([]);
+    expect(result.errors).toBe(0);
+    // A recovered read that never reaches the consumer is a silent no-op.
+    expect(persistedFeedback.map((row) => row.agentId).sort()).toEqual([2, 3]);
+    expect(persistedAgents.at(-1)?.map((a) => a.agentId).sort()).toEqual([2, 3]);
+    expect(persistedAgents.at(-1)?.every((a) => a.feedback !== undefined)).toBe(true);
+    expect(result.feedbackScanned).toBe(2);
+  });
+
+  test('a retry that reverts marks the member unreadable, not a read failure that will heal', async () => {
+    const c = client({
+      onRetry: () => { throw new ContractFunctionExecutionError(
+        new ContractFunctionRevertedError({ abi: [], functionName: 'readAllFeedback', data: '0x' }),
+        { abi: [], functionName: 'readAllFeedback' },
+      ); },
+    });
+    const result = await runRegistryScan(config, async (_c, rows) => rows.length, async () => 0, {
+      agentIds: [1], fetchRemote: false, client: c.impl,
+    });
+    expect(result.failedMembers).toEqual([{ agentId: 1, stages: ['feedback'] }]);
+    expect(result.errors).toBe(1);
+    expect(result.unreadableMembers).toEqual([1]);
+  });
+
+  test('a retry that fails on transport stays a retryable read failure', async () => {
+    const c = client({ onRetry: () => { throw Error('fetch failed'); } });
+    const result = await runRegistryScan(config, async (_c, rows) => rows.length, async () => 0, {
+      agentIds: [1], fetchRemote: false, client: c.impl,
+    });
+    expect(result.failedMembers).toEqual([{ agentId: 1, stages: ['feedback'] }]);
+    expect(result.errors).toBe(1);
+    expect(result.unreadableMembers).toEqual([]);
+  });
+
+  test('a multicall that throws wholesale is a batch transport fault, retried by nobody', async () => {
+    const c = client({ onFeedbackMulticall: () => { throw Error('RPC failed'); } });
+    const result = await runRegistryScan(config, async (_c, rows) => rows.length, async () => 0, {
+      agentIds: [2, 3], fetchRemote: false, client: c.impl,
+    });
+    expect(c.retried).toEqual([]);
+    expect(result.failedMembers).toEqual([{ agentId: 2, stages: ['feedback'] }, { agentId: 3, stages: ['feedback'] }]);
+  });
+
+  test('discovery mode has no membership to defend and never retries', async () => {
+    const c = client({});
+    await runRegistryScan(config, async (_c, rows) => rows.length, async () => 0, {
+      fromId: 2, toId: 3, fetchRemote: false, client: c.impl,
+    });
+    expect(c.retried).toEqual([]);
   });
 });
