@@ -12,14 +12,25 @@
  * so a recreate (e.g. via `bun run src/scripts/setup-webhook.ts`) keeps
  * working without code changes.
  *
+ * It treats the webhook as DESIRED STATE and converges on it: re-enable when
+ * disabled, and CREATE when the account has none. That second case is what
+ * makes credential failover work at all — webhooks belong to the account that
+ * registered them, so a different credential sees an empty list, and
+ * re-enable-only logic would report "no webhook matched" while the push path
+ * stayed dead.
+ *
  * Tunables:
  *   HELIUS_WATCHDOG_INTERVAL_MS  default 300_000  (5 min)
  *   HELIUS_WATCHDOG_DISABLED     "1" to skip
- *   HELIUS_WATCHDOG_URL_HINT     URL substring to match (default agentkarma.io/api/webhook/helius)
+ *   HELIUS_WEBHOOK_URL           the webhook to converge on (default https://agentkarma.io/api/webhook/helius)
+ *   HELIUS_WATCHDOG_URL_HINT     URL substring to match (defaults to HELIUS_WEBHOOK_URL)
  */
 import { ALL_FACILITATOR_ADDRESSES } from '../config/facilitators';
 import { SPECIMEN_ADDRESSES } from '../config/specimen';
+import { heliusApiKeys, withHeliusKey } from './helius-keys';
+import { optionalEnv } from './require-env';
 
+const DEFAULT_WEBHOOK_URL = 'https://agentkarma.io/api/webhook/helius';
 const DEFAULT_URL_HINT = 'agentkarma.io/api/webhook/helius';
 const HELIUS_WEBHOOK_API = 'https://api-mainnet.helius-rpc.com/v0/webhooks';
 
@@ -27,7 +38,7 @@ const HELIUS_WEBHOOK_API = 'https://api-mainnet.helius-rpc.com/v0/webhooks';
 // setup-webhook.ts. We re-assert this on every repair rather than echoing the
 // list response, because Helius's list endpoint can return webhooks WITHOUT
 // their accountAddresses; echoing that back would silently wipe the watch set.
-const WATCHED_ADDRESSES = [...new Set([...ALL_FACILITATOR_ADDRESSES, ...SPECIMEN_ADDRESSES])];
+export const WATCHED_ADDRESSES = [...new Set([...ALL_FACILITATOR_ADDRESSES, ...SPECIMEN_ADDRESSES])];
 
 // The `Authorization` header value Helius must send so our webhook route's
 // verifyHeliusWebhook() accepts the delivery. MUST track the server's own
@@ -52,21 +63,41 @@ interface HeliusWebhook {
   disabledAt?: string;
 }
 
-function getApiKey(): string | null {
-  if (process.env.HELIUS_API_KEY) return process.env.HELIUS_API_KEY;
-  const url = process.env.HELIUS_RPC_URL;
-  if (!url) return null;
-  try {
-    return new URL(url).searchParams.get('api-key');
-  } catch {
-    return null;
-  }
+/** The webhook we converge on. A substring cannot be POSTed, so this is a real URL. */
+export function desiredWebhookUrl(): string {
+  return optionalEnv('HELIUS_WEBHOOK_URL', DEFAULT_WEBHOOK_URL);
+}
+
+/** Carry the status so `withHeliusKey` can tell a dead key from a broken call. */
+function heliusError(what: string, status: number, detail = ''): Error {
+  return Object.assign(new Error(`Helius ${what} ${status}${detail && `: ${detail}`}`), { status });
 }
 
 async function listWebhooks(apiKey: string): Promise<HeliusWebhook[]> {
   const r = await fetch(`${HELIUS_WEBHOOK_API}?api-key=${apiKey}`);
-  if (!r.ok) throw new Error(`Helius listWebhooks ${r.status}`);
+  if (!r.ok) throw heliusError('listWebhooks', r.status);
   return (await r.json()) as HeliusWebhook[];
+}
+
+/**
+ * Register the webhook on an account that has none — the rotation case.
+ * Same watch set and auth header as a repair, so the two paths cannot drift.
+ */
+export async function createWebhook(apiKey: string, webhookUrl: string): Promise<string> {
+  const authHeader = desiredAuthHeader();
+  const r = await fetch(`${HELIUS_WEBHOOK_API}?api-key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      webhookURL: webhookUrl,
+      webhookType: 'enhanced',
+      accountAddresses: WATCHED_ADDRESSES,
+      transactionTypes: ['TRANSFER'],
+      ...(authHeader ? { authHeader } : {}),
+    }),
+  });
+  if (!r.ok) throw heliusError('create webhook', r.status, await r.text());
+  return ((await r.json()) as { webhookID?: string }).webhookID ?? 'unknown';
 }
 
 async function repairWebhook(apiKey: string, hook: HeliusWebhook): Promise<void> {
@@ -88,39 +119,48 @@ async function repairWebhook(apiKey: string, hook: HeliusWebhook): Promise<void>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!r.ok) {
-    throw new Error(`Helius PUT webhook ${hook.webhookID} → ${r.status}: ${await r.text()}`);
-  }
+  if (!r.ok) throw heliusError(`PUT webhook ${hook.webhookID}`, r.status, await r.text());
 }
 
 export interface WatchdogTick {
   matched: number;
   active: number;
+  /** Webhooks registered on an account that had none — i.e. a rotation landed. */
+  created: string[];
   reEnabled: { id: string; reason?: string }[];
   errors: string[];
 }
 
 export async function checkOnce(urlHint = DEFAULT_URL_HINT): Promise<WatchdogTick | null> {
-  const apiKey = getApiKey();
-  if (!apiKey) return null;
-  const hooks = await listWebhooks(apiKey);
-  const matched = hooks.filter((h) => h.webhookURL?.includes(urlHint));
-  const tick: WatchdogTick = {
-    matched: matched.length,
-    active: matched.filter((h) => h.active).length,
-    reEnabled: [],
-    errors: [],
-  };
-  for (const h of matched) {
-    if (h.active) continue;
-    try {
-      await repairWebhook(apiKey, h);
-      tick.reEnabled.push({ id: h.webhookID, reason: h.disabledReason });
-    } catch (err) {
-      tick.errors.push(`${h.webhookID}: ${err instanceof Error ? err.message : err}`);
+  if (heliusApiKeys().length === 0) return null;
+  const webhookUrl = desiredWebhookUrl();
+  return withHeliusKey(async (apiKey) => {
+    const hooks = await listWebhooks(apiKey);
+    const matched = hooks.filter((h) => h.webhookURL?.includes(urlHint));
+    const tick: WatchdogTick = {
+      matched: matched.length,
+      active: matched.filter((h) => h.active).length,
+      created: [],
+      reEnabled: [],
+      errors: [],
+    };
+    // An account with no webhook is the rotation case, not an error to warn
+    // about: register the desired state instead of reporting its absence.
+    if (matched.length === 0) {
+      tick.created.push(await createWebhook(apiKey, webhookUrl));
+      return tick;
     }
-  }
-  return tick;
+    for (const h of matched) {
+      if (h.active) continue;
+      try {
+        await repairWebhook(apiKey, h);
+        tick.reEnabled.push({ id: h.webhookID, reason: h.disabledReason });
+      } catch (err) {
+        tick.errors.push(`${h.webhookID}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    return tick;
+  });
 }
 
 export function startWatchdog(): void {
@@ -128,12 +168,13 @@ export function startWatchdog(): void {
     console.log('[helius-watchdog] disabled via env');
     return;
   }
-  if (!getApiKey()) {
-    console.log('[helius-watchdog] no HELIUS_API_KEY / HELIUS_RPC_URL — skipping');
+  const keyCount = heliusApiKeys().length;
+  if (keyCount === 0) {
+    console.log('[helius-watchdog] no Helius credentials configured — skipping');
     return;
   }
   const intervalMs = Number(process.env.HELIUS_WATCHDOG_INTERVAL_MS) || 300_000;
-  const urlHint = process.env.HELIUS_WATCHDOG_URL_HINT || DEFAULT_URL_HINT;
+  const urlHint = process.env.HELIUS_WATCHDOG_URL_HINT || desiredWebhookUrl();
 
   let running = false;
   const tick = async () => {
@@ -154,8 +195,8 @@ export function startWatchdog(): void {
           console.error(`[helius-watchdog] error: ${e}`);
         }
       }
-      if (result.matched === 0) {
-        console.warn(`[helius-watchdog] no webhook matched URL hint "${urlHint}"`);
+      for (const id of result.created) {
+        console.log(`[helius-watchdog] registered webhook ${id} on an account that had none`);
       }
     } catch (err) {
       console.error('[helius-watchdog] tick failed:', err instanceof Error ? err.message : err);
@@ -166,7 +207,9 @@ export function startWatchdog(): void {
 
   const timer = setInterval(() => { void tick(); }, intervalMs);
   if (typeof timer.unref === 'function') timer.unref();
-  console.log(`[helius-watchdog] registered · interval=${intervalMs}ms url_hint="${urlHint}"`);
+  console.log(
+    `[helius-watchdog] registered · interval=${intervalMs}ms keys=${keyCount} url_hint="${urlHint}"`,
+  );
   // Prime an immediate check on boot so a webhook disabled mid-deploy
   // recovers as soon as the new replica is live.
   void tick();
