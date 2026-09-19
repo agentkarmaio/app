@@ -1,5 +1,6 @@
 import { afterEach, expect, test, spyOn } from 'bun:test';
 import { __setSupabaseForTest } from '@/db/client';
+import * as db from '@/db/client';
 import { POST, chainSchema, chainFilterSchema, resolveForChain, fullKarmaJson } from './route';
 import * as arc from '@/integrations/erc8004-arc';
 import * as celo from '@/integrations/erc8004-celo';
@@ -29,8 +30,8 @@ function store() {
   }});
   return reads;
 }
-async function tool(name:string) {
-  const response=await POST(new Request('https://agentkarma.io/mcp',{method:'POST',headers:{'content-type':'application/json',accept:'application/json, text/event-stream'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:{wallet:address,chain:'arc-mainnet'}}})}));
+async function tool(name:string, args: Record<string, unknown> = { wallet: address, chain: 'arc-mainnet' }) {
+  const response=await POST(new Request('https://agentkarma.io/mcp',{method:'POST',headers:{'content-type':'application/json',accept:'application/json, text/event-stream'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}})}));
   const text=await response.text();
   const line=text.split('\n').find(line=>line.startsWith('data:'));
   const envelope=JSON.parse(line?line.slice(5):text);
@@ -83,4 +84,41 @@ test('the Arc-specific tool honors an explicit mainnet request without a testnet
     expect(await tool('get_arc_karma')).toMatchObject({chain:'arc-mainnet'});
     expect(read).not.toHaveBeenCalled();
   }finally{read.mockRestore();}
+});
+
+
+test('MCP mainnet leaderboard keeps absent faces null and exact identity links including ID zero', async () => {
+  const rows = [
+    { chain: 'arc-mainnet', address, arc_agent_id: 0, score: null, provider_score: null, consumer_score: null,
+      display_name: 'Registry identity', confidence_badge: 'declared', trust_tier: 'Unrated', tx_count: 0 },
+    { chain: 'arc-mainnet', address, arc_agent_id: 1, score: 0, provider_score: 0, consumer_score: 12,
+      display_name: 'Observed identity', confidence_badge: 'behavior-inferred', trust_tier: 'Unrated', tx_count: 2 },
+  ] as unknown as Wallet[];
+  const leaderboard = spyOn(db, 'getLeaderboard').mockResolvedValue({ wallets: rows, total: 2 });
+  const feedback = spyOn(db, 'getFeedbackSummariesForWallets').mockResolvedValue(new Map());
+  try {
+    const result = await tool('get_leaderboard');
+    expect(result.agents[0]).toMatchObject({ agentId: 0, score: null, providerScore: null, consumerScore: null, delivery: null });
+    expect(result.agents[0].profileUrl).toEndWith(`/agent/${address}?chain=arc-mainnet&agentId=0`);
+    expect(result.agents[1]).toMatchObject({ agentId: 1, score: 0, providerScore: 0, consumerScore: 12 });
+    expect(result.agents[1].profileUrl).toEndWith(`/agent/${address}?chain=arc-mainnet&agentId=1`);
+    expect(feedback).not.toHaveBeenCalled();
+  } finally { leaderboard.mockRestore(); feedback.mockRestore(); }
+});
+
+test('MCP mixed leaderboard preserves legacy chains while retaining mainnet absence', async () => {
+  const rows = [
+    { chain: 'celo', address, score: 90, provider_score: null, consumer_score: null, confidence_badge: 'declared' },
+    { chain: 'arc-mainnet', address, arc_agent_id: 0, score: null, provider_score: null, consumer_score: null },
+  ] as unknown as Wallet[];
+  const leaderboard = spyOn(db, 'getLeaderboard').mockResolvedValue({ wallets: rows, total: 2 });
+  const feedback = spyOn(db, 'getFeedbackSummariesForWallets').mockResolvedValue(new Map());
+  try {
+    const result = await tool('get_leaderboard', {});
+    expect(result.agents[0]).toMatchObject({ chain: 'celo', score: 90, providerScore: 90 });
+    expect(result.agents[0].profileUrl).toEndWith(`/agent/${address}`);
+    expect(result.agents[1]).toMatchObject({ chain: 'arc-mainnet', score: null, providerScore: null, agentId: 0 });
+    expect(feedback).toHaveBeenCalledTimes(1);
+    expect(feedback).toHaveBeenCalledWith([address], 'celo');
+  } finally { leaderboard.mockRestore(); feedback.mockRestore(); }
 });

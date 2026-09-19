@@ -9,7 +9,7 @@ describe('Arc mainnet adapter', () => {
     const adapter = makeArcMainnetAdapter();
     expect(adapter.chain).toBe('arc-mainnet');
     expect(adapter.validateAddress(ADDRESS)).toBe(true);
-    expect(adapter.explorerTxUrl(`${HASH}:3`)).toBe(`https://arc-scan.org/tx/${HASH}`);
+    expect(adapter.explorerTxUrl(`${HASH}:3`)).toBe(`https://explorer.arc.io/tx/${HASH}`);
     expect(() => adapter.explorerTxUrl(`${HASH}:invalid`)).toThrow('arc_mainnet_receipt_invalid');
   });
   test('unavailable registry reads are explicit and publication cannot use a testnet implementation', async () => {

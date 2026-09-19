@@ -53,6 +53,7 @@ const ERROR_CODES = new Set([
   'scan_limit',
   'empty_seed',
   'scan_partial',
+  'score_refresh_pending',
   'budget',
   'rate_limited',
   'time_budget',

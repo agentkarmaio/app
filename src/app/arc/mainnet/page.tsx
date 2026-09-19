@@ -15,6 +15,7 @@ export default async function ArcMainnetPage() {
   const rows = await readIndexingStates().catch(() => null);
   const coverage = rows ? buildIndexingHealth(rows).chains.find(chain => chain.chain === 'arc-mainnet') : null;
   const transfers = coverage?.paths.find(path => path.path === 'transfers');
+  const registry = coverage?.paths.find(path => path.path === 'registry');
   return (
     <main className="mx-auto max-w-3xl space-y-8 px-6 py-16">
       <header className="space-y-3">
@@ -23,9 +24,16 @@ export default async function ArcMainnetPage() {
         <p className="text-muted-foreground">USDC receipts involving verified mainnet agent addresses. Testnet activity is tracked separately.</p>
       </header>
       <Card>
+        <CardHeader><CardTitle className="text-base">Agent discovery</CardTitle></CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <p role="status">{registry ? INDEXING_STATUS_LABELS[registry.status] : 'Status temporarily unavailable'}</p>
+          <p className="text-muted-foreground">Mainnet ERC-8004 identities are listed separately from their observed payment scores. Registration alone does not establish Karma.</p>
+        </CardContent>
+      </Card>
+      <Card>
         <CardHeader><CardTitle className="text-base">Agent transfers</CardTitle></CardHeader>
         <CardContent className="space-y-3 text-sm">
-          <p role="status">{coverage ? INDEXING_STATUS_LABELS[coverage.status] : 'Status temporarily unavailable'}</p>
+          <p role="status">{transfers ? INDEXING_STATUS_LABELS[transfers.status] : 'Status temporarily unavailable'}</p>
           <p className="text-muted-foreground">Last checked: {transfers?.lastCheckedAt ? <time dateTime={transfers.lastCheckedAt}>{new Date(transfers.lastCheckedAt).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC')}</time> : 'Not yet verified'}</p>
           <p className="text-muted-foreground">Registration, feedback publishing, and ownership claims are not enabled for mainnet yet.</p>
         </CardContent>

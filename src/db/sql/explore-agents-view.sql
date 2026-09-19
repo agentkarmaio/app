@@ -95,7 +95,24 @@ CREATE OR REPLACE VIEW explore_agents AS
     -- Registry rows are 100% declared, so the weight applies unconditionally.
     (metadata_score::numeric * 0.7)      AS rank_score
   FROM erc8004_agents
-  WHERE chain IN ('celo', 'arc', 'stellar');
+  WHERE chain IN ('celo', 'arc', 'stellar')
+  UNION ALL
+  -- Mainnet metadata identifies agents; only observed transfers supply Karma.
+  -- Join on the composite wallet key so testnet scores cannot leak across.
+  SELECT
+    r.chain,
+    COALESCE(NULLIF(r.agent_wallet, '0x0000000000000000000000000000000000000000'), r.owner),
+    r.registration->>'name', COALESCE(w.claimed, false),
+    CASE WHEN w.confidence_badge = 'behavior-inferred' THEN w.provider_score END,
+    w.consumer_score, COALESCE(w.trust_tier, 'Unrated'), COALESCE(w.confidence_badge, 'declared'),
+    w.autonomy_score, w.autonomy_label, COALESCE(w.tx_count, 0), w.last_seen,
+    w.metric_success_rate, w.metric_diversity, w.metric_volume, w.metric_age, w.metric_cadence,
+    NULL::bigint, r.agent_id, NULL::bigint,
+    COALESCE(w.score, 0), r.registration->>'image', COALESCE(w.rank_score, 0)
+  FROM erc8004_agents r
+  LEFT JOIN wallets w ON w.chain = r.chain
+    AND w.address = COALESCE(NULLIF(r.agent_wallet, '0x0000000000000000000000000000000000000000'), r.owner)
+  WHERE r.chain = 'arc-mainnet';
 
 GRANT SELECT ON explore_agents TO anon, authenticated, service_role;
 

@@ -12,10 +12,10 @@ export const metadata = {
 export const revalidate = 60;
 
 export default async function WidgetPage() {
-  // Grab a sample wallet for live preview
+  // The legacy embed resolves Solana wallets, so its preview must use Solana.
   let sampleWallet = 'WALLET_ADDRESS';
   try {
-    const { wallets: top } = await getLeaderboard(1);
+    const { wallets: top } = await getLeaderboard(1, 0, { chain: 'solana' });
     if (top.length > 0) sampleWallet = top[0].address;
   } catch { /* ok */ }
 

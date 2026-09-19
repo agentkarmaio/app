@@ -74,6 +74,16 @@ test('zero inserts can be a real completed scan', async () => {
   expect(r.status).toBe('caught_up');
   expect(d.finishes).toHaveLength(1);
 });
+test('mainnet score refresh backlog retains its stable classification through lease completion', async () => {
+  const d = deps();
+  const outcome = { status: 'catching_up' as const, errorCode: 'score_refresh_pending',
+    checkedCount: 200, pendingCount: 1, checkpoint: '100', head: '100' };
+  const result = await executeIndexingJob({ ...job, chain: 'arc-mainnet', path: 'transfers',
+    run: async () => outcome }, d.value);
+  expect(result).toEqual(outcome);
+  expect(d.finishes).toHaveLength(1);
+  expect(d.finishes[0]).toMatchObject({ ...outcome, chain: 'arc-mainnet', path: 'transfers' });
+});
 test('failure is recorded with safe error code, no provider key', async () => {
   const d = deps();
   const r = await executeIndexingJob(

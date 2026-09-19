@@ -249,6 +249,7 @@ describe('dirty-queue chunks address .in() lists to avoid URI-too-long', () => {
         const b: Record<string, unknown> = {};
         b.select = () => b;
         b.not = () => b;
+        b.neq = () => b;
         b.order = () => b;
         b.limit = async () => ({ data: selectRows, error: null });
         // The clear/mark path is `.update(row).eq('chain', c).in('address', [...])`
@@ -949,6 +950,7 @@ describe('markAllWalletsDirty enqueues instead of rescoring inline', () => {
             const call = { table, patch, filtered: false };
             calls.push(call);
             const chain: Record<string, unknown> = {};
+            chain.neq = () => chain;
             // PostgREST refuses an unfiltered UPDATE, so a filter must be present.
             chain.not = () => { call.filtered = true; return Promise.resolve({ count, error: null }); };
             return chain;

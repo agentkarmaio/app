@@ -5,7 +5,8 @@
  * profile. Deep-link / SDK primitive: given `celo` + `9058`, returns the bound
  * wallet address, current Karma, and a ready-to-use profile URL.
  *
- * Reads the scored `wallets` row (the AK projection), not the raw registry — for
+ * Mainnet resolves exact registry identity and recomputes both receipt faces.
+ * Other chains read the scored `wallets` row (the AK projection) — for
  * the live IdentityRegistry record + reputation feedback use the per-chain
  * resolver (e.g. /api/v2/celo/[agentId]). Solana has no ERC-8004 agentId and is
  * rejected; look those agents up by address instead.
@@ -15,6 +16,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getWalletByAgentId } from '@/db/client';
 import { CHAINS, type Chain } from '@/db/schema';
 import { agentHref } from '@/lib/agent-href';
+import { resolveKarma } from '@/lib/karma-resolver';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
 const MAX_INT32 = 2147483647;
@@ -37,9 +39,6 @@ export async function GET(
     return NextResponse.json({ error: `unknown chain '${chainParam}'` }, { status: 400, headers });
   }
   const chain = chainParam as Chain;
-  if (chain === 'arc-mainnet') {
-    return NextResponse.json({ error: 'Arc mainnet registry lookup is not enabled; look up by address instead' }, { status: 501, headers });
-  }
   if (chain === 'solana') {
     return NextResponse.json(
       { error: 'Solana agents have no ERC-8004 agentId; look up by address instead' },
@@ -48,9 +47,10 @@ export async function GET(
   }
 
   const agentId = Number(id);
-  if (!Number.isInteger(agentId) || agentId <= 0 || agentId > MAX_INT32) {
+  const isMainnet = chain === 'arc-mainnet';
+  if (!Number.isInteger(agentId) || agentId < (isMainnet ? 0 : 1) || agentId > MAX_INT32 || (isMainnet && !/^\d+$/.test(id))) {
     return NextResponse.json(
-      { error: 'agentId must be a positive integer within int32 range' },
+      { error: `agentId must be a ${isMainnet ? 'nonnegative' : 'positive'} integer within int32 range` },
       { status: 400, headers },
     );
   }
@@ -60,18 +60,24 @@ export async function GET(
     return NextResponse.json({ error: `no agent with id ${agentId} on ${chain}` }, { status: 404, headers });
   }
 
+  const snapshot = isMainnet ? await resolveKarma(wallet.address, chain, { agentId }) : null;
+  if (isMainnet && !snapshot) {
+    return NextResponse.json({ error: `no agent with id ${agentId} on ${chain}` }, { status: 404, headers });
+  }
+
   return NextResponse.json(
     {
       chain,
       agentId,
-      address: wallet.address,
-      displayName: wallet.display_name ?? null,
-      score: Number(wallet.score),
-      providerScore: Number(wallet.provider_score),
-      consumerScore: wallet.consumer_score == null ? null : Number(wallet.consumer_score),
-      trustTier: wallet.trust_tier,
-      confidenceBadge: wallet.confidence_badge,
-      profileUrl: agentHref({ chain, address: wallet.address, agentId }),
+      address: snapshot?.address ?? wallet.address,
+      displayName: snapshot ? snapshot.identity.displayName ?? null : wallet.display_name ?? null,
+      score: snapshot ? (snapshot.provider.hasSignal ? snapshot.provider.score : null) : Number(wallet.score),
+      providerScore: snapshot ? (snapshot.provider.hasSignal ? snapshot.provider.score : null) : Number(wallet.provider_score),
+      consumerScore: snapshot ? (snapshot.consumer.hasSignal ? snapshot.consumer.score : null)
+        : wallet.consumer_score == null ? null : Number(wallet.consumer_score),
+      trustTier: snapshot?.provider.trustTier ?? wallet.trust_tier,
+      confidenceBadge: snapshot?.provider.confidenceBadge ?? wallet.confidence_badge,
+      profileUrl: agentHref({ chain, address: snapshot?.address ?? wallet.address, agentId }),
     },
     {
       headers: {

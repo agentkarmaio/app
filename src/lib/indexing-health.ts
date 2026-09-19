@@ -62,6 +62,7 @@ export const INDEXING_PATHS: ReadonlyArray<{
     intervalMs: 3_600_000,
   },
   { chain: 'arc-mainnet', path: 'transfers', label: 'Agent transfers', intervalMs: 300_000 },
+  { chain: 'arc-mainnet', path: 'registry', label: 'Agent registry', intervalMs: 900_000 },
 ];
 export type IndexingStatus =
   | 'current'

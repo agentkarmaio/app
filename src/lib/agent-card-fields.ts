@@ -18,7 +18,8 @@ import { getTrustTier } from '@/scoring/index';
 import type { Chain, Wallet } from '@/db/schema';
 import { getRegistryAgentsForAddress } from '@/db/enrichment-queries';
 import { canonicalAddress } from '@/lib/chain-detect';
-import { computeAgentLiveBundle } from '@/scoring/live-agent-score';
+import { resolveKarma } from '@/lib/karma-resolver';
+import { agentHref } from '@/lib/agent-href';
 
 export interface AgentCardFields {
   name: string;
@@ -30,6 +31,8 @@ export interface AgentCardFields {
   claimed: boolean;
   /** true when resolved from the ERC-8004 registry mirror (declared-tier). */
   isRegistry: boolean;
+  /** Canonical network-pinned identity URL when registry binding is resolved. */
+  profileUrl?: string;
 }
 
 const EVM_RE = /^0x[a-fA-F0-9]{40}$/;
@@ -82,10 +85,13 @@ export async function resolveAgentCardFields(
   candidate ??= await getWallet(wallet, opts.chain ?? 'solana').catch(() => null);
   const w = opts.chain && candidate?.chain !== opts.chain ? null : candidate;
   if (opts.chain === 'arc-mainnet') {
-    const receipt = (await computeAgentLiveBundle(wallet, 'arc-mainnet')).receiptScore!;
-    return { name: w?.display_name ?? `Agent ${short(wallet)}`, score: receipt.provider.score,
-      tier: receipt.provider.trustTier, badge: receipt.provider.confidenceBadge,
-      txCount: receipt.txCount, chain: 'arc-mainnet', claimed: w?.claimed ?? false, isRegistry: false };
+    const snapshot = await resolveKarma(wallet, 'arc-mainnet', { agentId: opts.agentId });
+    return { name: snapshot?.identity.displayName ?? `Agent ${short(wallet)}`,
+      score: snapshot?.provider.score ?? 0, tier: snapshot?.provider.trustTier ?? 'Unrated',
+      badge: snapshot?.provider.confidenceBadge ?? 'declared',
+      txCount: snapshot?.txCount ?? 0, chain: 'arc-mainnet', claimed: snapshot?.identity.claimed ?? false,
+      isRegistry: snapshot?.agentId != null,
+      profileUrl: agentHref({ chain: 'arc-mainnet', address: snapshot?.address ?? wallet, agentId: snapshot?.agentId }) };
   }
 
   // 1. A wallets-backed agent with actual signal (Solana/Stellar, or a claimed

@@ -12,7 +12,7 @@
 
 import { describe, expect, mock, test } from 'bun:test';
 import { gzipSync } from 'zlib';
-import { ContractFunctionExecutionError, ContractFunctionRevertedError } from 'viem';
+import { ContractFunctionExecutionError, ContractFunctionRevertedError, ContractFunctionZeroDataError, encodeErrorResult, parseAbi } from 'viem';
 import {
   decodeRegistration,
   parseFeedbackArrays,
@@ -22,14 +22,325 @@ import {
   runRegistryScan,
   incrementalScanRange,
   runIncrementalRegistryScan,
+  makeRegistryClient,
   DEFAULT_RESCAN_WINDOW,
   type ScannedAgent,
   type ScannedFeedback,
+  type RegistryScanOptions,
 } from './erc8004-registry';
-import type { Erc8004RegistryConfig } from '../config/erc8004-registries';
+import { ERC8004_REGISTRIES, type Erc8004RegistryConfig } from '../config/erc8004-registries';
 import { scoreMetadataQuality } from '../scoring/celo-metadata';
 
 const SAMPLE_REG = { type: 'x', name: 'Agent', description: 'd', services: [{ name: 's', endpoint: 'https://e' }] };
+
+const OWNER = '0x1111111111111111111111111111111111111111';
+const TOKEN_ERRORS = parseAbi([
+  'function ownerOf(uint256 tokenId) view returns (address)',
+  'error ERC721NonexistentToken(uint256 tokenId)',
+  'error RegistryPaused()',
+]);
+type FixtureMulticall = (params: { contracts: readonly { functionName: string; args?: readonly unknown[] }[] }) => Promise<{ status: string; result?: unknown; error?: unknown }[]>;
+
+function contractRevert(errorName: 'ERC721NonexistentToken' | 'RegistryPaused') {
+  const data = errorName === 'ERC721NonexistentToken'
+    ? encodeErrorResult({ abi: TOKEN_ERRORS, errorName, args: [3n] })
+    : encodeErrorResult({ abi: TOKEN_ERRORS, errorName });
+  return new ContractFunctionExecutionError(new ContractFunctionRevertedError({
+    abi: TOKEN_ERRORS, functionName: 'ownerOf', data,
+  }), { abi: TOKEN_ERRORS, functionName: 'ownerOf', args: [3n], contractAddress: OWNER });
+}
+
+async function withMainnetRpc<T>(raw: string | undefined, fn: () => Promise<T> | T): Promise<T> {
+  const previous = process.env.ARC_MAINNET_RPC_URL;
+  if (raw === undefined) delete process.env.ARC_MAINNET_RPC_URL;
+  else process.env.ARC_MAINNET_RPC_URL = raw;
+  try { return await fn(); }
+  finally {
+    if (previous === undefined) delete process.env.ARC_MAINNET_RPC_URL;
+    else process.env.ARC_MAINNET_RPC_URL = previous;
+  }
+}
+
+function registryFixture(config = ERC8004_REGISTRIES.celo) {
+  const events: string[] = [];
+  const agents = new Map<number, ScannedAgent>([[1, {
+    agentId: 1, owner: OWNER, agentWallet: OWNER, tokenURI: 'old-uri',
+    registration: { ...SAMPLE_REG, name: 'Previously fetched' }, registrationStatus: 'fetched',
+    metadataScore: 80, feedback: { count: 3, sum: 240, avg: 80 },
+  }]]);
+  const cursors = new Map<string, number>([['arc', 77], ['celo', 0], ['arc-mainnet', 0]]);
+  const writes: { chain: string; rows: ScannedAgent[] }[] = [];
+  const feedback = new Map<string, ScannedFeedback>();
+  const persistAgents = mock(async (chain: string, rows: ScannedAgent[]) => {
+    events.push(`agents:${chain}`);
+    writes.push({ chain, rows: structuredClone(rows) });
+    for (const row of rows) agents.set(row.agentId, { ...agents.get(row.agentId), ...structuredClone(row) });
+    return rows.length;
+  });
+  const persistFeedback = mock(async (chain: string, rows: ScannedFeedback[]) => {
+    events.push(`feedback:${chain}`);
+    for (const row of rows) feedback.set(`${chain}:${row.agentId}:${row.client}:${row.feedbackIndex}`, row);
+    return rows.length;
+  });
+  const getCursor = mock(async (chain: string) => { events.push(`cursor-read:${chain}`); return cursors.get(chain) ?? 0; });
+  const setCursor = mock(async (chain: string, tip: number) => { events.push(`cursor-write:${chain}`); cursors.set(chain, tip); });
+  const client = {
+    getChainId: mock(async () => { events.push('chain-id'); return 5042; }),
+    getBytecode: mock(async ({ address }: { address: string }) => { events.push(`code:${address.toLowerCase()}`); return '0x6000' as const; }),
+    readContract: (async ({ functionName, args }: { functionName: string; args?: readonly unknown[] }) => {
+      events.push(functionName);
+      if (functionName === 'getIdentityRegistry') return config.identityRegistry;
+      if (Number(args?.[0]) <= 2) return OWNER;
+      throw contractRevert('ERC721NonexistentToken');
+    }) as never,
+    multicall: (async ({ contracts }: { contracts: { functionName: string; args: readonly unknown[] }[] }) => contracts.map(c => ({
+      status: 'success', result: c.functionName === 'readAllFeedback'
+        ? [[OWNER], [1n], [85n], [0], ['quality'], [''], [false]]
+        : c.functionName === 'tokenURI' ? JSON.stringify(SAMPLE_REG) : OWNER,
+    }))) as never,
+  };
+  return {
+    client, agents, cursors, writes, feedback, events, persistAgents, persistFeedback, getCursor, setCursor,
+    run: (opts: RegistryScanOptions = {}) => runIncrementalRegistryScan(
+      config, persistAgents, persistFeedback, getCursor, setCursor, { client, ...opts },
+    ),
+  };
+}
+
+describe('registry discovery fails closed', () => {
+  test.each([
+    Error('HTTP 401 Unauthorized'), Error('fetch failed'), Error('socket ECONNRESET'),
+    new ContractFunctionZeroDataError({ functionName: 'ownerOf' }),
+    contractRevert('RegistryPaused'),
+    new ContractFunctionRevertedError({ abi: TOKEN_ERRORS, functionName: 'ownerOf', message: 'upstream internal error' }),
+    Error('HTTP 503: upstream execution reverted'), Error('reverted'),
+  ])('a failed tip probe is not an absent token: %s', async error => {
+    const readContract = mock(async () => { throw error; });
+    await expect(findRegistryTip({ readContract: readContract as never }, OWNER)).rejects.toBe(error);
+    expect(readContract).toHaveBeenCalledTimes(1);
+  });
+
+  test('a decoded viem nonexistent-token revert is absence', async () => {
+    expect(await findRegistryTip({ readContract: (async () => { throw contractRevert('ERC721NonexistentToken'); }) as never }, OWNER)).toBe(0);
+  });
+
+  test.each(['ownerOf', 'getAgentWallet', 'tokenURI', 'readAllFeedback'])('%s failure holds the cursor and retains saved fields until replay', async stage => {
+    const f = registryFixture();
+    const clean = f.client.multicall as FixtureMulticall;
+    f.client.multicall = (async (params: Parameters<typeof clean>[0]) => {
+      const rows = await clean(params);
+      return rows.map((row, i) => params.contracts[i].functionName === stage && Number(params.contracts[i].args?.[0]) === 1
+        ? { status: 'failure', error: Error('HTTP 503 upstream unavailable') } : row);
+    }) as never;
+    const result = await f.run();
+    expect(result.errors).toBeGreaterThan(0);
+    expect(f.setCursor).not.toHaveBeenCalled();
+    expect(f.agents.get(1)?.feedback).toEqual({ count: 3, sum: 240, avg: 80 });
+    if (stage !== 'readAllFeedback') expect(f.agents.get(1)?.registration?.name).toBe('Previously fetched');
+    expect(f.agents.has(2)).toBe(true);
+    f.client.multicall = clean as never;
+    expect((await f.run()).errors).toBe(0);
+    expect(f.cursors.get('celo')).toBe(2);
+    expect(f.agents.get(1)?.feedback?.count).toBe(1);
+    expect(f.feedback.size).toBe(2);
+  });
+
+  test('remote outage preserves prior metadata and blocks discovery cursor advancement', async () => {
+    const f = registryFixture();
+    const clean = f.client.multicall as FixtureMulticall;
+    f.client.multicall = (async (params: Parameters<typeof clean>[0]) => {
+      const rows = await clean(params);
+      return rows.map((row, i) => params.contracts[i].functionName === 'tokenURI' && Number(params.contracts[i].args?.[0]) === 1
+        ? { status: 'success', result: 'https://93.184.216.34/agent.json' } : row);
+    }) as never;
+    const previousFetch = globalThis.fetch;
+    const fetch = mock(async () => new Response('gateway unavailable', { status: 503 }));
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      const result = await f.run();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(result.errors).toBe(1);
+      expect(f.setCursor).not.toHaveBeenCalled();
+      expect(f.agents.get(1)?.registration?.name).toBe('Previously fetched');
+      expect(f.agents.get(1)?.tokenURI).toBe('old-uri');
+      expect(f.agents.has(2)).toBe(true);
+    } finally { globalThis.fetch = previousFetch; }
+  });
+
+  test('malformed discovery feedback cannot replace an existing aggregate or advance the cursor', async () => {
+    const f = registryFixture();
+    const clean = f.client.multicall as FixtureMulticall;
+    f.client.multicall = (async (params: Parameters<typeof clean>[0]) => {
+      const rows = await clean(params);
+      return rows.map((row, i) => params.contracts[i].functionName === 'readAllFeedback'
+        ? { status: 'success', result: [[OWNER], [], [], [], [], [], []] } : row);
+    }) as never;
+    const result = await f.run();
+    expect(result.errors).toBe(2);
+    expect(f.setCursor).not.toHaveBeenCalled();
+    expect(f.persistFeedback).not.toHaveBeenCalled();
+    expect(f.agents.get(1)?.feedback).toEqual({ count: 3, sum: 240, avg: 80 });
+  });
+});
+
+describe('Arc mainnet registry admission', () => {
+  const config = ERC8004_REGISTRIES['arc-mainnet'];
+  const rpc = 'https://rpc.example.invalid/mainnet';
+
+  test.each([undefined, '', 'rpc.example.invalid', 'http://rpc.example.invalid'])('requires an explicit HTTPS RPC even with an injected client: %s', async raw => {
+    await withMainnetRpc(raw, async () => {
+      expect(() => makeRegistryClient(config)).toThrow(/arc_mainnet_rpc_/);
+      const f = registryFixture(config);
+      await expect(f.run()).rejects.toThrow(/arc_mainnet_rpc_/);
+      expect(f.client.getChainId).not.toHaveBeenCalled();
+      expect(f.getCursor).not.toHaveBeenCalled();
+      expect(f.persistAgents).not.toHaveBeenCalled();
+      expect(f.setCursor).not.toHaveBeenCalled();
+    });
+  });
+
+  test.each(['incremental', 'bounded', 'explicit'] as const)('%s scanning cannot bypass the actual chain ID with a test client', async mode => {
+    await withMainnetRpc(rpc, async () => {
+      const f = registryFixture(config);
+      f.client.getChainId.mockImplementation(async () => 5042002);
+      const scan = mode === 'incremental' ? f.run() : runRegistryScan(config, f.persistAgents, f.persistFeedback, {
+        client: f.client, ...(mode === 'bounded' ? { toId: 2 } : { agentIds: [1] }),
+      });
+      await expect(scan).rejects.toThrow('arc_mainnet_chain_mismatch');
+      expect(f.client.getChainId).toHaveBeenCalledTimes(1);
+      expect(f.getCursor).not.toHaveBeenCalled();
+      expect(f.persistAgents).not.toHaveBeenCalled();
+      expect(f.persistFeedback).not.toHaveBeenCalled();
+      expect(f.setCursor).not.toHaveBeenCalled();
+    });
+  });
+
+  test('a client without admission methods cannot persist mainnet membership', async () => {
+    await withMainnetRpc(rpc, async () => {
+      const f = registryFixture(config);
+      await expect(f.run({ client: { readContract: f.client.readContract, multicall: f.client.multicall } })).rejects.toThrow();
+      expect(f.persistAgents).not.toHaveBeenCalled();
+      expect(f.setCursor).not.toHaveBeenCalled();
+    });
+  });
+
+  test.each(['chain', 'identity-code', 'reputation-code', 'multicall-code', 'linkage'] as const)('admission rejects RPC failures at %s before any membership or cursor writes', async stage => {
+    await withMainnetRpc(rpc, async () => {
+      const f = registryFixture(config);
+      const error = Error('HTTP 401 Unauthorized');
+      const addresses = {
+        'identity-code': config.identityRegistry,
+        'reputation-code': config.reputationRegistry,
+        'multicall-code': config.viemChain.contracts!.multicall3!.address,
+      };
+      if (stage === 'chain') f.client.getChainId.mockImplementation(async () => { throw error; });
+      else if (stage === 'linkage') f.client.readContract = (async () => { throw error; }) as never;
+      else f.client.getBytecode.mockImplementation(async ({ address }) => {
+        if (address === addresses[stage]) throw error;
+        return '0x6000';
+      });
+      await expect(f.run()).rejects.toThrow();
+      expect(f.getCursor).not.toHaveBeenCalled();
+      expect(f.persistAgents).not.toHaveBeenCalled();
+      expect(f.persistFeedback).not.toHaveBeenCalled();
+      expect(f.setCursor).not.toHaveBeenCalled();
+    });
+  });
+
+  test.each(['identity', 'reputation', 'multicall', 'linkage'] as const)('rejects an undeployed or unrelated %s contract', async stage => {
+    await withMainnetRpc(rpc, async () => {
+      const f = registryFixture(config);
+      if (stage === 'linkage') {
+        const read = f.client.readContract as (params: { functionName: string; args?: readonly unknown[] }) => Promise<unknown>;
+        f.client.readContract = (async (params: Parameters<typeof read>[0]) => params.functionName === 'getIdentityRegistry' ? OWNER : read(params)) as never;
+      }
+      else {
+        const missing = stage === 'identity' ? config.identityRegistry : stage === 'reputation'
+          ? config.reputationRegistry : config.viemChain.contracts!.multicall3!.address;
+        f.client.getBytecode = mock(async ({ address }: { address: string }) => address === missing ? '0x' : '0x6000') as typeof f.client.getBytecode;
+      }
+      await expect(f.run()).rejects.toThrow();
+      expect(f.getCursor).not.toHaveBeenCalled();
+      expect(f.persistAgents).not.toHaveBeenCalled();
+      expect(f.setCursor).not.toHaveBeenCalled();
+    });
+  });
+
+  test('admitted incremental scans isolate mainnet membership, feedback and cursor from testnet', async () => {
+    await withMainnetRpc(rpc, async () => {
+      const f = registryFixture(config);
+      expect((await f.run()).errors).toBe(0);
+      expect(f.events[0]).toBe('chain-id');
+      expect(f.events.indexOf('getIdentityRegistry')).toBeLessThan(f.events.indexOf('cursor-read:arc-mainnet'));
+      expect(f.client.getBytecode.mock.calls.map(([{ address }]) => address.toLowerCase())).toEqual(expect.arrayContaining([
+        config.identityRegistry.toLowerCase(), config.reputationRegistry.toLowerCase(), config.viemChain.contracts!.multicall3!.address.toLowerCase(),
+      ]));
+      expect(f.writes.every(write => write.chain === 'arc-mainnet')).toBe(true);
+      expect([...f.feedback.keys()].every(key => key.startsWith('arc-mainnet:'))).toBe(true);
+      expect(f.cursors.get('arc-mainnet')).toBe(2);
+      expect(f.cursors.get('arc')).toBe(77);
+      f.client.getChainId.mockImplementation(async () => 5042002);
+      f.persistAgents.mockClear(); f.setCursor.mockClear();
+      await expect(f.run()).rejects.toThrow('arc_mainnet_chain_mismatch');
+      expect(f.persistAgents).not.toHaveBeenCalled();
+      expect(f.setCursor).not.toHaveBeenCalled();
+    });
+  });
+
+  test.each(['incremental', 'bounded', 'explicit'] as const)('%s scans include mainnet agent zero', async mode => {
+    await withMainnetRpc(rpc, async () => {
+      const f = registryFixture(config);
+      const result = mode === 'incremental' ? await f.run() : await runRegistryScan(config, f.persistAgents, f.persistFeedback, {
+        client: f.client, ...(mode === 'bounded' ? { toId: 2 } : { agentIds: [0, 1, 2] }),
+      });
+      expect(result.errors).toBe(0);
+      expect([...f.agents.keys()].sort()).toEqual([0, 1, 2]);
+      expect([...f.feedback.keys()].some(key => key.startsWith('arc-mainnet:0:'))).toBe(true);
+    });
+  });
+
+  test('a mainnet registry containing only agent zero is not empty', async () => {
+    await withMainnetRpc(rpc, async () => {
+      const f = registryFixture(config);
+      const clean = f.client.readContract as (params: { functionName: string; args?: readonly unknown[] }) => Promise<unknown>;
+      f.client.readContract = (async (params: Parameters<typeof clean>[0]) => {
+        if (params.functionName === 'ownerOf' && Number(params.args?.[0]) !== 0) throw contractRevert('ERC721NonexistentToken');
+        return clean(params);
+      }) as never;
+      const result = await f.run();
+      expect(result.agentsScanned).toBe(1);
+      expect(f.agents.has(0)).toBe(true);
+      expect(f.setCursor).toHaveBeenCalledWith('arc-mainnet', 0);
+    });
+  });
+
+  test('an empty mainnet registry neither writes membership nor advances its cursor', async () => {
+    await withMainnetRpc(rpc, async () => {
+      const f = registryFixture(config);
+      const clean = f.client.readContract as (params: { functionName: string; args?: readonly unknown[] }) => Promise<unknown>;
+      f.client.readContract = (async (params: Parameters<typeof clean>[0]) => {
+        if (params.functionName === 'ownerOf') throw contractRevert('ERC721NonexistentToken');
+        return clean(params);
+      }) as never;
+      expect((await f.run()).agentsScanned).toBe(0);
+      expect(f.persistAgents).not.toHaveBeenCalled();
+      expect(f.setCursor).not.toHaveBeenCalled();
+    });
+  });
+
+  test('cancellation during admission prevents all later work', async () => {
+    await withMainnetRpc(rpc, async () => {
+      const controller = new AbortController();
+      const f = registryFixture(config);
+      f.client.getChainId.mockImplementation(async () => { controller.abort(Error('stop_registry')); return 5042; });
+      await expect(f.run({ signal: controller.signal })).rejects.toThrow('stop_registry');
+      expect(f.client.getBytecode).not.toHaveBeenCalled();
+      expect(f.getCursor).not.toHaveBeenCalled();
+      expect(f.persistAgents).not.toHaveBeenCalled();
+      expect(f.setCursor).not.toHaveBeenCalled();
+    });
+  });
+});
 
 describe('decodeRegistration', () => {
   test('data: base64 json', async () => {
@@ -232,7 +543,7 @@ describe('findRegistryTip', () => {
       readContract: (async ({ args }: { args: readonly unknown[] }) => {
         const id = Number(args[0] as bigint);
         if (id >= 1 && id <= maxId) return '0xowner';
-        throw new Error('reverted: ERC721NonexistentToken');
+        throw contractRevert('ERC721NonexistentToken');
       }) as never,
     };
   }
@@ -269,7 +580,7 @@ describe('runRegistryScan (orchestrator, injected fake client)', () => {
       readContract: (async ({ args }: { args: readonly unknown[] }) => {
         const id = Number(args[0] as bigint);
         if (owners[id]) return owners[id];
-        throw new Error('reverted');
+        throw contractRevert('ERC721NonexistentToken');
       }) as never,
       multicall: (async ({ contracts }: { contracts: { functionName: string; args: readonly unknown[] }[] }) =>
         contracts.map((c) => {
@@ -331,6 +642,12 @@ describe('incrementalScanRange', () => {
     expect(incrementalScanRange(0, 9100, 500)).toEqual({ from: 1, to: 9100 });
   });
 
+  test('mainnet bootstrap includes agent zero even beyond the rescan window', () => {
+    expect(incrementalScanRange(0, 9000, 500, 0)).toEqual({ from: 0, to: 9000 });
+    expect(incrementalScanRange(0, 0, 500, 0)).toEqual({ from: 0, to: 0 });
+    expect(incrementalScanRange(9000, 9100, 500, 0)).toEqual({ from: 8601, to: 9100 });
+  });
+
   test('empty registry (tip 0) → nothing to do', () => {
     expect(incrementalScanRange(0, 0, 500)).toEqual({ from: 0, to: 0 });
     expect(incrementalScanRange(50, 0, 500)).toEqual({ from: 0, to: 0 });
@@ -351,7 +668,7 @@ describe('runIncrementalRegistryScan (cursor-driven)', () => {
       readContract: (async ({ args }: { args: readonly unknown[] }) => {
         const id = Number(args[0] as bigint);
         if (id >= 1 && id <= maxId) return '0xowner';
-        throw new Error('reverted');
+        throw contractRevert('ERC721NonexistentToken');
       }) as never,
       multicall: (async ({ contracts }: { contracts: { functionName: string; args: readonly unknown[] }[] }) =>
         contracts.map((c) => {
@@ -408,7 +725,7 @@ describe('runIncrementalRegistryScan (cursor-driven)', () => {
       readContract: (async ({ args }: { args: readonly unknown[] }) => {
         const id = Number(args[0] as bigint);
         if (id >= 1 && id <= 20) return '0xowner';
-        throw new Error('reverted');
+        throw contractRevert('ERC721NonexistentToken');
       }) as never,
       multicall: (async () => { throw new Error('rpc down'); }) as never,
     };
@@ -425,7 +742,7 @@ describe('runIncrementalRegistryScan (cursor-driven)', () => {
 
   test('empty registry (tip 0) → no scan, no cursor write', async () => {
     const emptyClient = {
-      readContract: (async () => { throw new Error('reverted'); }) as never,
+      readContract: (async () => { throw contractRevert('ERC721NonexistentToken'); }) as never,
       multicall: (async () => []) as never,
     };
     let saved = false;

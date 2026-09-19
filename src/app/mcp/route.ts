@@ -35,6 +35,7 @@ import { readAgent, aggregateFeedback } from '@/integrations/erc8004-celo';
 import { getAdapter } from '@/chain-adapters/registry';
 import { resolveAgentChain } from '@/app/agent/[wallet]/resolve-chain';
 import { canonicalAddress } from '@/lib/chain-detect';
+import { agentHref } from '@/lib/agent-href';
 import {
   getScoreHistory,
   getLeaderboard,
@@ -765,21 +766,24 @@ function registerTools(server: McpServer): void {
     async ({ chain, limit }) => runTool('get_leaderboard', async () => {
       const take = limit ?? 10;
       const { wallets, total } = await getLeaderboard(take, 0, { chain });
-      const deliveries = new Map(await Promise.all([...new Set(wallets.map(w => w.chain))].map(async network =>
+      const deliveries = new Map(await Promise.all([...new Set(wallets.filter(w => w.chain !== 'arc-mainnet').map(w => w.chain))].map(async network =>
         [network, await getFeedbackSummariesForWallets(wallets.filter(w => w.chain === network).map(w => w.address), network)] as const)));
       return jsonResult({
         chain: chain ?? null,
         total,
         count: wallets.length,
         agents: wallets.map((w, i) => {
-          const delivery = deliveries.get(w.chain)?.get(w.address) ?? null;
+          const mainnet = w.chain === 'arc-mainnet';
+          const delivery = mainnet ? null : deliveries.get(w.chain)?.get(w.address) ?? null;
+          const providerScore = w.provider_score != null ? Number(w.provider_score) : mainnet ? null : Number(w.score);
           return {
             rank: i + 1,
             address: w.address,
             chain: w.chain,
             displayName: w.display_name ?? null,
-            score: Number(w.score),
-            providerScore: w.provider_score != null ? Number(w.provider_score) : Number(w.score),
+            ...(mainnet ? { agentId: w.arc_agent_id ?? null } : {}),
+            score: mainnet ? providerScore : Number(w.score),
+            providerScore,
             consumerScore: w.consumer_score != null ? Number(w.consumer_score) : null,
             confidenceBadge: w.confidence_badge ?? 'declared',
             trustTier: w.trust_tier,
@@ -788,7 +792,7 @@ function registerTools(server: McpServer): void {
             delivery: delivery
               ? { total: delivery.total, deliveryRate: delivery.deliveryRate }
               : null,
-            profileUrl: profileUrl(w.address, w.chain),
+            profileUrl: profileUrl(w.address, w.chain, mainnet ? w.arc_agent_id : undefined),
           };
         }),
       });
@@ -955,9 +959,11 @@ function faceJson(b: { score: number; trustTier: string; confidenceBadge: string
   };
 }
 
-function profileUrl(addr: string, chain?: Chain): string {
+function profileUrl(addr: string, chain?: Chain, agentId?: number | null): string {
   const origin = process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io';
-  return `${origin}/agent/${addr}${chain === 'arc-mainnet' ? '?chain=arc-mainnet' : ''}`;
+  const path = chain === 'arc-mainnet'
+    ? agentHref({ chain, address: canonicalAddress(addr, chain), agentId }) : `/agent/${addr}`;
+  return `${origin}${path}`;
 }
 
 function jsonResult(payload: unknown) {

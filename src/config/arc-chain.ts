@@ -49,8 +49,8 @@ export const arcTestnet = defineChain({
 
 /**
  * Arc mainnet is a separate network (5042), never an alias for testnet (5042002).
- * Callers require an explicit authenticated HTTPS endpoint and verify eth_chainId.
- * No public gateway fallback or registry/escrow deployment is assumed here.
+ * Callers require an explicit HTTPS endpoint and verify eth_chainId.
+ * Public mainnet RPCs are available; no implicit gateway fallback is selected.
  *
  * Native USDC system Transfer events use 18 decimals and have existed since
  * mainnet genesis. ERC-20 interface logs at 0x3600 use 6 decimals and duplicate
@@ -63,7 +63,10 @@ export const arcMainnet = defineChain({
   nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
   rpcUrls: { default: { http: [] } },
   blockExplorers: {
-    default: { name: "Arcscan", url: "https://arc-scan.org" },
+    default: { name: "Arc Explorer", url: "https://explorer.arc.io" },
+  },
+  contracts: {
+    multicall3: { address: "0xcA11bde05977b3631167028862bE2a173976CA11" },
   },
   testnet: false,
 });

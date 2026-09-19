@@ -39,6 +39,16 @@ export async function GET(request: NextRequest) {
     ),
   );
 
+  // This graph represents active wallets, not each registry identity. Filter
+  // absent provider faces and shared operators before allocating scarce slots.
+  const mainnetAddresses = new Set<string>();
+  const mainnetWallets = perChainPages[4].wallets.filter((wallet) => {
+    if (wallet.provider_score == null || !(Number(wallet.score) > 0)
+      || mainnetAddresses.has(wallet.address)) return false;
+    mainnetAddresses.add(wallet.address);
+    return true;
+  });
+
   // Allocate slots: start with the configured base, then redistribute any
   // shortfall (chain had fewer scored wallets than its slot count) round-robin
   // to the next chain with surplus availability.
@@ -47,7 +57,7 @@ export async function GET(request: NextRequest) {
     celo: perChainPages[1].wallets,
     stellar: perChainPages[2].wallets,
     arc: perChainPages[3].wallets,
-    'arc-mainnet': perChainPages[4].wallets,
+    'arc-mainnet': mainnetWallets,
   };
 
   const take: Record<Chain, number> = { solana: 0, celo: 0, stellar: 0, arc: 0, 'arc-mainnet': 0 };

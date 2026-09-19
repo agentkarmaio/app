@@ -64,6 +64,10 @@ async function rescoreOne(
   // 'solana', so an arc wallet read 0 transactions, returned "skipped", and was
   // de-queued having had nothing done — 11,650 of them in one 2026-09-14 drain.
   const { chain, address } = wallet;
+  // Mainnet native movements use the shared receipt model under their own
+  // managed transfer lease. Never overwrite them with legacy payment scoring,
+  // even if a stale queue implementation returns a mainnet wallet.
+  if (chain === 'arc-mainnet') return false;
   const txs = await getRecentTransactionsForWallet(address, txWindow, chain);
   if (txs.length === 0) {
     // Wallet has no txs yet — claimed but nothing to score. Leave defaults.
@@ -136,7 +140,7 @@ export async function drainOnce(
     return { claimed: 0, scored: 0, skipped: 0, errors: [], remaining: 0, elapsedMs: Date.now() - start };
   }
 
-  const attestations = await readAttestations(claimed.map((w) => w.address));
+  const attestations = await readAttestations(claimed.filter((w) => w.chain !== 'arc-mainnet').map((w) => w.address));
 
   const errors: { address: string; message: string }[] = [];
   let scored = 0;

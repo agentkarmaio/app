@@ -333,3 +333,24 @@ describe('actual ingestion write fencing', () => {
     expect(() => fenced("UPDATE public.indexer_cursors SET last_signature='99' WHERE chain='arc'")).toThrow('indexing_lease_lost');
   });
 });
+
+
+test('mainnet ranking view joins only mainnet scores and preserves every agent identity', () => {
+  query(readFileSync(resolve('src/db/sql/explore-agents-view.sql'), 'utf8'));
+  query(`INSERT INTO wallets(chain,address,score,provider_score,consumer_score,confidence_badge,trust_tier,tx_count,last_seen)
+    VALUES ('arc','shared',99,99,99,'receipt-backed','Excellent',999,now()),
+    ('arc-mainnet','shared',12,12,NULL,'behavior-inferred','Unrated',3,'2026-09-18T00:00:00Z'),
+    ('arc-mainnet','sender',0,0,14,'declared','Unrated',4,'2026-09-18T00:00:00Z');
+    INSERT INTO erc8004_agents(chain,agent_id,owner,agent_wallet,metadata_score,registration)
+    VALUES ('arc-mainnet',0,'owner','shared',100,'{"name":"First"}'),
+    ('arc-mainnet',1,'owner','shared',90,'{"name":"Second"}'),
+    ('arc-mainnet',2,'sender',NULL,100,'{"name":"Sender"}'),
+    ('arc-mainnet',3,'unobserved','0x0000000000000000000000000000000000000000',100,'{"name":"New"}');`);
+  const rows=JSON.parse(query(`SELECT json_agg(t) FROM (SELECT address,display_name,arc_agent_id,provider_score,consumer_score,tx_count,rank_score,last_seen FROM explore_agents WHERE chain='arc-mainnet' ORDER BY rank_score DESC,arc_agent_id) t;`));
+  expect(rows).toHaveLength(4);
+  expect(rows.slice(0,2).map((r: {arc_agent_id:number})=>r.arc_agent_id)).toEqual([0,1]);
+  expect(rows[0]).toMatchObject({address:'shared',display_name:'First',provider_score:12,consumer_score:null,tx_count:3,rank_score:12});
+  expect(rows[2]).toMatchObject({provider_score:null,consumer_score:14,tx_count:4});
+  expect(rows[3]).toMatchObject({address:'unobserved',provider_score:null,consumer_score:null,tx_count:0,last_seen:null});
+  expect(query("SELECT count(*) FROM explore_agents WHERE chain='arc-mainnet' AND provider_score>=10;")).toBe('2');
+});

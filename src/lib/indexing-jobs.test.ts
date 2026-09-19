@@ -1,8 +1,108 @@
-import { expect, test } from 'bun:test';
-import { coverageOutcome, registryScanReason, runManagedIndexingTask, type ManagedTaskStore } from './indexing-jobs';
+import { expect, spyOn, test } from 'bun:test';
+import { coverageOutcome, registryScanReason, createIndexingJob, runManagedIndexingTask, type ManagedTaskStore } from './indexing-jobs';
+import * as registry from '@/indexer/erc8004-registry';
+import * as db from '@/db/client';
+import * as mainnetTransfers from '@/indexer/arc-mainnet-transfers';
+import * as mainnetScores from '@/scoring/arc-mainnet-persistence';
+import { markIndexingLeaseLost, runWithIndexingContext } from '@/db/indexing-context';
+import { indexingErrorCode } from './indexing-runner';
 import type { IndexingJob, ScanOutcome } from './indexing-runner';
 import type { IndexingState } from '@/db/indexing-state';
 const coverage = { complete: false, checked: 0, pending: 10, unresolved: 0 };
+
+test.each(['celo', 'arc-mainnet'] as const)('%s managed registry job uses incremental discovery with chain-bound persistence', async chain => {
+  const get = spyOn(db, 'getRegistryCursorTip').mockResolvedValue(7);
+  const set = spyOn(db, 'setRegistryCursorTip').mockResolvedValue(undefined);
+  const scan = spyOn(registry, 'runIncrementalRegistryScan').mockImplementation(async (config, agents, feedback, getCursor, setCursor, opts) => {
+    expect(config.chain).toBe(chain);
+    expect(agents).toBe(db.upsertErc8004Agents);
+    expect(feedback).toBe(db.upsertErc8004Feedback);
+    expect(opts?.rescanWindow).toBe(37);
+    expect(opts?.signal).toBe(signal);
+    expect(await getCursor(config.chain)).toBe(7);
+    await setCursor(config.chain, 9);
+    return { chain, tip: 9, agentsScanned: 2, agentsPersisted: 2, feedbackScanned: 0, feedbackPersisted: 0, errors: 0 };
+  });
+  const signal = new AbortController().signal;
+  try {
+    const job = createIndexingJob(chain, 'registry', { rescanWindow: 37 });
+    expect(job.timeoutMs).toBe(1_200_000);
+    expect(await job.run(signal)).toMatchObject({ status: 'caught_up', checkpoint: '9', head: '9', checkedCount: 2, insertedCount: 2 });
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith(chain);
+    expect(set).toHaveBeenCalledWith(chain, 9);
+  } finally { scan.mockRestore(); get.mockRestore(); set.mockRestore(); }
+});
+
+test.each(['celo', 'arc-mainnet'] as const)('%s partial registry run must not publish the discovered tip as its checkpoint', async chain => {
+  const scan = spyOn(registry, 'runIncrementalRegistryScan').mockResolvedValue({
+    chain, tip: 9, agentsScanned: 1, agentsPersisted: 1, feedbackScanned: 0, feedbackPersisted: 0, errors: 1,
+  });
+  try {
+    const outcome = await createIndexingJob(chain, 'registry').run(new AbortController().signal);
+    expect(outcome).toMatchObject({ status: 'catching_up', errorCode: 'retry_backlog', head: '9', unresolvedCount: 1 });
+    expect(outcome.checkpoint).toBeUndefined();
+  } finally { scan.mockRestore(); }
+});
+test.each([true, false])('mainnet transfer ticks refresh persisted ranks even with no inserts (cycle complete=%s)', async complete => {
+  const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockResolvedValue({
+    fetched: 0, inserted: 0, cursors: new Map(),
+    coverage: { complete: true, checked: 1, pending: 0, unresolved: 0, checkpoint: '10', head: '10' },
+  });
+  const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete, cursor: complete ? '' : 'address' });
+  const signal = new AbortController().signal;
+  try {
+    const outcome = await createIndexingJob('arc-mainnet', 'transfers').run(signal);
+    expect(refresh).toHaveBeenCalledWith({ signal });
+    expect(outcome).toMatchObject({ status: complete ? 'caught_up' : 'catching_up', insertedCount: 0, checkpoint: '10', checkedCount: 2 });
+    if (!complete) expect(outcome).toMatchObject({ errorCode: 'score_refresh_pending', pendingCount: 1 });
+  } finally { scan.mockRestore(); refresh.mockRestore(); }
+});
+test('RPC failure still refreshes DB-only decay and preserves the original ingestion error', async () => {
+  const failure = new Error('rpc_unavailable');
+  const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockRejectedValue(failure);
+  const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete: true, cursor: '' });
+  const signal = new AbortController().signal;
+  try {
+    await expect(createIndexingJob('arc-mainnet', 'transfers').run(signal)).rejects.toBe(failure);
+    expect(refresh).toHaveBeenCalledWith({ signal });
+  } finally { scan.mockRestore(); refresh.mockRestore(); }
+});
+test('simultaneous ingestion and scoring errors remain available with ingestion failure classification', async () => {
+  const ingestionError = new Error('rpc_rate_limited');
+  const scoreError = new Error('score persistence unavailable');
+  const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockRejectedValue(ingestionError);
+  const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockRejectedValue(scoreError);
+  try {
+    const failure = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal).catch(error => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure.errors).toEqual([ingestionError, scoreError]);
+    expect(failure.cause).toBe(ingestionError);
+    expect(indexingErrorCode(failure)).toBe('rpc_rate_limited');
+  } finally { scan.mockRestore(); refresh.mockRestore(); }
+});
+test('a scoring failure after successful ingestion fails the whole managed job', async () => {
+  const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockResolvedValue({ fetched: 0, inserted: 0, cursors: new Map(),
+    coverage: { complete: true, checked: 1, pending: 0, unresolved: 0, checkpoint: '10', head: '10' } });
+  const failure = new Error('score persistence unavailable');
+  const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockRejectedValue(failure);
+  try {
+    await expect(createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal)).rejects.toBe(failure);
+  } finally { scan.mockRestore(); refresh.mockRestore(); }
+});
+test.each(['abort', 'lease_lost'] as const)('%s during ingestion prevents the decay phase from starting', async mode => {
+  const controller = new AbortController();
+  const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockImplementation(async () => {
+    if (mode === 'abort') controller.abort(); else markIndexingLeaseLost();
+    throw new Error('rpc_unavailable');
+  });
+  const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete: true, cursor: '' });
+  try {
+    await expect(runWithIndexingContext({ chain: 'arc-mainnet', path: 'transfers', owner: 'test-owner', signal: controller.signal },
+      () => createIndexingJob('arc-mainnet', 'transfers').run(controller.signal))).rejects.toThrow();
+    expect(refresh).not.toHaveBeenCalled();
+  } finally { scan.mockRestore(); refresh.mockRestore(); }
+});
 test('a first-window provider throttle is failed, not successful catch-up', () => {
   expect(
     coverageOutcome({ ...coverage, reason: 'rate_limited' }, 0).status,

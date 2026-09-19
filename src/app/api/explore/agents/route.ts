@@ -87,7 +87,7 @@ export async function GET(request: NextRequest) {
       displayName: w.display_name ?? null,
       imageUrl: w.image_url ?? null,
       claimed: w.claimed ?? false,
-      providerScore: Number(w.provider_score ?? 0),
+      providerScore: w.chain === 'arc-mainnet' && w.provider_score == null ? null : Number(w.provider_score ?? 0),
       consumerScore: w.consumer_score != null ? Number(w.consumer_score) : null,
       trustTier: w.trust_tier,
       confidenceBadge: w.confidence_badge ?? 'declared',

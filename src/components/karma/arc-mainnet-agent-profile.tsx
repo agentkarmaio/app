@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { notFound } from 'next/navigation';
 import { resolveKarma } from '@/lib/karma-resolver';
 import { collectArcMainnetReceipts } from '@/scoring/arc-mainnet-receipts';
 import { getSignalEventsForWallet } from '@/db/client';
@@ -10,12 +11,12 @@ import { NotIndexedBlock } from './not-indexed-block';
 import { AutonomyChip } from './autonomy-chip';
 
 /** Read-only mainnet evidence. No testnet registry or legacy claim workflow. */
-export async function ArcMainnetAgentProfile({ wallet }: { wallet: string }) {
-  const [snapshot, events] = await Promise.all([
-    resolveKarma(wallet, 'arc-mainnet'),
-    getSignalEventsForWallet(wallet, 50, 'arc-mainnet'),
-  ]);
-  const receipts = collectArcMainnetReceipts(wallet, events).observations
+export async function ArcMainnetAgentProfile({ wallet, agentId }: { wallet: string; agentId?: number | null }) {
+  const snapshot = await resolveKarma(wallet, 'arc-mainnet', { agentId });
+  if (agentId != null && !snapshot) notFound();
+  const evidenceAddress = snapshot?.address ?? wallet;
+  const events = await getSignalEventsForWallet(evidenceAddress, 50, 'arc-mainnet');
+  const receipts = collectArcMainnetReceipts(evidenceAddress, events).observations
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.logIndex - a.logIndex);
   const adapter = getAdapter('arc-mainnet');
   return (
@@ -23,9 +24,10 @@ export async function ArcMainnetAgentProfile({ wallet }: { wallet: string }) {
       <Link href="/arc/mainnet" className="inline-flex min-h-10 items-center text-sm underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Arc mainnet coverage</Link>
       <header className="space-y-3">
         <h1 className="text-2xl font-medium tracking-tight">{snapshot?.identity.displayName ?? 'Agent profile'}</h1>
-        <p className="text-sm text-muted-foreground">Arc mainnet</p>
+        <p className="text-sm text-muted-foreground">Arc mainnet{snapshot?.agentId != null ? ` · Agent #${snapshot.agentId}` : ''}</p>
+        {snapshot?.identity.description && <p className="max-w-prose text-sm text-muted-foreground">{snapshot.identity.description}</p>}
         {snapshot?.autonomy.score != null && snapshot.autonomy.label ? <AutonomyChip score={snapshot.autonomy.score} label={snapshot.autonomy.label} /> : <p className="text-sm text-muted-foreground">Autonomy: not enough activity to assess yet.</p>}
-        <a href={adapter.explorerAddressUrl(wallet)} target="_blank" rel="noopener noreferrer" className="block break-all font-mono text-sm underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{wallet}</a>
+        <a href={adapter.explorerAddressUrl(evidenceAddress)} target="_blank" rel="noopener noreferrer" className="block break-all font-mono text-sm underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{evidenceAddress}</a>
       </header>
       {!snapshot ? <NotIndexedBlock chain="arc-mainnet" /> : (
         <div className="grid gap-4 sm:grid-cols-2">
