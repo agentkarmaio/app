@@ -23,10 +23,10 @@ import { drainOnce } from './rescore-dirty';
 
 afterAll(() => { __setSupabaseForTest(null); });
 
-const ARC_ADDR = '0x00000000000000000000000000000000000000a1';
-const ARC_TX = {
-  chain: 'arc', wallet_address: ARC_ADDR, facilitator: 'FAC', counterparty: 'PAYEE',
-  amount: '1.5', timestamp: '2026-09-01T00:00:00Z', success: true, tx_signature: 'arc-1',
+const CELO_ADDR = '0x00000000000000000000000000000000000000a1';
+const CELO_TX = {
+  chain: 'celo', wallet_address: CELO_ADDR, facilitator: 'FAC', counterparty: 'PAYEE',
+  amount: '1.5', timestamp: '2026-09-01T00:00:00Z', success: true, tx_signature: 'celo-1',
 };
 
 type Seen = { table: string; op: string; chain?: string; rows?: unknown };
@@ -34,16 +34,16 @@ type Seen = { table: string; op: string; chain?: string; rows?: unknown };
 /**
  * Records the `chain` filter of every read and the `chain` of every write.
  * `wallets` selects return one dirty arc row; `transactions` selects return the
- * arc tx ONLY when the query actually filtered on chain 'arc'.
+ * arc tx ONLY when the query actually filtered on chain 'celo'.
  */
-function makeChainRecordingFake(seen: Seen[], chain = 'arc') {
+function makeChainRecordingFake(seen: Seen[], chain = 'celo') {
   return {
     from(table: string) {
       const state: { chain?: string } = {};
       const b: Record<string, unknown> = {};
       const rows = () => {
-        if (table === 'wallets') return [{ chain, address: ARC_ADDR }];
-        if (table === 'transactions') return state.chain === chain ? [{ ...ARC_TX, chain }] : [];
+        if (table === 'wallets') return [{ chain, address: CELO_ADDR }];
+        if (table === 'transactions') return state.chain === chain ? [{ ...CELO_TX, chain }] : [];
         return [];
       };
       b.select = () => { seen.push({ table, op: 'select', chain: state.chain }); return b; };
@@ -85,20 +85,20 @@ describe('rescore queue is chain-aware', () => {
   let seen: Seen[];
   beforeEach(() => { seen = []; __setSupabaseForTest(makeChainRecordingFake(seen)); });
 
-  test('an arc wallet reads its transactions on chain arc, never solana', async () => {
+  test('a celo wallet reads its transactions on chain celo, never solana', async () => {
     await drainOnce(10, 100);
     const txReads = seen.filter((s) => s.table === 'transactions' && s.op === 'select');
     expect(txReads.length).toBeGreaterThan(0);
-    for (const r of txReads) expect(r.chain).toBe('arc');
+    for (const r of txReads) expect(r.chain).toBe('celo');
   });
 
-  test('nothing in the drain touches chain solana for an arc wallet', async () => {
+  test('nothing in the drain touches chain solana for a celo wallet', async () => {
     await drainOnce(10, 100);
     const solana = seen.filter((s) => s.chain === 'solana');
     expect(solana).toEqual([]);
   });
 
-  test('the arc wallet is scored, not silently skipped', async () => {
+  test('the celo wallet is scored, not silently skipped', async () => {
     const r = await drainOnce(10, 100);
     expect(r.claimed).toBe(1);
     // The whole defect: claimed, skipped, de-queued, zero errors, zero effect.
@@ -107,18 +107,18 @@ describe('rescore queue is chain-aware', () => {
     expect(r.errors).toEqual([]);
   });
 
-  test('the score write targets the arc wallet row', async () => {
+  test('the score write targets the celo wallet row', async () => {
     await drainOnce(10, 100);
     const walletWrite = seen.find((s) => s.table === 'wallets' && s.op === 'upsert');
     expect(walletWrite).toBeDefined();
-    expect((walletWrite!.rows as { chain?: string }).chain).toBe('arc');
+    expect((walletWrite!.rows as { chain?: string }).chain).toBe('celo');
   });
 
   test('the score snapshot carries the chain — scores FKs (chain, wallet_address)', async () => {
     await drainOnce(10, 100);
     const snapshot = seen.find((s) => s.table === 'scores' && s.op === 'insert');
     expect(snapshot).toBeDefined();
-    expect((snapshot!.rows as { chain?: string }).chain).toBe('arc');
+    expect((snapshot!.rows as { chain?: string }).chain).toBe('celo');
   });
 
   test('clearing the dirty flag is chain-scoped', async () => {
@@ -128,7 +128,7 @@ describe('rescore queue is chain-aware', () => {
         (s.rows as { scoring_dirty_at?: unknown })?.scoring_dirty_at === null,
     );
     expect(clear).toBeDefined();
-    expect(clear!.chain).toBe('arc');
+    expect(clear!.chain).toBe('celo');
   });
 
   test('a mainnet row returned by the queue never reaches legacy scoring', async () => {
@@ -138,4 +138,12 @@ describe('rescore queue is chain-aware', () => {
     expect(seen.filter(row => row.table === 'transactions')).toEqual([]);
     expect(seen.filter(row => row.op === 'upsert' || row.op === 'insert')).toEqual([]);
   });
+});
+
+test('retired testnet queued rows are left untouched', async () => {
+  const seen: Seen[] = [];
+  __setSupabaseForTest(makeChainRecordingFake(seen, 'arc'));
+  const result = await drainOnce(10, 100);
+  expect(result.claimed).toBe(0);
+  expect(seen.filter(row => row.op !== 'select')).toEqual([]);
 });

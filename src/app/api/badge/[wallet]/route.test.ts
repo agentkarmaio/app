@@ -58,14 +58,14 @@ function makeBadgeFake() {
   };
 }
 
-function req(query = '?format=svg'): Request {
+function req(query = '?format=svg&chain=arc'): Request {
   return new Request(`http://localhost/api/badge/${ARC_ADDR}${query}`);
 }
 
 afterEach(() => { __setSupabaseForTest(null); });
 
 describe('GET /api/badge/[wallet] resolves non-Solana chains', () => {
-  test('renders a 200 SVG for an agent that exists only on Arc', async () => {
+  test('renders a 200 SVG for an explicitly pinned archived Arc agent', async () => {
     __setSupabaseForTest(makeBadgeFake());
     const res = await GET(req() as never, { params: Promise.resolve({ wallet: ARC_ADDR }) });
     expect(res.status).toBe(200); // pre-fix: 404 (looked up on Solana, not found)
@@ -76,7 +76,7 @@ describe('GET /api/badge/[wallet] resolves non-Solana chains', () => {
 
   test('JSON format returns the resolved agent, not 404', async () => {
     __setSupabaseForTest(makeBadgeFake());
-    const res = await GET(req('?format=json') as never, { params: Promise.resolve({ wallet: ARC_ADDR }) });
+    const res = await GET(req('?format=json&chain=arc') as never, { params: Promise.resolve({ wallet: ARC_ADDR }) });
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.trustTier).toBe('Excellent');

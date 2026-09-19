@@ -42,10 +42,16 @@ export async function GET(
   const gate = await enforceRateLimit('score', request);
   if (!gate.ok) return gate.response;
 
+  const retired = chainParam === 'arc';
+  const archiveChain = retired ? 'arc' : DEFAULT_CHAIN;
   const [walletRow, transactions] = await Promise.all([
-    getWallet(wallet),
-    getTransactions(wallet, 1000),
+    getWallet(wallet, archiveChain),
+    getTransactions(wallet, 1000, 0, archiveChain),
   ]);
+
+  if (retired && !walletRow) {
+    return NextResponse.json({ error: 'Wallet not found' }, { status: 404, headers: { ...gate.headers, ...corsHeaders() } });
+  }
 
   if (!walletRow && transactions.length === 0) {
     // Unknown wallet: enqueue a regressive scan and return 202 Accepted so
@@ -107,11 +113,11 @@ export async function GET(
     label: walletRow.autonomy_label ?? null,
   } : null;
 
-  if (transactions.length === 0) {
+  if (retired || transactions.length === 0) {
     // Scan in flight against this stub? Surface 202 so the client poller
     // keeps polling instead of treating the empty payload as "done".
     const scanInFlight =
-      walletRow?.scan_state === 'pending' || walletRow?.scan_state === 'scanning';
+      !retired && (walletRow?.scan_state === 'pending' || walletRow?.scan_state === 'scanning');
     if (scanInFlight) {
       return NextResponse.json(
         {
@@ -139,8 +145,16 @@ export async function GET(
       confidenceBadge,
       autonomy: storedAutonomy,
       trustTier: walletRow?.trust_tier ?? 'Unrated',
-      metrics: { successRate: 0, loyalty: 0, diversity: 0, activity: 0, avgDealSize: 0, volume: 0, age: 0 },
-      txCount: 0,
+      metrics: retired ? {
+        successRate: walletRow?.metric_success_rate ?? null,
+        diversity: walletRow?.metric_diversity ?? null,
+        volume: walletRow?.metric_volume ?? null,
+        age: walletRow?.metric_age ?? null,
+        cadence: walletRow?.metric_cadence ?? null,
+        loyalty: null, activity: null, avgDealSize: null,
+      } : { successRate: 0, loyalty: 0, diversity: 0, activity: 0, avgDealSize: 0, volume: 0, age: 0 },
+      txCount: retired ? walletRow?.tx_count ?? transactions.length : 0,
+      ...(retired ? { chain: 'arc', readOnly: true } : {}),
       lastActive: walletRow?.last_seen ?? null,
       identity,
       entity,

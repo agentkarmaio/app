@@ -82,11 +82,9 @@ async function main() {
         if (shouldPageIndexingOutcome(managed) || unserved > 0) throw Error('solana_scan_failed');
         return result ?? { fetched: 0, inserted: 0, scored: 0, payshSignals: 0, operatorsScored: 0, unresolved: 0, skipped: 'already_running' };
       },
-      // Hourly `indexing-recovery` already runs arc/escrow, transfers, and
-      // registry. Re-running escrow here duplicated that page every 6h
-      // (2026-09-12) without adding a floor the hourly job does not already own.
+      // Historical testnet is retired; preserve the orchestration result shape.
       indexArc: async () => {
-        console.log('[keep-fresh] arc: skipped — covered by hourly indexing-recovery');
+        console.log('[keep-fresh] arc: retired — historical records are read-only');
         return { fetched: 0, inserted: 0 };
       },
       drainOnce: () => drainOnce(drainLimit, 5000),

@@ -13,6 +13,30 @@ beforeEach(() => {
 });
 afterEach(() => { signals.mockRestore(); byAddress.mockRestore(); });
 describe('network-pinned unfurl fields', () => {
+  test('an explicit archived identity overrides a different wallet-linked agent', async () => {
+    const wallet = spyOn(db, 'getWallet').mockResolvedValue({ chain: 'arc', address,
+      arc_agent_id: 1, display_name: 'Other identity', provider_score: 99, tx_count: 50 } as Wallet);
+    const registry = spyOn(db, 'getErc8004Agent').mockResolvedValue({ owner: address,
+      metadata_score: 20, registration: { name: 'Requested archive' } });
+    try {
+      expect(await resolveAgentCardFields(address, { chain: 'arc', agentId: 2 })).toMatchObject({
+        name: 'Requested archive', score: 20, chain: 'arc', isRegistry: true,
+      });
+      expect(registry).toHaveBeenCalledWith('arc', 2);
+    } finally { wallet.mockRestore(); registry.mockRestore(); }
+  });
+  test('unpinned registry fallback does not select retired testnet metadata', async () => {
+    const anyChain = spyOn(db, 'getWalletsByAddressAnyChain').mockResolvedValue([]);
+    const wallet = spyOn(db, 'getWallet').mockResolvedValue(null);
+    const registry = spyOn(db, 'getErc8004Agent').mockImplementation(async chain => chain === 'arc'
+      ? { owner: address, metadata_score: 99, registration: { name: 'Archived testnet' } } : null);
+    const byAddress = spyOn(db, 'getErc8004AgentByAddress').mockResolvedValue(null);
+    try {
+      const fields = await resolveAgentCardFields(address, { agentId: 72077 });
+      expect(fields.name).not.toBe('Archived testnet');
+      expect(registry).not.toHaveBeenCalledWith('arc', 72077);
+    } finally { anyChain.mockRestore(); wallet.mockRestore(); registry.mockRestore(); byAddress.mockRestore(); }
+  });
   test('an unpinned address shared with mainnet returns neutral metadata without registry fallback', async () => {
     const anyChain = spyOn(db, 'getWalletsByAddressAnyChain').mockResolvedValue([
       {chain:'arc',address,provider_score:99,tx_count:100,display_name:'Testnet only'} as Wallet,

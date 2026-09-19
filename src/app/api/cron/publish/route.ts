@@ -48,6 +48,10 @@ export async function POST(request: NextRequest) {
     // ignore — use defaults
   }
 
+  if (chain === 'arc') {
+    return NextResponse.json({ error: 'Arc testnet is retired. Historical profiles remain read-only.' }, { status: 410 });
+  }
+
   try {
     const result = await publishTopScores(limit, chain);
     return NextResponse.json(result);

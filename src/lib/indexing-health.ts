@@ -182,7 +182,7 @@ export function buildIndexingHealth(rows: HealthStateRow[], now = Date.now()) {
   );
   return {
     checkedAt: new Date(now).toISOString(),
-    status: worst(chains.map((c) => c.status)),
+    status: worst(chains.filter((c) => c.chain !== 'arc').map((c) => c.status)),
     chains,
   };
 }

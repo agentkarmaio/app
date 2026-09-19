@@ -95,25 +95,13 @@ export async function resolveAgentChain(
   if (hint && isEvmChain(hint)) {
     return { addressClass, chain: hint, wallet: candidates.find(w => w.chain === hint) ?? null, candidates };
   }
-  if (candidates.length === 0) {
-    return { addressClass, chain: null, wallet: null, candidates: [] };
+  // Historical testnet profiles require an explicit network pin. An archived
+  // wallet must never win the default resolution over an active mainnet row.
+  const activeCandidates = candidates.filter(w => w.chain !== 'arc');
+  if (activeCandidates.length === 0) {
+    return { addressClass, chain: null, wallet: null, candidates };
   }
-  if (candidates.length === 1) {
-    return {
-      addressClass,
-      chain: candidates[0].chain,
-      wallet: candidates[0],
-      candidates,
-    };
-  }
-  // Multiple rows. Honor the explicit ?chain= hint when it matches a candidate
-  // (this is how an Arc row is reached for an address also registered on Celo).
-  // Without a hint, prefer Celo (deeper integration today); both rows remain in
-  // `candidates` so callers can offer a chain switcher.
-  const preferred =
-    (hint && candidates.find((w) => w.chain === hint)) ??
-    candidates.find((w) => w.chain === 'celo') ??
-    candidates[0];
+  const preferred = activeCandidates.find(w => w.chain === 'celo') ?? activeCandidates[0];
   return {
     addressClass,
     chain: preferred.chain,

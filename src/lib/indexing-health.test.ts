@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildIndexingHealth } from './indexing-health';
+import { buildIndexingHealth, INDEXING_PATHS } from './indexing-health';
 
 const now = Date.parse('2026-09-12T12:00:00Z');
 const at = new Date(now - 60_000).toISOString();
@@ -190,4 +190,12 @@ test('a retained registry retry backlog stays disclosed even though it no longer
     row('arc', 'registry', { status: 'catching_up', error_code: 'retry_backlog', unresolved_count: 1397 }),
   ], now);
   expect(result.chains.find(c => c.chain === 'arc')?.paths.find(p => p.path === 'registry')?.issue).toBe('registry_retry');
+});
+
+
+test('archived testnet health never downgrades active chain health', () => {
+  const rows = INDEXING_PATHS.map(def => row(def.chain, def.path, { enabled: def.chain !== 'arc' }));
+  const result = buildIndexingHealth(rows, now);
+  expect(result.chains.find(chain => chain.chain === 'arc')?.status).toBe('disabled');
+  expect(result.status).toBe('current');
 });

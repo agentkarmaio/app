@@ -19,50 +19,20 @@ describe('makeArcAdapter', () => {
     expect(a.explorerTxUrl('0xtx')).toBe('https://testnet.arcscan.app/tx/0xtx');
     expect(a.explorerAddressUrl(GOOD)).toBe(`https://testnet.arcscan.app/address/${GOOD}`);
   });
-  test('publishAttestation skips when no agentId can be resolved from address', async () => {
+  test('retired testnet publishing skips before resolving identity', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = await a.publishAttestation(GOOD, { score: 80, trustTier: 'Good' } as any);
     expect(r.skipped).toBe(true);
-    expect(r.reason).toBe('no_arc_agent_id');
+    expect(r.reason).toBe('arc_testnet_retired');
     expect(r.dryRun).toBe(true);
   });
-  // indexReceipts has TWO independent gates (arc.ts:35,38). Both must be closed
-  // for the no-op, and both must be cleared here: bun test loads .env, which on
-  // a developer machine sets ARC_TRANSFERS_START_BLOCK and would otherwise run
-  // the transfers branch for real.
-  test('indexReceipts is a no-op (fetched:0) when neither start-block env is set', async () => {
-    const prevJobs = process.env.ARC_JOBS_START_BLOCK;
-    const prevTransfers = process.env.ARC_TRANSFERS_START_BLOCK;
-    delete process.env.ARC_JOBS_START_BLOCK;
-    delete process.env.ARC_TRANSFERS_START_BLOCK;
-    try {
-      const r = await a.indexReceipts();
-      expect(r.fetched).toBe(0);
-      expect(r.inserted).toBe(0);
-      expect(r.cursors.size).toBe(0);
-    } finally {
-      if (prevJobs !== undefined) process.env.ARC_JOBS_START_BLOCK = prevJobs;
-      if (prevTransfers !== undefined) process.env.ARC_TRANSFERS_START_BLOCK = prevTransfers;
-    }
-  });
-  // Guards the gate itself: with the jobs gate closed but the transfers gate
-  // OPEN, the transfers branch must actually run. runArcTransfersIndexer calls
-  // makeClient() before any DB/seed read, so dropping ARC_RPC_URL makes this
-  // offline and deterministic — it raises there and never reaches the network.
-  test('indexReceipts runs the transfers branch when only ARC_TRANSFERS_START_BLOCK is set', async () => {
-    const prevJobs = process.env.ARC_JOBS_START_BLOCK;
-    const prevTransfers = process.env.ARC_TRANSFERS_START_BLOCK;
-    const prevRpc = process.env.ARC_RPC_URL;
-    delete process.env.ARC_JOBS_START_BLOCK;
-    delete process.env.ARC_RPC_URL;
-    process.env.ARC_TRANSFERS_START_BLOCK = '1'; // any truthy value opens the gate
-    try {
-      await expect(a.indexReceipts()).rejects.toThrow(/ARC_RPC_URL/);
-    } finally {
-      if (prevJobs !== undefined) process.env.ARC_JOBS_START_BLOCK = prevJobs;
-      if (prevRpc !== undefined) process.env.ARC_RPC_URL = prevRpc;
-      if (prevTransfers !== undefined) process.env.ARC_TRANSFERS_START_BLOCK = prevTransfers;
-      else delete process.env.ARC_TRANSFERS_START_BLOCK;
+  test('retired testnet indexing refuses even when legacy start-block flags are set', async () => {
+    const previous = process.env.ARC_TRANSFERS_START_BLOCK;
+    process.env.ARC_TRANSFERS_START_BLOCK = '1';
+    try { await expect(a.indexReceipts()).rejects.toThrow('arc_testnet_retired'); }
+    finally {
+      if (previous === undefined) delete process.env.ARC_TRANSFERS_START_BLOCK;
+      else process.env.ARC_TRANSFERS_START_BLOCK = previous;
     }
   });
 });

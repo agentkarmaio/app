@@ -40,6 +40,21 @@ test('mainnet empty lookup retains its explicit network', async () => {
   expect((await resolveAgentChain(address, 'arc-mainnet')).chain).toBe('arc-mainnet');
 });
 
+test('unpinned profiles choose an active network over archived testnet', async () => {
+  walletRows(['arc', 'arc-mainnet']);
+  const result = await resolveAgentChain(address);
+  expect(result.chain).toBe('arc-mainnet');
+  expect(result.wallet?.chain).toBe('arc-mainnet');
+});
+
+test('testnet-only wallets require their historical network pin', async () => {
+  walletRows(['arc']);
+  expect((await resolveAgentChain(address)).chain).toBeNull();
+  const archived = await resolveAgentChain(address, 'arc');
+  expect(archived.chain).toBe('arc');
+  expect(archived.wallet?.chain).toBe('arc');
+});
+
 test('mainnet identity links retain the network and agent id', () => {
   expect(agentHref({ chain: 'arc-mainnet' as Chain, address, agentId: 7 }))
     .toBe(`/agent/${address}?chain=arc-mainnet&agentId=7`);

@@ -35,11 +35,12 @@ export const CHAIN_META: Record<Chain, ChainMeta> = {
   'arc-mainnet': { label: 'Arc mainnet', logo: '/logos/arc-network.svg', href: '/arc/mainnet' },
 };
 
-/** Solana first, then remaining chains in CHAINS declaration order.
+/** Active networks only; archived testnet metadata remains available by key.
+ *  Solana first, then remaining chains in CHAINS declaration order.
  *  Ordering is independent of UI_DEFAULT_CHAIN — the default is which chain a
  *  chain-neutral page reads as, not which one heads the dropdown. */
 export function chainOptions(): Chain[] {
-  return [...CHAINS];
+  return CHAINS.filter(chain => chain !== 'arc');
 }
 
 /** EVM chains share the same injected-wallet (EIP-1193) connection path. */
@@ -100,7 +101,7 @@ export function agentChainFromPath(pathname: string): Chain {
 export function activeChainFromPath(pathname: string): Chain {
   let best: Chain = UI_DEFAULT_CHAIN;
   let bestLen = -1;
-  for (const c of chainOptions()) {
+  for (const c of CHAINS) {
     const href = CHAIN_META[c].href;
     if ((pathname === href || pathname.startsWith(href + '/')) && href.length > bestLen) {
       best = c;

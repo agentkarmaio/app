@@ -1,4 +1,4 @@
-export const STATS_SNAPSHOT_VERSION = 1;
+export const STATS_SNAPSHOT_VERSION = 2;
 export const STATS_SNAPSHOT_MAX_AGE_MS = 90_000;
 
 export interface StatsSnapshotPayload {

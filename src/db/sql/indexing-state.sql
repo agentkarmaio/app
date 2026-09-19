@@ -16,16 +16,16 @@ BEGIN
   IF p_owner IS NULL OR p_lease_ms IS NULL OR p_lease_ms NOT BETWEEN 1000 AND 900000 THEN
     RAISE EXCEPTION 'indexing_lease_invalid' USING ERRCODE = '22023';
   END IF;
-  -- Mainnet activation is explicit: missing/deleted rollout state fails closed.
+  -- Mainnet activation is explicit; retired testnet cannot restart after state loss.
   -- ON CONFLICT preserves an operator-enabled existing mainnet row.
   INSERT INTO public.indexing_state(chain, path, enabled, interval_ms)
-  VALUES (p_chain, p_path, CASE WHEN p_chain = 'arc-mainnet' THEN false ELSE p_enabled END, p_interval_ms)
+  VALUES (p_chain, p_path, CASE WHEN p_chain IN ('arc', 'arc-mainnet') THEN false ELSE p_enabled END, p_interval_ms)
   ON CONFLICT (chain, path) DO NOTHING;
   SELECT * INTO state FROM public.indexing_state
     WHERE chain = p_chain AND path = p_path FOR UPDATE;
   -- Time must be sampled AFTER any wait for the previous owner to commit.
   checked_at := clock_timestamp();
-  IF NOT state.enabled OR (state.owner IS NOT NULL AND state.lease_until > checked_at) THEN
+  IF p_chain = 'arc' OR NOT state.enabled OR (state.owner IS NOT NULL AND state.lease_until > checked_at) THEN
     RETURN;
   END IF;
   RETURN QUERY UPDATE public.indexing_state SET
@@ -49,7 +49,7 @@ BEGIN
   END IF;
   SELECT * INTO state FROM public.indexing_state
     WHERE chain = p_chain AND path = p_path FOR UPDATE;
-  IF NOT FOUND OR NOT state.enabled OR state.owner IS DISTINCT FROM p_owner
+  IF p_chain = 'arc' OR NOT FOUND OR NOT state.enabled OR state.owner IS DISTINCT FROM p_owner
      OR state.lease_until IS NULL OR state.lease_until <= clock_timestamp() THEN RETURN false; END IF;
   UPDATE public.indexing_state SET lease_until = clock_timestamp() + p_lease_ms * interval '1 millisecond'
     WHERE chain = p_chain AND path = p_path;
@@ -105,7 +105,7 @@ BEGIN
   SELECT * INTO state FROM public.indexing_state
     WHERE chain = p_chain AND path = p_path FOR UPDATE;
   finished_at := clock_timestamp();
-  IF NOT FOUND OR NOT state.enabled OR state.owner IS DISTINCT FROM p_owner
+  IF p_chain = 'arc' OR NOT FOUND OR NOT state.enabled OR state.owner IS DISTINCT FROM p_owner
      OR state.lease_until IS NULL OR state.lease_until <= finished_at THEN RETURN false; END IF;
   -- Ordinary incremental success cannot prove historical omissions repaired.
   -- Keep a conservative lower bound, without double-counting the same gap.
@@ -129,9 +129,10 @@ BEGIN
 END;
 $$;
 
--- Fencing is opt-in on requests, so existing webhook/scoring/legacy writers
--- preserve their current behavior. Once a worker carries context, every write
--- locks and checks its lease in the SAME transaction as its actual mutation.
+-- Lease fencing is opt-in on requests for active chains, so their existing
+-- webhook/scoring/legacy writers preserve their current behavior. Once a worker
+-- carries context, every write locks and checks its lease in the SAME transaction
+-- as its actual mutation.
 -- A local AbortSignal alone cannot stop a request already in flight.
 CREATE OR REPLACE FUNCTION public.fence_indexing_write()
 RETURNS trigger
@@ -143,6 +144,12 @@ DECLARE
   context_path text;
   context_owner uuid;
 BEGIN
+  -- Archived testnet is immutable, including legacy requests without a lease
+  -- and attempts to relabel historical rows as mainnet.
+  IF (TG_OP <> 'DELETE' AND NEW.chain = 'arc')
+     OR (TG_OP <> 'INSERT' AND OLD.chain = 'arc') THEN
+    RAISE EXCEPTION 'arc_testnet_retired' USING ERRCODE = '55000';
+  END IF;
   IF NOT (headers ?| ARRAY['x-indexing-chain', 'x-indexing-path', 'x-indexing-owner']) THEN
     IF TG_OP = 'DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
   END IF;
@@ -188,7 +195,7 @@ GRANT EXECUTE ON FUNCTION public.finish_indexing_run(text,text,uuid,text,text,te
 DO $$
 DECLARE target text;
 BEGIN
-  FOREACH target IN ARRAY ARRAY['indexer_cursors','transactions','signal_events','wallets','erc8004_agents','erc8004_feedback'] LOOP
+  FOREACH target IN ARRAY ARRAY['indexer_cursors','transactions','signal_events','wallets','erc8004_agents','erc8004_feedback','scores','successions','feedback','organization_members','agent_manifests','bonds','bond_underwriters','celo_x402_payees'] LOOP
     EXECUTE format('DROP TRIGGER IF EXISTS indexing_write_fence ON public.%I', target);
     EXECUTE format('CREATE TRIGGER indexing_write_fence BEFORE INSERT OR UPDATE OR DELETE ON public.%I FOR EACH ROW EXECUTE FUNCTION public.fence_indexing_write()', target);
   END LOOP;

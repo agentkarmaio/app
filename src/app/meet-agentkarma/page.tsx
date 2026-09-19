@@ -2,7 +2,6 @@ import type { Metadata } from 'next';
 import Image from 'next/image';
 import Link from 'next/link';
 import { ArrowUpRight, ChevronDown } from 'lucide-react';
-import { arcTestnet } from 'viem/chains';
 import { AgentKarmaPlayground } from '@/components/agentkarma-playground';
 import { AgentKarmaOnboarding } from '@/components/agentkarma-onboarding';
 import { AK_ARC, AK_STELLAR, AK_VALIDATOR, celoscanAddress } from '@/config/ak-validator';
@@ -37,12 +36,6 @@ const registrations = [
     profile: agentHref({ chain: 'stellar', address: AK_STELLAR.account }),
     registry: stellarExplorer('contract', STELLAR_IDENTITY_REGISTRY),
   },
-  {
-    chain: 'Arc', network: 'Testnet', id: AK_ARC.agentId,
-    address: AK_ARC.controller,
-    profile: agentHref({ chain: 'arc', address: AK_ARC.controller, agentId: AK_ARC.agentId }),
-    registry: `${arcTestnet.blockExplorers.default.url}/address/${AK_ARC.identityRegistry}`,
-  },
 ];
 
 export default function MeetAgentKarmaPage() {
@@ -63,7 +56,6 @@ export default function MeetAgentKarmaPage() {
         { label: 'Celo', value: `agentId ${AK_VALIDATOR.agentId} on celo` },
         { label: 'Stellar', value: `${AK_STELLAR.account} on stellar` },
         { label: 'Specimen consumer', value: `${SPECIMEN_CONSUMER_ADDRESS} on solana` },
-        { label: 'Arc testnet', value: `agentId ${AK_ARC.agentId} on arc` },
       ]} />
 
       <section id="identities" aria-labelledby="identities-title" className="mt-9 scroll-mt-24 border-t border-border pt-6">
@@ -101,6 +93,7 @@ export default function MeetAgentKarmaPage() {
               <Link href="/validator" className={linkClass}>Validator disclosure</Link>
               <a href={celoscanAddress(AK_VALIDATOR.validator)} target="_blank" rel="noopener noreferrer" className={linkClass}>Celo activity <ArrowUpRight aria-hidden className="size-3" /></a>
               <a href={stellarExplorer('account', AK_STELLAR.account)} target="_blank" rel="noopener noreferrer" className={linkClass}>Stellar activity <ArrowUpRight aria-hidden className="size-3" /></a>
+              <Link href={agentHref({ chain: 'arc', address: AK_ARC.controller, agentId: AK_ARC.agentId })} className={linkClass}>Archived Arc testnet identity</Link>
               <Link href="/specimen" className={linkClass}>Solana specimen</Link>
             </div>
           </div>

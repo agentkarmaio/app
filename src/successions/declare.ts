@@ -39,6 +39,8 @@ export type DeclareSuccessionResult =
 export async function declareSuccession(
   input: DeclareSuccessionInput,
 ): Promise<DeclareSuccessionResult> {
+  if (input.chain === 'arc') return { ok: false, error: 'Arc testnet is retired. Historical profiles remain read-only.' };
+
   const validation: SuccessionValidationResult = validateSuccessionPlan(
     input.plan,
     input.chain,

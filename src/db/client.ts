@@ -409,6 +409,7 @@ export async function getLeaderboard(
   filters: LeaderboardFilters = {},
   opts: { withCount?: boolean } = {},
 ): Promise<LeaderboardPage> {
+  if (filters.chain === 'arc') return { wallets: [], total: 0 };
   // count: 'exact' over 86k+ wallets is the slow path. Skip when caller doesn't
   // need the total (e.g. homepage cache, where only the page rows are used).
   if (filters.chain === 'arc-mainnet') {
@@ -419,7 +420,8 @@ export async function getLeaderboard(
   let q = supabase
     .from('wallets')
     .select('*', withCount ? { count: 'exact' } : {})
-    .gt('score', 0);
+    .gt('score', 0)
+    .neq('chain', 'arc');
 
   if (filters.chain) q = q.eq('chain', filters.chain);
 
@@ -742,6 +744,7 @@ export async function getAgents(
   filters: AgentsExploreFilters = {},
   sort: AgentsExploreSort = { field: 'provider_score', direction: 'desc' },
 ): Promise<LeaderboardPage> {
+  if (filters.chain === 'arc') return { wallets: [], total: 0 };
   // ERC-8004 registry chains read the registry mirror (per-agent), not the
   // owner-keyed `wallets` table — see getRegistryAgentsPage. Solana falls
   // through. Stellar joined this set on 2026-08-05: its 67 registered agentIds
@@ -775,7 +778,8 @@ export async function getAgents(
   // tx_count > 0 always carry score > 0, so this doesn't regress them.
   let q = supabase
     .from('wallets')
-    .select('*', { count: 'exact' });
+    .select('*', { count: 'exact' })
+    .neq('chain', 'arc');
 
   // The score>0 gate hides untracked/noise wallets from the default population.
   // When the caller explicitly filters for claimed agents, drop it: a freshly
@@ -885,6 +889,7 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
   const { data, error } = await supabase
     .from('wallets')
     .select('address, chain, display_name, score, trust_tier, tx_count, celo_agent_id, arc_agent_id, stellar_agent_id')
+    .neq('chain', 'arc')
     .or(orFilter)
     .order('score', { ascending: false })
     .limit(Math.max(1, Math.min(50, limit)));
@@ -1210,10 +1215,12 @@ export async function updateClaimedAgentMetadata(
 export async function setWalletTempoAddress(
   address: string,
   tempoAddress: string | null,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<void> {
   const { error } = await supabase
     .from('wallets')
     .update({ tempo_address: tempoAddress, updated_at: new Date().toISOString() })
+    .eq('chain', chain)
     .eq('address', address);
   if (error) throw error;
 }
@@ -1484,7 +1491,7 @@ export async function markWalletsDirty(wallets: DirtyWallet[]): Promise<void> {
   const byChain = new Map<Chain, string[]>();
   for (const w of wallets) {
     // Mainnet scores are refreshed under its transfer lease using its own model.
-    if (w.chain === 'arc-mainnet') continue;
+    if (w.chain === 'arc-mainnet' || w.chain === 'arc') continue;
     const list = byChain.get(w.chain) ?? [];
     list.push(w.address);
     byChain.set(w.chain, list);
@@ -1521,6 +1528,7 @@ export async function markAllWalletsDirty(): Promise<number> {
     .from('wallets')
     .update({ scoring_dirty_at: new Date().toISOString() }, { count: 'exact' })
     .neq('chain', 'arc-mainnet')
+    .neq('chain', 'arc')
     .not('address', 'is', null);
 
   if (error) throw error;
@@ -1542,12 +1550,13 @@ export async function claimDirtyWallets(limit = 100): Promise<DirtyWallet[]> {
     // solana-only queue.
     .select('chain, address')
     .neq('chain', 'arc-mainnet')
+    .neq('chain', 'arc')
     .not('scoring_dirty_at', 'is', null)
     .order('scoring_dirty_at', { ascending: true })
     .limit(limit);
 
   if (error) throw error;
-  const claimed = (data ?? []) as DirtyWallet[];
+  const claimed = ((data ?? []) as DirtyWallet[]).filter(w => w.chain !== 'arc');
   if (claimed.length === 0) return [];
 
   // Clear the dirty flag grouped by chain (composite key) and in URI-safe
@@ -1581,6 +1590,7 @@ export async function countDirtyWallets(): Promise<number> {
     .from('wallets')
     .select('address', { count: 'exact', head: true })
     .neq('chain', 'arc-mainnet')
+    .neq('chain', 'arc')
     .not('scoring_dirty_at', 'is', null);
   if (error) throw error;
   return count ?? 0;
@@ -1624,6 +1634,7 @@ export async function enqueueWalletScan(
   address: string,
   chain: Chain = DEFAULT_CHAIN,
 ): Promise<EnqueueWalletScanResult> {
+  if (chain === 'arc') throw new Error('arc_testnet_retired');
   if (!address || typeof address !== 'string') {
     return { enqueued: false, reason: 'invalid' };
   }
@@ -1808,6 +1819,7 @@ export async function recoverStuckScans(staleMs: number): Promise<number> {
     .from('wallets')
     .update({ scan_state: 'pending', updated_at: now })
     .eq('scan_state', 'scanning')
+    .neq('chain', 'arc')
     .lt('scan_requested_at', cutoff)
     .select('address');
   if (error) throw error;
@@ -2022,6 +2034,7 @@ export async function getFacilitatorStats(): Promise<{
   const { data, error } = await supabase
     .from('transactions')
     .select('facilitator, wallet_address, amount, timestamp')
+    .neq('chain', 'arc')
     .order('timestamp', { ascending: false })
     .limit(5000);
 
@@ -2067,6 +2080,7 @@ export async function getRecentTransactions(
   let query = supabase
     .from('transactions')
     .select('*')
+    .neq('chain', 'arc')
     .order('timestamp', { ascending: false })
     .limit(limit);
 
@@ -2663,6 +2677,7 @@ export async function getOrganizationForWallet(agentWallet: string): Promise<Org
 
 export interface UpsertAgentManifestInput {
   agentWallet: string;
+  chain?: Chain;
   sourceType: ManifestSourceType;
   url: string | null;
   raw: Record<string, unknown> | null;
@@ -2675,23 +2690,26 @@ export async function upsertAgentManifest(input: UpsertAgentManifestInput): Prom
     .from('agent_manifests')
     .upsert({
       agent_wallet: input.agentWallet,
+      chain: input.chain ?? DEFAULT_CHAIN,
       source_type:  input.sourceType,
       url:          input.url,
       raw:          input.raw,
       parsed:       input.parsed,
       verified:     input.verified,
       fetched_at:   new Date().toISOString(),
-    }, { onConflict: 'agent_wallet,source_type' });
+    }, { onConflict: 'chain,agent_wallet,source_type' });
 
   if (error) throw error;
 }
 
 export async function getAgentManifestsForWallet(
   agentWallet: string,
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<AgentManifest[]> {
   const { data, error } = await supabase
     .from('agent_manifests')
     .select('*')
+    .eq('chain', chain)
     .eq('agent_wallet', agentWallet)
     .order('fetched_at', { ascending: false });
 
@@ -2701,6 +2719,7 @@ export async function getAgentManifestsForWallet(
 
 export async function getAgentManifestsForWallets(
   agentWallets: string[],
+  chain: Chain = DEFAULT_CHAIN,
 ): Promise<Map<string, AgentManifest[]>> {
   const out = new Map<string, AgentManifest[]>();
   if (agentWallets.length === 0) return out;
@@ -2710,6 +2729,7 @@ export async function getAgentManifestsForWallets(
     const { data, error } = await supabase
       .from('agent_manifests')
       .select('*')
+      .eq('chain', chain)
       .in('agent_wallet', chunk);
 
     if (error) throw error;
@@ -2949,12 +2969,14 @@ export async function getReapableSuccessions(
   offset = 0,
   filters: ReapableFilters = {},
 ): Promise<ReapablePage> {
+  if (filters.chain === 'arc') return { successions: [], total: 0 };
   const statuses = filters.statuses?.length ? filters.statuses : REAPABLE_STATUSES;
 
   let q = supabase
     .from('successions')
     .select('*', { count: 'exact' })
-    .in('status', statuses);
+    .in('status', statuses)
+    .neq('chain', 'arc');
 
   if (filters.chain) q = q.eq('chain', filters.chain);
 
@@ -3050,10 +3072,12 @@ export async function listSuccessionsForHeartbeat(
   limit = 500,
   chain?: Chain,
 ): Promise<Succession[]> {
+  if (chain === 'arc') return [];
   let q = supabase
     .from('successions')
     .select('*')
-    .not('status', 'in', '("executed","revoked")');
+    .not('status', 'in', '("executed","revoked")')
+    .neq('chain', 'arc');
 
   if (chain) q = q.eq('chain', chain);
 
@@ -3205,10 +3229,12 @@ export async function getSuretyLeaderboard(
   offset = 0,
   filters: SuretyLeaderboardFilters = {},
 ): Promise<SuretyLeaderboardPage> {
+  if (filters.chain === 'arc') return { wallets: [], total: 0 };
   let q = supabase
     .from('wallets')
     .select('*', { count: 'exact' })
-    .not('surety_score', 'is', null);
+    .not('surety_score', 'is', null)
+    .neq('chain', 'arc');
 
   if (filters.chain) q = q.eq('chain', filters.chain);
 
@@ -3406,7 +3432,7 @@ export async function upsertErc8004Feedback(chain: string, feedback: ScannedFeed
  * that has at least one agent row.
  */
 export async function getRegistryStats(
-  chains: string[] = ['celo', 'arc'],
+  chains: string[] = ['celo', 'stellar', 'arc-mainnet'],
 ): Promise<{ chain: string; agents: number; feedbacks: number }[]> {
   const out: { chain: string; agents: number; feedbacks: number }[] = [];
   for (const chain of chains) {
@@ -3641,7 +3667,7 @@ export async function getErc8004AgentByAddress(
   const { data, error } = await supabase
     .from('erc8004_agents')
     .select('*')
-    .in('chain', ['celo', 'arc'])
+    .eq('chain', 'celo')
     .or(`owner.eq.${lc},agent_wallet.eq.${lc}`)
     .order('metadata_score', { ascending: false })
     .limit(1);
@@ -3894,4 +3920,27 @@ export async function getDiscoveredCeloX402Payees(
     set.add(row.address.toLowerCase());
   }
   return set;
+}
+
+/** Saved registry feedback, including revoked records, for read-only archives. */
+export async function getErc8004Feedback(
+  chain: Chain,
+  agentId: number,
+): Promise<import('./schema').Erc8004Feedback[]> {
+  const rows: import('./schema').Erc8004Feedback[] = [];
+  const pageSize = 500;
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await supabase
+      .from('erc8004_feedback')
+      .select('*')
+      .eq('chain', chain)
+      .eq('agent_id', agentId)
+      .order('client', { ascending: true })
+      .order('feedback_index', { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    const page = (data ?? []) as import('./schema').Erc8004Feedback[];
+    rows.push(...page);
+    if (page.length < pageSize) return rows;
+  }
 }

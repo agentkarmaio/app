@@ -11,7 +11,7 @@
 CREATE OR REPLACE FUNCTION get_transaction_stats()
 RETURNS TABLE(total_count bigint, total_volume numeric) AS $$
   SELECT COUNT(*)::bigint, COALESCE(SUM(amount), 0)
-FROM transactions;
+FROM transactions WHERE chain <> 'arc';
 $$ LANGUAGE sql STABLE;
 
 -- Durable lease for the off-band public activity snapshot. The request path
@@ -108,6 +108,7 @@ RETURNS TABLE(
     COALESCE(SUM(amount), 0) AS total_volume,
     MAX(timestamp) AS last_active
   FROM transactions
+  WHERE chain <> 'arc'
   GROUP BY facilitator
   ORDER BY tx_count DESC;
 $$ LANGUAGE sql STABLE;

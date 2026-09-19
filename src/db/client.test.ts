@@ -318,14 +318,14 @@ describe('dirty-queue chunks address .in() lists to avoid URI-too-long', () => {
 
     await markWalletsDirty([
       { chain: 'solana', address: 'SoL1' },
-      { chain: 'arc', address: '0xa1' },
+      { chain: 'celo', address: '0xa1' },
       { chain: 'solana', address: 'SoL2' },
     ]);
 
-    expect(new Set(chainFilters)).toEqual(new Set(['solana', 'arc']));
+    expect(new Set(chainFilters)).toEqual(new Set(['solana', 'celo']));
     const byChain = new Map(chainFilters.map((c, i) => [c, inCalls[i]]));
     expect(byChain.get('solana')).toEqual(['SoL1', 'SoL2']);
-    expect(byChain.get('arc')).toEqual(['0xa1']);
+    expect(byChain.get('celo')).toEqual(['0xa1']);
   });
 });
 
@@ -387,7 +387,7 @@ describe('getStats failure contract: stale-on-error, throw-on-cold, no row-strea
   test('reads a completed durable snapshot without calling live aggregate RPCs', async () => {
     const completedAt = new Date(Date.now() - 1_000).toISOString();
     const payload = {
-      version: 1,
+      version: 2,
       totalAgents: 88,
       totalTransactions: 144,
       totalVolumeUsdc: 12.5,
@@ -693,7 +693,7 @@ describe('getAgents routes claimed=true for registry chains to wallets', () => {
         tablesQueried.push(table);
         const rows = table === 'wallets' ? opts.walletRows : opts.registryRows;
         const b: Record<string, unknown> = {};
-        for (const m of ['select', 'eq', 'gt', 'gte', 'lt', 'in', 'or', 'order', 'not', 'limit']) {
+        for (const m of ['select', 'neq', 'eq', 'gt', 'gte', 'lt', 'in', 'or', 'order', 'not', 'limit']) {
           b[m] = () => b;
         }
         b.range = async () => ({ data: rows, error: null, count: rows.length });
@@ -1272,7 +1272,7 @@ describe('leaderboard ranks by evidence-weighted score', () => {
       __orders: orders,
       from() {
         const b: Record<string, unknown> = {};
-        for (const m of ['select', 'eq', 'gt', 'gte', 'lt', 'in', 'or', 'not', 'limit']) {
+        for (const m of ['select', 'neq', 'eq', 'gt', 'gte', 'lt', 'in', 'or', 'not', 'limit']) {
           b[m] = () => b;
         }
         b.order = (column: string, opts?: { ascending?: boolean }) => {
@@ -1377,7 +1377,7 @@ describe('registry-chain search matches the declared name, not just addresses', 
       __orFilters: orFilters,
       from(table: string) {
         const b: Record<string, unknown> = {};
-        for (const m of ['select', 'eq', 'gt', 'gte', 'lt', 'in', 'order', 'not', 'limit']) {
+        for (const m of ['select', 'neq', 'eq', 'gt', 'gte', 'lt', 'in', 'order', 'not', 'limit']) {
           b[m] = () => b;
         }
         b.or = (f: string) => { if (table === 'erc8004_agents') orFilters.push(f); return b; };
@@ -1409,7 +1409,7 @@ describe('registry-chain search matches the declared name, not just addresses', 
   });
 
   test('the same holds for the other registry chains', async () => {
-    for (const chain of ['arc', 'stellar'] as const) {
+    for (const chain of ['celo', 'stellar'] as const) {
       const fake = makeSearchFake([akCelo]);
       __setSupabaseForTest(fake);
       await getAgents(25, 0, { chain, search: 'AgentKarma' }, SORT);
@@ -1473,7 +1473,7 @@ describe('liveness status filters read observed activity', () => {
       from() {
         const b: Record<string, unknown> = {};
         for (const m of ['select', 'or', 'in', 'limit', 'order']) b[m] = () => b;
-        for (const m of ['eq', 'gt', 'gte', 'lt', 'is', 'not']) {
+        for (const m of ['neq', 'eq', 'gt', 'gte', 'lt', 'is', 'not']) {
           b[m] = (column: string, value: unknown) => {
             preds.push({ method: m, column, value });
             return b;

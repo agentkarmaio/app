@@ -18,6 +18,7 @@ function makeFake(rows: unknown[], count = rows.length) {
     from() {
       const builder: Record<string, unknown> = {};
       builder.select = () => builder;
+      builder.neq = () => builder;
       builder.eq = () => builder;
       builder.in = () => builder;
       builder.order = () => builder;

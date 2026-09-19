@@ -93,25 +93,11 @@ function copyFor(chain: SupportedChain): CopyVariant {
 
     case 'arc':
       return {
-        title: 'Not indexed yet on Arc',
+        title: 'Arc testnet is retired',
         body: (
           <>
-            <p>
-              AgentKarma indexes the Arc ERC-8004 IdentityRegistry plus the
-              ERC-8183 PaymentReleased event stream for receipt-gated signals.
-              Arc is currently testnet; registered agents appear after the next
-              index pass.
-            </p>
-            <p>
-              See{' '}
-              <Link
-                href="/arc"
-                className="text-[#828fff] underline-offset-2 hover:underline"
-              >
-                /arc
-              </Link>{' '}
-              for the Arc integration status and AK&apos;s registered identity.
-            </p>
+            <p>No archived testnet profile is available for this address. Testnet indexing and new claims have ended.</p>
+            <p><Link href="/arc/mainnet" className="inline-flex min-h-10 items-center underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring">View Arc mainnet coverage</Link></p>
           </>
         ),
       };

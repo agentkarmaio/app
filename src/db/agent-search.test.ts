@@ -28,6 +28,7 @@ function fakeSupabase(rows: unknown[], recorder: Recorded[]) {
       const result = { data: rows, error: null };
       const builder: Record<string, unknown> = {};
       builder.select = (sel: string) => { rec.select = sel; return builder; };
+      builder.neq = () => builder;
       builder.or = (f: string) => { rec.or = f; return builder; };
       builder.eq = (col: string, val: unknown) => { rec.eqs.push([col, val]); return builder; };
       builder.order = (col: string) => { rec.orders.push(col); return builder; };

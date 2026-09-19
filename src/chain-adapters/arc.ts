@@ -11,8 +11,6 @@ import type { ChainAdapter, IndexRunResult, PublishResult } from "./types";
 import { explorerAddressUrl, explorerTxUrl } from "@/lib/explorer-urls";
 import type { WalletScore } from "@/scoring/index";
 import { aggregateFeedback } from "@/integrations/erc8004-arc";
-import { runArcJobsIndexer } from "@/indexer/arc-jobs";
-import { runArcTransfersIndexer } from "@/indexer/arc-transfers";
 
 const TAG2 = "agentkarma";
 
@@ -23,32 +21,8 @@ export function makeArcAdapter(): ChainAdapter {
     validateAddress: (address) => isAddress(address),
     normalizeAddress: (address) => address.toLowerCase(),
 
-    // Two independent Tier-1 sources, both OPT-IN via their own start-block env
-    // (mirrors Celo's no-op + Stellar's empty-set guard) so the keep-fresh cron
-    // never triggers an unbounded from-genesis backfill:
-    //   - ERC-8183 job-escrow settlements (ARC_JOBS_START_BLOCK)
-    //   - plain USDC transfers, e.g. AgentStack nanopayments (ARC_TRANSFERS_START_BLOCK)
-    // Each paginates in <=10k-block windows, bounded per run by its maxWindows cap.
-    async indexReceipts(_opts?: {
-      backfill?: boolean;
-      limit?: number;
-    }): Promise<IndexRunResult> {
-      const jobs = process.env.ARC_JOBS_START_BLOCK
-        ? await runArcJobsIndexer()
-        : { fetched: 0, inserted: 0, cursors: new Map<string, string>() };
-      const transfers = process.env.ARC_TRANSFERS_START_BLOCK
-        ? await runArcTransfersIndexer()
-        : { fetched: 0, inserted: 0, cursors: new Map<string, string>() };
-
-      const cursors = new Map<string, string>([
-        ...jobs.cursors,
-        ...transfers.cursors,
-      ]);
-      return {
-        fetched: jobs.fetched + transfers.fetched,
-        inserted: jobs.inserted + transfers.inserted,
-        cursors,
-      };
+    async indexReceipts(): Promise<IndexRunResult> {
+      throw new Error('arc_testnet_retired');
     },
 
     // Reading by EVM address requires an agentId; absent a resolver here we
@@ -70,15 +44,13 @@ export function makeArcAdapter(): ChainAdapter {
       address: string,
       _score: WalletScore,
     ): Promise<PublishResult> {
-      // Identity gate: no agentId resolvable from the bare address → skip,
-      // badge-gated until the agent is registered. Mirrors erc8004-arc-publish
-      // precondition (caller must supply a registered agentId).
+      // Historical testnet profiles remain readable; publication is retired.
       void TAG2;
       return {
         address,
         dryRun: true,
         skipped: true,
-        reason: "no_arc_agent_id",
+        reason: "arc_testnet_retired",
       };
     },
 

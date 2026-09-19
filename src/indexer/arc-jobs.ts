@@ -587,6 +587,7 @@ export async function runArcJobsIndexer(
     maxWindows?: number;
   } = {},
 ): Promise<ArcIndexRunResult> {
+  if (ARC_CHAIN === 'arc') throw new Error('arc_testnet_retired');
   opts.signal?.throwIfAborted();
   const rpc = <T>(read: () => Promise<T>) => { opts.signal?.throwIfAborted(); return read(); };
   const jobsContract = opts.jobsContract ?? ARC_JOBS_CONTRACT;

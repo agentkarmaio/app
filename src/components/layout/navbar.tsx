@@ -16,6 +16,7 @@ import { isEvmChain } from '@/lib/chain-meta';
  *  swaps the wallet without navigating. */
 function ConnectButton() {
   const { active } = useChainSelection();
+  if (active === 'arc') return null;
   return isEvmChain(active) ? <EvmWalletButton /> : <WalletConnectButton />;
 }
 

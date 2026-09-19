@@ -119,7 +119,7 @@ import { resolveAgentChain } from './resolve-chain';
  * Disambiguate which EVM chain an agentId belongs to using the address already
  * in the URL. Without a `?chain=` hint an EVM 0x address is Celo-vs-Arc
  * ambiguous, and the same agentId exists on BOTH chains as different agents — so
- * we match on ownership: probe both registries and pick the chain whose agentId
+ * we match on ownership: probe active registries and pick the chain whose agentId
  * record is owned by (or whose agentWallet is) this address. Returns null when
  * neither matches, or when BOTH match (a real conflict that still needs an
  * explicit `?chain=`).
@@ -130,14 +130,14 @@ async function probeRegistryChainByAgentId(address: string, agentId: number): Pr
     !!row &&
     (String(row.owner ?? '').toLowerCase() === lc ||
       String(row.agent_wallet ?? '').toLowerCase() === lc);
-  const [celo, arc] = await Promise.all([
+  const [celo, arcMainnet] = await Promise.all([
     getErc8004Agent('celo', agentId).catch(() => null),
-    getErc8004Agent('arc', agentId).catch(() => null),
+    getErc8004Agent('arc-mainnet', agentId).catch(() => null),
   ]);
   const celoOwns = owns(celo);
-  const arcOwns = owns(arc);
+  const arcOwns = owns(arcMainnet);
   if (celoOwns && !arcOwns) return 'celo';
-  if (arcOwns && !celoOwns) return 'arc';
+  if (arcOwns && !celoOwns) return 'arc-mainnet';
   return null;
 }
 
@@ -188,11 +188,11 @@ function UnindexedAgentStub({
   wallet: string;
   chain: NotIndexedChain;
 }) {
-  // Claim flow covers Solana (Ed25519), Stellar (Freighter), and EVM (Celo/Arc
+  // Claim flow covers Solana (Ed25519), Stellar (Freighter), and EVM (Celo
   // injected personal_sign). evm-ambiguous/unknown stay hidden — no single chain
   // to claim against.
   const showClaimBanner =
-    chain === 'solana' || chain === 'stellar' || chain === 'celo' || chain === 'arc';
+    chain === 'solana' || chain === 'stellar' || chain === 'celo';
 
   const explorerChain: Chain | null =
     chain === 'evm-ambiguous' || chain === 'unknown' ? null : chain;
@@ -233,7 +233,7 @@ function UnindexedAgentStub({
 
       {showClaimBanner && (
         chain === 'stellar' ? <StellarClaimBanner walletAddress={wallet} /> :
-        chain === 'celo' || chain === 'arc' ? <EvmClaimBanner walletAddress={wallet} chain={chain} /> :
+        chain === 'celo' ? <EvmClaimBanner walletAddress={wallet} chain={chain} /> :
         <ClaimBanner walletAddress={wallet} />
       )}
     </div>
@@ -364,7 +364,9 @@ export async function generateMetadata(
 
   const mainnetUnrated = chainHint === 'arc-mainnet' && f.tier === 'Unrated';
   const title = mainnetUnrated ? `${f.name} — Unrated · Arc mainnet` : `${f.name} — Karma ${f.score.toFixed(0)}/100 · ${f.tier}`;
-  const description = mainnetUnrated
+  const description = f.chain === 'arc'
+    ? `${f.name}: archived Arc testnet profile. Historical scores and payment evidence; testnet indexing and writes have ended.`
+    : mainnetUnrated
     ? 'Arc mainnet payment behavior with separate incoming and outgoing evidence. Trust is Unrated; transfers do not verify service delivery.'
     : f.isRegistry
     ? `${f.name}: Provider Karma ${f.score.toFixed(1)}/100, trust tier ${f.tier}, confidence ${badgeLabel}. `
@@ -373,7 +375,7 @@ export async function generateMetadata(
       + `${f.txCount.toLocaleString()} on-chain transactions indexed. `
       + `Live reputation snapshot for autonomous agent on ${chainLabel} via AgentKarma.`;
 
-  const canonical = f.profileUrl ?? `/agent/${wallet}${isChain(chainHint) ? `?chain=${chainHint}` : ''}`;
+  const canonical = f.profileUrl ?? `/agent/${wallet}${isChain(chainHint) ? `?chain=${chainHint}${chainHint === 'arc' && agentId != null ? `&agentId=${agentId}` : ''}` : ''}`;
   return {
     title,
     description,
@@ -727,10 +729,11 @@ export default async function AgentProfilePage({
     // agentId: resolve the chain by matching that agentId's on-chain owner to the
     // address in the URL, so a shared link like /agent/<addr>?agentId=N works
     // without a manual ?chain=. Only a genuine conflict (the same address owns
-    // agentId N on BOTH Celo and Arc) stays ambiguous and still needs ?chain=.
+    // agentId N on BOTH Celo and Arc mainnet) stays ambiguous and still needs ?chain=.
     if (evmChain == null && agentIdNum != null) {
       evmChain = await probeRegistryChainByAgentId(wallet, agentIdNum);
     }
+    if (evmChain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} agentId={agentIdNum ?? undefined} />;
 
     const celoAgentId = resolved.wallet?.celo_agent_id
       ?? (evmChain === 'celo' ? agentIdNum : null);
@@ -745,10 +748,11 @@ export default async function AgentProfilePage({
         />
       );
     }
-    const arcAgentId = resolved.wallet?.arc_agent_id
-      ?? (evmChain === 'arc' ? agentIdNum : null);
+    const arcAgentId = evmChain === 'arc' ? agentIdNum ?? resolved.wallet?.arc_agent_id : null;
     if (evmChain === 'arc' && arcAgentId != null) {
-      const walletRow = resolved.wallet ?? await synthesizeRegistryWalletRow('arc', arcAgentId, wallet);
+      const walletRow = resolved.wallet?.arc_agent_id === arcAgentId
+        ? resolved.wallet
+        : await synthesizeRegistryWalletRow('arc', arcAgentId, wallet);
       return (
         <ArcAgentProfile
           wallet={wallet}
@@ -1039,7 +1043,7 @@ async function SolanaProfileBody({
 }) {
   const [bundle, manifests, dms] = await Promise.all([
     getAgentLiveBundle(wallet),
-    getAgentManifestsForWallet(wallet).catch(() => []),
+    getAgentManifestsForWallet(wallet, chain).catch(() => []),
     getDeadMansSwitchBlocks(wallet, chain),
   ]);
   const succession = dms?.succession ?? null;
