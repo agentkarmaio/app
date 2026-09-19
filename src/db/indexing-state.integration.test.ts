@@ -24,11 +24,17 @@ function command(args: string[], input?: string) {
 const query = (sql: string) => command([bin('psql'), ...pgArgs], sql);
 const ownerA = '00000000-0000-4000-8000-000000000001';
 const ownerB = '00000000-0000-4000-8000-000000000002';
-function acquire(owner = ownerA, chain = 'arc', path = 'transfers') {
+function acquire(owner = ownerA, chain = 'celo', path = 'transfers') {
   return query(`SET ROLE service_role; SELECT row_to_json(s) FROM public.acquire_indexing_lease('${chain}', '${path}', '${owner}', 60000, 300000, true) s;`);
 }
 function fenced(sql: string, owner = ownerA, role = 'service_role') {
-  return query(`BEGIN; SET LOCAL ROLE ${role}; SET LOCAL request.headers = '{"x-indexing-chain":"arc","x-indexing-path":"transfers","x-indexing-owner":"${owner}"}'; ${sql}; COMMIT;`);
+  return query(`BEGIN; SET LOCAL ROLE ${role}; SET LOCAL request.headers = '{"x-indexing-chain":"celo","x-indexing-path":"transfers","x-indexing-owner":"${owner}"}'; ${sql}; COMMIT;`);
+}
+
+function seedArchivedRows(sql: string) {
+  const tables = ['wallets', 'transactions', 'signal_events', 'indexer_cursors', 'erc8004_agents', 'erc8004_feedback', 'scores', 'successions', 'feedback', 'organization_members', 'agent_manifests', 'bonds', 'bond_underwriters', 'celo_x402_payees'];
+  query('BEGIN; ' + tables.map(table => `ALTER TABLE public.${table} DISABLE TRIGGER indexing_write_fence;`).join(' ')
+    + sql + '; ' + tables.map(table => `ALTER TABLE public.${table} ENABLE TRIGGER indexing_write_fence;`).join(' ') + ' COMMIT;');
 }
 
 beforeAll(() => {
@@ -52,13 +58,13 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  query('TRUNCATE public.indexing_state, public.indexer_cursors, public.erc8004_agents, public.wallets CASCADE;');
+  query('TRUNCATE public.indexing_state, public.indexer_cursors, public.erc8004_agents, public.wallets, public.organizations, public.celo_x402_payees CASCADE;');
 });
 
 describe('persistent lease and success state', () => {
   test('mainnet receipt keyset pages preserve tied PostgreSQL timestamps and isolate chains', () => {
-    query("INSERT INTO public.wallets(chain,address) VALUES ('arc-mainnet','page-wallet'),('arc','page-wallet');");
-    query(`INSERT INTO public.signal_events(id,chain,agent_wallet,tier,kind,observed_at)
+    seedArchivedRows("INSERT INTO public.wallets(chain,address) VALUES ('arc-mainnet','page-wallet'),('arc','page-wallet');");
+    seedArchivedRows(`INSERT INTO public.signal_events(id,chain,agent_wallet,tier,kind,observed_at)
       SELECT ('00000000-0000-0000-0000-' || lpad(to_hex(n),12,'0'))::uuid,
         'arc-mainnet','page-wallet',2,'usdc_transfer_settled','2026-09-12T00:00:00.123456Z'
       FROM generate_series(1,1500) n;
@@ -92,30 +98,30 @@ describe('persistent lease and success state', () => {
 
   test('Arc mainnet leases cannot collide with testnet ownership', () => {
     query("INSERT INTO public.indexing_state(chain,path,enabled,interval_ms) VALUES ('arc-mainnet','transfers',true,300000);");
-    expect(JSON.parse(acquire(ownerA, 'arc')).owner).toBe(ownerA);
+    expect(acquire(ownerA, 'arc')).toBe('');
     expect(JSON.parse(acquire(ownerB, 'arc-mainnet')).owner).toBe(ownerB);
     expect(query('SELECT count(*) FROM public.indexing_state;')).toBe('2');
     const mainnetContext = `BEGIN; SET LOCAL ROLE service_role; SET LOCAL request.headers='{"x-indexing-chain":"arc-mainnet","x-indexing-path":"transfers","x-indexing-owner":"${ownerB}"}';`;
     query(mainnetContext + "INSERT INTO public.indexer_cursors(chain,facilitator,last_signature) VALUES ('arc-mainnet','rail','mainnet-tip'); COMMIT;");
-    expect(() => query(mainnetContext + "INSERT INTO public.indexer_cursors(chain,facilitator,last_signature) VALUES ('arc','rail','wrong-network'); COMMIT;")).toThrow('indexing_chain_mismatch');
+    expect(() => query(mainnetContext + "INSERT INTO public.indexer_cursors(chain,facilitator,last_signature) VALUES ('arc','rail','wrong-network'); COMMIT;")).toThrow('arc_testnet_retired');
     expect(query("SELECT chain || ':' || last_signature FROM public.indexer_cursors;")).toBe('arc-mainnet:mainnet-tip');
   });
 
   test('identical EVM addresses and raw transaction hashes persist independently on both networks', () => {
     const address = '0x1111111111111111111111111111111111111111';
     const hash = '0x' + 'ab'.repeat(32);
-    query(`INSERT INTO public.wallets(chain,address) VALUES ('arc','${address}'),('arc-mainnet','${address}');`);
+    seedArchivedRows(`INSERT INTO public.wallets(chain,address) VALUES ('arc','${address}'),('arc-mainnet','${address}');`);
     for (const chain of ['arc', 'arc-mainnet']) {
-      query(`INSERT INTO public.transactions(chain,wallet_address,facilitator,timestamp,tx_signature,amount) VALUES ('${chain}','${address}','rail',now(),'${hash}',1) ON CONFLICT(chain,tx_signature) DO NOTHING;`);
-      query(`INSERT INTO public.transactions(chain,wallet_address,facilitator,timestamp,tx_signature,amount) VALUES ('${chain}','${address}','rail',now(),'${hash}',99) ON CONFLICT(chain,tx_signature) DO NOTHING;`);
+      seedArchivedRows(`INSERT INTO public.transactions(chain,wallet_address,facilitator,timestamp,tx_signature,amount) VALUES ('${chain}','${address}','rail',now(),'${hash}',1) ON CONFLICT(chain,tx_signature) DO NOTHING;`);
+      seedArchivedRows(`INSERT INTO public.transactions(chain,wallet_address,facilitator,timestamp,tx_signature,amount) VALUES ('${chain}','${address}','rail',now(),'${hash}',99) ON CONFLICT(chain,tx_signature) DO NOTHING;`);
     }
     expect(query(`SELECT chain || ':' || amount::numeric::text FROM public.transactions WHERE tx_signature='${hash}' ORDER BY chain;`)).toBe('arc:1.000000000000000000\narc-mainnet:1.000000000000000000');
     expect(query(`SELECT count(DISTINCT id) FROM public.transactions WHERE tx_signature='${hash}';`)).toBe('2');
   });
 
   test('eighteen-decimal mainnet receipts and existing six-decimal amounts are stored exactly', () => {
-    query("INSERT INTO public.wallets(chain,address) VALUES ('arc','same-address'),('arc-mainnet','same-address');");
-    query("INSERT INTO public.transactions(chain,wallet_address,facilitator,timestamp,tx_signature,amount) VALUES ('arc','same-address','rail',now(),'old-six',1.234567),('arc-mainnet','same-address','rail',now(),'native-wei',0.000000000000000001);");
+    seedArchivedRows("INSERT INTO public.wallets(chain,address) VALUES ('arc','same-address'),('arc-mainnet','same-address');");
+    seedArchivedRows("INSERT INTO public.transactions(chain,wallet_address,facilitator,timestamp,tx_signature,amount) VALUES ('arc','same-address','rail',now(),'old-six',1.234567),('arc-mainnet','same-address','rail',now(),'native-wei',0.000000000000000001);");
     expect(query("SELECT amount FROM public.transactions WHERE tx_signature='native-wei';")).toBe('0.000000000000000001');
     expect(query("SELECT amount FROM public.transactions WHERE tx_signature='old-six';")).toBe('1.234567000000000000');
   });
@@ -150,23 +156,23 @@ describe('persistent lease and success state', () => {
     expect(JSON.parse(acquire()).generation).toBe(1);
     expect(acquire(ownerB)).toBe('');
     expect(JSON.parse(acquire(ownerB, 'stellar')).owner).toBe(ownerB);
-    query("UPDATE public.indexing_state SET lease_until = clock_timestamp() - interval '1 second' WHERE chain = 'arc';");
+    query("UPDATE public.indexing_state SET lease_until = clock_timestamp() - interval '1 second' WHERE chain = 'celo';");
     expect(JSON.parse(acquire(ownerB)).generation).toBe(2);
-    expect(query(`SET ROLE service_role; SELECT public.renew_indexing_lease('arc','transfers','${ownerA}',60000);`)).toBe('f');
-    expect(query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerA}','caught_up');`)).toBe('f');
-    expect(query("SELECT owner FROM public.indexing_state WHERE chain='arc';")).toBe(ownerB);
+    expect(query(`SET ROLE service_role; SELECT public.renew_indexing_lease('celo','transfers','${ownerA}',60000);`)).toBe('f');
+    expect(query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerA}','caught_up');`)).toBe('f');
+    expect(query("SELECT owner FROM public.indexing_state WHERE chain='celo';")).toBe(ownerB);
   });
 
   test('zero matches is a successful scan; later failure preserves successful checkpoint', () => {
     acquire();
-    expect(query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerA}','caught_up',NULL,'100','100',20,0,0,0);`)).toBe('t');
-    const previous = JSON.parse(query("SELECT row_to_json(s) FROM public.indexing_state s WHERE chain='arc';"));
+    expect(query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerA}','caught_up',NULL,'100','100',20,0,0,0);`)).toBe('t');
+    const previous = JSON.parse(query("SELECT row_to_json(s) FROM public.indexing_state s WHERE chain='celo';"));
     expect(previous.last_success_at).not.toBeNull();
     expect(previous.inserted_count).toBe(0);
     expect(previous.owner).toBeNull();
     acquire(ownerB);
-    expect(query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerB}','failed','rpc_rate_limited','150','200',2,98,1,3);`)).toBe('t');
-    const failed = JSON.parse(query("SELECT row_to_json(s) FROM public.indexing_state s WHERE chain='arc';"));
+    expect(query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerB}','failed','rpc_rate_limited','150','200',2,98,1,3);`)).toBe('t');
+    const failed = JSON.parse(query("SELECT row_to_json(s) FROM public.indexing_state s WHERE chain='celo';"));
     expect(failed.status).toBe('failed');
     expect(failed.checkpoint).toBe('100');
     expect(failed.last_success_at).toBe(previous.last_success_at);
@@ -176,22 +182,22 @@ describe('persistent lease and success state', () => {
 
   test('bounded partial success remains catching_up and expires cannot renew itself', () => {
     acquire();
-    expect(query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerA}','catching_up',NULL,'40','100',40,60,2,1);`)).toBe('t');
+    expect(query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerA}','catching_up',NULL,'40','100',40,60,2,1);`)).toBe('t');
     expect(query("SELECT status || ':' || pending_count FROM public.indexing_state;")).toBe('catching_up:60');
     acquire(ownerB);
     query("UPDATE public.indexing_state SET lease_until=clock_timestamp()-interval '1 second';");
-    expect(query(`SET ROLE service_role; SELECT public.renew_indexing_lease('arc','transfers','${ownerB}',60000);`)).toBe('f');
-    expect(query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerB}','dormant');`)).toBe('f');
+    expect(query(`SET ROLE service_role; SELECT public.renew_indexing_lease('celo','transfers','${ownerB}',60000);`)).toBe('f');
+    expect(query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerB}','dormant');`)).toBe('f');
   });
 
   test('partial and dormant runs never advance the last fully successful scan', () => {
     acquire();
-    query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerA}','caught_up',NULL,'100','100',20,0,0,0);`);
+    query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerA}','caught_up',NULL,'100','100',20,0,0,0);`);
     const previous = JSON.parse(query('SELECT row_to_json(s) FROM public.indexing_state s;'));
     for (const status of ['catching_up', 'dormant']) {
       acquire(ownerB);
       const reason = status === 'catching_up' ? 'coverage_incomplete' : 'no_eligible_targets';
-      query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerB}','${status}','${reason}','150','200',5,50,0,2);`);
+      query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerB}','${status}','${reason}','150','200',5,50,0,2);`);
       const state = JSON.parse(query('SELECT row_to_json(s) FROM public.indexing_state s;'));
       expect(state.last_success_at).toBe(previous.last_success_at);
       expect(state.last_finished_at).not.toBe(previous.last_finished_at);
@@ -202,7 +208,7 @@ describe('persistent lease and success state', () => {
   test('caught_up cannot claim complete coverage with pending or unresolved scope', () => {
     acquire();
     for (const [pending, unresolved] of [[1, 0], [0, 1]]) {
-      expect(() => query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerA}','caught_up',NULL,'100','100',20,${pending},0,${unresolved});`))
+      expect(() => query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerA}','caught_up',NULL,'100','100',20,${pending},0,${unresolved});`))
         .toThrow('indexing_coverage_incomplete');
     }
     const state = JSON.parse(query('SELECT row_to_json(s) FROM public.indexing_state s;'));
@@ -212,9 +218,9 @@ describe('persistent lease and success state', () => {
 
   test('a failed attempt cannot erase previously reported unresolved coverage', () => {
     acquire();
-    query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerA}','catching_up','coverage_incomplete','100','200',20,100,0,7);`);
+    query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerA}','catching_up','coverage_incomplete','100','200',20,100,0,7);`);
     acquire(ownerB);
-    query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerB}','failed','rpc_unavailable',NULL,NULL,0,0,0,0);`);
+    query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerB}','failed','rpc_unavailable',NULL,NULL,0,0,0,0);`);
     const state = JSON.parse(query('SELECT row_to_json(s) FROM public.indexing_state s;'));
     expect(state.unresolved_count).toBe(7);
     expect(state.checkpoint).toBe('100');
@@ -223,12 +229,12 @@ describe('persistent lease and success state', () => {
 
   test('historical gaps stay separate from retriable misses and prevent false caught_up', () => {
     acquire();
-    query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerA}','caught_up',NULL,'50','50',10,0,0,0,0);`);
+    query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerA}','caught_up',NULL,'50','50',10,0,0,0,0);`);
     const success = JSON.parse(query('SELECT row_to_json(s) FROM public.indexing_state s;')).last_success_at;
     acquire(ownerB);
-    query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerB}','catching_up','archive_gap','100','200',20,1,0,2,3);`);
+    query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerB}','catching_up','archive_gap','100','200',20,1,0,2,3);`);
     acquire();
-    query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerA}','caught_up',NULL,'200','200',20,0,0,0,0);`);
+    query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerA}','caught_up',NULL,'200','200',20,0,0,0,0);`);
     const state = JSON.parse(query('SELECT row_to_json(s) FROM public.indexing_state s;'));
     expect(state.gaps_count).toBe(3);
     expect(state.unresolved_count).toBe(0);
@@ -240,11 +246,11 @@ describe('persistent lease and success state', () => {
   test('new gap evidence increases retained scope; failed or lower-count runs cannot erase it', () => {
     for (const [status, gaps] of [['catching_up', 3], ['catching_up', 5], ['failed', 0], ['catching_up', 1]] as const) {
       acquire();
-      query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerA}','${status}',NULL,NULL,NULL,0,0,0,0,${gaps});`);
+      query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerA}','${status}',NULL,NULL,NULL,0,0,0,0,${gaps});`);
     }
     expect(query('SELECT gaps_count FROM public.indexing_state;')).toBe('5');
     acquire(ownerB);
-    expect(() => query(`SET ROLE service_role; SELECT public.finish_indexing_run('arc','transfers','${ownerB}','catching_up',NULL,NULL,NULL,0,0,0,0,-1);`)).toThrow();
+    expect(() => query(`SET ROLE service_role; SELECT public.finish_indexing_run('celo','transfers','${ownerB}','catching_up',NULL,NULL,NULL,0,0,0,0,-1);`)).toThrow();
   });
 
   test('disabled paths cannot be silently reenabled by acquire', () => {
@@ -256,14 +262,14 @@ describe('persistent lease and success state', () => {
   test('untrusted roles cannot read state or acquire authority; inputs are bounded', () => {
     for (const role of ['anon', 'authenticated']) {
       expect(() => query(`SET ROLE ${role}; SELECT * FROM public.indexing_state;`)).toThrow('permission denied');
-      expect(() => query(`SET ROLE ${role}; SELECT * FROM public.acquire_indexing_lease('arc','transfers','${ownerA}',60000,300000,true);`)).toThrow('permission denied');
-      expect(() => query(`SET ROLE ${role}; SELECT public.renew_indexing_lease('arc','transfers','${ownerA}',60000);`)).toThrow('permission denied');
-      expect(() => query(`SET ROLE ${role}; SELECT public.finish_indexing_run('arc','transfers','${ownerA}','caught_up');`)).toThrow('permission denied');
+      expect(() => query(`SET ROLE ${role}; SELECT * FROM public.acquire_indexing_lease('celo','transfers','${ownerA}',60000,300000,true);`)).toThrow('permission denied');
+      expect(() => query(`SET ROLE ${role}; SELECT public.renew_indexing_lease('celo','transfers','${ownerA}',60000);`)).toThrow('permission denied');
+      expect(() => query(`SET ROLE ${role}; SELECT public.finish_indexing_run('celo','transfers','${ownerA}','caught_up');`)).toThrow('permission denied');
     }
-    expect(() => query("SET ROLE service_role; INSERT INTO public.indexing_state(chain,path,interval_ms) VALUES ('arc','transfers',300000);")).toThrow('permission denied');
+    expect(() => query("SET ROLE service_role; INSERT INTO public.indexing_state(chain,path,interval_ms) VALUES ('celo','transfers',300000);")).toThrow('permission denied');
     expect(() => acquire(ownerA, 'bitcoin')).toThrow();
-    expect(() => acquire(ownerA, 'arc', 'rpc-url')).toThrow();
-    expect(() => query(`SET ROLE service_role; SELECT * FROM public.acquire_indexing_lease('arc','transfers','${ownerA}',0,300000,true);`)).toThrow();
+    expect(() => acquire(ownerA, 'celo', 'rpc-url')).toThrow();
+    expect(() => query(`SET ROLE service_role; SELECT * FROM public.acquire_indexing_lease('celo','transfers','${ownerA}',0,300000,true);`)).toThrow();
   });
 
   test('repeatable function deployment preserves active ownership and generated migration matches schema', () => {
@@ -283,41 +289,41 @@ describe('persistent lease and success state', () => {
 
 describe('actual ingestion write fencing', () => {
   const inserts = [
-    "INSERT INTO public.wallets(chain,address) VALUES ('arc','agent')",
-    "INSERT INTO public.indexer_cursors(chain,facilitator,last_signature) VALUES ('arc','rail','10')",
-    "INSERT INTO public.transactions(chain,wallet_address,facilitator,timestamp,tx_signature) VALUES ('arc','agent','rail',now(),'tx')",
-    "INSERT INTO public.signal_events(chain,agent_wallet,tier,kind) VALUES ('arc','agent',2,'transfer')",
-    "INSERT INTO public.erc8004_agents(chain,agent_id,owner) VALUES ('arc',1,'agent')",
-    "INSERT INTO public.erc8004_feedback(chain,agent_id,client,feedback_index) VALUES ('arc',1,'reviewer',1)",
+    "INSERT INTO public.wallets(chain,address) VALUES ('celo','agent')",
+    "INSERT INTO public.indexer_cursors(chain,facilitator,last_signature) VALUES ('celo','rail','10')",
+    "INSERT INTO public.transactions(chain,wallet_address,facilitator,timestamp,tx_signature) VALUES ('celo','agent','rail',now(),'tx')",
+    "INSERT INTO public.signal_events(chain,agent_wallet,tier,kind) VALUES ('celo','agent',2,'transfer')",
+    "INSERT INTO public.erc8004_agents(chain,agent_id,owner) VALUES ('celo',1,'agent')",
+    "INSERT INTO public.erc8004_feedback(chain,agent_id,client,feedback_index) VALUES ('celo',1,'reviewer',1)",
   ];
   test('current owner writes every ingestion surface; expired owner is rejected on each', () => {
     acquire();
     inserts.forEach((sql) => fenced(sql));
     query("UPDATE public.indexing_state SET lease_until=clock_timestamp()-interval '1 second';");
     for (const table of ['wallets','indexer_cursors','transactions','signal_events','erc8004_agents','erc8004_feedback']) {
-      expect(() => fenced(`DELETE FROM public.${table} WHERE chain='arc'`)).toThrow('indexing_lease_lost');
-      expect(() => fenced(`UPDATE public.${table} SET chain='arc' WHERE chain='arc'`)).toThrow('indexing_lease_lost');
+      expect(() => fenced(`DELETE FROM public.${table} WHERE chain='celo'`)).toThrow('indexing_lease_lost');
+      expect(() => fenced(`UPDATE public.${table} SET chain='celo' WHERE chain='celo'`)).toThrow('indexing_lease_lost');
     }
     inserts.forEach((sql) => expect(() => fenced(sql)).toThrow('indexing_lease_lost'));
     acquire(ownerB);
-    expect(() => fenced("UPDATE public.indexer_cursors SET last_signature='99' WHERE chain='arc'")).toThrow('indexing_lease_lost');
-    expect(query("SELECT last_signature FROM public.indexer_cursors WHERE chain='arc';")).toBe('10');
-    fenced("UPDATE public.indexer_cursors SET last_signature='20' WHERE chain='arc'", ownerB);
+    expect(() => fenced("UPDATE public.indexer_cursors SET last_signature='99' WHERE chain='celo'")).toThrow('indexing_lease_lost');
+    expect(query("SELECT last_signature FROM public.indexer_cursors WHERE chain='celo';")).toBe('10');
+    fenced("UPDATE public.indexer_cursors SET last_signature='20' WHERE chain='celo'", ownerB);
   });
 
   test('legacy writes retain behavior; partial, forged and cross-chain context fails closed', () => {
     acquire();
-    query("SET ROLE service_role; INSERT INTO public.wallets(chain,address) VALUES ('arc','legacy');");
+    query("SET ROLE service_role; INSERT INTO public.wallets(chain,address) VALUES ('celo','legacy');");
     expect(() => fenced("INSERT INTO public.wallets(chain,address) VALUES ('stellar','wrong-chain')")).toThrow('indexing_chain_mismatch');
-    expect(() => query("SET ROLE service_role; SET request.headers='{\"x-indexing-chain\":\"arc\"}'; INSERT INTO public.wallets(chain,address) VALUES ('arc','partial');")).toThrow('indexing_context_invalid');
+    expect(() => query("SET ROLE service_role; SET request.headers='{\"x-indexing-chain\":\"celo\"}'; INSERT INTO public.wallets(chain,address) VALUES ('celo','partial');")).toThrow('indexing_context_invalid');
     query('GRANT INSERT ON public.wallets TO authenticated;');
-    expect(() => fenced("INSERT INTO public.wallets(chain,address) VALUES ('arc','spoof')", ownerA, 'authenticated')).toThrow('indexing_context_forbidden');
+    expect(() => fenced("INSERT INTO public.wallets(chain,address) VALUES ('celo','spoof')", ownerA, 'authenticated')).toThrow('indexing_context_forbidden');
   });
 
   test('takeover waits for an already admitted write transaction before fencing old work', async () => {
     acquire();
     const writer = Bun.spawn([bin('psql'), ...pgArgs], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: localEnv });
-    writer.stdin.write(`BEGIN; SET LOCAL ROLE service_role; SET LOCAL request.headers='{"x-indexing-chain":"arc","x-indexing-path":"transfers","x-indexing-owner":"${ownerA}"}'; INSERT INTO public.indexer_cursors(chain,facilitator,last_signature) VALUES ('arc','rail','10'); SELECT pg_sleep(0.4); COMMIT;`);
+    writer.stdin.write(`BEGIN; SET LOCAL ROLE service_role; SET LOCAL request.headers='{"x-indexing-chain":"celo","x-indexing-path":"transfers","x-indexing-owner":"${ownerA}"}'; INSERT INTO public.indexer_cursors(chain,facilitator,last_signature) VALUES ('celo','rail','10'); SELECT pg_sleep(0.4); COMMIT;`);
     writer.stdin.end();
     // Wait for the writer to hold the state row lock; no timing-based correctness assertion.
     for (let n = 0; n < 100; n++) {
@@ -330,14 +336,14 @@ describe('actual ingestion write fencing', () => {
     expect(await writer.exited).toBe(0);
     query("UPDATE public.indexing_state SET lease_until=clock_timestamp()-interval '1 second';");
     acquire(ownerB);
-    expect(() => fenced("UPDATE public.indexer_cursors SET last_signature='99' WHERE chain='arc'")).toThrow('indexing_lease_lost');
+    expect(() => fenced("UPDATE public.indexer_cursors SET last_signature='99' WHERE chain='celo'")).toThrow('indexing_lease_lost');
   });
 });
 
 
 test('mainnet ranking view joins only mainnet scores and preserves every agent identity', () => {
   query(readFileSync(resolve('src/db/sql/explore-agents-view.sql'), 'utf8'));
-  query(`INSERT INTO wallets(chain,address,score,provider_score,consumer_score,confidence_badge,trust_tier,tx_count,last_seen)
+  seedArchivedRows(`INSERT INTO wallets(chain,address,score,provider_score,consumer_score,confidence_badge,trust_tier,tx_count,last_seen)
     VALUES ('arc','shared',99,99,99,'receipt-backed','Excellent',999,now()),
     ('arc-mainnet','shared',12,12,NULL,'behavior-inferred','Unrated',3,'2026-09-18T00:00:00Z'),
     ('arc-mainnet','sender',0,0,14,'declared','Unrated',4,'2026-09-18T00:00:00Z');
@@ -353,4 +359,74 @@ test('mainnet ranking view joins only mainnet scores and preserves every agent i
   expect(rows[2]).toMatchObject({provider_score:null,consumer_score:14,tx_count:4});
   expect(rows[3]).toMatchObject({address:'unobserved',provider_score:null,consumer_score:null,tx_count:0,last_seen:null});
   expect(query("SELECT count(*) FROM explore_agents WHERE chain='arc-mainnet' AND provider_score>=10;")).toBe('2');
+});
+
+
+describe('Arc testnet retirement', () => {
+  test('missing or accidentally reenabled state cannot acquire, renew or finish testnet work', () => {
+    expect(acquire(ownerA, 'arc')).toBe('');
+    expect(query("SELECT enabled FROM indexing_state WHERE chain='arc';")).toBe('f');
+    query(`UPDATE indexing_state SET enabled=true,owner='${ownerA}',lease_until=now()+interval '1 hour' WHERE chain='arc';`);
+    expect(acquire(ownerB, 'arc')).toBe('');
+    expect(query(`SELECT renew_indexing_lease('arc','transfers','${ownerA}',60000);`)).toBe('f');
+    expect(query(`SELECT finish_indexing_run('arc','transfers','${ownerA}','caught_up');`)).toBe('f');
+  });
+
+  test('migration disables every testnet path without changing archives, cursors or mainnet enablement', () => {
+    seedArchivedRows("INSERT INTO wallets(chain,address) VALUES ('arc','archive'); INSERT INTO indexer_cursors(chain,facilitator,last_signature) VALUES ('arc','rail','123');");
+    query(`INSERT INTO indexing_state(chain,path,enabled,interval_ms,checkpoint,owner,lease_until)
+      VALUES ('arc','transfers',true,300000,'123','${ownerA}',now()+interval '1 hour'),('arc-mainnet','transfers',true,300000,'456',NULL,NULL);`);
+    const migration = readFileSync(resolve('drizzle/0024_retire_arc_testnet.sql'), 'utf8');
+    query(migration); query(migration);
+    expect(query("SELECT count(*) FROM indexing_state WHERE chain='arc' AND NOT enabled AND owner IS NULL AND lease_until IS NULL;")).toBe('3');
+    expect(query("SELECT checkpoint FROM indexing_state WHERE chain='arc' AND path='transfers';")).toBe('123');
+    expect(query("SELECT last_signature FROM indexer_cursors WHERE chain='arc';")).toBe('123');
+    expect(query("SELECT address FROM wallets WHERE chain='arc';")).toBe('archive');
+    expect(query("SELECT enabled || ':' || checkpoint FROM indexing_state WHERE chain='arc-mainnet';")).toBe('true:456');
+  });
+
+  test('all historical scoring and indexing tables reject new, changed, deleted and relabeled testnet rows without lease headers', () => {
+    const inserts = [
+      "INSERT INTO wallets(chain,address) VALUES ('arc','archive')",
+      "INSERT INTO indexer_cursors(chain,facilitator,last_signature) VALUES ('arc','rail','123')",
+      "INSERT INTO transactions(chain,wallet_address,facilitator,timestamp,tx_signature) VALUES ('arc','archive','rail',now(),'hash')",
+      "INSERT INTO signal_events(chain,agent_wallet,tier,kind) VALUES ('arc','archive',2,'transfer')",
+      "INSERT INTO erc8004_agents(chain,agent_id,owner) VALUES ('arc',1,'archive')",
+      "INSERT INTO erc8004_feedback(chain,agent_id,client,feedback_index) VALUES ('arc',1,'reviewer',1)",
+      "INSERT INTO scores(chain,wallet_address,score) VALUES ('arc','archive',42)",
+      "INSERT INTO successions(chain,agent_wallet,source_type,interval_seconds,heirs) VALUES ('arc','archive','self_hosted',3600,'[]')",
+      "INSERT INTO feedback(chain,agent_wallet,consumer_wallet,rating,tx_signature) VALUES ('arc','archive','consumer','delivered','archive-feedback')",
+      "INSERT INTO organization_members(chain,organization_slug,agent_wallet) VALUES ('arc','archive-org','archive')",
+      "INSERT INTO agent_manifests(chain,agent_wallet,source_type) VALUES ('arc','archive','self_hosted')",
+      `INSERT INTO bonds(id,chain,bonded_agent_wallet,beneficiary,escrow_ref) VALUES ('${ownerA}','arc','archive','beneficiary','escrow')`,
+      `INSERT INTO bond_underwriters(chain,bond_id,underwriter_wallet) VALUES ('arc','${ownerA}','archive')`,
+      "INSERT INTO celo_x402_payees(chain,address) VALUES ('arc','archive')",
+    ];
+    query("INSERT INTO organizations(slug,name) VALUES ('archive-org','Archive organization');");
+    for (const sql of inserts) expect(() => query('SET ROLE service_role; ' + sql)).toThrow('arc_testnet_retired');
+    seedArchivedRows(inserts.join('; '));
+    // The same application-role writes on an active chain stay supported.
+    query('SET ROLE service_role; ' + inserts.join('; ').replaceAll("'arc'", "'celo'").replaceAll(ownerA, ownerB).replaceAll('archive-feedback', 'active-feedback'));
+    for (const table of ['wallets','indexer_cursors','transactions','signal_events','erc8004_agents','erc8004_feedback','scores','successions','feedback','organization_members','agent_manifests','bonds','bond_underwriters','celo_x402_payees']) {
+      for (const sql of [`DELETE FROM ${table} WHERE chain='arc'`, `UPDATE ${table} SET chain='arc' WHERE chain='arc'`, `UPDATE ${table} SET chain='arc-mainnet' WHERE chain='arc'`]) {
+        expect(() => query('SET ROLE service_role; ' + sql)).toThrow('arc_testnet_retired');
+      }
+      expect(query(`SELECT count(*) FROM ${table} WHERE chain='arc';`)).toBe('1');
+    }
+  });
+});
+
+
+test('active listing and transaction aggregates exclude archived testnet without deleting base records', () => {
+  query(readFileSync(resolve('src/db/sql/explore-agents-view.sql'), 'utf8'));
+  query(readFileSync(resolve('src/db/sql/aggregate-functions.sql'), 'utf8'));
+  seedArchivedRows(`INSERT INTO wallets(chain,address) VALUES ('arc','shared'),('arc-mainnet','shared');
+    INSERT INTO erc8004_agents(chain,agent_id,owner,agent_wallet,registration) VALUES ('arc',1,'shared','shared','{"name":"Archive"}'),('arc-mainnet',1,'shared','shared','{"name":"Mainnet"}');
+    INSERT INTO transactions(chain,wallet_address,facilitator,timestamp,tx_signature,amount) VALUES
+    ('arc','shared','shared-rail',now(),'archive',100),('arc-mainnet','shared','shared-rail',now(),'mainnet',2);`);
+  expect(query("SELECT string_agg(chain,',') FROM explore_agents WHERE address='shared';")).toBe('arc-mainnet');
+  expect(query("SELECT total_count || ':' || total_volume::numeric FROM get_transaction_stats();")).toBe('1:2.000000000000000000');
+  expect(query("SELECT tx_count || ':' || unique_agents || ':' || total_volume::numeric FROM get_facilitator_stats() WHERE facilitator='shared-rail';")).toBe('1:1:2.000000000000000000');
+  expect(query("SELECT count(*) FROM erc8004_agents WHERE chain='arc';")).toBe('1');
+  expect(query("SELECT amount::numeric FROM transactions WHERE chain='arc';")).toBe('100.000000000000000000');
 });

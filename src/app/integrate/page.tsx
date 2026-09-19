@@ -165,8 +165,7 @@ export default async function IntegratePage() {
           <span aria-hidden>·</span>
           <span className="inline-flex items-center gap-1.5">
             <span aria-hidden className="size-1 rounded-full bg-[#10b981]" />
-            Arc testnet registered as agentId{' '}
-            <span className="font-mono text-[#8a8f98]">72077</span>
+            Arc mainnet discovery and transfer scores
           </span>
         </div>
       </section>

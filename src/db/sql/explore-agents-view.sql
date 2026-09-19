@@ -2,6 +2,9 @@
 -- deploy via `bun run db:functions`. Trailing NOTIFY reloads PostgREST's schema
 -- cache so the view is reachable over REST immediately.
 --
+-- Arc testnet rows remain in their source tables as a read-only archive.
+-- Active discovery and totals exclude them.
+--
 -- `explore_agents` unifies the two agent populations behind the "All chains"
 -- leaderboard so its count + list match reality:
 --   • Solana lives in `wallets` (address-keyed, score-gated).
@@ -95,7 +98,7 @@ CREATE OR REPLACE VIEW explore_agents AS
     -- Registry rows are 100% declared, so the weight applies unconditionally.
     (metadata_score::numeric * 0.7)      AS rank_score
   FROM erc8004_agents
-  WHERE chain IN ('celo', 'arc', 'stellar')
+  WHERE chain IN ('celo', 'stellar')
   UNION ALL
   -- Mainnet metadata identifies agents; only observed transfers supply Karma.
   -- Join on the composite wallet key so testnet scores cannot leak across.

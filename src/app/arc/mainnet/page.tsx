@@ -21,7 +21,7 @@ export default async function ArcMainnetPage() {
       <header className="space-y-3">
         <p className="text-sm text-muted-foreground">Network coverage</p>
         <h1 className="text-3xl font-medium tracking-tight">Arc mainnet</h1>
-        <p className="text-muted-foreground">USDC receipts involving verified mainnet agent addresses. Testnet activity is tracked separately.</p>
+        <p className="text-muted-foreground">USDC receipts involving verified mainnet agent addresses. Testnet history is archived separately.</p>
       </header>
       <Card>
         <CardHeader><CardTitle className="text-base">Agent discovery</CardTitle></CardHeader>
@@ -40,7 +40,7 @@ export default async function ArcMainnetPage() {
       </Card>
       <nav className="flex flex-wrap gap-4 text-sm">
         <Link href="/explore?chain=arc-mainnet" className="inline-flex min-h-10 items-center underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Browse indexed mainnet agents</Link>
-        <Link href="/arc" className="inline-flex min-h-10 items-center underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Arc testnet coverage</Link>
+        <Link href="/arc" className="inline-flex min-h-10 items-center underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Arc testnet archive</Link>
       </nav>
     </main>
   );

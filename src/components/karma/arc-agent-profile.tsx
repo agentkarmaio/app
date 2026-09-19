@@ -1,16 +1,6 @@
 /**
- * ArcAgentProfile — rendered when /agent/[wallet] resolves to an Arc wallet
- * row that has a known ERC-8004 agentId. Reads the on-chain IdentityRegistry +
- * ReputationRegistry directly so the page reflects current chain state, not
- * whatever the indexer last persisted.
- *
- * Arc is testnet today (Arc mainnet ships summer 2026), so the page carries a
- * visible TESTNET marker. On-chain reads are best-effort — if the RPC blips we
- * fall back to the DB row alone, same pattern as CeloAgentProfile.
- *
- * Receipt-gated Tier-1 history is x402/Solana-only today; this view stays
- * focused on declared identity + ERC-8004 feedback aggregate. No tx list, no
- * score trend, no consumer feedback form (those wire to Solana data shapes).
+ * Read-only Arc testnet profile. Scores, registry identity, and feedback are
+ * preserved from the database archive; no former testnet RPC is queried.
  */
 import { Suspense } from 'react';
 import Link from 'next/link';
@@ -23,20 +13,15 @@ import { AgentAvatar } from '@/components/karma/agent-avatar';
 import { TierBadge } from '@/components/karma/tier-badge';
 import { ConfidenceBadge } from '@/components/karma/confidence-badge';
 import { WalletAddress } from '@/components/karma/wallet-address';
-import { BadgeButton } from '@/components/karma/badge-button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { resolveRaters, getFeedbackComments, type RaterInfo } from '@/db/client';
 import type { Wallet, TrustTier, ConfidenceBadge as ConfidenceBadgeValue } from '@/db/schema';
 import { safeHref } from '@/lib/safe-url';
-import { EvmClaimBanner } from '@/components/wallet/evm-claim-banner';
-import { GiveFeedbackCard } from '@/components/karma/give-feedback-card';
 import { FeedbackRecordsCard } from '@/components/karma/feedback-records-card';
 import { scoreMetadataQuality, METADATA_SCHEME_VERSION } from '@/scoring/celo-metadata';
 import { ClaimProof } from '@/components/karma/claim-proof';
-import { ProveOwnership } from '@/components/wallet/prove-ownership';
-import { EditProfile } from '@/components/wallet/edit-profile';
 
 const CATEGORY_LABELS: Record<string, string> = {
   ai: 'AI / ML',
@@ -66,7 +51,7 @@ export function ArcAgentProfile({
 }) {
   // SHELL — synchronous by design. Every value below comes from the `wallets`
   // row the page already holds, so identity paints in the first flush instead
-  // of waiting on the Arc testnet RPC. The chain reads live in
+  // of waiting on the saved registry reads. Those reads live in
   // ArcOnchainSections, behind the Suspense boundary at the bottom.
   //
   // Consequence: name/description fall back to the short address rather than to
@@ -99,11 +84,11 @@ export function ArcAgentProfile({
       </Link>
 
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-4">
+        <div className="flex min-w-0 items-start gap-4">
           <AgentAvatar src={walletRow.image_url} name={displayName} />
-          <div className="space-y-3">
+          <div className="min-w-0 space-y-3">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
+            <h1 className="min-w-0 break-words text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
               {displayName}
             </h1>
             <TierBadge tier={tier} />
@@ -117,9 +102,9 @@ export function ArcAgentProfile({
             <Badge
               variant="outline"
               className="border-amber-500/30 bg-amber-500/10 text-amber-400 text-[10px] px-1.5 py-0 font-[510] tracking-wider"
-              title="Arc mainnet ships summer 2026; current data is from Arc Testnet."
+              title="Arc testnet is retired. Historical profile; writes are disabled."
             >
-              TESTNET
+              TESTNET · RETIRED
             </Badge>
             {isClaimed && (
               <Badge
@@ -131,8 +116,8 @@ export function ArcAgentProfile({
               </Badge>
             )}
           </div>
-          <div className="flex items-center gap-3">
-            <WalletAddress address={wallet} truncate={false} className="text-muted-foreground" />
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <WalletAddress address={wallet} truncate={false} className="min-w-0 max-w-full break-all text-muted-foreground [&>span]:min-w-0 [&>button]:shrink-0" />
             <a
               href={explorerUrl}
               target="_blank"
@@ -142,14 +127,13 @@ export function ArcAgentProfile({
             >
               <ExternalLink className="size-3.5" />
             </a>
-            <BadgeButton wallet={wallet} chain="arc" />
           </div>
           {description && (
             <p className="text-[14px] text-[#8a8f98] leading-relaxed max-w-lg">
               {description}
             </p>
           )}
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
             {category && (
               <Badge variant="outline" className="bg-[rgb(255_255_255/0.04)] text-[#8a8f98] border-[rgb(255_255_255/0.08)] text-[11px] px-1.5 py-0">
                 {CATEGORY_LABELS[category] ?? category}
@@ -180,26 +164,10 @@ export function ArcAgentProfile({
 
       <Separator />
 
-      {!isClaimed && <EvmClaimBanner walletAddress={walletRow.address} chain="arc" />}
-
-      {isClaimed && !walletRow.claim_signature && (
-        <ProveOwnership chain="arc" address={walletRow.address} />
-      )}
-
-      {isClaimed && (
-        <EditProfile
-          chain="arc"
-          address={walletRow.address}
-          current={{
-            displayName: walletRow.display_name ?? '',
-            description: walletRow.description ?? '',
-            website: walletRow.website ?? '',
-            category: walletRow.category ?? '',
-            imageUrl: walletRow.image_url ?? '',
-            tempoAddress: walletRow.tempo_address ?? '',
-          }}
-        />
-      )}
+      <p className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
+        Arc testnet is retired. This profile is read-only; its scores and payment history are archived.
+        {' '}<Link href="/arc/mainnet" className="inline-flex min-h-10 items-center underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring">View Arc mainnet</Link>
+      </p>
 
       {isClaimed && walletRow.claim_signature && walletRow.claim_message && (
         <ClaimProof
@@ -215,7 +183,7 @@ export function ArcAgentProfile({
       </Suspense>
 
       {/* Two windowed DB reads, so it streams in its own boundary rather than
-          sharing the Arc RPC boundary above — a slow registry read must not
+          sharing the registry boundary above — a slow archive read must not
           hold back payment history that needs no chain call. */}
       <Suspense fallback={<CardSkeleton title="Payment Relationships" rows={6} />}>
         <PaymentRelationships wallet={walletRow.address} chain="arc" />
@@ -227,8 +195,8 @@ export function ArcAgentProfile({
 }
 
 /**
- * TAIL — everything that needs the Arc IdentityRegistry / ReputationRegistry.
- * Streamed behind Suspense so an RPC round-trip (or a cold 120s cache) never
+ * TAIL — saved Arc IdentityRegistry / ReputationRegistry records.
+ * Streamed behind Suspense so the registry mirror reads never
  * delays the identity header above it.
  */
 async function ArcOnchainSections({
@@ -240,10 +208,8 @@ async function ArcOnchainSections({
   walletRow: Wallet;
   agentId: number;
 }) {
-  // On-chain identity + aggregate feedback, read through the per-agent cache
-  // (120s) so repeat profile views don't re-hit the Arc testnet RPC.
-  // includeRevoked: retracted records surface struck-through; count/average
-  // still exclude them. If the chain call fails, fall back to the DB row.
+  // Historical identity and feedback come from the saved registry mirror.
+  // Revoked records remain struck through. Missing archive reads stay unavailable.
   const { agent, feedback } = await getCachedEvmAgentOnchain('arc', agentId);
 
   // Rater names + comments both depend on the feedback list, so they follow
@@ -286,7 +252,7 @@ async function ArcOnchainSections({
               ERC-8004 identity
             </CardTitle>
             <p className="mt-1 text-[11px] text-[#62666d]">
-              Read directly from Arc IdentityRegistry (testnet)
+              Saved Arc testnet registry identity
             </p>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
@@ -360,7 +326,7 @@ async function ArcOnchainSections({
               <Row label="Confidence" value={<ConfidenceBadge badge={confidenceBadge} size="sm" />} />
               <Separator />
               <Row
-                label="Feedback (on-chain)"
+                label="Feedback (archived)"
                 value={
                   feedback ? (
                     <span className="tabular-nums">
@@ -399,8 +365,6 @@ async function ArcOnchainSections({
           metadataAssessment={metadataAssessment}
         />
       )}
-
-      <GiveFeedbackCard agentId={agentId} chain="arc" ownerAddress={agent?.owner ?? walletRow.address} />
 
       {services.length > 0 && (
         <Card className="border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">

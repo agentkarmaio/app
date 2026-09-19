@@ -11,9 +11,9 @@ describe('chain-adapter registry', () => {
     expect(getAdapter('arc').chain).toBe('arc');
   });
 
-  test('getAllAdapters covers every chain in CHAINS exactly once', () => {
+  test('getAllAdapters covers active chains exactly once and retains explicit archive lookup', () => {
     const chains = getAllAdapters().map((a) => a.chain).sort();
-    expect(chains).toEqual([...CHAINS].sort());
+    expect(chains).toEqual(CHAINS.filter((chain) => chain !== 'arc').sort());
   });
 
   test('getAdapter throws on an unknown chain', () => {

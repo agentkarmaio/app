@@ -37,10 +37,12 @@ describe('chain-meta', () => {
     }
   });
 
-  test('chainOptions() lists solana first, then the rest in CHAINS order', () => {
+  test('chainOptions() lists active networks and preserves the historical schema', () => {
     const opts = chainOptions();
     expect(opts[0]).toBe('solana');
-    expect(opts).toEqual([...CHAINS]);
+    expect(opts).toEqual(['solana', 'celo', 'stellar', 'arc-mainnet']);
+    expect(CHAINS).toContain('arc');
+    expect(opts).not.toContain('arc');
     expect(new Set(opts).size).toBe(opts.length); // no dupes
   });
 
@@ -93,6 +95,8 @@ describe('activeChainFromPath — what the header switcher reads on browse pages
     expect(activeChainFromPath('/celo')).toBe('celo');
     expect(activeChainFromPath('/stellar')).toBe('stellar');
     expect(activeChainFromPath('/arc')).toBe('arc');
+    expect(activeChainFromPath('/arc/mainnet')).toBe('arc-mainnet');
+    expect(activeChainFromPath('/arc/archive')).toBe('arc');
   });
 
   test('nested routes under a context page keep that chain', () => {

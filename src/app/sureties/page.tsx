@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
 import type { Metadata } from 'next';
 import { ArrowLeft, ShieldOff } from 'lucide-react';
 import { getSuretyLeaderboard } from '@/db/client';
@@ -32,6 +33,7 @@ export default async function SuretiesPage({
   searchParams: Promise<{ chain?: string }>;
 }) {
   const { chain: chainParam } = await searchParams;
+  if (chainParam === 'arc') redirect('/arc');
   const chainFilter: Chain | undefined =
     chainParam && isChain(chainParam) ? chainParam : undefined;
 

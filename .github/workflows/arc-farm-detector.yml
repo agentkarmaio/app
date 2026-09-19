@@ -21,8 +21,7 @@ name: Arc farm detector
 #                 throttles hard — the script paces + backs off either way.
 
 on:
-  schedule:
-    - cron: '0 9 * * 1' # weekly, Monday 09:00 UTC
+  # Historical read-only diagnostics remain manually available.
   workflow_dispatch:
 
 concurrency:

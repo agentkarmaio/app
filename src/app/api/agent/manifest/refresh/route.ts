@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isRecognizedAddress, detectChain } from '@/lib/chain-detect';
+import { isRecognizedAddress, canonicalAddress, resolveChainParam } from '@/lib/chain-detect';
 import {
   getWallet,
   getWalletsByAddressAnyChain,
@@ -27,14 +27,14 @@ import {
  * to bound the outbound-fetch blast radius. The fetch cap (5s, 100kb) keeps
  * abuse cheap on top.
  *
- * Body: { wallet: string }
+ * Body: { wallet: string, chain?: Chain }
  */
 export async function POST(request: NextRequest) {
   // Per-IP gate first — cheapest rejection, no body read needed.
   const ipGate = await enforceRateLimit('manifest-refresh', request);
   if (!ipGate.ok) return ipGate.response;
 
-  let body: { wallet?: string };
+  let body: { wallet?: string; chain?: string };
   try {
     body = await request.json();
   } catch {
@@ -44,12 +44,21 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const wallet = body.wallet;
-  if (!wallet) {
+  if (body.chain === 'arc') {
+    return NextResponse.json({ error: 'Arc testnet is retired. Historical profiles remain read-only.' }, { status: 410, headers: ipGate.headers });
+  }
+
+  if (typeof body.wallet !== 'string' || !body.wallet) {
     return NextResponse.json(
       { error: 'Missing wallet' },
       { status: 400, headers: ipGate.headers },
     );
+  }
+
+  const wallet = canonicalAddress(body.wallet);
+  const pinned = body.chain ? resolveChainParam(body.chain, wallet) : null;
+  if (body.chain && !pinned) {
+    return NextResponse.json({ error: 'Invalid chain for wallet address' }, { status: 400, headers: ipGate.headers });
   }
 
   // Per-wallet gate: the wallet's declared website is the SSRF target, so one
@@ -62,10 +71,7 @@ export async function POST(request: NextRequest) {
       { status: 429, headers: { ...rateLimitHeaders(walletLimit), ...ipGate.headers } },
     );
   }
-  // Chain-dispatched address guard: accept any chain's valid address format
-  // (Solana base58, Stellar StrKey G…, EVM 0x… for Celo/Arc). Validity only —
-  // EVM chains share a format so the address isn't auto-routable here; this
-  // endpoint reads by address, not by chain.
+  // Validate unpinned addresses too; EVM format alone never selects a network.
   if (!isRecognizedAddress(wallet)) {
     return NextResponse.json(
       { error: 'Invalid wallet address' },
@@ -73,18 +79,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Chain-aware resolution so celo/arc/stellar wallets resolve (getWallet
-  // defaults to solana). detectChain narrows solana/stellar by format; EVM is
-  // ambiguous so we pick from the DB rows — never auto-pick an EVM chain. The
-  // resolved row's `chain` is what drives the succession declare path below.
-  let walletRow = await getWallet(wallet);
-  if (!walletRow) {
+  // A provided network pin must resolve only that row, including when the
+  // same address has a historical testnet identity. Unpinned ambiguous EVM
+  // addresses require a pin before any website fetch or mutation.
+  let walletRow = await getWallet(wallet, pinned ?? undefined);
+  if (!walletRow && !pinned) {
     const rows = await getWalletsByAddressAnyChain(wallet);
     if (rows.length === 1) {
       walletRow = rows[0];
     } else if (rows.length > 1) {
-      const detected = detectChain(wallet);
-      walletRow = (detected && rows.find((r) => r.chain === detected)) ?? rows[0];
+      return NextResponse.json({ error: 'Multiple networks found. Specify chain to refresh this wallet.' }, { status: 409, headers: ipGate.headers });
     }
   }
   if (!walletRow) {
@@ -92,6 +96,10 @@ export async function POST(request: NextRequest) {
       { error: 'Wallet not found' },
       { status: 404, headers: ipGate.headers },
     );
+  }
+
+  if (walletRow.chain === 'arc') {
+    return NextResponse.json({ error: 'Arc testnet is retired. Historical profiles remain read-only.' }, { status: 410, headers: ipGate.headers });
   }
 
   const website = walletRow.website ?? null;
@@ -116,6 +124,7 @@ export async function POST(request: NextRequest) {
 
   await upsertAgentManifest({
     agentWallet: wallet,
+    chain: walletRow.chain,
     sourceType:  result.sourceType,
     url:         result.url,
     raw:         result.raw,
@@ -124,11 +133,11 @@ export async function POST(request: NextRequest) {
   });
 
   await insertSignalEvents(
-    [buildManifestSignal(wallet, {
+    [{ ...buildManifestSignal(wallet, {
       sourceType: result.sourceType,
       verified:   result.verified,
       url:        result.url,
-    })],
+    }), chain: walletRow.chain }],
     { overwrite: true },
   );
 
@@ -137,7 +146,7 @@ export async function POST(request: NextRequest) {
   // never blended into Karma.
   const declaredTempo = (result.parsed as { tempoAddress?: string | null }).tempoAddress;
   if (isTempoAddress(declaredTempo)) {
-    try { await setWalletTempoAddress(wallet, declaredTempo); }
+    try { await setWalletTempoAddress(wallet, declaredTempo, walletRow.chain); }
     catch (err) { console.error('[manifest/refresh] tempo_address update failed:', err); }
   }
 

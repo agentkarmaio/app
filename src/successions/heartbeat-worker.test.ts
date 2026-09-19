@@ -45,6 +45,7 @@ function makeFake(opts: {
       builder.eq = (col: string, val: unknown) => { filters[col] = val; return builder; };
       builder.in = (col: string, val: unknown) => { filters[col] = val; return builder; };
       builder.not = () => builder;
+      builder.neq = () => builder;
       builder.order = () => builder;
       builder.limit = async () => {
         if (table === 'successions') {
@@ -202,4 +203,15 @@ describe('drainHeartbeatsOnce', () => {
     expect(r.transitioned).toBe(2);
     expect(r.errors).toHaveLength(0);
   });
+});
+
+
+test('archived testnet heartbeat never reads activity or changes historical liveness', async () => {
+  const signals: SignalRow[] = [];
+  const updates: UpdateRec[] = [];
+  __setSupabaseForTest(makeFake({successions: [succ({agent_wallet:'ARCHIVE',chain:'arc',status:'live'})], lastTxByWallet:{ARCHIVE:tsAgo(30*DAY)}, signals, updates}));
+  expect(await evaluateOneHeartbeat(succ({agent_wallet:'ARCHIVE',chain:'arc',status:'executed'}), NOW)).toBe('skipped');
+  expect(await drainHeartbeatsOnce(500, undefined, NOW)).toMatchObject({claimed:0,transitioned:0,observed:0,lapsed:0,errors:[]});
+  expect(signals).toHaveLength(0);
+  expect(updates).toHaveLength(0);
 });

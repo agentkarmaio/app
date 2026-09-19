@@ -25,7 +25,7 @@ describe('pickWalletRow', () => {
   test('unpinned single row is returned', () => {
     expect(pickWalletRow([row('celo')], EVM, null)?.chain).toBe('celo');
   });
-  test('unpinned EVM address on two chains picks the row with the most evidence, not alphabetical order', () => {
+  test('unpinned EVM lookup excludes retired testnet even when it has more evidence', () => {
     const rows = [
       { chain: 'arc', address: EVM, tx_count: 0, rank_score: 20 },
       { chain: 'celo', address: EVM, tx_count: 0, rank_score: 70 },
@@ -35,7 +35,9 @@ describe('pickWalletRow', () => {
       { chain: 'arc', address: EVM, tx_count: 12, rank_score: 40 },
       { chain: 'celo', address: EVM, tx_count: 0, rank_score: 70 },
     ] as never[];
-    expect(pickWalletRow(byTx, EVM, null)?.chain).toBe('arc');
+    expect(pickWalletRow(byTx, EVM, null)?.chain).toBe('celo');
+    expect(pickWalletRow([row('arc')], EVM, null)).toBeNull();
+    expect(pickWalletRow([row('arc'), row('arc-mainnet')], EVM, null)?.chain).toBe('arc-mainnet');
   });
   test('unpinned, format-detectable address prefers the detected chain', () => {
     const rows = [{ chain: 'celo', address: SOL }, { chain: 'solana', address: SOL }] as never[];

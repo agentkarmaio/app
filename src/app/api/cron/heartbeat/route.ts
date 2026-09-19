@@ -55,6 +55,10 @@ export async function POST(request: NextRequest) {
     // ignore — use defaults
   }
 
+  if (chain === 'arc') {
+    return NextResponse.json({ error: 'Arc testnet is retired. Historical profiles remain read-only.' }, { status: 410 });
+  }
+
   try {
     const result = await drainHeartbeatsOnce(limit, chain);
     const status = result.errors.length > 0 ? 207 : 200;

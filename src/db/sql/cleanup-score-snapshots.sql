@@ -15,7 +15,8 @@ BEGIN
   ),
   deletable AS (
     SELECT s.id FROM scores s
-    WHERE s.calculated_at < NOW() - make_interval(days => retention_days)
+    WHERE s.chain <> 'arc'
+    AND s.calculated_at < NOW() - make_interval(days => retention_days)
     AND s.id NOT IN (SELECT id FROM latest_per_wallet)
   )
   DELETE FROM scores WHERE id IN (SELECT id FROM deletable);

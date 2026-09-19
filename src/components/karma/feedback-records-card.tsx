@@ -246,7 +246,7 @@ export function FeedbackRecordsCard({
           On-chain feedback
         </CardTitle>
         <p className="mt-1 text-[11px] text-[#62666d]">
-          Every record from the {chain === 'celo' ? 'Celo' : 'Arc'} ReputationRegistry — independent and portable.
+          {chain === 'arc' ? 'Saved Arc testnet records. The archive may have incomplete historical coverage.' : 'Every record from the Celo ReputationRegistry — independent and portable.'}
         </p>
       </CardHeader>
       <CardContent className="space-y-2">

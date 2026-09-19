@@ -28,6 +28,9 @@ const row = (overrides: Partial<StatsSnapshotRow> = {}): StatsSnapshotRow => ({
 });
 
 describe('stats snapshot contract', () => {
+  test('rejects snapshots from before testnet retirement', () => {
+    expect(() => parseStatsSnapshot({ ...(row().payload as StatsSnapshotPayload), version: 1 })).toThrow(/Invalid stats snapshot/);
+  });
   test('accepts a complete last-known-good payload', () => {
     expect(parseStatsSnapshot(row().payload)).toMatchObject({
       totalAgents: 12,

@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
 import { Suspense } from 'react';
 import type { Metadata } from 'next';
 import {
@@ -55,6 +56,7 @@ interface Props {
 
 export default async function ExplorePage({ searchParams }: Props) {
   const params = await searchParams;
+  if (params.chain === 'arc') redirect('/arc');
   const tab: ExploreTab = params.tab === 'activity' ? 'activity' : 'agents';
   const selectedFacilitator = params.f;
   const timeWindow: TimeWindow = (params.t && TIME_WINDOWS.find((w) => w.key === params.t))

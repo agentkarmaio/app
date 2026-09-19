@@ -261,6 +261,7 @@ export async function runArcRegistryRefresh(opts: {
 } = {}): Promise<ArcRegistryRefreshResult> {
   const config = getRegistryConfig('arc');
   if (!config) throw new Error('Arc registry config missing');
+  if (config.chain === 'arc') throw new Error('arc_testnet_retired');
   return arcRegistryRefresh({
     ...opts,
     loadKnownIds: () => loadKnownArcIds(opts.signal),

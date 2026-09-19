@@ -26,6 +26,7 @@ import { computeAgentLiveBundle } from '@/scoring/live-agent-score';
 import type { ArcMainnetReceiptScore } from '@/scoring/arc-mainnet-receipts';
 import { readAttestation } from '@/integrations/attestation';
 import { canonicalAddress } from '@/lib/chain-detect';
+import { agentHref } from '@/lib/agent-href';
 import { isStellarAccount } from '@/config/stellar-x402';
 import {
   getRegistryAgentsForAddress,
@@ -593,8 +594,8 @@ export interface EvmKarmaSnapshot {
  * `walletRow` is the already-resolved `wallets` row for this (chain, address) —
  * the caller (MCP) resolves it via `resolveAgentChain` to disambiguate Celo vs
  * Arc, so this function does not re-read the row. Reads the on-chain ERC-8004
- * identity + aggregate feedback keyed by the agentId on the row; best-effort, a
- * chain RPC blip falls back to the declared row alone.
+ * identity + aggregate feedback keyed by the agentId on the row. Arc uses its
+ * frozen DB archive; Celo RPC failures fall back to the declared row alone.
  *
  * Returns `null` when there is no `wallets` row for the address (nothing
  * declared, nothing to show).
@@ -611,18 +612,19 @@ export async function resolveEvmKarma(
   const agentId =
     chain === 'celo' ? walletRow.celo_agent_id ?? null : walletRow.arc_agent_id ?? null;
 
-  // Lazy import the chain adapter so a Solana/Stellar caller never pulls viem.
-  const { readAgent, aggregateFeedback } =
-    chain === 'celo'
-      ? await import('@/integrations/erc8004-celo')
-      : await import('@/integrations/erc8004-arc');
-
-  const [agent, feedback] = agentId != null
-    ? await Promise.all([
-        readAgent(BigInt(agentId)).catch(() => null),
-        aggregateFeedback(BigInt(agentId), { includeRevoked: true }).catch(() => null),
-      ])
-    : [null, null];
+  // Retired testnet reads only its saved mirror. Lazy loading avoids a static
+  // cycle through the cached profile helpers; Celo retains its live readers.
+  const [agent, feedback] = agentId == null
+    ? [null, null]
+    : chain === 'arc'
+      ? await import('@/db/cached').then(async ({ getCachedEvmAgentOnchain }) => {
+          const archived = await getCachedEvmAgentOnchain('arc', agentId);
+          return [archived.agent, archived.feedback] as const;
+        })
+      : await import('@/integrations/erc8004-celo').then(({ readAgent, aggregateFeedback }) => Promise.all([
+          readAgent(BigInt(agentId)).catch(() => null),
+          aggregateFeedback(BigInt(agentId), { includeRevoked: true }).catch(() => null),
+        ]));
 
   const identity: KarmaIdentity = walletRow.claimed
     ? {
@@ -674,14 +676,14 @@ export async function resolveEvmKarma(
     explorerUrls: {
       evmscan,
       eightthousandfourscan: agentId != null ? `https://8004scan.io/agent/${agentId}` : null,
-      agentkarma: profileUrlFor(address),
+      agentkarma: profileUrlFor(address, chain, agentId),
     },
   };
 }
 
-function profileUrlFor(address: string): string {
+function profileUrlFor(address: string, chain: Chain, agentId: number | null): string {
   const origin = process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io';
-  return `${origin}/agent/${address}`;
+  return `${origin}${agentHref({ chain, address, agentId })}`;
 }
 
 // Re-export Chain for callers that branch on the resolved chain alongside the

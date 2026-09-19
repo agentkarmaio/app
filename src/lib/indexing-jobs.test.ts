@@ -248,3 +248,8 @@ test('a clean membership sweep carries no reason at all', () => {
 test('an empty population is not a read failure', () => {
   expect(registryScanReason(0, 0, 0)).toBeUndefined();
 });
+
+
+test.each(['escrow', 'transfers', 'registry'] as const)('retired Arc testnet refuses the %s job before any dependencies run', path => {
+  expect(() => createIndexingJob('arc', path)).toThrow('arc_testnet_retired');
+});

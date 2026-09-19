@@ -180,10 +180,19 @@ describe('POST /api/agent/claim/evm — honest claim write', () => {
     const lower = address.toLowerCase();
     const { message: m, signature: s } = await signedClaim(lower, { displayName: 'Lower' });
     const res = await POST(
-      req({ address: lower, chain: 'arc', displayName: 'Lower', signature: s, message: m }) as never,
+      req({ address: lower, chain: 'celo', displayName: 'Lower', signature: s, message: m }) as never,
     );
     expect(res.status).toBe(200);
-    expect((await res.json()).chain).toBe('arc');
+    expect((await res.json()).chain).toBe('celo');
+  });
+
+  test('a valid signed testnet claim is retired without persisting metadata', async () => {
+    const { message: m, signature: s } = await signedClaim(address, { displayName: 'Archived Agent' });
+    const res = await POST(
+      req({ address, chain: 'arc', displayName: 'Archived Agent', signature: s, message: m }) as never,
+    );
+    expect(res.status).toBe(410);
+    expect(captured).toEqual([]);
   });
 
   test('valid signature but body metadata differs from the binding → 401', async () => {

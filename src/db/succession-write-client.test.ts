@@ -41,6 +41,7 @@ function makeFake(opts: {
       const builder: Record<string, unknown> = {};
       builder.select = () => builder;
       builder.eq = (col: string, val: unknown) => { filters[col] = val; return builder; };
+      builder.neq = () => builder;
       builder.in = (col: string, val: unknown) => { filters[col] = val; return builder; };
       builder.not = (col: string, _op: string, val: unknown) => { filters[`not_${col}`] = val; return builder; };
       builder.order = () => builder;

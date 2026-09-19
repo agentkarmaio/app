@@ -105,6 +105,7 @@ export function createIndexingJob(
   path: IndexingPath,
   options: JobOptions = {},
 ): IndexingJob {
+  if (chain === 'arc') throw Error('arc_testnet_retired');
   const definition = INDEXING_PATHS.find(
     (p) => p.chain === chain && p.path === path,
   );
@@ -143,36 +144,6 @@ export function createIndexingJob(
             pendingCount: (outcome.pendingCount ?? 0) + 1 };
         }
         return outcome;
-      }
-      if (chain === 'arc' && path === 'escrow') {
-        const { runArcJobsIndexer } = await import('@/indexer/arc-jobs');
-        const r = await runArcJobsIndexer({ signal });
-        return coverageOutcome(
-          {
-            ...r.coverage,
-            gaps:
-              r.coverage.reason === 'head_behind_cursor'
-                ? 0
-                : r.coverage.unresolved,
-            unresolved:
-              r.coverage.reason === 'head_behind_cursor'
-                ? r.coverage.unresolved
-                : 0,
-          },
-          r.inserted,
-        );
-      }
-      if (chain === 'arc' && path === 'transfers') {
-        const { runArcTransfersIndexer } =
-          await import('@/indexer/arc-transfers');
-        const r = await runArcTransfersIndexer({ signal });
-        return coverageOutcome(r.coverage, r.inserted);
-      }
-      if (chain === 'arc' && path === 'registry') {
-        const { runArcRegistryRefresh } =
-          await import('@/indexer/arc-registry-refresh');
-        const r = await runArcRegistryRefresh({ signal });
-        return coverageOutcome(r.coverage, r.agentsPersisted);
       }
       if (chain === 'stellar' && path === 'transfers') {
         const { runStellarTransfersIndexer } =
@@ -382,6 +353,8 @@ export function startIndexingWorkers() {
     return;
   installLeaseShutdownHandlers();
   for (const def of INDEXING_PATHS) {
+    // Retain definitions for archived health; never schedule retired testnet.
+    if (def.chain === 'arc') continue;
     if (
       def.chain === 'solana' &&
       def.path === 'payments' &&

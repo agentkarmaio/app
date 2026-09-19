@@ -18,7 +18,7 @@ const CLAIM_WINDOW_MS = 5 * 60 * 1000;
  *
  * Update an ALREADY-CLAIMED agent's identity metadata (display name,
  * description, website, category, logo, and — Solana only — Tempo address).
- * Chain-unified: one route serves solana/celo/arc/stellar, authed by the SAME
+ * Chain-unified: one route serves solana/celo/stellar, authed by the SAME
  * byte-identical claim challenge the /api/agent/prove route uses. Only the
  * keyholder of the agent's wallet can produce the signature, so this gates edits
  * to the owner. Unlike the claim routes it has NO succession/scan side-effects.
@@ -51,6 +51,10 @@ export async function POST(request: NextRequest) {
       message?: string;
     };
 
+  if (chain === 'arc') {
+    return NextResponse.json({ error: 'Arc testnet is retired. Historical profiles remain read-only.' }, { status: 410 });
+  }
+
   if (chain === 'arc-mainnet') {
     return NextResponse.json({ error: 'Arc mainnet ownership changes are not enabled' }, { status: 501 });
   }
@@ -68,7 +72,7 @@ export async function POST(request: NextRequest) {
   // Per-chain address validation + normalization (EVM rows are lowercase) —
   // identical to /api/agent/prove so the challenge address matches the stored row.
   let normalized: string;
-  if (chain === 'celo' || chain === 'arc') {
+  if (chain === 'celo') {
     if (!isAddress(address)) {
       return NextResponse.json({ error: 'Invalid EVM wallet address' }, { status: 400 });
     }

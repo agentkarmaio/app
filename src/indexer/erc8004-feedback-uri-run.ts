@@ -55,6 +55,7 @@ if (!config) {
 }
 const chain = config.chain;
 const dryRun = flag('dry-run');
+if (chain === 'arc' && !dryRun) throw new Error('arc_testnet_retired');
 const windowSize = numArg('window') ?? MAX_LOG_WINDOW;
 const maxWindows = numArg('max-windows') ?? DEFAULT_MAX_WINDOWS;
 

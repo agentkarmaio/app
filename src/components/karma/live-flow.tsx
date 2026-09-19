@@ -76,7 +76,7 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
         </summary>
         <div className="absolute left-0 top-full z-40 mt-2 max-h-[70vh] w-[min(28rem,calc(100vw-3rem))] overflow-y-auto rounded-lg border border-border bg-popover p-4 text-xs font-normal text-popover-foreground shadow-lg">
           <p className="font-medium">Network coverage</p>
-          <p className="mt-1 text-muted-foreground">Relevant agent activity across supported networks. Mainnet and testnet records are kept separate. Counts include previously indexed receipts.</p>
+          <p className="mt-1 text-muted-foreground">Relevant agent activity across active networks. Archived testnet records are excluded from these counts.</p>
           {healthFailed && <p className="mt-3 text-muted-foreground">Status updates are delayed. Showing the last available report.</p>}
           {health ? (
             <div className="mt-4 space-y-4">
@@ -84,19 +84,19 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
                 <section key={chain.chain} aria-label={`${CHAIN_LABELS[chain.chain]} indexing`}>
                   <div className="flex items-baseline justify-between gap-3">
                     <h3 className="font-medium">{CHAIN_LABELS[chain.chain]}</h3>
-                    <span className="text-muted-foreground">{INDEXING_STATUS_LABELS[chain.status]}</span>
+                    <span className="text-muted-foreground">{chain.chain === 'arc' ? 'Retired' : INDEXING_STATUS_LABELS[chain.status]}</span>
                   </div>
                   <ul className="mt-2 space-y-2 border-l border-border pl-3">
                     {chain.paths.map((path) => (
                       <li key={path.path}>
                         <div className="flex items-baseline justify-between gap-2">
                           <span>{path.label}</span>
-                          <span className="text-right text-muted-foreground">{INDEXING_STATUS_LABELS[path.status]}</span>
+                          <span className="text-right text-muted-foreground">{chain.chain === 'arc' ? 'Archived' : INDEXING_STATUS_LABELS[path.status]}</span>
                         </div>
                         <p className="mt-0.5 text-[11px] text-muted-foreground">Last checked: <CheckedTime value={path.lastCheckedAt} empty="Never checked" /></p>
                         <p className="text-[11px] text-muted-foreground">Last complete scan: <CheckedTime value={path.lastSuccessAt} empty="Not yet completed" /></p>
-                        {path.unresolved > 0 && <p className="text-[11px] text-muted-foreground">At least {path.unresolved.toLocaleString('en-US')} coverage issues</p>}
-                        {path.issue && <p className="mt-1 text-[11px] text-muted-foreground">{INDEXING_ISSUE_MESSAGES[path.issue]}</p>}
+                        {chain.chain !== 'arc' && path.unresolved > 0 && <p className="text-[11px] text-muted-foreground">At least {path.unresolved.toLocaleString('en-US')} coverage issues</p>}
+                        {chain.chain !== 'arc' && path.issue && <p className="mt-1 text-[11px] text-muted-foreground">{INDEXING_ISSUE_MESSAGES[path.issue]}</p>}
                       </li>
                     ))}
                   </ul>

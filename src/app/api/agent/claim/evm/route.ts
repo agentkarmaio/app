@@ -9,15 +9,15 @@ import { SsrfError } from '@/lib/ssrf-guard';
 
 export const runtime = 'nodejs'; // validateImageUrl → SSRF guard needs node:dns/net
 
-const VALID_CHAINS: ReadonlyArray<Extract<Chain, 'celo' | 'arc'>> = ['celo', 'arc'];
+const VALID_CHAINS: ReadonlyArray<Extract<Chain, 'celo'>> = ['celo'];
 const CLAIM_WINDOW_MS = 5 * 60 * 1000;
 
 /**
  * POST /api/agent/claim/evm
  *
- * Claim a Celo / Arc (0x…) wallet to enrich its agent profile. Proves ownership
+ * Claim a Celo (0x…) wallet to enrich its agent profile. Proves ownership
  * via an EIP-191 personal_sign over the canonical challenge (byte-identical to
- * the Solana / Stellar routes). One route serves both EVM chains; the `chain`
+ * the Solana / Stellar routes). Arc testnet is retired; the `chain`
  * field selects the (chain, address) composite-PK row.
  *
  * EVM rows are keyed LOWERCASE (the indexer stores owner.toLowerCase()), so the
@@ -48,6 +48,10 @@ export async function POST(request: NextRequest) {
     message?: string;
   };
 
+  if (chain === 'arc') {
+    return NextResponse.json({ error: 'Arc testnet is retired. Historical profiles remain read-only.' }, { status: 410 });
+  }
+
   if (chain === 'arc-mainnet') {
     return NextResponse.json({ error: 'Arc mainnet ownership changes are not enabled' }, { status: 501 });
   }
@@ -59,7 +63,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!VALID_CHAINS.includes(chain as Extract<Chain, 'celo' | 'arc'>)) {
+  if (!VALID_CHAINS.includes(chain as Extract<Chain, 'celo'>)) {
     return NextResponse.json({ error: `chain must be one of: ${VALID_CHAINS.join(', ')}` }, { status: 400 });
   }
   if (!isAddress(address)) {

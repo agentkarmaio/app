@@ -16,6 +16,9 @@ export async function POST(request: NextRequest) {
   if (!gate.ok) return gate.response;
 
   const body = await request.json().catch(() => ({}));
+  if ((body as { chain?: string }).chain === 'arc') {
+    return NextResponse.json({ error: 'Arc testnet is retired. Historical profiles remain read-only.' }, { status: 410 });
+  }
   const wallet = (body as { wallet?: string }).wallet;
 
   if (wallet) {

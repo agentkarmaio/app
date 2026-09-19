@@ -84,6 +84,13 @@ export async function resolveAgentCardFields(
   }
   candidate ??= await getWallet(wallet, opts.chain ?? 'solana').catch(() => null);
   const w = opts.chain && candidate?.chain !== opts.chain ? null : candidate;
+  if (opts.chain === 'arc' && opts.agentId != null && w?.arc_agent_id !== opts.agentId) {
+    const row = await getErc8004Agent('arc', opts.agentId).catch(() => null);
+    if (ownsAddress(row, wallet.toLowerCase())) return fromRegistry(row!, 'arc', wallet);
+    // A missing/mismatched archive pin cannot inherit another agent's identity.
+    return { name: `Agent ${short(wallet)}`, score: 0, tier: 'Unrated', badge: 'declared',
+      txCount: 0, chain: 'arc', claimed: false, isRegistry: false };
+  }
   if (opts.chain === 'arc-mainnet') {
     const snapshot = await resolveKarma(wallet, 'arc-mainnet', { agentId: opts.agentId });
     return { name: snapshot?.identity.displayName ?? `Agent ${short(wallet)}`,
@@ -116,7 +123,7 @@ export async function resolveAgentCardFields(
   if (opts.agentId != null) {
     const networks: Array<'celo' | 'arc'> = opts.chain
       ? opts.chain === 'celo' || opts.chain === 'arc' ? [opts.chain] : []
-      : ['celo', 'arc'];
+      : ['celo'];
     for (const c of networks) {
       const r = await getErc8004Agent(c, opts.agentId).catch(() => null);
       if (ownsAddress(r, lc)) return fromRegistry(r as Record<string, unknown>, c, wallet);
@@ -126,7 +133,7 @@ export async function resolveAgentCardFields(
   // 3. ERC-8004 registry by address (no agentId — e.g. the OG image path).
   if (EVM_RE.test(wallet) && !opts.chain) {
     const reg = await getErc8004AgentByAddress(wallet).catch(() => null);
-    if (reg) return fromRegistry(reg.row, reg.chain, wallet);
+    if (reg && reg.chain !== 'arc') return fromRegistry(reg.row, reg.chain, wallet);
   } else if (opts.chain === 'celo' || opts.chain === 'arc') {
     const reg = await getRegistryAgentsForAddress(opts.chain, wallet, 1).catch(() => null);
     if (reg?.rows[0]) return fromRegistry(reg.rows[0] as unknown as Record<string, unknown>, opts.chain, wallet);

@@ -10,7 +10,7 @@
  *   4. persists the derived status + observed heartbeat onto successions + the
  *      denormalized wallet columns.
  *
- * Chain-agnostic: one drain covers solana / celo / arc / stellar uniformly via
+ * Chain-agnostic: one drain covers solana / celo / stellar / arc-mainnet uniformly via
  * the composite (chain, agent_wallet) keying — the per-row `chain` drives both
  * the tx read and the writes. AK never executes a will; this is pure OBSERVATION
  * + scoring (RFC §12 Non-Custody).
@@ -65,6 +65,9 @@ export async function evaluateOneHeartbeat(
   succession: Succession,
   now: Date = new Date(),
 ): Promise<'observed' | 'lapsed' | 'skipped'> {
+  // Retired testnet records retain their last observed state.
+  if (succession.chain === 'arc') return 'skipped';
+
   // Terminal facts (executed/revoked) are settled — never derive liveness or
   // emit a heartbeat for them. The list query already excludes these, but guard
   // here too so a direct call can't resurrect a heartbeat on a closed will.
@@ -137,8 +140,10 @@ export async function drainHeartbeatsOnce(
   chain?: Chain,
   now: Date = new Date(),
 ): Promise<HeartbeatResult> {
+  if (chain === 'arc') return { claimed: 0, transitioned: 0, observed: 0, lapsed: 0, skipped: 0, errors: [], elapsedMs: 0 };
+
   const start = Date.now();
-  const rows = await listSuccessionsForHeartbeat(batchSize, chain);
+  const rows = (await listSuccessionsForHeartbeat(batchSize, chain)).filter(row => row.chain !== 'arc');
 
   let observed = 0;
   let lapsed = 0;

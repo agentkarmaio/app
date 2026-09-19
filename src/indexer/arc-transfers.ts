@@ -811,6 +811,7 @@ export interface RunArcTransfersOptions {
 export async function runArcTransfersIndexer(
   opts: RunArcTransfersOptions = {},
 ): Promise<ArcIndexRunResult> {
+  if (ARC_CHAIN === 'arc') throw new Error('arc_testnet_retired');
   opts.signal?.throwIfAborted();
   const rpc = createArcRpcGate({ signal: opts.signal, deadline: Date.now() + ARC_RUN_TIME_BUDGET_MS });
   const usdcContract = opts.usdcContract ?? ARC_USDC_CONTRACT;

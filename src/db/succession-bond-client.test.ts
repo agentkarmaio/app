@@ -33,6 +33,7 @@ function makeFake(rows: unknown[], rec: Recorder[], count = rows.length) {
       const builder: Record<string, unknown> = {};
       builder.select = (sel: string) => { r.selected = sel; return builder; };
       builder.eq = (col: string, val: unknown) => { r.filters.push({ col, val }); return builder; };
+      builder.neq = () => builder;
       builder.in = (col: string, val: unknown) => { r.filters.push({ col, val }); return builder; };
       builder.order = () => builder;
       builder.maybeSingle = async () => ({ data: rows[0] ?? null, error: null });

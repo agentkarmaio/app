@@ -33,9 +33,9 @@ test('mainnet ID zero resolves exact registry identity from the ranking projecti
 });
 test('mainnet is never enqueued for the incompatible legacy scoring model',async()=>{
   const calls=recorder();
-  await markWalletsDirty([{chain:'arc-mainnet',address:'same'},{chain:'arc',address:'same'}]);
+  await markWalletsDirty([{chain:'arc-mainnet',address:'same'},{chain:'celo',address:'same'}]);
   expect(calls).toHaveLength(1);
-  expect(calls[0].filters).toContainEqual(['eq','chain','arc']);
+  expect(calls[0].filters).toContainEqual(['eq','chain','celo']);
 });
 for(const [name,run] of [['claim',()=>claimDirtyWallets()],['count',()=>countDirtyWallets()],['enqueue-all',()=>markAllWalletsDirty()]] as const) {
   test(`legacy queue ${name} excludes mainnet at the database`,async()=>{

@@ -25,5 +25,5 @@ export function getAdapter(chain: Chain): ChainAdapter {
 }
 
 export function getAllAdapters(): ChainAdapter[] {
-  return [..._adapters.values()];
+  return [..._adapters.values()].filter((adapter) => adapter.chain !== 'arc');
 }

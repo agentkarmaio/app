@@ -38,6 +38,10 @@ export async function POST(request: NextRequest) {
     message?: string;
   };
 
+  if (chain === 'arc') {
+    return NextResponse.json({ error: 'Arc testnet is retired. Historical profiles remain read-only.' }, { status: 410 });
+  }
+
   if (chain === 'arc-mainnet') {
     return NextResponse.json({ error: 'Arc mainnet ownership changes are not enabled' }, { status: 501 });
   }
@@ -54,7 +58,7 @@ export async function POST(request: NextRequest) {
 
   // Per-chain address validation + normalization (EVM rows are lowercase).
   let normalized: string;
-  if (chain === 'celo' || chain === 'arc') {
+  if (chain === 'celo') {
     if (!isAddress(address)) {
       return NextResponse.json({ error: 'Invalid EVM wallet address' }, { status: 400 });
     }

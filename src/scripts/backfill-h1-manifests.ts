@@ -13,23 +13,25 @@ import {
 } from '../db/client';
 import { resolveManifest } from '../integrations/manifest';
 import { buildManifestSignal } from '../scoring/signals';
+import type { Chain } from '../db/schema';
 
 async function main() {
   console.log('[backfill-h1] Loading claimed wallets with a website…');
   const { data, error } = await supabase
     .from('wallets')
-    .select('address, website')
+    .select('chain, address, website')
     .eq('claimed', true)
+    .neq('chain', 'arc')
     .not('website', 'is', null);
   if (error) throw error;
 
-  const rows = (data ?? []) as { address: string; website: string | null }[];
+  const rows = (data ?? []) as { chain: Chain; address: string; website: string | null }[];
   console.log(`[backfill-h1] ${rows.length} claimed wallets with websites`);
 
   const signals = [];
   const summary = { resolved: 0, verified: 0, missed: 0, errors: 0 };
 
-  for (const { address, website } of rows) {
+  for (const { chain, address, website } of rows) {
     try {
       const result = await resolveManifest(address, website);
       if (!result) {
@@ -39,6 +41,7 @@ async function main() {
 
       await upsertAgentManifest({
         agentWallet: address,
+        chain,
         sourceType:  result.sourceType,
         url:         result.url,
         raw:         result.raw,
@@ -46,11 +49,11 @@ async function main() {
         verified:    result.verified,
       });
 
-      signals.push(buildManifestSignal(address, {
+      signals.push({ ...buildManifestSignal(address, {
         sourceType: result.sourceType,
         verified:   result.verified,
         url:        result.url,
-      }));
+      }), chain });
 
       summary.resolved++;
       if (result.verified) summary.verified++;
