@@ -1304,10 +1304,32 @@ export async function insertTransaction(
   if (error) throw error;
 }
 
-export async function insertTransactions(
+export interface InsertedTransactions {
+  /** Rows actually written. Duplicates are not counted; see below. */
+  count: number;
+  /** Distinct `wallet_address` of those rows — the wallets whose score moved. */
+  wallets: string[];
+}
+
+/**
+ * Insert receipts, reporting WHICH wallets received one.
+ *
+ * `ignoreDuplicates` makes PostgREST emit `ON CONFLICT DO NOTHING … RETURNING`,
+ * so the returned rows are exactly the rows inserted — conflicting ones come
+ * back empty. That is not an assumption: run 35467107060 logged
+ * `Inserted 10/1138`, i.e. 1,138 rows sent and 10 returned. The wallet set is
+ * therefore free, and the caller no longer has to treat every FETCHED
+ * transaction as a wallet that needs rescoring.
+ *
+ * Retried: `ignoreDuplicates` makes the statement idempotent, and 57014 cancels
+ * + rolls the whole statement back, so a retry re-inserts the same rows rather
+ * than a remainder — the returned count stays true. See the withTransientDbRetry
+ * header for why the ingest hot path needs this.
+ */
+export async function insertTransactionsReturningWallets(
   txs: TransactionInsert[],
-): Promise<number> {
-  if (txs.length === 0) return 0;
+): Promise<InsertedTransactions> {
+  if (txs.length === 0) return { count: 0, wallets: [] };
 
   const rows = txs.map((tx) => ({
     chain: tx.chain,
@@ -1320,19 +1342,33 @@ export async function insertTransactions(
     tx_signature: tx.tx_signature,
   }));
 
-  // Retried: `ignoreDuplicates` makes the statement idempotent, and 57014
-  // cancels + rolls the whole statement back, so a retry re-inserts the same
-  // rows rather than a remainder — the returned count stays true. See the
-  // withTransientDbRetry header for why the ingest hot path needs this.
   return withTransientDbRetry(async () => {
     const { data, error } = await supabase
       .from('transactions')
       .upsert(rows, { onConflict: 'chain,tx_signature', ignoreDuplicates: true })
-      .select('id');
+      .select('id, wallet_address');
 
     if (error) throw error;
-    return data?.length ?? 0;
+    const inserted = (data ?? []) as { wallet_address?: string }[];
+    const wallets = [...new Set(
+      inserted.map((row) => row.wallet_address).filter((a): a is string => Boolean(a)),
+    )];
+    return { count: inserted.length, wallets };
   });
+}
+
+/**
+ * Insert receipts, returning how many landed.
+ *
+ * Kept as the shared contract every chain indexer is typed against
+ * (`arc-jobs.ts`, `celo-x402.ts`, `stellar-*`, `solana-transfers`, and their
+ * test doubles). Only the Solana payments indexer needs the wallet set, so it
+ * calls `insertTransactionsReturningWallets` rather than widening this one.
+ */
+export async function insertTransactions(
+  txs: TransactionInsert[],
+): Promise<number> {
+  return (await insertTransactionsReturningWallets(txs)).count;
 }
 
 export async function getTransactions(

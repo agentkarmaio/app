@@ -21,7 +21,6 @@ import { Connection } from '@solana/web3.js';
 import { __setSupabaseForTest } from '../db/client';
 import * as helius from './helius';
 import * as db from '../db/client';
-import * as attestation from '../integrations/attestation';
 import { ALL_FACILITATOR_ADDRESSES } from '../config/facilitators';
 import {
   isRpcRateLimited,
@@ -200,10 +199,10 @@ describe('Solana receipt-before-cursor ordering', () => {
     }));
     restores.push(spyOn(db, 'upsertCursor').mockImplementation(async () => { events.push('cursor'); }));
     restores.push(spyOn(db, 'ensureWalletsExist').mockResolvedValue(undefined));
-    restores.push(spyOn(db, 'insertTransactions').mockImplementation(async () => {
+    restores.push(spyOn(db, 'insertTransactionsReturningWallets').mockImplementation(async () => {
       events.push('receipt');
       if (failure === 'receipt') throw Error('receipt_insert_failed');
-      return 1;
+      return { count: 1, wallets: ['payer'] };
     }));
     restores.push(spyOn(db, 'insertSignalEvents').mockImplementation(async () => {
       events.push('signal');
@@ -211,9 +210,7 @@ describe('Solana receipt-before-cursor ordering', () => {
       abort?.abort(Error('commit_cancelled'));
       return 1;
     }));
-    restores.push(spyOn(db, 'getTransactionsForWallets').mockResolvedValue([]));
-    restores.push(spyOn(db, 'getLatestSignalValues').mockResolvedValue(new Map()));
-    restores.push(spyOn(attestation, 'readAttestations').mockResolvedValue(new Map()));
+    restores.push(spyOn(db, 'markWalletsDirty').mockImplementation(async () => { events.push('dirty'); }));
     return { events, restore: () => restores.reverse().forEach(spy => spy.mockRestore()) };
   }
 
@@ -240,7 +237,11 @@ describe('Solana receipt-before-cursor ordering', () => {
     try {
       const result = await runIndexer(100);
       expect(result.inserted).toBe(1);
-      expect(fixture.events).toEqual(['receipt', 'signal', 'cursor']);
+      // Scoring is the drain's job now; the indexer queues and stops. The
+      // enqueue must land BEFORE the cursor moves, so a crash in between
+      // cannot leave a receipt banked with nobody scheduled to score it.
+      expect(fixture.events).toEqual(['receipt', 'signal', 'cursor', 'dirty']);
+      expect(result.queued).toBe(1);
     } finally { fixture.restore(); }
   });
 
@@ -489,5 +490,74 @@ describe('describeCursorReset', () => {
     expect(r.level).toBe('warn');
     expect(r.message).toContain('500 signature(s)');
     expect(r.message).toContain('backfill-facilitator-gap');
+  });
+});
+
+/**
+ * Regression: 2026-09-19. The rescore set was built from every FETCHED
+ * transaction, before the insert, so a backfill run re-scored every payer in
+ * the 100-signature window whether or not anything was new. That run fetched
+ * 1,138 receipts, inserted 10, and rescored 221 wallets — a 5,000-row history
+ * read, a 5 s attestation read and two writes each — and was killed at its
+ * 600 s lease with the tail still running. Over 09-18/19, five consecutive runs
+ * rescored ~190 wallets each for 0, 0, 0, 1 and 0 new rows.
+ */
+describe('Solana indexer queues only the wallets that received a receipt', () => {
+  const address = ALL_FACILITATOR_ADDRESSES[0];
+
+  function setup(inserted: { count: number; wallets: string[] }) {
+    const restores: Array<{ mockRestore: () => void }> = [];
+    const dirty: Array<{ chain: string; address: string }> = [];
+    const sigs = ['s1', 's2', 's3'].map((signature) => ({ signature, slot: 1, err: null, memo: null, blockTime: 1 }));
+
+    restores.push(spyOn(Connection.prototype, 'getSignaturesForAddress').mockImplementation(
+      async (key) => (key.toBase58() === address ? sigs : []),
+    ));
+    restores.push(spyOn(helius, 'parseTransactionsBatch').mockResolvedValue({
+      transactions: sigs.map(() => ({}) as helius.HeliusEnhancedTransaction),
+      requested: sigs.length, unresolved: [], undecodable: 0, recoveredFromArchive: 0,
+    }));
+    let n = 0;
+    restores.push(spyOn(helius, 'extractX402Payment').mockImplementation(() => {
+      const i = n++;
+      return {
+        chain: 'solana', wallet_address: `payer-${i}`, facilitator: address, amount: 1,
+        timestamp: '2026-09-19T00:00:00Z', success: true, tx_signature: `s${i + 1}`,
+      };
+    }));
+    restores.push(spyOn(helius, 'extractPayshPayment').mockReturnValue(null));
+    restores.push(spyOn(db, 'getCursor').mockResolvedValue(null));
+    restores.push(spyOn(db, 'upsertCursor').mockResolvedValue(undefined));
+    restores.push(spyOn(db, 'ensureWalletsExist').mockResolvedValue(undefined));
+    restores.push(spyOn(db, 'insertSignalEvents').mockResolvedValue(0));
+    restores.push(spyOn(db, 'insertTransactionsReturningWallets').mockResolvedValue(inserted));
+    restores.push(spyOn(db, 'markWalletsDirty').mockImplementation(async (wallets) => {
+      dirty.push(...wallets);
+    }));
+    return { dirty, restore: () => restores.reverse().forEach((spy) => spy.mockRestore()) };
+  }
+
+  test('three fetched, one inserted → exactly that one wallet is queued', async () => {
+    const fixture = setup({ count: 1, wallets: ['payer-1'] });
+    try {
+      const result = await runIndexer(100, { backfill: true });
+      expect(result.fetched).toBe(3);
+      expect(result.inserted).toBe(1);
+      expect(result.queued).toBe(1);
+      expect(fixture.dirty).toEqual([{ chain: 'solana', address: 'payer-1' }]);
+    } finally { fixture.restore(); }
+  });
+
+  // The 09-18/19 steady state: everything already banked by the webhook, so the
+  // run has nothing to hand on. It must not touch the scoring path at all.
+  test('nothing inserted → nothing queued, even with a full fetched window', async () => {
+    const fixture = setup({ count: 0, wallets: [] });
+    try {
+      const result = await runIndexer(100, { backfill: true });
+      expect(result.fetched).toBe(3);
+      expect(result.inserted).toBe(0);
+      expect(result.queued).toBe(0);
+      expect(fixture.dirty).toEqual([]);
+    } finally { fixture.restore(); }
   });
 });

@@ -37,7 +37,7 @@ runIndexerCli({
     console.log(`[indexer] managed status: ${status}`);
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     console.log(`\n[indexer] Done in ${elapsed}s`);
-    console.log(`[indexer] Fetched: ${result.fetched} | Inserted: ${result.inserted} | Scored: ${result.scored}`);
+    console.log(`[indexer] Fetched: ${result.fetched} | Inserted: ${result.inserted} | Queued for scoring: ${result.queued}`);
     process.exit(exitCode);
   })
   .catch((err) => {

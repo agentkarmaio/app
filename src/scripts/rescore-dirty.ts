@@ -40,7 +40,7 @@ import { calculateScore } from '@/scoring';
 import { buildCadenceSignal, buildAutonomySignal } from '@/scoring/signals';
 import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy } from '@/scoring/autonomy';
-import { readAttestations } from '@/integrations/attestation';
+import { readAttestationsDetailed } from '@/integrations/attestation';
 
 const DEFAULT_BATCH_SIZE = 200;
 const CONCURRENCY = 8;
@@ -52,12 +52,25 @@ export interface RescoreResult {
   errors: { address: string; message: string }[];
   remaining: number;
   elapsedMs: number;
+  /**
+   * No Solana read endpoint would serve 8004 attestations for this batch.
+   *
+   * REQUIRED, deliberately: an optional flag would be silently satisfied by a
+   * producer that never sets it, and the whole point is that a run which could
+   * not read a Tier-1 signal must not report clean. Solana wallets are left
+   * queued rather than scored from a signal we know we could not read — the
+   * SDK returns a valid-looking zero on failure, and `calculateScore` treats a
+   * zero attestation as ABSENT, so persisting one silently rewrites the wallet
+   * as having no on-chain feedback.
+   */
+  attestationsUnavailable: boolean;
 }
 
 async function rescoreOne(
   wallet: DirtyWallet,
   txWindow: number,
   attestations: Map<string, number>,
+  attestationsUnavailable = false,
 ): Promise<boolean> {
   // Every read and write below is scoped to the wallet's own chain. Omitting it
   // is not a smaller bug than getting it wrong: the client helpers default to
@@ -68,6 +81,11 @@ async function rescoreOne(
   // managed transfer lease. Never overwrite them with legacy payment scoring,
   // even if a stale queue implementation returns a mainnet wallet.
   if (chain === 'arc-mainnet' || chain === 'arc') return false;
+  // Solana scores blend an on-chain 8004 attestation. When no endpoint would
+  // serve that read, the honest move is to leave the wallet queued: writing a
+  // score now would bake "no attestation" into a wallet that may well have one.
+  // Other chains do not read it, so they are unaffected.
+  if (attestationsUnavailable && chain === 'solana') return false;
   const txs = await getRecentTransactionsForWallet(address, txWindow, chain);
   if (txs.length === 0) {
     // Wallet has no txs yet — claimed but nothing to score. Leave defaults.
@@ -137,10 +155,15 @@ export async function drainOnce(
   const start = Date.now();
   const claimed = await claimDirtyWallets(batchSize);
   if (claimed.length === 0) {
-    return { claimed: 0, scored: 0, skipped: 0, errors: [], remaining: 0, elapsedMs: Date.now() - start };
+    return { claimed: 0, scored: 0, skipped: 0, errors: [], remaining: 0, elapsedMs: Date.now() - start, attestationsUnavailable: false };
   }
 
-  const attestations = await readAttestations(claimed.filter((w) => w.chain !== 'arc-mainnet' && w.chain !== 'arc').map((w) => w.address));
+  const { scores: attestations, unavailable: attestationsUnavailable } =
+    await readAttestationsDetailed(
+      claimed
+        .filter((w) => w.chain !== 'arc-mainnet' && w.chain !== 'arc')
+        .map((w) => w.address),
+    );
 
   const errors: { address: string; message: string }[] = [];
   let scored = 0;
@@ -150,7 +173,7 @@ export async function drainOnce(
   for (let i = 0; i < claimed.length; i += CONCURRENCY) {
     const slice = claimed.slice(i, i + CONCURRENCY);
     const results = await Promise.allSettled(
-      slice.map((w) => rescoreOne(w, txWindow, attestations)),
+      slice.map((w) => rescoreOne(w, txWindow, attestations, attestationsUnavailable)),
     );
     for (let j = 0; j < results.length; j++) {
       const r = results[j];
@@ -171,6 +194,18 @@ export async function drainOnce(
     await markWalletsDirty(claimed.filter((w) => failed.has(w.address)));
   }
 
+  // Claiming clears the dirty flag, so wallets skipped for an unreadable
+  // attestation have to be put back explicitly or they are simply dropped.
+  if (attestationsUnavailable) {
+    const solana = claimed.filter((w) => w.chain === 'solana');
+    if (solana.length > 0) {
+      await markWalletsDirty(solana);
+      console.warn(
+        `[rescore] re-queued ${solana.length} Solana wallet(s): no 8004 read endpoint available`,
+      );
+    }
+  }
+
   const remaining = await countDirtyWallets();
   return {
     claimed: claimed.length,
@@ -179,6 +214,7 @@ export async function drainOnce(
     errors,
     remaining,
     elapsedMs: Date.now() - start,
+    attestationsUnavailable,
   };
 }
 

@@ -2,8 +2,8 @@
  * Karma Indexer — Fetches x402 USDC payment transactions from Solana
  * for all known facilitator addresses.
  *
- * Uses Helius Enhanced Transactions API for batch parsing (fast),
- * with cursor-based incremental indexing and parallel facilitator fetching.
+ * Uses cursor-based incremental indexing with parallel facilitator fetching.
+ * Receipts are persisted here; scoring is deferred to the dirty-wallet queue.
  *
  * Env:
  *   SOLANA_RPC_URL         — indexer RPC (a free standard endpoint; preferred)
@@ -33,30 +33,21 @@ import {
 } from '../config/specimen';
 import type { Transaction } from '../db/schema';
 import {
-  insertTransactions,
+  insertTransactionsReturningWallets,
   upsertWallet,
   ensureWalletsExist,
-  insertScoreSnapshot,
-  getTransactionsForWallets,
-  DEFAULT_TX_WINDOW,
+  markWalletsDirty,
   getCursor,
   upsertCursor,
   insertSignalEvents,
-  getLatestSignalValues,
   getPayshOperatorReceiptStats,
   type InsertSignalEventInput,
 } from '../db/client';
-import { calculateScores } from '../scoring';
 import { calculateOperatorScore } from '../scoring/operator';
 import {
   buildX402PaymentSignals,
-  buildCadenceSignal,
-  buildAutonomySignal,
   buildPayshRoutedSignal,
 } from '../scoring/signals';
-import { computeCadence } from '../scoring/cadence';
-import { computeAutonomy, type AutonomyResult } from '../scoring/autonomy';
-import { readAttestations } from '../integrations/attestation';
 import {
   parseTransactionsBatch,
   extractX402Payment,
@@ -532,8 +523,10 @@ export interface IndexerOptions {
 }
 
 /**
- * Full indexer run: fetch all x402 transactions, persist to DB,
- * recalculate scores, and update wallet records.
+ * Full indexer run: fetch all x402 transactions, persist receipts and their
+ * signal rows, advance cursors, and queue the affected wallets for scoring.
+ * Scoring itself belongs to `rescore-dirty`; see the note above the queueing
+ * step for why it is not done inline.
  */
 export async function runIndexer(
   limit: number = DEFAULT_LIMIT,
@@ -541,7 +534,13 @@ export async function runIndexer(
 ): Promise<{
   fetched: number;
   inserted: number;
-  scored: number;
+  /**
+   * Wallets handed to the deferred-scoring queue because they received a receipt
+   * this run. Named `queued`, not `scored`, because the indexer no longer scores:
+   * reporting a count of work merely ENQUEUED as work DONE is how a silent
+   * regression gets in.
+   */
+  queued: number;
   payshSignals: number;
   operatorsScored: number;
   /**
@@ -565,7 +564,7 @@ export async function runIndexer(
     console.log('[indexer] No new transactions found');
     await commitCursors();
     options?.signal?.throwIfAborted();
-    return { fetched: 0, inserted: 0, scored: 0, payshSignals: 0, operatorsScored: 0, unresolved, coverage };
+    return { fetched: 0, inserted: 0, queued: 0, payshSignals: 0, operatorsScored: 0, unresolved, coverage };
   }
 
   // Ensure wallet records exist before inserting transactions/signal_events
@@ -585,7 +584,8 @@ export async function runIndexer(
   await ensureWalletsExist(uniqueWallets);
   options?.signal?.throwIfAborted();
 
-  const inserted = await insertTransactions(transactions);
+  const { count: inserted, wallets: insertedWallets } =
+    await insertTransactionsReturningWallets(transactions);
   options?.signal?.throwIfAborted();
   console.log(`[indexer] Inserted ${inserted}/${transactions.length} transactions`);
 
@@ -637,112 +637,41 @@ export async function runIndexer(
   await commitCursors();
   options?.signal?.throwIfAborted();
 
-  // Main scoring loop runs only on wallets that have x402-style transactions.
-  // Pay.sh operators have no transactions (they're recipients, not senders)
-  // so they're filtered out here and scored separately in the operator pass below.
+  // Scoring is the drain's job, not the indexer's.
+  //
+  // This used to score inline over every payer in the FETCHED window. In
+  // backfill mode that is the newest 100 signatures per facilitator on EVERY
+  // run, whether or not anything is new: on 2026-09-19, 10 new receipts
+  // triggered 221 wallet rescores — a 5,000-row history read, a 5 s attestation
+  // read and two writes each — and the run was killed at its 600 s lease with
+  // the tail still running. Five runs over 09-18/19 rescored ~190 wallets each
+  // for 0, 0, 0, 1 and 0 new rows.
+  //
+  // Marking dirty instead is the shape the rest of the codebase already uses:
+  // the Helius webhook handler, `solana-transfers` and `wallet-scan` all insert
+  // and hand scoring to `rescore-dirty`, which reads a bounded window per
+  // wallet, isolates per-wallet failures, and re-queues whatever throws.
+  //
+  // It must happen HERE, before any later step can fail. The queue is the retry
+  // path: without it, narrowing the set to freshly-inserted wallets would mean a
+  // crash after this point loses them for good, because the next run inserts
+  // nothing for them and would never revisit them.
   const operatorSet = new Set(operatorAddresses);
-  const affectedWallets = uniqueWallets.filter((a) => !operatorSet.has(a));
-  console.log(
-    `[indexer] Fetching up to ${DEFAULT_TX_WINDOW} recent txs each for ` +
-    `${affectedWallets.length} affected wallets...`,
-  );
-  const allTxsForAffected = await getTransactionsForWallets(affectedWallets);
-  options?.signal?.throwIfAborted();
+  const affectedWallets = [...new Set([
+    ...insertedWallets,
+    // A pay.sh receipt is a Tier-1 signal even when the payer's transaction row
+    // already existed, so a newly emitted one changes that payer's score.
+    ...(payshSignalsInserted > 0 ? paysh.map((p) => p.wallet) : []),
+  ])].filter((address) => !operatorSet.has(address));
 
-  // Match the existing reader's five-wallet batch size, checking cancellation
-  // before each batch so scoring cannot continue queuing RPCs after a deadline.
-  const attestations = new Map<string, number>();
-  for (let i = 0; i < affectedWallets.length; i += 5) {
-    options?.signal?.throwIfAborted();
-    const batch = await readAttestations(affectedWallets.slice(i, i + 5));
-    options?.signal?.throwIfAborted();
-    for (const [address, score] of batch) attestations.set(address, score);
-  }
-  if (attestations.size > 0) {
-    console.log(`[indexer] Found ${attestations.size} 8004 attestations`);
-  }
-
-  // Emit Tier 2 cadence + Autonomy Confidence signals for affected wallets.
-  const txByWallet = new Map<string, typeof allTxsForAffected>();
-  for (const tx of allTxsForAffected) {
-    const list = txByWallet.get(tx.wallet_address) ?? [];
-    list.push(tx);
-    txByWallet.set(tx.wallet_address, list);
-  }
-  const cadenceSignals = [];
-  const autonomySignals = [];
-  const cadenceScores = new Map<string, number>();
-  const autonomyByWallet = new Map<string, AutonomyResult>();
-  for (const [addr, txs] of txByWallet) {
-    const cadence = computeCadence(txs.map((tx) => new Date(tx.timestamp)));
-    if (cadence) {
-      cadenceSignals.push(buildCadenceSignal(addr, cadence));
-      cadenceScores.set(addr, cadence.automationScore);
-    }
-    const autonomy = computeAutonomy(
-      txs.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
+  if (affectedWallets.length > 0) {
+    await markWalletsDirty(
+      affectedWallets.map((address) => ({ chain: 'solana' as const, address })),
     );
-    if (autonomy) {
-      autonomySignals.push(buildAutonomySignal(addr, autonomy));
-      autonomyByWallet.set(addr, autonomy);
-    }
-  }
-  if (cadenceSignals.length > 0) {
-    await insertSignalEvents(cadenceSignals, { overwrite: true });
     options?.signal?.throwIfAborted();
-    console.log(`[indexer] Emitted ${cadenceSignals.length} cadence signals`);
+    console.log(`[indexer] Queued ${affectedWallets.length} wallet(s) for scoring`);
   }
-  if (autonomySignals.length > 0) {
-    await insertSignalEvents(autonomySignals, { overwrite: true });
-    options?.signal?.throwIfAborted();
-    console.log(`[indexer] Emitted ${autonomySignals.length} autonomy signals`);
-  }
-
-  // Load Tier 3 manifest scores (Phase H1) — already-resolved manifests contribute
-  // to the blended score; wallets with no manifest get null and weight redistributes.
-  const manifestScores = await getLatestSignalValues(affectedWallets, 'manifest');
-  options?.signal?.throwIfAborted();
-
-  // NOTE: payshRoutedCount was previously passed here, but the legacy
-  // attribution credited the payer's provider face — wrong direction (the
-  // payer is the consumer in a pay.sh tx, the operator is the provider).
-  // Consumer-face pay.sh signals are now emitted with face='consumer' and
-  // will feed Consumer Karma in a future scoring revision. Operator-side
-  // Provider Karma is computed in the operator pass below.
-  const scores = calculateScores(allTxsForAffected, attestations, cadenceScores, manifestScores);
-
-  let scored = 0;
-  for (const [address, walletScore] of scores) {
-    options?.signal?.throwIfAborted();
-    const autonomy = autonomyByWallet.get(address);
-    await upsertWallet(address, walletScore.score, walletScore.trustTier, walletScore.txCount, {
-      // Observed activity, not the time of this run — see
-      // docs/superpowers/specs/2026-09-13-observed-liveness.md.
-      lastSeen: walletScore.lastActive.toISOString(),
-      providerScore: walletScore.providerScore,
-      consumerScore: walletScore.consumerScore,
-      confidenceBadge: walletScore.confidenceBadge,
-      autonomyScore: autonomy?.score ?? null,
-      autonomyLabel: autonomy?.label ?? null,
-      metricSuccessRate: walletScore.metrics.successRate,
-      metricDiversity:   walletScore.metrics.diversity,
-      metricVolume:      walletScore.metrics.volume,
-      metricAge:         walletScore.metrics.age,
-      metricCadence:     walletScore.metrics.cadence,
-    });
-    options?.signal?.throwIfAborted();
-    await insertScoreSnapshot(
-      address,
-      walletScore.score,
-      walletScore.metrics.successRate,
-      walletScore.metrics.diversity,
-      walletScore.metrics.volume,
-      walletScore.metrics.age,
-    );
-    scored++;
-  }
-
-  console.log(`[indexer] Scored ${scored} wallets`);
+  const queued = affectedWallets.length;
 
   // ─── Operator scoring pass (pay.sh provider-side Karma) ───────────────────
   // Operators have no `transactions` rows so the main calculateScores loop
@@ -780,7 +709,7 @@ export async function runIndexer(
   return {
     fetched: transactions.length,
     inserted,
-    scored,
+    queued,
     payshSignals: payshSignalsInserted,
     operatorsScored,
     unresolved,

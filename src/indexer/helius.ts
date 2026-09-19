@@ -2,7 +2,8 @@ import { Connection, type ParsedTransactionWithMeta } from '@solana/web3.js';
 import { USDC_MINT } from '../config/facilitators';
 import { detectPayshRouted } from './paysh-fingerprint';
 import { withConcurrency } from '@/lib/concurrency';
-import { heliusApiKeys, heliusRpcUrls } from '@/lib/helius-keys';
+import { heliusApiKeys } from '@/lib/helius-keys';
+import { DEFAULT_SOLANA_RPC, solanaReadRpcUrls } from '@/lib/solana-rpc';
 import { optionalEnv } from '@/lib/require-env';
 import type { Transaction } from '../db/schema';
 
@@ -57,7 +58,7 @@ export function getHeliusApiKey(): string {
 
 // ─── RPC resolver ────────────────────────────────────────────────────────────
 
-const DEFAULT_RPC = 'https://api.mainnet-beta.solana.com';
+const DEFAULT_RPC = DEFAULT_SOLANA_RPC;
 
 /**
  * RPC endpoint for indexer READS (getSignaturesForAddress + getParsedTransactions).
@@ -72,7 +73,10 @@ const DEFAULT_RPC = 'https://api.mainnet-beta.solana.com';
  * the 2026-06-23 floor outage.
  */
 export function getIndexerRpcUrl(): string {
-  return optionalEnv('SOLANA_RPC_URL', heliusRpcUrls()[0] ?? DEFAULT_RPC);
+  // One ordered list, shared with the 8004 attestation reader (`lib/solana-rpc`)
+  // so the two cannot drift. The indexer only ever wants its first entry; the
+  // attestation reader walks the rest when one endpoint stops answering.
+  return solanaReadRpcUrls()[0];
 }
 
 let _rpcConn: Connection | null = null;

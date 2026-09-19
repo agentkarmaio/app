@@ -58,6 +58,12 @@ jobs:
       - uses: ./.github/actions/bun-setup
 
       - name: Run keep-fresh
+        id: keep_fresh
+        # Step-level, NOT job-level. A job that exceeds its own timeout-minutes
+        # is CANCELLED, and `if: failure()` steps do not run on cancellation —
+        # so a job-level timeout would silence the very page it exists to raise.
+        # A step-level one fails the step and lets the alert step run.
+        timeout-minutes: 20
         env:
           # Optional free RPC → Helius-free ingestion. When set, the indexer reads
           # Solana through it (getParsedTransaction) instead of Helius credits.
@@ -69,6 +75,8 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           # Pass the input via env (never interpolate ${{ }} into the shell).
           BACKFILL: ${{ inputs.backfill }}
+          # One-line verdict for the alert step: status, cause and counts.
+          KEEP_FRESH_SUMMARY_FILE: ${{ runner.temp }}/keep-fresh-verdict.txt
         run: |
           # A free SOLANA_RPC_URL means Helius-free, which REQUIRES --backfill
           # (free RPCs lack deep history for incremental `until` cursors) and a
@@ -98,17 +106,37 @@ jobs:
 
       # A broken floor must page, not rot silently — the exact gap that let the
       # 2026-06-23 outage (secrets unset → 100% failure for weeks) go unnoticed.
+      #
+      # The script exits non-zero ONLY when the floor could not do its job: a
+      # step threw, the scan did not complete, the lease was busy while nobody
+      # had finished a scan, or freshness is unreadable/critical. What a
+      # completed scan classified (unserved signatures, retained gaps,
+      # `catching_up`) is disclosed on /api/v2/indexing/status and does NOT
+      # page — keying the exit code on it produced 25 pages in nine days, 24 of
+      # them while ingest was current to the minute.
+      - name: Read the run's verdict
+        id: verdict
+        if: always()
+        shell: bash
+        run: |
+          line="$(cat "${RUNNER_TEMP}/keep-fresh-verdict.txt" 2>/dev/null | head -1)"
+          # No file means the script died before it could say anything.
+          [ -n "$line" ] || line="[keep-fresh] verdict=PAGE why=\"no verdict written — the run died before reporting\""
+          echo "line=${line}" >> "$GITHUB_OUTPUT"
+
+      # `always()` + an explicit outcome check, not `if: failure()`: a step-level
+      # timeout must still reach this step, and this phrasing does not depend on
+      # how a given abort path is classified.
       - name: Page on failure
-        if: failure()
+        if: always() && steps.keep_fresh.outcome != 'success'
         uses: ./.github/actions/telegram-alert
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           text: |
             🛟 <b>AgentKarma keep-fresh FLOOR DEGRADED</b>
-            One or more floor steps failed, or ingest is critically stale.
-            The remaining steps still ran — open the log and read the
-            "[keep-fresh] FAILED steps: …" line for which one broke.
+            The floor could not do its job this run.
+            <code>${{ steps.verdict.outputs.line }}</code>
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
   # Incremental ERC-8004 Celo registry-mirror refresh — the /celo disclosure's
