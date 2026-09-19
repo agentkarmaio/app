@@ -52,6 +52,11 @@ concurrency:
 jobs:
   keep-fresh:
     runs-on: ubuntu-latest
+    # `actions: read` is what the alert gate needs to see how previous runs
+    # ended. Declared per-job so the sibling registry-scan job keeps the default.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
@@ -78,15 +83,25 @@ jobs:
           # One-line verdict for the alert step: status, cause and counts.
           KEEP_FRESH_SUMMARY_FILE: ${{ runner.temp }}/keep-fresh-verdict.txt
         run: |
-          # A free SOLANA_RPC_URL means Helius-free, which REQUIRES --backfill
-          # (free RPCs lack deep history for incremental `until` cursors) and a
-          # capped per-facilitator limit (singular getParsedTransaction calls).
-          if [ -n "$SOLANA_RPC_URL" ]; then
-            bun run src/scripts/keep-fresh.ts --backfill --limit 100
-          elif [ "$BACKFILL" = "true" ]; then
+          # INCREMENTAL by default. This used to force --backfill whenever
+          # SOLANA_RPC_URL was set, because a free RPC prunes its signature
+          # history and a stored `until` cursor would age out into a permanent
+          # -32020 wedge. That reason is gone: `getSignaturesWithCursorFallback`
+          # re-anchors an unresolvable cursor (0953625) and the archive leg
+          # resolves the ones the primary pruned, which is why the in-app worker
+          # has run incremental against the same endpoint all along.
+          #
+          # Backfill re-fetched the newest ~100 signatures for every facilitator
+          # on every run — ~1,000 receipts per run, of which the last five runs
+          # before this change inserted 0, 0, 0, 1 and 0, because the webhook had
+          # already banked them. It cannot close the real gaps either: those are
+          # 59-81 days old and this endpoint retains ~2 days.
+          #
+          # The escape hatch stays: `workflow_dispatch` with backfill=true.
+          if [ "$BACKFILL" = "true" ]; then
             bun run keep-fresh:backfill
           else
-            bun run keep-fresh
+            bun run src/scripts/keep-fresh.ts --limit 100
           fi
 
       # Ping IndexNow (Bing/Yandex/Naver/…) with the agent + org pages whose
@@ -127,8 +142,21 @@ jobs:
       # `always()` + an explicit outcome check, not `if: failure()`: a step-level
       # timeout must still reach this step, and this phrasing does not depend on
       # how a given abort path is classified.
+      # Page on the TRANSITION, not on every red run. A standing incident at a
+      # 6-hourly cadence otherwise sends four identical messages a day, and the
+      # fourth is read with as much attention as the third.
+      - name: Alert gate
+        id: gate
+        if: always()
+        uses: ./.github/actions/alert-gate
+        with:
+          github-token: ${{ github.token }}
+          workflow: keep-fresh.yml
+          failed: ${{ steps.keep_fresh.outcome != 'success' }}
+          reminder-every: '4'
+
       - name: Page on failure
-        if: always() && steps.keep_fresh.outcome != 'success'
+        if: always() && steps.gate.outputs.page == 'true'
         uses: ./.github/actions/telegram-alert
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -136,6 +164,20 @@ jobs:
           text: |
             🛟 <b>AgentKarma keep-fresh FLOOR DEGRADED</b>
             The floor could not do its job this run.
+            <code>${{ steps.verdict.outputs.line }}</code>
+            Consecutive failed runs: ${{ steps.gate.outputs.streak }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      # Closing the loop matters as much as opening it: without this, the only
+      # way to learn the floor came back is to notice the alerts stopping.
+      - name: Note recovery
+        if: always() && steps.gate.outputs.recovered == 'true'
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            ✅ <b>AgentKarma keep-fresh recovered</b>
             <code>${{ steps.verdict.outputs.line }}</code>
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 

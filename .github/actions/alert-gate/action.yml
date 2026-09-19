@@ -1,0 +1,104 @@
+name: Alert gate
+description: >
+  Decide whether THIS run should page, given how the previous runs of the same
+  workflow ended.
+
+  A 6-hourly job that exits non-zero for a week sends 28 identical messages
+  describing one incident, and the 28th is read with exactly as much attention
+  as the 27th — which is to say none. The signal worth delivering is the
+  TRANSITION: the floor just broke, or the floor just recovered.
+
+  So: page when the previous run was not a failure (something changed), and
+  again every `reminder-every` consecutive failures so a standing incident
+  cannot be forgotten (at a 6h cadence, 4 means once a day). Emit `recovered`
+  when this run succeeded and the previous one did not.
+
+  Stateless by design — the run history IS the state, so there is no counter to
+  go stale, nothing to reset, and no divergence between what the badge says and
+  what the phone got.
+
+inputs:
+  github-token:
+    description: Token with `actions: read` on this repository.
+    required: true
+  workflow:
+    description: Workflow file name, e.g. keep-fresh.yml.
+    required: true
+  failed:
+    description: '"true" when this run should be considered failed.'
+    required: true
+  reminder-every:
+    description: >
+      Re-page every Nth consecutive failure, counting this one. 4 at a 6-hourly
+      cadence is one reminder a day. 0 disables reminders entirely.
+    required: false
+    default: '4'
+
+outputs:
+  page:
+    description: '"true" when this run should send a failure page.'
+    value: ${{ steps.decide.outputs.page }}
+  recovered:
+    description: '"true" when this run is the first success after a failure.'
+    value: ${{ steps.decide.outputs.recovered }}
+  streak:
+    description: Consecutive failures including this run ("0" when this run is fine).
+    value: ${{ steps.decide.outputs.streak }}
+
+runs:
+  using: composite
+  steps:
+    - id: decide
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        WORKFLOW: ${{ inputs.workflow }}
+        BRANCH: ${{ github.ref_name }}
+        RUN_ID: ${{ github.run_id }}
+        FAILED: ${{ inputs.failed }}
+        REMINDER_EVERY: ${{ inputs.reminder-every }}
+      run: |
+        set -uo pipefail
+
+        # Previous completed runs on this branch, newest first, excluding this one.
+        history=$(gh api \
+          "repos/${REPO}/actions/workflows/${WORKFLOW}/runs?branch=${BRANCH}&status=completed&per_page=20" \
+          --jq "[.workflow_runs[] | select(.id != ${RUN_ID}) | .conclusion] | .[:10] | join(\" \")" \
+          2>/dev/null) || history=""
+
+        previous=$(printf '%s\n' "$history" | awk '{print $1}')
+
+        # A history we could not read must not silence a page: unknown → page.
+        if [ -z "$history" ]; then
+          echo "::notice::alert-gate: no run history available, treating as a transition"
+          previous="unknown"
+        fi
+
+        streak=0
+        if [ "$FAILED" = "true" ]; then
+          streak=1
+          for conclusion in $history; do
+            [ "$conclusion" = "failure" ] || break
+            streak=$((streak + 1))
+          done
+        fi
+
+        page=false
+        recovered=false
+        if [ "$FAILED" = "true" ]; then
+          if [ "$previous" != "failure" ]; then
+            page=true                      # green → red, or first-ever run
+          elif [ "${REMINDER_EVERY}" -gt 0 ] && [ $((streak % REMINDER_EVERY)) -eq 0 ]; then
+            page=true                      # standing incident, periodic reminder
+          fi
+        elif [ "$previous" = "failure" ]; then
+          recovered=true                   # red → green
+        fi
+
+        echo "alert-gate: failed=${FAILED} previous=${previous} streak=${streak} page=${page} recovered=${recovered}"
+        {
+          echo "page=${page}"
+          echo "recovered=${recovered}"
+          echo "streak=${streak}"
+        } >> "$GITHUB_OUTPUT"
