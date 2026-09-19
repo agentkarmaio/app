@@ -622,13 +622,13 @@ function registerTools(server: McpServer): void {
     {
       title: 'Get Arc agent Karma (both faces)',
       description:
-        'Look up the full Karma snapshot for an Arc agent wallet (EVM 0x… address): provider score, consumer score, confidence badge, and autonomy. Arc is Circle\'s USDC-native L1; AgentKarma indexes its ERC-8183 agentic-commerce job settlements as Tier-1 receipt-grade signals. Same primitive as get_karma (Solana) / get_stellar_karma — Arc rails. Use BEFORE paying an Arc agent.',
+        'Look up Provider and Consumer Karma, confidence, and autonomy for an Arc mainnet EVM wallet. Mainnet scores use observed native USDC transfers as behavioral evidence; transfers alone do not prove delivery. Omit chain or pass arc-mainnet for mainnet. Pass chain=arc only to read the retired testnet archive.',
       inputSchema: { wallet: walletSchema, chain: z.enum(['arc', 'arc-mainnet']).optional() },
       annotations: readOnly(),
     },
     async ({ wallet: addr, chain }) => runTool('get_arc_karma', async () => {
-      if (chain === 'arc-mainnet') {
-        const resolved = await resolveForChain(addr, chain);
+      if (chain !== 'arc') {
+        const resolved = await resolveForChain(addr, 'arc-mainnet');
         return resolved ? jsonResult(fullKarmaJson(resolved, addr)) : notFound(addr);
       }
       const arc = getAdapter('arc');
@@ -661,9 +661,9 @@ function registerTools(server: McpServer): void {
         onChainAttestation,
         explorerUrls: {
           arcscan: arc.explorerAddressUrl(addr),
-          agentkarma: profileUrl(addr),
+          agentkarma: profileUrl(addr, 'arc'),
         },
-        profileUrl: profileUrl(addr),
+        profileUrl: profileUrl(addr, 'arc'),
       });
     }),
   );
@@ -961,7 +961,7 @@ function faceJson(b: { score: number; trustTier: string; confidenceBadge: string
 
 function profileUrl(addr: string, chain?: Chain, agentId?: number | null): string {
   const origin = process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io';
-  const path = chain === 'arc-mainnet'
+  const path = chain === 'arc-mainnet' || chain === 'arc'
     ? agentHref({ chain, address: canonicalAddress(addr, chain), agentId }) : `/agent/${addr}`;
   return `${origin}${path}`;
 }
