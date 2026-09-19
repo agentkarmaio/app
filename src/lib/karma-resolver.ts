@@ -12,6 +12,7 @@
 
 import {
   getWallet,
+  getErc8004Agent,
   getTransactions,
   getFeedbackSummary,
   getLatestSignalValues,
@@ -97,6 +98,8 @@ export interface KarmaSnapshot {
   // Top-level convenience badge — mirrors `provider.confidenceBadge` because
   // the provider face is the canonical "is this agent trustworthy" surface.
   found: boolean;
+  /** Selected mainnet registry identity; does not contribute to Karma. */
+  agentId?: number;
   receiptEvidence?: ArcMainnetReceiptScore['evidence'];
 }
 
@@ -105,10 +108,13 @@ export const SNAPSHOT_NOT_FOUND = Symbol('karma_not_found');
 /**
  * Resolve both faces of Karma for `wallet`, plus confidence badge and autonomy.
  *
- * Returns `null` when the wallet has neither a `wallets` row NOR any indexed
- * transactions. Callers should treat that as 404.
+ * Returns `null` when there is no wallet, indexed activity, or mainnet registry
+ * identity. A mainnet agentId is ownership-checked and uses its payment wallet.
+ * Callers should treat an unmatched explicit identity as 404.
  */
-export async function resolveKarma(rawWallet: string, network?: Chain): Promise<KarmaSnapshot | null> {
+export async function resolveKarma(
+  rawWallet: string, network?: Chain, opts: { agentId?: number | null } = {},
+): Promise<KarmaSnapshot | null> {
   // Public entry point: normalize once so MCP / A2A callers get the same row
   // the v2 route does for a checksummed EVM input (rows are stored lowercase).
   const wallet = canonicalAddress(rawWallet);
@@ -116,14 +122,37 @@ export async function resolveKarma(rawWallet: string, network?: Chain): Promise<
   // because the generic DB helper defaults to the Solana composite key.
   const chain = network ?? (isStellarAccount(wallet) ? 'stellar' : 'solana');
   if (chain === 'arc-mainnet') {
-    const [walletRow, bundle] = await Promise.all([getWallet(wallet, chain), computeAgentLiveBundle(wallet, chain)]);
+    let registry: Record<string, unknown> | null = null;
+    let scoreAddress = wallet;
+    if (opts.agentId != null) {
+      if (!Number.isSafeInteger(opts.agentId) || opts.agentId < 0 || opts.agentId > 2147483647) return null;
+      const row = await getErc8004Agent(chain, opts.agentId);
+      if (!row || row.chain !== chain || Number(row.agent_id) !== opts.agentId ||
+        ![row.owner, row.agent_wallet].some(address => String(address ?? '').toLowerCase() === wallet)) return null;
+      scoreAddress = mainnetAgentAddress(row) ?? '';
+      if (!scoreAddress) return null;
+      registry = row;
+    } else {
+      // An owner can control many agents with separate payment wallets. An
+      // address lookup must never label the owner's activity as one of theirs.
+      const agents = await getRegistryAgentsForAddress(chain, wallet);
+      registry = agents.rows.find(row => row.chain === chain && mainnetAgentAddress(row) === wallet) as unknown as Record<string, unknown> ?? null;
+    }
+    const [walletRow, bundle] = await Promise.all([getWallet(scoreAddress, chain), computeAgentLiveBundle(scoreAddress, chain)]);
     const receipt = bundle.receiptScore!;
-    if (!walletRow && !receipt.txCount) return null;
+    if (!walletRow && !registry && !receipt.txCount) return null;
     const autonomy = bundle.autonomy;
+    const registration = registry?.registration as { name?: unknown; description?: unknown } | null;
     return {
-      address: wallet, found: true,
-      identity: walletRow?.claimed ? { claimed: true, displayName: walletRow.display_name,
-        description: walletRow.description, website: walletRow.website, category: walletRow.category } : { claimed: false },
+      address: scoreAddress, found: true,
+      ...(registry ? { agentId: Number(registry.agent_id) } : {}),
+      identity: {
+        claimed: walletRow?.claimed ?? false,
+        displayName: typeof registration?.name === 'string' && registration.name.trim()
+          ? registration.name : registry ? `Agent #${registry.agent_id}` : walletRow?.display_name ?? null,
+        description: typeof registration?.description === 'string' ? registration.description : registry ? null : walletRow?.description ?? null,
+        website: walletRow?.website ?? null, category: walletRow?.category ?? null,
+      },
       txCount: receipt.txCount, lastActive: receipt.lastActive,
       provider: receipt.provider, consumer: receipt.consumer,
       confidenceBadge: receipt.provider.confidenceBadge, receiptEvidence: receipt.evidence,
@@ -258,6 +287,14 @@ export async function resolveKarma(rawWallet: string, network?: Chain): Promise<
   };
 }
 
+
+/** Resolve the registry's payment wallet without treating the zero sentinel as an address. */
+function mainnetAgentAddress(row: { agent_wallet?: unknown; owner?: unknown }): string | null {
+  const agentWallet = String(row.agent_wallet ?? '').toLowerCase();
+  const address = agentWallet && agentWallet !== '0x0000000000000000000000000000000000000000'
+    ? agentWallet : String(row.owner ?? '').toLowerCase();
+  return /^0x[a-f0-9]{40}$/.test(address) && address !== '0x0000000000000000000000000000000000000000' ? address : null;
+}
 
 // --- Enrichment (registry / declared / feedback / discovery / rank / explain) -
 //

@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test, spyOn } from 'bun:test';
 import * as db from '@/db/client';
+import * as enrichment from '@/db/enrichment-queries';
 import { resolveAgentCardFields } from './agent-card-fields';
 import type { Wallet } from '@/db/schema';
 
 const address = '0x1111111111111111111111111111111111111111';
 let signals: ReturnType<typeof spyOn<typeof db, 'getArcMainnetReceiptEvents'>>;
-beforeEach(() => { signals = spyOn(db, 'getArcMainnetReceiptEvents').mockResolvedValue({ events: [], saturated: false }); });
-afterEach(() => signals.mockRestore());
+let byAddress: ReturnType<typeof spyOn<typeof enrichment, 'getRegistryAgentsForAddress'>>;
+beforeEach(() => {
+  signals = spyOn(db, 'getArcMainnetReceiptEvents').mockResolvedValue({ events: [], saturated: false });
+  byAddress = spyOn(enrichment, 'getRegistryAgentsForAddress').mockResolvedValue({ rows: [], total: 0 });
+});
+afterEach(() => { signals.mockRestore(); byAddress.mockRestore(); });
 describe('network-pinned unfurl fields', () => {
   test('an unpinned address shared with mainnet returns neutral metadata without registry fallback', async () => {
     const anyChain = spyOn(db, 'getWalletsByAddressAnyChain').mockResolvedValue([
@@ -24,7 +29,7 @@ describe('network-pinned unfurl fields', () => {
   });
   test('a sole mainnet wallet resolves its own network on address-only OG requests', async () => {
     const anyChain = spyOn(db,'getWalletsByAddressAnyChain').mockResolvedValue([{chain:'arc-mainnet',address,provider_score:0,tx_count:2,display_name:'Mainnet agent'} as Wallet]);
-    const wallet = spyOn(db,'getWallet').mockResolvedValue(null);
+    const wallet = spyOn(db,'getWallet').mockResolvedValue({ chain: 'arc-mainnet', address, display_name: 'Mainnet agent', claimed: false } as Wallet);
     const registry = spyOn(db,'getErc8004AgentByAddress').mockResolvedValue({chain:'arc',row:{metadata_score:99,registration:{name:'Testnet only'}}});
     try {
       expect(await resolveAgentCardFields(address)).toMatchObject({name:'Mainnet agent',score:0,txCount:0,chain:'arc-mainnet',isRegistry:false});
@@ -33,7 +38,7 @@ describe('network-pinned unfurl fields', () => {
   });
   test('an absent mainnet wallet cannot reuse matching testnet registry metadata', async () => {
     const wallet = spyOn(db, 'getWallet').mockResolvedValue(null);
-    const registry = spyOn(db, 'getErc8004Agent').mockResolvedValue({ owner: address, metadata_score: 99, registration: { name: 'Testnet only' } });
+    const registry = spyOn(db, 'getErc8004Agent').mockImplementation(async chain => chain === 'arc-mainnet' ? null : { owner: address, metadata_score: 99, registration: { name: 'Testnet only' } });
     const byAddress = spyOn(db, 'getErc8004AgentByAddress').mockResolvedValue({ chain: 'arc', row: { owner: address, metadata_score: 99, registration: { name: 'Testnet only' } } });
     try {
       const fields = await resolveAgentCardFields(address, { chain: 'arc-mainnet', agentId: 42 });
@@ -41,7 +46,7 @@ describe('network-pinned unfurl fields', () => {
       expect(fields.isRegistry).toBe(false);
       expect(fields.name).not.toBe('Testnet only');
       expect(wallet).toHaveBeenCalledWith(address, 'arc-mainnet');
-      expect(registry).not.toHaveBeenCalled();
+      expect(registry).toHaveBeenCalledWith('arc-mainnet', 42);
       expect(byAddress).not.toHaveBeenCalled();
     } finally { wallet.mockRestore(); registry.mockRestore(); byAddress.mockRestore(); }
   });

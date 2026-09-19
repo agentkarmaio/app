@@ -1,6 +1,7 @@
 import type { MetadataRoute } from 'next';
 import { getLeaderboard, listOrganizations } from '@/db/client';
 import { PAYSH_OPERATORS } from '@/config/paysh-operators';
+import { agentHref } from '@/lib/agent-href';
 
 const SITE = 'https://agentkarma.io';
 
@@ -13,6 +14,7 @@ const STATIC_ROUTES: { path: string; changeFrequency: MetadataRoute.Sitemap[numb
   { path: '/',           changeFrequency: 'hourly',  priority: 1.0 },
   { path: '/meet-agentkarma', changeFrequency: 'weekly', priority: 0.8 },
   { path: '/explore',    changeFrequency: 'hourly',  priority: 0.9 },
+  { path: '/arc/mainnet', changeFrequency: 'weekly', priority: 0.8 },
   { path: '/solana',     changeFrequency: 'weekly',  priority: 0.8 },
   { path: '/agent-enact', changeFrequency: 'weekly', priority: 0.8 },
   { path: '/succession', changeFrequency: 'weekly',  priority: 0.8 },
@@ -56,7 +58,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   // window. Throwing means Next.js retries on the next request.
   const { wallets } = await getLeaderboard(MAX_AGENTS_IN_SITEMAP, 0);
   const agentEntries: MetadataRoute.Sitemap = wallets.map((w) => ({
-    url: `${SITE}/agent/${w.address}`,
+    url: `${SITE}${w.chain === 'arc-mainnet' ? agentHref({ chain: w.chain, address: w.address, agentId: w.arc_agent_id }) : `/agent/${w.address}`}`,
     lastModified: w.last_seen ? new Date(w.last_seen) : (w.updated_at ? new Date(w.updated_at) : now),
     changeFrequency: 'daily',
     priority: w.claimed ? 0.7 : 0.4,

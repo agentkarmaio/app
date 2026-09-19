@@ -25,6 +25,8 @@
  *   HEARTBEAT_WORKER_INTERVAL_MS     default 300_000 (5m)
  *   HEARTBEAT_WORKER_BATCH           default 500   (successions per tick, all chains)
  *   HEARTBEAT_WORKER_DISABLED        set to "1" to skip registering the loop
+ *   STATS_SNAPSHOT_WORKER_INTERVAL_MS default 60_000 (1m)
+ *   STATS_SNAPSHOT_WORKER_DISABLED    set to "1" to skip registering the loop
  */
 
 export async function register() {
@@ -38,6 +40,8 @@ export async function register() {
   await registerWalletScanWorker();
   await registerIndexerWorker();
   await registerHeartbeatWorker();
+  const { startStatsSnapshotWorker } = await import('./db/stats-snapshot-worker');
+  startStatsSnapshotWorker();
 }
 
 async function registerScoringWorker() {

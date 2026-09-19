@@ -71,7 +71,10 @@ import { withConcurrency } from '@/lib/concurrency';
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_LIMIT = 100;
-const FACILITATOR_CONCURRENCY = 5;
+// Keep the fan-out below provider burst limits. Five facilitators each making
+// five parse calls produced up to 25 concurrent requests and exhausted the
+// Helius budget before the run could reach the rest of the targets.
+const FACILITATOR_CONCURRENCY = 2;
 
 export interface SolanaScanCoverage {
   complete: boolean;
@@ -101,8 +104,13 @@ function getConnection(): Connection {
  * skipped facilitators are never advanced).
  */
 export function isRpcRateLimited(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
+  const structured = err && typeof err === 'object' ? err as { code?: unknown; message?: unknown } : null;
+  const code = typeof structured?.code === 'string' || typeof structured?.code === 'number'
+    ? String(structured.code) : '';
+  const message = typeof structured?.message === 'string' ? structured.message : '';
+  const msg = err instanceof Error ? err.message : message || String(err);
   return (
+    code === '429' ||
     msg.includes('429') ||
     msg.includes('-32429') ||
     msg.includes('max usage reached') ||

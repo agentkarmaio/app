@@ -12,6 +12,12 @@ test('mainnet admission failures retain actionable safe classifications', () => 
   expect(indexingErrorCode(Error('arc_mainnet_rpc_missing'))).toBe('configuration_missing');
   expect(indexingErrorCode(Error('arc_mainnet_rpc_invalid'))).toBe('configuration_invalid');
 });
+
+test('structured provider errors retain their actionable classification', () => {
+  expect(indexingErrorCode({ code: '57014', message: 'canceling statement due to statement timeout' })).toBe('rpc_unavailable');
+  expect(indexingErrorCode({ code: 'PGRST301', message: 'JWT expired' })).toBe('rpc_authentication_failed');
+  expect(indexingErrorCode({ code: '429', message: 'rate limit exceeded' })).toBe('rpc_rate_limited');
+});
 const job: IndexingJob = {
   chain: 'arc',
   path: 'escrow',
@@ -67,6 +73,16 @@ test('zero inserts can be a real completed scan', async () => {
   const r = await executeIndexingJob(job, d.value);
   expect(r.status).toBe('caught_up');
   expect(d.finishes).toHaveLength(1);
+});
+test('mainnet score refresh backlog retains its stable classification through lease completion', async () => {
+  const d = deps();
+  const outcome = { status: 'catching_up' as const, errorCode: 'score_refresh_pending',
+    checkedCount: 200, pendingCount: 1, checkpoint: '100', head: '100' };
+  const result = await executeIndexingJob({ ...job, chain: 'arc-mainnet', path: 'transfers',
+    run: async () => outcome }, d.value);
+  expect(result).toEqual(outcome);
+  expect(d.finishes).toHaveLength(1);
+  expect(d.finishes[0]).toMatchObject({ ...outcome, chain: 'arc-mainnet', path: 'transfers' });
 });
 test('failure is recorded with safe error code, no provider key', async () => {
   const d = deps();

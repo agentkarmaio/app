@@ -156,6 +156,7 @@ export async function Hero() {
     ? {
         totalAgents: initialStats.totalAgents,
         totalTransactions: initialStats.totalTransactions,
+        freshness: initialStats.freshness,
       }
     : undefined;
 

@@ -43,8 +43,8 @@ const EXPLORERS: Record<Chain, ExplorerPaths> = {
     address: 'https://testnet.arcscan.app/address/',
   },
   'arc-mainnet': {
-    tx: 'https://arc-scan.org/tx/',
-    address: 'https://arc-scan.org/address/',
+    tx: 'https://explorer.arc.io/tx/',
+    address: 'https://explorer.arc.io/address/',
   },
 };
 

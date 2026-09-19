@@ -35,11 +35,12 @@ export async function GET(request: NextRequest) {
   const chain = parseChain(searchParams.get('chain'));
 
   const { wallets, total } = await getLeaderboard(limit, offset, { status, tier, chain });
-  const addresses = wallets.map((w) => w.address);
+  // Mainnet native movements do not describe legacy service delivery/history.
+  const addresses = wallets.filter((w) => w.chain !== 'arc-mainnet').map((w) => w.address);
 
   const [deliveryMap, historyMap] = await Promise.all([
-    getFeedbackSummariesForWallets(addresses),
-    getScoreHistoriesForWallets(addresses),
+    addresses.length ? getFeedbackSummariesForWallets(addresses) : Promise.resolve(null),
+    addresses.length ? getScoreHistoriesForWallets(addresses) : Promise.resolve(null),
   ]);
 
   return NextResponse.json({
@@ -48,16 +49,20 @@ export async function GET(request: NextRequest) {
     offset,
     limit,
     wallets: wallets.map((w, i) => {
-      const delivery = deliveryMap.get(w.address) ?? null;
-      const history = historyMap.get(w.address) ?? [];
+      const mainnet = w.chain === 'arc-mainnet';
+      const delivery = mainnet ? null : deliveryMap?.get(w.address) ?? null;
+      const history = mainnet ? [] : historyMap?.get(w.address) ?? [];
+      const providerScore = w.provider_score != null ? Number(w.provider_score)
+        : mainnet ? null : Number(w.score);
       return {
         rank: offset + i + 1,
         address: w.address,
         chain: w.chain,
+        ...(mainnet ? { agentId: w.arc_agent_id ?? null } : {}),
         displayName: w.display_name ?? null,
         imageUrl: w.image_url ?? null,
-        score: Number(w.score),
-        providerScore: w.provider_score != null ? Number(w.provider_score) : Number(w.score),
+        score: mainnet ? providerScore : Number(w.score),
+        providerScore,
         consumerScore: w.consumer_score != null ? Number(w.consumer_score) : null,
         confidenceBadge: w.confidence_badge ?? 'declared',
         autonomyScore: w.autonomy_score != null ? Number(w.autonomy_score) : null,

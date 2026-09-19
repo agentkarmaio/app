@@ -36,14 +36,14 @@ type Seen = { table: string; op: string; chain?: string; rows?: unknown };
  * `wallets` selects return one dirty arc row; `transactions` selects return the
  * arc tx ONLY when the query actually filtered on chain 'arc'.
  */
-function makeChainRecordingFake(seen: Seen[]) {
+function makeChainRecordingFake(seen: Seen[], chain = 'arc') {
   return {
     from(table: string) {
       const state: { chain?: string } = {};
       const b: Record<string, unknown> = {};
       const rows = () => {
-        if (table === 'wallets') return [{ chain: 'arc', address: ARC_ADDR }];
-        if (table === 'transactions') return state.chain === 'arc' ? [ARC_TX] : [];
+        if (table === 'wallets') return [{ chain, address: ARC_ADDR }];
+        if (table === 'transactions') return state.chain === chain ? [{ ...ARC_TX, chain }] : [];
         return [];
       };
       b.select = () => { seen.push({ table, op: 'select', chain: state.chain }); return b; };
@@ -62,7 +62,7 @@ function makeChainRecordingFake(seen: Seen[]) {
         }
         return b;
       };
-      for (const m of ['not', 'in', 'or', 'gt', 'gte', 'lt', 'is', 'order', 'limit']) b[m] = () => b;
+      for (const m of ['not', 'neq', 'in', 'or', 'gt', 'gte', 'lt', 'is', 'order', 'limit']) b[m] = () => b;
       b.update = (r: unknown) => { seen.push({ table, op: 'update', chain: state.chain, rows: r }); return b; };
       b.insert = (r: unknown) => {
         seen.push({ table, op: 'insert', chain: state.chain, rows: r });
@@ -129,5 +129,13 @@ describe('rescore queue is chain-aware', () => {
     );
     expect(clear).toBeDefined();
     expect(clear!.chain).toBe('arc');
+  });
+
+  test('a mainnet row returned by the queue never reaches legacy scoring', async () => {
+    __setSupabaseForTest(makeChainRecordingFake(seen, 'arc-mainnet'));
+    const result = await drainOnce(10, 100);
+    expect(result.scored).toBe(0);
+    expect(seen.filter(row => row.table === 'transactions')).toEqual([]);
+    expect(seen.filter(row => row.op === 'upsert' || row.op === 'insert')).toEqual([]);
   });
 });

@@ -48,6 +48,7 @@ import {
 } from '@/lib/arc-dashboard-stats';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
 import { withRetry, type RetryOpts } from '@/lib/retry';
+import { statsFromSnapshot, type StatsSnapshotPayload, type StatsSnapshotRow } from '@/lib/stats-snapshot';
 
 // Every DB helper that takes a wallet address optionally takes a chain. The
 // default is 'solana' for back-compat with all pre-existing callers — Solana
@@ -410,6 +411,10 @@ export async function getLeaderboard(
 ): Promise<LeaderboardPage> {
   // count: 'exact' over 86k+ wallets is the slow path. Skip when caller doesn't
   // need the total (e.g. homepage cache, where only the page rows are used).
+  if (filters.chain === 'arc-mainnet') {
+    return getUnifiedAgentsPage(limit, offset, { chain: filters.chain, status: filters.status,
+      tiers: filters.tier ? [filters.tier] : undefined }, { field: 'provider_score', direction: 'desc' });
+  }
   const withCount = opts.withCount ?? true;
   let q = supabase
     .from('wallets')
@@ -700,6 +705,7 @@ async function getUnifiedAgentsPage(
   sort: AgentsExploreSort,
 ): Promise<LeaderboardPage> {
   let q = supabase.from('explore_agents').select('*', { count: 'exact' });
+  if (filters.chain) q = q.eq('chain', filters.chain);
 
   if (filters.tiers?.length) q = q.in('trust_tier', filters.tiers);
   if (filters.confidenceBadges?.length) q = q.in('confidence_badge', filters.confidenceBadges);
@@ -719,7 +725,11 @@ async function getUnifiedAgentsPage(
 
   const { data, error, count } = await q
     .order(rankingOrderColumn(sort.field), { ascending: sort.direction === 'asc', nullsFirst: false })
+    .order('chain', { ascending: true })
     .order('address', { ascending: true })
+    .order('celo_agent_id', { ascending: true })
+    .order('arc_agent_id', { ascending: true })
+    .order('stellar_agent_id', { ascending: true })
     .range(offset, offset + limit - 1);
 
   if (error) throw error;
@@ -745,6 +755,8 @@ export async function getAgents(
   // even for these chains. (claimed=false keeps reading the registry: it is the
   // full unclaimed population; the handful of claimed rows that also live in
   // wallets are an accepted, marginal overcount there.)
+  // Mainnet identities use persisted transfer scores, never metadata quality.
+  if (filters.chain === 'arc-mainnet') return getUnifiedAgentsPage(limit, offset, filters, sort);
   if (isRegistryMirrorChain(filters.chain) && filters.claimed !== true) {
     return getRegistryAgentsPage(filters.chain, limit, offset, filters, sort);
   }
@@ -905,6 +917,13 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
  * highest-scored match deterministically rather than risk a multi-row throw.
  */
 export async function getWalletByAgentId(chain: Chain, agentId: number): Promise<Wallet | null> {
+  if (chain === 'arc-mainnet') {
+    if (!Number.isSafeInteger(agentId) || agentId < 0 || agentId > MAX_INT32) return null;
+    const { data, error } = await supabase.from('explore_agents').select('*')
+      .eq('chain', chain).eq('arc_agent_id', agentId).limit(1);
+    if (error) throw error;
+    return ((data ?? [])[0] as Wallet) ?? null;
+  }
   const col = agentIdColumn(chain);
   if (!col || !Number.isInteger(agentId) || agentId < 0 || agentId > MAX_INT32) return null;
 
@@ -1464,6 +1483,8 @@ export async function markWalletsDirty(wallets: DirtyWallet[]): Promise<void> {
   // respect Kong's ~8KB URI cap on .in() filters (see ADDRESS_IN_CHUNK).
   const byChain = new Map<Chain, string[]>();
   for (const w of wallets) {
+    // Mainnet scores are refreshed under its transfer lease using its own model.
+    if (w.chain === 'arc-mainnet') continue;
     const list = byChain.get(w.chain) ?? [];
     list.push(w.address);
     byChain.set(w.chain, list);
@@ -1499,6 +1520,7 @@ export async function markAllWalletsDirty(): Promise<number> {
   const { count, error } = await supabase
     .from('wallets')
     .update({ scoring_dirty_at: new Date().toISOString() }, { count: 'exact' })
+    .neq('chain', 'arc-mainnet')
     .not('address', 'is', null);
 
   if (error) throw error;
@@ -1519,6 +1541,7 @@ export async function claimDirtyWallets(limit = 100): Promise<DirtyWallet[]> {
     // address), and a claim that returns bare addresses silently becomes a
     // solana-only queue.
     .select('chain, address')
+    .neq('chain', 'arc-mainnet')
     .not('scoring_dirty_at', 'is', null)
     .order('scoring_dirty_at', { ascending: true })
     .limit(limit);
@@ -1557,6 +1580,7 @@ export async function countDirtyWallets(): Promise<number> {
   const { count, error } = await supabase
     .from('wallets')
     .select('address', { count: 'exact', head: true })
+    .neq('chain', 'arc-mainnet')
     .not('scoring_dirty_at', 'is', null);
   if (error) throw error;
   return count ?? 0;
@@ -1861,7 +1885,33 @@ let staleStats: {
   registries?: { chain: string; agents: number; feedbacks: number }[];
 } = {};
 
-export async function getStats() {
+async function readStatsSnapshot(): Promise<StatsSnapshotPayload | null> {
+  // A deploy can briefly run before the migration reaches the database. Keep
+  // that rollout state compatible with the legacy reader, but once a valid
+  // snapshot exists never run the expensive aggregate on a request.
+  const query = supabase.from('stats_snapshots').select('scope,payload,as_of,completed_at');
+  if (!query || typeof (query as { eq?: unknown }).eq !== 'function') return null;
+  const builder = query as unknown as {
+    eq: (column: string, value: string) => {
+      maybeSingle: () => Promise<{ data: unknown; error: { message?: string } | null }>;
+    };
+  };
+  const { data, error } = await builder.eq('scope', 'core').maybeSingle();
+  const row = data as Partial<StatsSnapshotRow> | null;
+  if (error || !row || !row.completed_at || !row.payload || !row.as_of) return null;
+  try {
+    return statsFromSnapshot(row as Parameters<typeof statsFromSnapshot>[0]);
+  } catch (err) {
+    console.error('[db] invalid stats snapshot ignored:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/**
+ * Live aggregate used only by the off-band snapshot worker and as a migration
+ * fallback before the first successful snapshot is published.
+ */
+export async function getLiveStats() {
   let countsStale = false;
   let transactionsUpdatedAt: string | null = null;
   let agentsUpdatedAt: string | null = null;
@@ -1939,6 +1989,11 @@ export async function getStats() {
 
   return { totalAgents, totalTransactions, totalVolumeUsdc, tierDistribution, registries,
     freshness: { stale: countsStale, transactionsUpdatedAt, agentsUpdatedAt } };
+}
+
+export async function getStats() {
+  const snapshot = await readStatsSnapshot();
+  return snapshot ?? getLiveStats();
 }
 
 // --- Explore Queries ---------------------------------------------------------

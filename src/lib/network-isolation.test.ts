@@ -63,7 +63,7 @@ test('mainnet score lookup pins every evidence read even when the wallet is abse
   const filters: string[] = [];
   __setSupabaseForTest({ from(table: string) {
     const query = {
-      select() { return query; }, order() { return query; }, limit() { return query; }, range() { return query; },
+      select() { return query; }, or(expression: string) { filters.push(`${table}.or=${expression}`); return query; }, order() { return query; }, limit() { return query; }, range() { return query; },
       eq(column: string, value: unknown) { filters.push(`${table}.${column}=${value}`); return query; },
       single: async () => ({ data: null, error: { code: 'PGRST116' } }),
       then(resolve: (value: unknown) => void) { resolve({ data: [], error: null }); },
@@ -72,7 +72,8 @@ test('mainnet score lookup pins every evidence read even when the wallet is abse
   } });
   expect(await resolveKarma(address, 'arc-mainnet' as Chain)).toBeNull();
   expect(filters.some(filter => filter.startsWith('transactions.'))).toBe(false);
-  for (const table of ['wallets', 'signal_events']) {
+  expect(filters).toContain(`erc8004_agents.or=owner.eq.${address},agent_wallet.eq.${address}`);
+  for (const table of ['wallets', 'signal_events', 'erc8004_agents']) {
     expect(filters).toContain(`${table}.chain=arc-mainnet`);
     expect(filters).not.toContain(`${table}.chain=arc`);
     expect(filters).not.toContain(`${table}.chain=solana`);

@@ -354,7 +354,7 @@ export async function generateMetadata(
 
   // Resolve the SAME fields the OG image uses — handles ERC-8004 registry agents
   // (not in `wallets`) so the unfurl shows real score/tier/chain, not 0/Unrated.
-  const f = await cachedAgentCardFields(wallet, agentId, isChain(chainHint) ? chainHint : undefined);
+  const f = await cachedAgentCardFields(wallet, chainHint === 'arc-mainnet' && agentIdHint != null ? agentId ?? Number.NaN : agentId, isChain(chainHint) ? chainHint : undefined);
   const badgeLabel = f.badge === 'receipt-backed'
     ? 'Receipt-backed'
     : f.badge === 'behavior-inferred'
@@ -373,7 +373,7 @@ export async function generateMetadata(
       + `${f.txCount.toLocaleString()} on-chain transactions indexed. `
       + `Live reputation snapshot for autonomous agent on ${chainLabel} via AgentKarma.`;
 
-  const canonical = `/agent/${wallet}${isChain(chainHint) ? `?chain=${chainHint}` : ''}`;
+  const canonical = f.profileUrl ?? `/agent/${wallet}${isChain(chainHint) ? `?chain=${chainHint}` : ''}`;
   return {
     title,
     description,
@@ -714,7 +714,7 @@ export default async function AgentProfilePage({
   // feedback form, no score trend — the profile is built from on-chain
   // ERC-8004 registration + reputation reads keyed by agentId.
   if (resolved.addressClass === 'evm') {
-    if (resolved.chain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} />;
+    if (resolved.chain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} agentId={agentIdHint != null ? agentIdNum ?? Number.NaN : undefined} />;
     // Prefer a real wallet row's agentId; otherwise honor the ?agentId= hint
     // from the registry-mirror leaderboard (fleet owners aren't in `wallets`, so
     // most registry agents only resolve via this path). Build a minimal walletRow

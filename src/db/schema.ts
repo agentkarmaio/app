@@ -1044,3 +1044,28 @@ export const indexingStateTable = pgTable('indexing_state', {
   check('indexing_state_error_check', sql`${table.error_code} IS NULL OR ${table.error_code} ~ '^[a-z][a-z0-9_]{0,63}$'`),
   check('indexing_state_checkpoint_check', sql`length(${table.checkpoint}) <= 512 AND length(${table.head}) <= 512`),
 ]).enableRLS();
+
+// Durable last-known-good public activity figures. The expensive aggregate is
+// refreshed off-band; request handlers read one small row and never scan the
+// transactions table on the homepage request path.
+export const statsSnapshotsTable = pgTable('stats_snapshots', {
+  scope:                  text('scope').notNull(),
+  payload:                jsonb('payload'),
+  as_of:                  timestamp('as_of', { withTimezone: true }),
+  completed_at:            timestamp('completed_at', { withTimezone: true }),
+  generation:              integer('generation').notNull().default(0),
+  owner:                   uuid('owner'),
+  lease_until:             timestamp('lease_until', { withTimezone: true }),
+  last_attempt_at:         timestamp('last_attempt_at', { withTimezone: true }),
+  last_failure_at:         timestamp('last_failure_at', { withTimezone: true }),
+  next_attempt_at:         timestamp('next_attempt_at', { withTimezone: true }),
+  consecutive_failures:    integer('consecutive_failures').notNull().default(0),
+  last_error_code:          text('last_error_code'),
+}, (table) => [
+  primaryKey({ columns: [table.scope], name: 'stats_snapshots_pkey' }),
+  check('stats_snapshots_scope_check', sql`${table.scope} IN ('core')`),
+  check('stats_snapshots_generation_check', sql`${table.generation} >= 0`),
+  check('stats_snapshots_failures_check', sql`${table.consecutive_failures} >= 0`),
+  check('stats_snapshots_owner_check', sql`(${table.owner} IS NULL) = (${table.lease_until} IS NULL)`),
+  check('stats_snapshots_error_check', sql`${table.last_error_code} IS NULL OR ${table.last_error_code} ~ '^[a-z][a-z0-9_]{0,63}$'`),
+]).enableRLS();

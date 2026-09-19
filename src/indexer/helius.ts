@@ -106,7 +106,9 @@ export function getArchiveConnection(): Connection | null {
 /** Concurrent single-tx fetches. We do NOT use batched getParsedTransactions:
  *  free RPCs cap JSON-RPC batch size (PublicNode allows 1 getTransaction/batch),
  *  so we fan out singular getParsedTransaction calls under bounded concurrency. */
-const PARSE_CONCURRENCY = 5;
+// Singular getParsedTransaction requests still count against provider burst
+// limits. Keep this bounded independently from facilitator fan-out.
+const PARSE_CONCURRENCY = 2;
 
 /**
  * Pure: map a standard `getParsedTransaction` result into the
@@ -239,7 +241,7 @@ export const ARCHIVE_RETRY_BUDGET = 100;
 /**
  * Serializes archive calls PROCESS-WIDE, not per batch.
  *
- * `fetchAllX402Transactions` runs FACILITATOR_CONCURRENCY (5) facilitators in
+ * `fetchAllX402Transactions` runs a bounded facilitator concurrency in
  * parallel, each with its own retry loop, so a per-call limit of 1 would still
  * put 5 requests in flight against an endpoint measured 429ing under less. That
  * failure is self-defeating: a 429 becomes `unresolved`, which holds the cursor

@@ -12,7 +12,7 @@ describe('explorerTxUrl', () => {
     ['solana', 'sig', 'https://solscan.io/tx/sig'],
     ['celo', '0xtx', 'https://celoscan.io/tx/0xtx'],
     ['arc', '0xtx', 'https://testnet.arcscan.app/tx/0xtx'],
-    ['arc-mainnet', '0xtx', 'https://arc-scan.org/tx/0xtx'],
+    ['arc-mainnet', '0xtx', 'https://explorer.arc.io/tx/0xtx'],
     ['stellar', 'abc', 'https://stellar.expert/explorer/public/tx/abc'],
   ] as const)('%s', (chain, id, expected) => {
     expect(explorerTxUrl(chain, id)).toBe(expected);
@@ -24,7 +24,7 @@ describe('explorerAddressUrl', () => {
     ['solana', 'W', 'https://solscan.io/account/W'],
     ['celo', '0xW', 'https://celoscan.io/address/0xW'],
     ['arc', '0xW', 'https://testnet.arcscan.app/address/0xW'],
-    ['arc-mainnet', '0xW', 'https://arc-scan.org/address/0xW'],
+    ['arc-mainnet', '0xW', 'https://explorer.arc.io/address/0xW'],
     ['stellar', 'G', 'https://stellar.expert/explorer/public/account/G'],
   ] as const)('%s', (chain, addr, expected) => {
     expect(explorerAddressUrl(chain, addr)).toBe(expected);

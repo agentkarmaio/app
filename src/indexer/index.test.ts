@@ -276,6 +276,11 @@ describe('isRpcRateLimited', () => {
     expect(isRpcRateLimited(null)).toBe(false);
     expect(isRpcRateLimited(undefined)).toBe(false);
   });
+
+  test('matches structured provider errors before String(object) erases them', () => {
+    expect(isRpcRateLimited({ code: 429, message: 'rate limit exceeded' })).toBe(true);
+    expect(isRpcRateLimited({ code: -32429, message: 'max usage reached' })).toBe(true);
+  });
 });
 
 describe('isCursorUnresolvable', () => {

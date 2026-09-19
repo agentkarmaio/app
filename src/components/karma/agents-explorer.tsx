@@ -69,7 +69,7 @@ interface ApiEntry {
   displayName: string | null;
   imageUrl: string | null;
   claimed: boolean;
-  providerScore: number;
+  providerScore: number | null;
   consumerScore: number | null;
   trustTier: TrustTier;
   confidenceBadge: ConfidenceBadge;
@@ -851,7 +851,7 @@ function AgentRow({ entry }: { entry: ApiEntry }) {
         </div>
       </td>
       <td className="px-3 py-3 text-right tabular-nums font-[510] text-[#f7f8f8]">
-        {entry.providerScore.toFixed(1)}
+        {entry.providerScore == null ? 'Unrated' : entry.providerScore.toFixed(1)}
       </td>
       <td className="px-3 py-3"><TierBadge tier={entry.trustTier} size="sm" /></td>
       <td className="px-3 py-3"><ConfidenceBadgeChip badge={entry.confidenceBadge} size="sm" /></td>

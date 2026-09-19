@@ -12,11 +12,12 @@ import {
   finishIndexingRun,
   releaseIndexingLease,
 } from '@/db/indexing-state';
-import { runWithIndexingContext } from '@/db/indexing-context';
+import { assertIndexingLease, runWithIndexingContext } from '@/db/indexing-context';
 import { INDEXING_PATHS, type IndexingPath } from './indexing-health';
 import { isIndexingStalled } from './indexing-exit';
 import {
   executeIndexingJob,
+  indexingErrorCode,
   releaseHeldIndexingLeases,
   type IndexingJob,
   type ScanOutcome,
@@ -115,8 +116,33 @@ export function createIndexingJob(
     run: async (signal) => {
       if (chain === 'arc-mainnet' && path === 'transfers') {
         const { runArcMainnetTransfersIndexer } = await import('@/indexer/arc-mainnet-transfers');
-        const result = await runArcMainnetTransfersIndexer({ signal });
-        return coverageOutcome(result.coverage, result.inserted);
+        const { refreshArcMainnetScores } = await import('@/scoring/arc-mainnet-persistence');
+        const [ingestion] = await Promise.allSettled([runArcMainnetTransfersIndexer({ signal })]);
+        // Stored evidence can still decay during an RPC outage. Attempt both
+        // phases under the same lease, preserving either or both failures.
+        const [refresh] = await Promise.allSettled([(async () => {
+          signal.throwIfAborted();
+          assertIndexingLease();
+          return refreshArcMainnetScores({ signal });
+        })()]);
+        if (ingestion.status === 'rejected') {
+          if (refresh.status === 'rejected') {
+            throw new AggregateError([ingestion.reason, refresh.reason],
+              indexingErrorCode(ingestion.reason), { cause: ingestion.reason });
+          }
+          throw ingestion.reason;
+        }
+        if (refresh.status === 'rejected') throw refresh.reason;
+        const result = ingestion.value;
+        const scores = refresh.value;
+        const outcome = coverageOutcome(result.coverage, result.inserted);
+        outcome.checkedCount = (outcome.checkedCount ?? 0) + scores.scored;
+        if (!scores.complete && outcome.status !== 'failed') {
+          return { ...outcome, status: 'catching_up',
+            errorCode: outcome.errorCode ?? 'score_refresh_pending',
+            pendingCount: (outcome.pendingCount ?? 0) + 1 };
+        }
+        return outcome;
       }
       if (chain === 'arc' && path === 'escrow') {
         const { runArcJobsIndexer } = await import('@/indexer/arc-jobs');
@@ -159,12 +185,12 @@ export function createIndexingJob(
         const r = await runCeloX402Indexer({ signal });
         return coverageOutcome(r.coverage, r.inserted);
       }
-      if (chain === 'celo' && path === 'registry') {
+      if ((chain === 'celo' || chain === 'arc-mainnet') && path === 'registry') {
         const { getRegistryConfig } =
           await import('@/config/erc8004-registries');
         const { runIncrementalRegistryScan } =
           await import('@/indexer/erc8004-registry');
-        const config = getRegistryConfig('celo');
+        const config = getRegistryConfig(chain);
         if (!config) throw Error('configuration_missing');
         const r = await runIncrementalRegistryScan(
           config,
@@ -179,7 +205,7 @@ export function createIndexingJob(
           checked: r.agentsScanned,
           pending: 0,
           unresolved: r.errors,
-          checkpoint: String(r.tip),
+          checkpoint: r.errors ? undefined : String(r.tip),
           head: String(r.tip),
           reason: registryScanReason(r.agentsScanned, r.errors, 0),
         }, r.agentsPersisted);

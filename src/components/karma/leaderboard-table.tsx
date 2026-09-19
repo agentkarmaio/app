@@ -21,7 +21,8 @@ export interface LeaderboardEntry {
   chain: Chain;
   displayName?: string | null;
   imageUrl?: string | null;
-  score: number;
+  score: number | null;
+  agentId?: number | null;
   trustTier: TrustTier;
   confidenceBadge?: ConfidenceBadgeValue | null;
   autonomyScore?: number | null;
@@ -68,10 +69,8 @@ export function LeaderboardTable({
       <TableBody>
         {entries.map((entry) => (
           <TableRow
-            // Composite key: EVM addresses (Celo + Arc) share the 0x40hex
-            // format, so the same address can appear once per chain. Keying
-            // on address alone collides and React merges the rows.
-            key={`${entry.chain}:${entry.address}`}
+            // Registry agents can share the same operator wallet on one chain.
+            key={`${entry.chain}:${entry.address}:${entry.agentId ?? 'wallet'}`}
             className={pulsingAddresses?.has(entry.address) ? 'karma-row-pulse' : undefined}
           >
             <TableCell className="text-center font-medium text-muted-foreground tabular-nums">
@@ -99,7 +98,7 @@ export function LeaderboardTable({
               </div>
             </TableCell>
             <TableCell className="text-center font-bold tabular-nums">
-              {Number(entry.score).toFixed(1)}
+              {entry.score == null ? '—' : Number(entry.score).toFixed(1)}
             </TableCell>
             <TableCell className="text-center hidden md:table-cell">
               {entry.trend && entry.trend.length >= 2 ? (

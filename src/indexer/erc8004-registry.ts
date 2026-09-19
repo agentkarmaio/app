@@ -6,7 +6,7 @@
  *
  * Strategy (Celo tip ≈ 9.5k agents, ~23k feedbacks):
  *   1. Binary-search the registry tip — largest agentId whose ownerOf() does
- *      not revert. ERC-8004 mints sequential ids from 1 with no totalSupply().
+ *      not revert. Registries mint sequential ids from their configured first ID.
  *   2. Multicall owner + agentWallet + tokenURI across the id range (allowFailure
  *      so burned/gapped ids skip cleanly). Multicall3 is live on Celo + Arc at
  *      the canonical 0xcA11… address, so ~19k reads collapse to ~20 eth_calls.
@@ -31,6 +31,7 @@ import {
 } from 'viem';
 import { gunzipSync } from 'zlib';
 import type { Erc8004RegistryConfig } from '@/config/erc8004-registries';
+import { ARC_MAINNET_CHAIN_ID, parseArcMainnetRpcUrl } from '@/config/arc-mainnet';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
 import type { Erc8004RegistrationStatus } from '@/db/schema';
 import { scoreMetadataQuality } from '@/scoring/celo-metadata';
@@ -48,12 +49,14 @@ const TWO = BigInt(2);
 // ─── ABIs ───────────────────────────────────────────────────────────────────
 
 const IDENTITY_ABI = parseAbi([
+  'error ERC721NonexistentToken(uint256 tokenId)',
   'function ownerOf(uint256 tokenId) view returns (address)',
   'function tokenURI(uint256 tokenId) view returns (string)',
   'function getAgentWallet(uint256 agentId) view returns (address)',
 ]);
 
 const REPUTATION_ABI = parseAbi([
+  'function getIdentityRegistry() view returns (address)',
   'function readAllFeedback(uint256 agentId, address[] clientAddresses, string tag1, string tag2, bool includeRevoked) view returns (address[] clients, uint64[] feedbackIndexes, int128[] values, uint8[] valueDecimals, string[] tag1s, string[] tag2s, bool[] revokedStatuses)',
 ]);
 
@@ -166,7 +169,7 @@ export interface IncrementalRange {
  * last sweep (`lastTip+1 .. currentTip`) UNIONED with a bounded recent re-scan
  * window (the most recent `window` ids). The two ranges always overlap or abut,
  * so their union is the single contiguous span starting at the LOWER of the two
- * lower bounds — no need to scan twice. Pure + clamped to [1, currentTip] so a
+ * lower bounds — no need to scan twice. Clamped to [firstAgentId, currentTip] so a
  * shrunk/empty registry or a window larger than the tip can't produce a bad id.
  *
  *   lastTip=9000 currentTip=9100 window=500 → from=8601 (re-scan window wins)
@@ -179,11 +182,13 @@ export function incrementalScanRange(
   lastTip: number,
   currentTip: number,
   window: number = DEFAULT_RESCAN_WINDOW,
+  firstAgentId: 0 | 1 = 1,
 ): IncrementalRange {
-  if (currentTip < 1) return { from: 0, to: 0 };
-  const newIdsFrom = lastTip + 1;          // first id never scanned before
+  if (currentTip < firstAgentId) return { from: 0, to: currentTip };
+  // Cursor zero also means never scanned; include mainnet agent zero on bootstrap.
+  const newIdsFrom = lastTip === 0 ? firstAgentId : lastTip + 1;
   const rescanFrom = currentTip - window + 1; // start of the recent re-scan window
-  const from = Math.max(1, Math.min(newIdsFrom, rescanFrom));
+  const from = Math.max(firstAgentId, Math.min(newIdsFrom, rescanFrom));
   return { from, to: currentTip };
 }
 
@@ -316,40 +321,104 @@ export function aggregateAgentFeedback(records: ScannedFeedback[]): FeedbackAgg 
 // ─── Client + chain reads ──────────────────────────────────────────────────────
 
 export function makeRegistryClient(config: Erc8004RegistryConfig): PublicClient {
-  const rpcUrl = process.env[config.rpcEnvVar];
+  const rpcUrl = config.chain === 'arc-mainnet'
+    ? parseArcMainnetRpcUrl(process.env.ARC_MAINNET_RPC_URL)
+    : process.env[config.rpcEnvVar];
   return createPublicClient({
     chain: config.viemChain,
     transport: http(rpcUrl, { batch: true, retryCount: 3, retryDelay: 400 }),
   }) as PublicClient;
 }
 
-/** Largest agentId whose ownerOf() does not revert (registry tip). 0 = empty. */
+type RegistryClient = Pick<PublicClient, 'readContract' | 'multicall'>
+  & Partial<Pick<PublicClient, 'getChainId' | 'getBytecode'>>;
+
+/** Mainnet admission is per run and applies equally to injected clients. */
+async function admittedRegistryClient(config: Erc8004RegistryConfig, opts: RegistryScanOptions): Promise<RegistryClient> {
+  opts.signal?.throwIfAborted();
+  if (config.chain === 'arc-mainnet') {
+    parseArcMainnetRpcUrl(process.env.ARC_MAINNET_RPC_URL);
+    if (config.viemChain.id !== ARC_MAINNET_CHAIN_ID || config.rpcEnvVar !== 'ARC_MAINNET_RPC_URL') {
+      throw new Error('configuration_invalid');
+    }
+  }
+  const client = opts.client ?? makeRegistryClient(config);
+  if (config.chain !== 'arc-mainnet') return client;
+  const rpc = async <T>(read: () => Promise<T>): Promise<T> => {
+    const result = await withRateLimitRetry(() => { opts.signal?.throwIfAborted(); return read(); });
+    opts.signal?.throwIfAborted();
+    return result;
+  };
+  try {
+    if (!client.getChainId || !client.getBytecode) throw new Error('registry_read_failure');
+    if (await rpc(() => client.getChainId!()) !== ARC_MAINNET_CHAIN_ID) throw new Error('arc_mainnet_chain_mismatch');
+    const multicall = config.viemChain.contracts?.multicall3?.address;
+    if (!multicall) throw new Error('registry_read_failure');
+    for (const address of [config.identityRegistry, config.reputationRegistry, multicall]) {
+      const code = await rpc(() => client.getBytecode!({ address }));
+      if (!code || !/^0x(?:[0-9a-f]{2})+$/i.test(code)) throw new Error('registry_read_failure');
+    }
+    const identity = await rpc(() => client.readContract({
+      address: config.reputationRegistry, abi: REPUTATION_ABI, functionName: 'getIdentityRegistry',
+    }));
+    if (typeof identity !== 'string' || identity.toLowerCase() !== config.identityRegistry.toLowerCase()) {
+      throw new Error('registry_read_failure');
+    }
+  } catch (error) {
+    opts.signal?.throwIfAborted();
+    if (error instanceof Error && ['arc_mainnet_chain_mismatch', 'registry_read_failure'].includes(error.message)) throw error;
+    // Provider errors can carry credential-bearing URLs. Emit only stable codes.
+    const seen = new Set<unknown>();
+    let current = error;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const record = current as { status?: unknown; statusCode?: unknown; message?: unknown; details?: unknown; cause?: unknown };
+      const message = [record.message, record.details].filter(value => typeof value === 'string').join(' ');
+      if (record.status === 401 || record.status === 403 || record.statusCode === 401 || record.statusCode === 403
+        || /\b(?:401|403)\b|unauthorized|forbidden/i.test(message)) throw new Error('rpc_authentication_failed');
+      current = record.cause;
+    }
+    throw new Error(isRateLimitedError(error) ? 'rpc_rate_limited' : 'rpc_unavailable');
+  }
+  return client;
+}
+
+/** A failed transport, empty return data, or unrelated revert proves no absence. */
+function isNonexistentTokenError(error: unknown): boolean {
+  const revert = error instanceof BaseError
+    ? error.walk(cause => cause instanceof ContractFunctionRevertedError)
+    : error;
+  if (revert instanceof ContractFunctionRevertedError) {
+    return revert.data?.errorName === 'ERC721NonexistentToken'
+      || /^ERC721: (?:invalid token ID|owner query for nonexistent token)$/i.test(revert.reason ?? '');
+  }
+  return false;
+}
+
+/** Largest minted ID; empty returns firstAgentId - 1 (legacy default: 0). */
 export async function findRegistryTip(
   client: Pick<PublicClient, 'readContract'>,
   identityRegistry: `0x${string}`,
   signal?: AbortSignal,
+  firstAgentId: 0 | 1 = 1,
 ): Promise<number> {
-  // A throttled probe must NOT read as "no such agent": swallowing a rate limit
-  // silently converges the binary search on a wrong tip, and every caller then
-  // samples garbage ids with no signal that anything went wrong. Retry
-  // throttles; treat only real errors (reverts) as non-existence.
-  const exists = async (id: bigint): Promise<boolean> => {
+  // Classify actual absence before retrying: a decoded token ID can itself
+  // contain "429", which is otherwise recognized as a throttle by the helper.
+  const exists = (id: bigint): Promise<boolean> => withRateLimitRetry(async () => {
     signal?.throwIfAborted();
     try {
-      await withRateLimitRetry(() => {
-        signal?.throwIfAborted();
-        return client.readContract({ address: identityRegistry, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [id] });
-      });
+      await client.readContract({ address: identityRegistry, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [id] });
       signal?.throwIfAborted();
       return true;
     } catch (err) {
       signal?.throwIfAborted();
-      if (isRateLimitedError(err)) throw err; // budget exhausted — fail loud, don't guess a tip
-      return false;
+      if (isNonexistentTokenError(err)) return false;
+      throw err;
     }
-  };
-  if (!(await exists(ONE))) return 0;
-  let lo = ONE, hi = TWO;
+  });
+  const first = BigInt(firstAgentId);
+  if (!(await exists(first))) return firstAgentId - 1;
+  let lo = first, hi = first + ONE;
   while (await exists(hi)) { lo = hi; hi *= TWO; }
   while (lo + ONE < hi) {
     const mid = (lo + hi) / TWO;
@@ -364,7 +433,7 @@ export interface RegistryScanOptions {
   signal?: AbortSignal;
   /** Refresh this exact membership, without tip discovery or filling ID gaps. */
   agentIds?: readonly number[];
-  fromId?: number;            // default 1
+  fromId?: number;            // default config.firstAgentId (otherwise 1)
   toId?: number;              // default = discovered tip
   identityBatch?: number;     // ids per identity multicall (default 250)
   feedbackBatch?: number;     // agents per feedback multicall (default 40)
@@ -373,7 +442,7 @@ export interface RegistryScanOptions {
   scanFeedback?: boolean;     // read ReputationRegistry (default true)
   onProgress?: (msg: string) => void;
   /** Inject a client (tests). Defaults to makeRegistryClient(config). */
-  client?: Pick<PublicClient, 'readContract' | 'multicall'>;
+  client?: RegistryClient;
 }
 
 export async function runRegistryScan(
@@ -382,22 +451,34 @@ export async function runRegistryScan(
   persistFeedback: PersistFeedback,
   opts: RegistryScanOptions = {},
 ): Promise<RegistryScanResult> {
+  const client = await admittedRegistryClient(config, opts);
+  return scanRegistry(config, persistAgents, persistFeedback, client, opts);
+}
+
+/** Only the exported entry points admit clients; no public admission bypass. */
+async function scanRegistry(
+  config: Erc8004RegistryConfig,
+  persistAgents: PersistAgents,
+  persistFeedback: PersistFeedback,
+  client: RegistryClient,
+  opts: RegistryScanOptions,
+): Promise<RegistryScanResult> {
   opts.signal?.throwIfAborted();
-  const client = opts.client ?? makeRegistryClient(config);
   const log = opts.onProgress ?? (() => {});
   const identityBatch = opts.identityBatch ?? 250;
   const feedbackBatch = opts.feedbackBatch ?? 40;
   const fetchRemote = opts.fetchRemote ?? true;
   const scanFeedback = opts.scanFeedback ?? true;
 
+  const firstAgentId = config.firstAgentId ?? 1;
   const explicitIds = opts.agentIds === undefined ? undefined : [...new Set(opts.agentIds)].sort((a, b) => a - b);
-  if (explicitIds?.some((id) => !Number.isSafeInteger(id) || id < 1)) {
-    throw new Error('registry agent IDs must be positive safe integers');
+  if (explicitIds?.some((id) => !Number.isSafeInteger(id) || id < firstAgentId)) {
+    throw new Error(`registry agent IDs must be safe integers >= ${firstAgentId}`);
   }
   const tip = explicitIds ? (explicitIds.at(-1) ?? 0)
-    : opts.toId ?? (await findRegistryTip(client, config.identityRegistry, opts.signal));
+    : opts.toId ?? (await findRegistryTip(client, config.identityRegistry, opts.signal, config.firstAgentId ?? 1));
   opts.signal?.throwIfAborted();
-  const from = Math.max(1, opts.fromId ?? 1);
+  const from = Math.max(firstAgentId, opts.fromId ?? firstAgentId);
   log(`tip=${tip} scanning ids ${from}..${tip}`);
 
   const result: RegistryScanResult = {
@@ -427,7 +508,7 @@ export async function runRegistryScan(
       { address: config.identityRegistry, abi: IDENTITY_ABI, functionName: 'getAgentWallet', args: [BigInt(id)] } as const,
       { address: config.identityRegistry, abi: IDENTITY_ABI, functionName: 'tokenURI', args: [BigInt(id)] } as const,
     ]);
-    let reads: { status: 'success' | 'failure'; result?: unknown }[];
+    let reads: { status: 'success' | 'failure'; result?: unknown; error?: unknown }[];
     try {
       reads = await client.multicall({ contracts: calls, allowFailure: true });
       opts.signal?.throwIfAborted();
@@ -445,17 +526,18 @@ export async function runRegistryScan(
       opts.signal?.throwIfAborted();
       const id = batch[i];
       const ownerR = reads[i * 3], walletR = reads[i * 3 + 1], uriR = reads[i * 3 + 2];
-      if (explicitIds && (ownerR?.status !== 'success' || walletR?.status !== 'success' || uriR?.status !== 'success')) {
-        // Membership is already known: a failed read cannot be silently treated
-        // as a hole in a discovered range or allowed to clear saved metadata.
+      if (ownerR?.status !== 'success' && !explicitIds && isNonexistentTokenError(ownerR?.error)) continue;
+      if (ownerR?.status !== 'success' || walletR?.status !== 'success' || uriR?.status !== 'success'
+        || typeof ownerR.result !== 'string' || typeof walletR.result !== 'string' || typeof uriR.result !== 'string') {
+        // In discovery too, an unknown read failure is not a gap or evidence
+        // that saved wallet/URI/registration data should be cleared.
         result.errors++;
         failed([id], 'identity');
         continue;
       }
-      if (ownerR?.status !== 'success') continue; // unminted / burned id
-      const owner = (ownerR.result as string).toLowerCase();
-      const agentWallet = walletR.status === 'success' ? (walletR.result as string).toLowerCase() : null;
-      const tokenURI = uriR.status === 'success' ? (uriR.result as string) : null;
+      const owner = ownerR.result.toLowerCase();
+      const agentWallet = walletR.result.toLowerCase();
+      const tokenURI = uriR.result;
 
       const dec = await decodeRegistration(tokenURI, { fetchRemote: false, signal: opts.signal });
       const agent: ScannedAgent = {
@@ -484,7 +566,7 @@ export async function runRegistryScan(
           registration: dec.registration,
           tokenURI: agent.tokenURI ?? undefined,
         }).score;
-        if (explicitIds && dec.status === 'unreachable') {
+        if (dec.status === 'unreachable') {
           result.errors++;
           failed([agent.agentId], 'registration');
         }
@@ -493,16 +575,14 @@ export async function runRegistryScan(
 
     // An outage is not evidence that previously saved registration disappeared.
     // Retain the whole stored identity until all its metadata reads succeed.
-    if (explicitIds) {
-      for (let i = live.length - 1; i >= 0; i--) {
-        if (live[i].registrationStatus === 'unreachable') live.splice(i, 1);
-      }
+    for (let i = live.length - 1; i >= 0; i--) {
+      if (live[i].registrationStatus === 'unreachable') live.splice(i, 1);
     }
 
     // Persist identities first so the feedback FK target (chain, agent_id) exists.
     opts.signal?.throwIfAborted();
     result.agentsScanned += live.length;
-    result.agentsPersisted += await persistAgents(config.chain, live);
+    if (live.length > 0) result.agentsPersisted += await persistAgents(config.chain, live);
     opts.signal?.throwIfAborted();
 
     // ── Feedback pass for this batch's live agents ──
@@ -551,19 +631,19 @@ export async function runRegistryScan(
         const aggById = new Map<number, FeedbackAgg>();
         for (let i = 0; i < fbIds.length; i++) {
           if (values[i] === MISSING) {
-            if (explicitIds) { result.errors++; failed([fbIds[i]], 'feedback'); }
+            result.errors++;
+            failed([fbIds[i]], 'feedback');
             continue;
           }
           let recs: ScannedFeedback[];
           try {
             const reply = values[i];
-            if (explicitIds && (!Array.isArray(reply) || reply.length !== 7
-              || !reply.every(Array.isArray) || reply.some(array => array.length !== reply[0].length))) {
+            if (!Array.isArray(reply) || reply.length !== 7
+              || !reply.every(Array.isArray) || reply.some(array => array.length !== reply[0].length)) {
               throw Error('Invalid registry feedback arrays');
             }
             recs = parseFeedbackArrays(fbIds[i], reply as readonly unknown[]);
-          } catch (error) {
-            if (!explicitIds) throw error;
+          } catch {
             result.errors++;
             failed([fbIds[i]], 'feedback');
             continue;
@@ -614,7 +694,7 @@ export interface IncrementalScanOptions extends RegistryScanOptions {
  * (new ids + a bounded recent re-scan window), then advances the cursor to the
  * tip — but ONLY after a clean run (errors === 0). A run that hit RPC errors
  * leaves the cursor where it was so the missed ids are retried next run rather
- * than silently skipped. The full 1..tip sweep stays `runRegistryScan`.
+ * than silently skipped. The full firstAgentId..tip sweep stays `runRegistryScan`.
  */
 export async function runIncrementalRegistryScan(
   config: Erc8004RegistryConfig,
@@ -625,25 +705,25 @@ export async function runIncrementalRegistryScan(
   opts: IncrementalScanOptions = {},
 ): Promise<RegistryScanResult> {
   opts.signal?.throwIfAborted();
-  const client = opts.client ?? makeRegistryClient(config);
+  const client = await admittedRegistryClient(config, opts);
   const log = opts.onProgress ?? (() => {});
   const window = opts.rescanWindow ?? DEFAULT_RESCAN_WINDOW;
 
-  const currentTip = await findRegistryTip(client, config.identityRegistry, opts.signal);
+  const currentTip = await findRegistryTip(client, config.identityRegistry, opts.signal, config.firstAgentId ?? 1);
   opts.signal?.throwIfAborted();
   const lastTip = await getCursorTip(config.chain);
   opts.signal?.throwIfAborted();
-  const { from, to } = incrementalScanRange(lastTip, currentTip, window);
+  const { from, to } = incrementalScanRange(lastTip, currentTip, window, config.firstAgentId ?? 1);
   log(`incremental: lastTip=${lastTip} currentTip=${currentTip} window=${window} → scan ${from}..${to}`);
 
-  if (to < 1) {
+  if (to < (config.firstAgentId ?? 1)) {
     return {
       chain: config.chain, tip: currentTip, agentsScanned: 0, agentsPersisted: 0,
       feedbackScanned: 0, feedbackPersisted: 0, errors: 0,
     };
   }
 
-  const result = await runRegistryScan(config, persistAgents, persistFeedback, {
+  const result = await scanRegistry(config, persistAgents, persistFeedback, client, {
     ...opts,
     client,
     fromId: from,

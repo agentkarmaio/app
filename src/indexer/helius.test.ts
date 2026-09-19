@@ -422,8 +422,8 @@ describe('RPC resolvers treat an empty env var as unset (CI secret trap)', () =>
 });
 
 // The archive endpoint (public mainnet-beta) 429s under light load, and
-// fetchAllX402Transactions runs 5 facilitators in parallel — each with its own
-// retry loop. A per-batch limit of 1 would still put 5 calls in flight, so the
+// fetchAllX402Transactions runs 2 facilitators in parallel — each with its own
+// retry loop. A per-batch limit of 1 would still put 2 calls in flight, so the
 // serialization has to be process-wide.
 describe('archive retries are serialized process-wide, not per batch', () => {
   test('two concurrent batches never put 2 archive calls in flight', async () => {
