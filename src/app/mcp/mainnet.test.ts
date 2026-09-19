@@ -87,6 +87,30 @@ test('the Arc-specific tool honors an explicit mainnet request without a testnet
 });
 
 
+test('the Arc-specific tool defaults to mainnet despite a stronger testnet row', async () => {
+  const reads = store();
+  const read = spyOn(getAdapter('arc'), 'readAttestation').mockRejectedValue(Error('testnet forbidden'));
+  try {
+    const result = await tool('get_arc_karma', { wallet: address });
+    expect(result).toMatchObject({ chain: 'arc-mainnet', provider: { score: null, hasSignal: false } });
+    expect(result.profileUrl).toContain('chain=arc-mainnet');
+    expect(reads.filter(r => ['transactions', 'signal_events', 'feedback'].includes(r.table)).every(r => r.chain === 'arc-mainnet')).toBe(true);
+    expect(read).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
+test('the Arc-specific tool retains explicit testnet archive access and pinned links', async () => {
+  const reads = store();
+  const liveRead = spyOn(arc, 'readAgent').mockRejectedValue(Error('live testnet forbidden'));
+  try {
+    const result = await tool('get_arc_karma', { wallet: address, chain: 'arc' });
+    expect(result.chain).toBe('arc');
+    expect(result.profileUrl).toContain('chain=arc');
+    expect(reads.filter(r => ['transactions', 'signal_events', 'feedback'].includes(r.table)).every(r => r.chain === 'arc')).toBe(true);
+    expect(liveRead).not.toHaveBeenCalled();
+  } finally { liveRead.mockRestore(); }
+});
+
 test('MCP mainnet leaderboard keeps absent faces null and exact identity links including ID zero', async () => {
   const rows = [
     { chain: 'arc-mainnet', address, arc_agent_id: 0, score: null, provider_score: null, consumer_score: null,
