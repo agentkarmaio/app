@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { activityStatus, parseActivityStats, parseActivityHealth, startActivityPoll, type ActivityStats } from './live-flow-state';
+import { activityStatus, orderActivityChains, parseActivityStats, parseActivityHealth, startActivityPoll, type ActivityStats } from './live-flow-state';
 import type { IndexingHealth } from '@/lib/indexing-health';
 
 const stats: ActivityStats = { totalTransactions: 42, totalAgents: 17 };
@@ -62,6 +62,14 @@ describe('activity polling', () => {
 test('rejects incomplete or malformed network status instead of crashing the disclosure', () => {
   expect(() => parseActivityHealth({ status: 'current', chains: [null, null, null, null] })).toThrow();
   expect(() => parseActivityHealth({ status: 'toString', chains: [] })).toThrow();
+});
+
+test('keeps Arc testnet last without changing the remaining network order', async () => {
+  const { buildIndexingHealth } = await import('@/lib/indexing-health');
+  const health = buildIndexingHealth([]);
+  expect(orderActivityChains(health.chains).map((chain) => chain.chain)).toEqual([
+    'solana', 'celo', 'stellar', 'arc-mainnet', 'arc',
+  ]);
 });
 
 test('timeout becomes visible even if an in-flight reader ignores abort', async () => {

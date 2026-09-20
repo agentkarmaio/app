@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import type { IndexingHealth } from '@/lib/indexing-health';
 import {
-  activityStatus, INDEXING_STATUS_LABELS, INDEXING_ISSUE_MESSAGES, parseActivityStats, parseActivityHealth, startActivityPoll, type ActivityStats,
+  activityStatus, INDEXING_STATUS_LABELS, INDEXING_ISSUE_MESSAGES, orderActivityChains, parseActivityStats, parseActivityHealth, startActivityPoll, type ActivityStats,
 } from './live-flow-state';
 
 const CHAIN_LABELS = { solana: 'Solana', arc: 'Arc testnet', 'arc-mainnet': 'Arc mainnet', celo: 'Celo', stellar: 'Stellar' };
@@ -80,7 +80,7 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
           {healthFailed && <p className="mt-3 text-muted-foreground">Status updates are delayed. Showing the last available report.</p>}
           {health ? (
             <div className="mt-4 space-y-4">
-              {health.chains.map((chain) => (
+              {orderActivityChains(health.chains).map((chain) => (
                 <section key={chain.chain} aria-label={`${CHAIN_LABELS[chain.chain]} indexing`}>
                   <div className="flex items-baseline justify-between gap-3">
                     <h3 className="font-medium">{CHAIN_LABELS[chain.chain]}</h3>
