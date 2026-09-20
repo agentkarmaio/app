@@ -34,6 +34,11 @@ export function activityStatus(
   return INDEXING_STATUS_LABELS[health.status];
 }
 
+/** Keep Arc testnet as the final network in the homepage disclosure. */
+export function orderActivityChains(chains: IndexingHealth['chains']): IndexingHealth['chains'] {
+  return chains.filter((chain) => chain.chain !== 'arc').concat(chains.filter((chain) => chain.chain === 'arc'));
+}
+
 /** A malformed successful response must never overwrite last-known counts. */
 export function parseActivityStats(value: unknown): ActivityStats {
   if (!value || typeof value !== 'object') throw new Error('Invalid activity counts');
