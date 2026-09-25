@@ -132,7 +132,7 @@ test('counts outgoing receipts per wallet and writes cumulative rates', async ()
   ]);
   const rpc = transport({ head: 104, receipts });
   const result = await managed({ transport: rpc, startBlock: 100, batchSize: 2 });
-  expect(result).toEqual({ scanned: 4, walletsUpdated: 2, complete: true, cursor: '103' });
+  expect(result).toEqual({ scanned: 4, walletsUpdated: 2, complete: true, stalled: false, cursor: '103' });
   expect(rpc.calls).toEqual([[100, 101], [102, 103]]);
   expect(state.rateWrites).toEqual([
     expect.objectContaining({ metric_success_rate: 2 / 4, __address: W1 }),
@@ -161,7 +161,7 @@ test('resumes at the stored block cursor and merges into prior counters', async 
   ]);
   const rpc = transport({ head: 104, receipts });
   const result = await managed({ transport: rpc, startBlock: 100, batchSize: 2 });
-  expect(result).toEqual({ scanned: 2, walletsUpdated: 2, complete: true, cursor: '103' });
+  expect(result).toEqual({ scanned: 2, walletsUpdated: 2, complete: true, stalled: false, cursor: '103' });
   expect(rpc.calls).toEqual([[102, 103]]);
   expect(state.rateWrites).toEqual([
     expect.objectContaining({ metric_success_rate: 1, __address: W1 }),
@@ -188,7 +188,7 @@ test('the per-wallet high-water mark skips blocks already counted by a crashed r
   ]);
   const rpc = transport({ head: 104, receipts });
   const result = await managed({ transport: rpc, startBlock: 100, batchSize: 2 });
-  expect(result).toEqual({ scanned: 4, walletsUpdated: 1, complete: true, cursor: '103' });
+  expect(result).toEqual({ scanned: 4, walletsUpdated: 1, complete: true, stalled: false, cursor: '103' });
   expect(state.rateWrites).toEqual([expect.objectContaining({ metric_success_rate: 1, __address: W2 })]);
   expect(state.statsUpserted).toEqual([
     expect.objectContaining({ address: W2, settled_count: 2, failed_count: 0, last_block: 103 }),
@@ -200,7 +200,7 @@ test('a block cap stops the run resumably with the cursor held', async () => {
   const receipts = new Map<number, WalkReceipt[]>([[100, [ok(W1)]], [101, [failed(W1)]]]);
   const rpc = transport({ head: 1_000, receipts });
   const result = await managed({ transport: rpc, startBlock: 100, batchSize: 2, maxBlocks: 2 });
-  expect(result).toEqual({ scanned: 2, walletsUpdated: 1, complete: false, cursor: '101' });
+  expect(result).toEqual({ scanned: 2, walletsUpdated: 1, complete: false, stalled: false, cursor: '101' });
   expect(rpc.calls).toEqual([[100, 101]]);
   expect(state.saveCursor).toHaveBeenCalledTimes(1);
 });
@@ -212,7 +212,7 @@ test('an RPC failure after bounded retries stops without advancing past the fail
   const result = await managed({
     transport: rpc, startBlock: 100, batchSize: 2, retryAttempts: 1, retryDelayMs: 0,
   });
-  expect(result).toEqual({ scanned: 2, walletsUpdated: 1, complete: false, cursor: '101' });
+  expect(result).toEqual({ scanned: 2, walletsUpdated: 1, complete: false, stalled: false, cursor: '101' });
   // First batch once, second batch once + one retry.
   expect(rpc.calls).toEqual([[100, 101], [102, 103], [102, 103]]);
   expect(state.saveCursor).toHaveBeenCalledTimes(1);
@@ -237,7 +237,7 @@ test('an empty wallet set completes without touching the chain', async () => {
   const receipts = new Map<number, WalkReceipt[]>();
   const rpc = transport({ head: 104, receipts });
   const result = await managed({ transport: rpc, startBlock: 100 });
-  expect(result).toEqual({ scanned: 0, walletsUpdated: 0, complete: true, cursor: '' });
+  expect(result).toEqual({ scanned: 0, walletsUpdated: 0, complete: true, stalled: false, cursor: '' });
   expect(rpc.calls).toEqual([]);
   expect(state.saveCursor).not.toHaveBeenCalled();
 });
@@ -246,7 +246,7 @@ test('a walk already at the tip completes without refetching', async () => {
   const state = setup({ wallets: [W1], cursor: '103' });
   const rpc = transport({ head: 104, receipts: new Map() });
   const result = await managed({ transport: rpc, startBlock: 100 });
-  expect(result).toEqual({ scanned: 0, walletsUpdated: 0, complete: true, cursor: '103' });
+  expect(result).toEqual({ scanned: 0, walletsUpdated: 0, complete: true, stalled: false, cursor: '103' });
   expect(rpc.calls).toEqual([]);
   expect(state.saveCursor).not.toHaveBeenCalled();
 });
@@ -279,7 +279,7 @@ test('work-set reads page past the 1000-row cap so prior counters are never lost
   });
   const rpc = transport({ head: 101, receipts: new Map([[100, [ok(late)]]]) });
   const result = await managed({ transport: rpc, startBlock: 100 });
-  expect(result).toEqual({ scanned: 1, walletsUpdated: 1, complete: true, cursor: '100' });
+  expect(result).toEqual({ scanned: 1, walletsUpdated: 1, complete: true, stalled: false, cursor: '100' });
   expect(state.pageReads.wallets).toEqual([[0, 999], [1000, 1999]]);
   expect(state.pageReads.wallet_tx_stats).toEqual([[0, 999], [1000, 1999]]);
   // Merged into the page-2 prior, not restarted from zero.
@@ -312,7 +312,7 @@ test('an unreachable chain id stops resumably and reports the held cursor', asyn
     getChainId: async () => { throw new Error('rpc_down'); },
   };
   const result = await managed({ transport: rpc, startBlock: 100, retryAttempts: 0 });
-  expect(result).toEqual({ scanned: 0, walletsUpdated: 0, complete: false, cursor: '150' });
+  expect(result).toEqual({ scanned: 0, walletsUpdated: 0, complete: false, stalled: true, cursor: '150' });
   expect(rpc.calls).toEqual([]);
 });
 
@@ -326,4 +326,12 @@ test('a hung RPC request times out instead of waiting on the job abort', async (
   await expect(rpc.getHead()).rejects.toThrow();
   expect(job.signal.aborted).toBe(false);
   expect(hung).toHaveBeenCalledTimes(1);
+});
+
+test('an RPC failure on the first batch reports a stall with the cursor held', async () => {
+  const state = setup({ wallets: [W1], cursor: '101' });
+  const rpc = transport({ head: 200, receipts: new Map(), failFromBlock: 102 });
+  const result = await managed({ transport: rpc, startBlock: 100, batchSize: 2, retryAttempts: 0 });
+  expect(result).toEqual({ scanned: 0, walletsUpdated: 0, complete: false, stalled: true, cursor: '101' });
+  expect(state.saveCursor).not.toHaveBeenCalled();
 });

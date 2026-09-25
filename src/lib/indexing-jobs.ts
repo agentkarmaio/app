@@ -154,9 +154,12 @@ export function createIndexingJob(
         }
         // A walk stopped short (throttled RPC or bounded budget) is
         // pending-with-reason, never a dead chain: it resumes at its cursor.
+        // A zero-progress stop gets its own code so a block the node can never
+        // serve reads as a stall, not as endless catch-up.
         if (!walkResult.complete && outcome.status !== 'failed') {
           return { ...outcome, status: 'catching_up',
-            errorCode: outcome.errorCode ?? 'failed_tx_walk_pending',
+            errorCode: outcome.errorCode
+              ?? (walkResult.stalled ? 'failed_tx_walk_stalled' : 'failed_tx_walk_pending'),
             pendingCount: (outcome.pendingCount ?? 0) + 1 };
         }
         return outcome;

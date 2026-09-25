@@ -45,7 +45,7 @@ test.each(['celo', 'arc-mainnet'] as const)('%s partial registry run must not pu
     expect(outcome.checkpoint).toBeUndefined();
   } finally { scan.mockRestore(); }
 });
-const WALKED = { scanned: 0, walletsUpdated: 0, complete: true, cursor: '' };
+const WALKED = { scanned: 0, walletsUpdated: 0, complete: true, stalled: false, cursor: '' };
 test.each([true, false])('mainnet transfer ticks refresh persisted ranks even with no inserts (cycle complete=%s)', async complete => {
   const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockResolvedValue({
     fetched: 0, inserted: 0, cursors: new Map(),
@@ -123,10 +123,23 @@ test('an incomplete settlement walk reports its own pending reason', async () =>
   });
   const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete: true, cursor: '' });
   const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement')
-    .mockResolvedValue({ scanned: 30_000, walletsUpdated: 25, complete: false, cursor: '103' });
+    .mockResolvedValue({ scanned: 30_000, walletsUpdated: 25, complete: false, stalled: false, cursor: '103' });
   try {
     const outcome = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal);
     expect(outcome).toMatchObject({ status: 'catching_up', errorCode: 'failed_tx_walk_pending', checkedCount: 27, pendingCount: 1 });
+  } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
+});
+test('a zero-progress settlement walk reports a stall, not catch-up', async () => {
+  const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockResolvedValue({
+    fetched: 0, inserted: 0, cursors: new Map(),
+    coverage: { complete: true, checked: 1, pending: 0, unresolved: 0, checkpoint: '10', head: '10' },
+  });
+  const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete: true, cursor: '' });
+  const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement')
+    .mockResolvedValue({ scanned: 0, walletsUpdated: 0, complete: false, stalled: true, cursor: '103' });
+  try {
+    const outcome = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal);
+    expect(outcome).toMatchObject({ status: 'catching_up', errorCode: 'failed_tx_walk_stalled', pendingCount: 1 });
   } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
 test('a pending score refresh outranks a pending settlement walk', async () => {
@@ -136,7 +149,7 @@ test('a pending score refresh outranks a pending settlement walk', async () => {
   });
   const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete: false, cursor: '0xabc' });
   const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement')
-    .mockResolvedValue({ scanned: 30_000, walletsUpdated: 25, complete: false, cursor: '103' });
+    .mockResolvedValue({ scanned: 30_000, walletsUpdated: 25, complete: false, stalled: false, cursor: '103' });
   try {
     const outcome = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal);
     expect(outcome).toMatchObject({ status: 'catching_up', errorCode: 'score_refresh_pending' });

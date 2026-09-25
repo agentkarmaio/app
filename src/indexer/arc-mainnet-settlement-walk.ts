@@ -42,6 +42,10 @@ export interface ArcMainnetWalkResult {
   scanned: number;
   walletsUpdated: number;
   complete: boolean;
+  /** The RPC failed before a single block was counted. A persistently
+   * unservable block repeats this every run, so it must read apart from
+   * ordinary budget-bound catch-up. */
+  stalled: boolean;
   cursor: string;
 }
 interface WalletStats { address: string; settled_count: number; failed_count: number; last_block: number }
@@ -99,7 +103,7 @@ export async function walkArcMainnetSettlement(
     }
   };
   const resumableStop = (cursor: string): ArcMainnetWalkResult =>
-    ({ scanned: 0, walletsUpdated: 0, complete: false, cursor });
+    ({ scanned: 0, walletsUpdated: 0, complete: false, stalled: true, cursor });
 
   const transport = options.transport
     ?? createArcMainnetWalkTransport(
@@ -127,7 +131,7 @@ export async function walkArcMainnetSettlement(
   const walletRows = await readAll<{ address: string }>('wallets', 'address', signal);
   const walletSet = new Set(walletRows.map(row => row.address.toLowerCase()));
   // No wallet subjects: nothing to measure and nothing to resume, ever.
-  if (walletSet.size === 0) return { scanned: 0, walletsUpdated: 0, complete: true, cursor };
+  if (walletSet.size === 0) return { scanned: 0, walletsUpdated: 0, complete: true, stalled: false, cursor };
 
   const prior = new Map<string, WalletStats>();
   const statsRows = await readAll<Partial<WalletStats>>(
@@ -228,10 +232,12 @@ export async function walkArcMainnetSettlement(
   if (lastScanned > firstUnscanned - 1) {
     await upsertCursor(CURSOR_KEY, String(lastScanned), lastScanned, 'arc-mainnet');
   }
+  const scanned = Math.max(0, lastScanned - (firstUnscanned - 1));
   return {
-    scanned: Math.max(0, lastScanned - (firstUnscanned - 1)),
+    scanned,
     walletsUpdated,
     complete: !stopped && lastScanned >= target,
+    stalled: stopped && scanned === 0,
     cursor: String(lastScanned),
   };
 }
