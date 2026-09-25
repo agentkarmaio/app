@@ -4,7 +4,7 @@ import type { WalletScore } from '@/scoring/index';
 const ADDRESS = `0x${'1'.repeat(40)}`;
 const HASH = `0x${'a'.repeat(64)}`;
 
-describe('Arc mainnet adapter', () => {
+describe('Arc adapter', () => {
   test('reports a separate chain with no testnet explorer and resolves event receipt links', () => {
     const adapter = makeArcMainnetAdapter();
     expect(adapter.chain).toBe('arc-mainnet');

@@ -22,6 +22,6 @@ test('unknown testnet profiles do not promise indexing or new claims', () => {
 
 test('active filters offer mainnet without promoting retired testnet', () => {
   const html = renderToStaticMarkup(<ChainFilterPill value="All" onChange={() => {}} />);
-  expect(html).toContain('Arc mainnet');
+  expect(html).toContain('Arc');
   expect(html).not.toContain('Arc testnet');
 });

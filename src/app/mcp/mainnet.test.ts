@@ -38,7 +38,7 @@ async function tool(name:string, args: Record<string, unknown> = { wallet: addre
   expect(envelope.result?.isError).not.toBe(true);
   return JSON.parse(envelope.result.content[0].text);
 }
-test('MCP schemas accept the distinct Arc mainnet network',()=>{
+test('MCP schemas accept the distinct Arc network',()=>{
   expect(chainSchema.safeParse('arc-mainnet').success).toBe(true);
   expect(chainFilterSchema.safeParse('arc-mainnet').success).toBe(true);
 });

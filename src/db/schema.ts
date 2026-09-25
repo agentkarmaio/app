@@ -141,7 +141,7 @@ export const walletsTable = pgTable('wallets', {
   // materialized via the arc backfill (see scripts/arc-backfill-agents.ts).
   // Arc has no mainnet today (launches summer 2026); presence of this column
   // value is the durable testnet marker — chain='arc' + arc_agent_id != NULL
-  // is always testnet. When Arc mainnet ships, a distinct chain value will
+  // is always testnet. When Arc ships, a distinct chain value will
   // fork and these rows stay visibly testnet.
   arc_agent_id:        integer('arc_agent_id'),
   // --- Succession / Dead Man's Switch (denormalized for Agent Estates) -------
@@ -520,7 +520,7 @@ export const indexerCursorsTable = pgTable('indexer_cursors', {
 
 // --- Per-wallet settlement counters (block-walk derived) ---------------------
 //
-// Cumulative outgoing receipt counts per wallet, maintained by the Arc mainnet
+// Cumulative outgoing receipt counts per wallet, maintained by the Arc
 // settlement walk (src/indexer/arc-mainnet-settlement-walk.ts) under the
 // transfers lease. `wallets.metric_success_rate` re-derives from these
 // counters; `last_block` is a per-wallet high-water mark that makes a run

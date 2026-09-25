@@ -1,5 +1,5 @@
 /**
- * Arc mainnet USDC receipts. Only the native system emitter is indexed:
+ * Arc USDC receipts. Only the native system emitter is indexed:
  * https://docs.arc.io/arc/references/usdc-system-events.md
  * It covers native and ERC-20 movements at 18 decimals from genesis; reading
  * the ERC-20 emitter too would count the same movement twice. Gas is not logged.

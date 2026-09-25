@@ -55,7 +55,7 @@ const EXPLORER_ADDR: Record<RecordsChain, string> = {
 const SUBTITLE: Record<RecordsChain, string> = {
   celo: 'Every record from the Celo ReputationRegistry — independent and portable.',
   arc: 'Saved Arc testnet records. The archive may have incomplete historical coverage.',
-  'arc-mainnet': 'Every record from the Arc mainnet ReputationRegistry — attestations and reviews, independent and portable.',
+  'arc-mainnet': 'Every record from the Arc ReputationRegistry — attestations and reviews, independent and portable.',
 };
 
 /** How many records render before "Show more", and the reveal increment. */

@@ -354,11 +354,11 @@ export async function generateMetadata(
   const chainLabel = f.chain.charAt(0).toUpperCase() + f.chain.slice(1);
 
   const mainnetUnrated = chainHint === 'arc-mainnet' && f.tier === 'Unrated';
-  const title = mainnetUnrated ? `${f.name} — Unrated · Arc mainnet` : `${f.name} — Karma ${f.score.toFixed(0)}/100 · ${f.tier}`;
+  const title = mainnetUnrated ? `${f.name} — Unrated · Arc` : `${f.name} — Karma ${f.score.toFixed(0)}/100 · ${f.tier}`;
   const description = f.chain === 'arc'
     ? `${f.name}: archived Arc testnet profile. Historical scores and payment evidence; testnet indexing and writes have ended.`
     : mainnetUnrated
-    ? 'Arc mainnet payment behavior with separate incoming and outgoing evidence. Trust is Unrated; transfers do not verify service delivery.'
+    ? 'Arc payment behavior with separate incoming and outgoing evidence. Trust is Unrated; transfers do not verify service delivery.'
     : f.isRegistry
     ? `${f.name}: Provider Karma ${f.score.toFixed(1)}/100, trust tier ${f.tier}, confidence ${badgeLabel}. `
       + `ERC-8004 agent on ${chainLabel}. Live reputation snapshot via AgentKarma.`
@@ -705,7 +705,7 @@ export default async function AgentProfilePage({
   // Celo and Arc take a separate render path because the data shape is
   // different: no x402 receipt history, no Solana delivery-feedback form — the
   // profile is built from ERC-8004 registration + reputation reads keyed by
-  // agentId (Arc mainnet adds its transfer-based Karma on top).
+  // agentId (Arc adds its transfer-based Karma on top).
   if (resolved.addressClass === 'evm') {
     if (resolved.chain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} agentId={agentIdHint != null ? agentIdNum ?? Number.NaN : undefined} deadMansSwitch={deadMansSwitch} />;
     // Prefer a real wallet row's agentId; otherwise honor the ?agentId= hint
@@ -720,7 +720,7 @@ export default async function AgentProfilePage({
     // agentId: resolve the chain by matching that agentId's on-chain owner to the
     // address in the URL, so a shared link like /agent/<addr>?agentId=N works
     // without a manual ?chain=. Only a genuine conflict (the same address owns
-    // agentId N on BOTH Celo and Arc mainnet) stays ambiguous and still needs ?chain=.
+    // agentId N on BOTH Celo and Arc) stays ambiguous and still needs ?chain=.
     if (evmChain == null && agentIdNum != null) {
       evmChain = await probeRegistryChainByAgentId(wallet, agentIdNum);
     }

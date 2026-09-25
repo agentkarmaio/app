@@ -24,7 +24,7 @@ beforeEach(() => {
 });
 afterEach(() => { wallet.mockRestore(); registry.mockRestore(); byAddress.mockRestore(); receipts.mockRestore(); });
 
-describe('Arc mainnet registry identity and receipt binding', () => {
+describe('Arc registry identity and receipt binding', () => {
   test('ID zero resolves a registry-only identity with no manufactured Karma', async () => {
     const result = await resolveKarma(owner, 'arc-mainnet', { agentId: 0 });
     expect(registry).toHaveBeenCalledWith('arc-mainnet', 0);

@@ -50,7 +50,7 @@ export const AK_STELLAR = {
   keyfile: '.keys/agentkarma-stellar.json',
 } as const;
 
-/** AgentKarma's published Arc TESTNET identity (not an Arc mainnet claim). */
+/** AgentKarma's published Arc TESTNET identity (not an Arc claim). */
 export const AK_ARC = {
   chain: 'arc',
   network: 'testnet',

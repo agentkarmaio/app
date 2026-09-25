@@ -1,4 +1,4 @@
-/** Arc mainnet receipt configuration. Never inherits testnet RPCs or membership.
+/** Arc receipt configuration. Never inherits testnet RPCs or membership.
  * Event provenance: https://docs.arc.io/arc/references/usdc-system-events.md
  */
 export const ARC_MAINNET_CHAIN_ID = 5042;

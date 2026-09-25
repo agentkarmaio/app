@@ -133,7 +133,7 @@ function profileLd(snapshot: KarmaSnapshot, name: string) {
         '@type': 'BreadcrumbList',
         itemListElement: [
           { '@type': 'ListItem', position: 1, name: 'AgentKarma', item: SITE_URL },
-          { '@type': 'ListItem', position: 2, name: 'Arc mainnet', item: `${SITE_URL}/arc/mainnet` },
+          { '@type': 'ListItem', position: 2, name: 'Arc', item: `${SITE_URL}/arc/mainnet` },
           { '@type': 'ListItem', position: 3, name, item: profileUrl },
         ],
       },
@@ -168,7 +168,7 @@ export function ArcMainnetProfileOverview({ snapshot, registry, registryUnavaila
   const registration = readProfileRegistration(registry?.registration);
   const evidence = snapshot.receiptEvidence;
   return <AgentProfileShell
-    back={{ href: '/arc/mainnet', label: 'Arc mainnet coverage' }}
+    back={{ href: '/arc/mainnet', label: 'Arc coverage' }}
     address={snapshot.address}
     chain="arc-mainnet"
     avatarSrc={registration.image}
@@ -178,7 +178,7 @@ export function ArcMainnetProfileOverview({ snapshot, registry, registryUnavaila
     category={snapshot.identity.category}
     website={snapshot.identity.website}
     chips={<>
-      <Badge variant="outline">Arc mainnet</Badge>
+      <Badge variant="outline">Arc</Badge>
       {snapshot.agentId != null && <Badge variant="outline">Agent #{snapshot.agentId}</Badge>}
       <AutonomyChip score={snapshot.autonomy.score} label={snapshot.autonomy.label} size="sm" />
     </>}
@@ -196,7 +196,7 @@ export function ArcMainnetProfileOverview({ snapshot, registry, registryUnavaila
     </nav>
     <div className="grid gap-6 md:grid-cols-2"><FaceCard face={snapshot.provider} /><FaceCard face={snapshot.consumer} /></div>
     <div className="grid gap-6 lg:grid-cols-2">
-      <ProfilePanel id="score-breakdown" title="Score Breakdown" intro="Arc mainnet transfer model · Tier 2 behavioral evidence only. The scores above come from the shared Karma resolver.">
+      <ProfilePanel id="score-breakdown" title="Score Breakdown" intro="Arc transfer model · Tier 2 behavioral evidence only. The scores above come from the shared Karma resolver.">
         {[snapshot.provider, snapshot.consumer].map(face => <section key={face.face} className="space-y-4 border-b border-border pb-5 last:border-0 last:pb-0">
           <h3 className="text-sm font-medium">{face.face === 'provider' ? 'Provider · Incoming' : 'Consumer · Outgoing'}</h3>
           {BEHAVIOR_METRICS.map(([key, label, weight, hint]) => {
@@ -213,7 +213,7 @@ export function ArcMainnetProfileOverview({ snapshot, registry, registryUnavaila
       </ProfilePanel>
       <div className="min-w-0 space-y-6">
         <ProfilePanel title="Summary" intro="Activity dates describe validated transfers, never registry scan times.">
-          <dl><Stat label="Network">Arc mainnet</Stat>
+          <dl><Stat label="Network">Arc</Stat>
             <Stat label="Unique transactions in score window">{snapshot.txCount.toLocaleString('en-US')}</Stat>
             <Stat label="Received transfer logs">{evidence?.received.toLocaleString('en-US') ?? 'Unavailable'}</Stat>
             <Stat label="Sent transfer logs">{evidence?.sent.toLocaleString('en-US') ?? 'Unavailable'}</Stat>
@@ -246,7 +246,7 @@ export function ArcMainnetProfileOverview({ snapshot, registry, registryUnavaila
           : 'The scoring read did not reach its history limit. Indexer coverage can still be incomplete; no indexed receipts does not prove no on-chain activity.'} Reciprocal transfers are discounted only within the observed window. This is not proof of counterparty independence.</p>
       </> : <p className="text-sm text-muted-foreground">Coverage details are unavailable for this snapshot.</p>}
     </ProfilePanel>
-    <ProfilePanel id="identity" title="Registry Identity & Services" intro="Declared metadata from the Arc mainnet registry mirror. Neither metadata nor registry feedback increases the transfer score.">
+    <ProfilePanel id="identity" title="Registry Identity & Services" intro="Declared metadata from the Arc registry mirror. Neither metadata nor registry feedback increases the transfer score.">
       {registryUnavailable ? <p role="status" className="text-sm text-muted-foreground">Registry details could not be loaded. Refresh to retry; the Karma snapshot above is still available.</p>
         : !registry ? <p className="text-sm text-muted-foreground">No registry identity is associated with this payment-wallet profile.</p> : <>
           <dl><Stat label="Registry agent">#{snapshot.agentId}</Stat>
@@ -274,7 +274,7 @@ export function ArcMainnetProfileOverview({ snapshot, registry, registryUnavaila
 
 function ReceiptTable({ receipts }: { receipts: ProfileActivity['receipts'] }) {
   return <div className="overflow-x-auto"><table className="w-full text-sm">
-    <caption className="sr-only">Validated Arc mainnet transfer receipts</caption>
+    <caption className="sr-only">Validated Arc transfer receipts</caption>
     <thead><tr className="border-b border-border text-xs text-muted-foreground">
       {['Direction', 'Amount', 'Counterparty', 'Time (UTC)', 'Transaction / log'].map(label => <th scope="col" className={cellStyle} key={label}>{label}</th>)}
     </tr></thead><tbody>{receipts.map(receipt => <tr className="border-b border-border/50" key={receipt.eventKey}>
@@ -325,7 +325,7 @@ export function ArcMainnetActivityDetails({ activity, saturated, sampled, invali
 }
 
 export function ArcMainnetRegistryFeedback({ rows }: { rows: EnrichmentFeedbackRow[] }) {
-  return <ProfilePanel id="feedback" title="Registry Feedback" intro={`Read-only Arc mainnet registry mirror · up to ${PROFILE_FEEDBACK_LIMIT} newest indexed records. Tags and decimal scales are preserved; different feedback schemes are not averaged together or included in Karma.`}>
+  return <ProfilePanel id="feedback" title="Registry Feedback" intro={`Read-only Arc registry mirror · up to ${PROFILE_FEEDBACK_LIMIT} newest indexed records. Tags and decimal scales are preserved; different feedback schemes are not averaged together or included in Karma.`}>
     {rows.length ? <>
       <p className="text-xs text-muted-foreground">{rows.filter(row => !row.revoked).length} non-revoked / {rows.length} shown. Indexing time is not the feedback submission time.</p>
       <ul className="divide-y divide-border">{rows.map((row, index) => <li key={`${row.agent_id}:${row.client}:${row.feedback_index}:${index}`} className="space-y-2 py-3">

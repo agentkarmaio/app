@@ -157,7 +157,7 @@ export function ArcAgentProfile({
 
       <p className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
         Arc testnet is retired. This profile is read-only; its scores and payment history are archived.
-        {' '}<Link href="/arc/mainnet" className="inline-flex min-h-10 items-center underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring">View Arc mainnet</Link>
+        {' '}<Link href="/arc/mainnet" className="inline-flex min-h-10 items-center underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring">View Arc</Link>
       </p>
 
       {isClaimed && walletRow.claim_signature && walletRow.claim_message && (

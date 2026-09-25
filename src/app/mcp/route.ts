@@ -622,7 +622,7 @@ function registerTools(server: McpServer): void {
     {
       title: 'Get Arc agent Karma (both faces)',
       description:
-        'Look up Provider and Consumer Karma, confidence, and autonomy for an Arc mainnet EVM wallet. Mainnet scores use observed native USDC transfers as behavioral evidence; transfers alone do not prove delivery. Omit chain or pass arc-mainnet for mainnet. Pass chain=arc only to read the retired testnet archive.',
+        'Look up Provider and Consumer Karma, confidence, and autonomy for an Arc EVM wallet. Mainnet scores use observed native USDC transfers as behavioral evidence; transfers alone do not prove delivery. Omit chain or pass arc-mainnet for mainnet. Pass chain=arc only to read the retired testnet archive.',
       inputSchema: { wallet: walletSchema, chain: z.enum(['arc', 'arc-mainnet']).optional() },
       annotations: readOnly(),
     },

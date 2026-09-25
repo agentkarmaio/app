@@ -16,7 +16,7 @@ function receipt(overrides: Partial<ArcMainnetReceiptObservation> = {}): ArcMain
     rawAmount: '1', amountDecimal: '0.000000000000000001', timestamp: '2026-01-01T00:00:00.000Z', ...overrides };
 }
 
-describe('Arc mainnet profile score display', () => {
+describe('Arc profile score display', () => {
   test('missing and fully discounted evidence are Unrated, not zero', () => {
     assert.equal(hasDisplayScore(face), false);
     assert.equal(displayTier({ ...face, score: 80, trustTier: 'Excellent', metrics: { retainedValueShare: 0 } }), 'Unrated');

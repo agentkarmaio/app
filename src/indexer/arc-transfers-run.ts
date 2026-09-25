@@ -2,7 +2,7 @@
  * CLI entrypoint: bun run src/indexer/arc-transfers-run.ts [flags]
  *
  * Reads seed-scoped plain USDC `Transfer` events on Arc Testnet and persists
- * them as Tier-1 receipts. ARC TESTNET ONLY — Arc mainnet has no live ERC-8004
+ * them as Tier-1 receipts. ARC TESTNET ONLY — Arc has no live ERC-8004
  * registry, so it has no seed set (see src/config/arc-chain.ts).
  *
  * Flags:

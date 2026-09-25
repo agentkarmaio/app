@@ -4,7 +4,7 @@ import { parseArcMainnetRpcUrl, parseArcMainnetStartBlock, parseArcMainnetSeedAd
 import { getRegistryConfig } from './erc8004-registries';
 import { INDEXING_PATHS } from '@/lib/indexing-health';
 
-describe('Arc mainnet configuration is explicit', () => {
+describe('Arc configuration is explicit', () => {
   test('schedules the independently configured mainnet registry', () => {
     const config = getRegistryConfig('arc-mainnet');
     expect(config?.chain).toBe('arc-mainnet');

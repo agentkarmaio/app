@@ -216,7 +216,7 @@ describe('registry discovery fails closed', () => {
   });
 });
 
-describe('Arc mainnet registry admission', () => {
+describe('Arc registry admission', () => {
   const config = ERC8004_REGISTRIES['arc-mainnet'];
   const rpc = 'https://rpc.example.invalid/mainnet';
 

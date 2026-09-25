@@ -7,7 +7,7 @@ import {
   activityStatus, INDEXING_STATUS_LABELS, INDEXING_ISSUE_MESSAGES, orderActivityChains, parseActivityStats, parseActivityHealth, startActivityPoll, type ActivityStats,
 } from './live-flow-state';
 
-const CHAIN_LABELS = { solana: 'Solana', arc: 'Arc testnet', 'arc-mainnet': 'Arc mainnet', celo: 'Celo', stellar: 'Stellar' };
+const CHAIN_LABELS = { solana: 'Solana', arc: 'Arc testnet', 'arc-mainnet': 'Arc', celo: 'Celo', stellar: 'Stellar' };
 
 function CheckedTime({ value, empty }: { value: string | null | undefined; empty: string }) {
   if (!value || !Number.isFinite(Date.parse(value))) return <span>{empty}</span>;

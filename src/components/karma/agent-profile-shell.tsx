@@ -26,7 +26,7 @@ const WEBSITE_LINK =
  * the streaming order of the SSR shell stays where it is.
  *
  * `score` is a node rather than a number because the faces legitimately differ:
- * Solana shows one ring, Arc mainnet shows both faces side by side (invariant
+ * Solana shows one ring, Arc shows both faces side by side (invariant
  * #3 — two-faced karma is never collapsed into one number).
  */
 export function AgentProfileShell({

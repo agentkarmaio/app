@@ -23,7 +23,7 @@ function receipt(face: 'provider' | 'consumer', index = 1, overrides: Partial<Si
 }
 const compute = (events: SignalEvent[]) => collectArcMainnetReceipts(wallet, events, { now });
 
-describe('Arc mainnet transfer provenance', () => {
+describe('Arc transfer provenance', () => {
   test('sender and receiver observations retain exact precision and event identity', () => {
     for (const face of ['provider', 'consumer'] as const) {
       const row = receipt(face);
@@ -83,7 +83,7 @@ describe('Arc mainnet transfer provenance', () => {
 });
 
 const score = (events: SignalEvent[]) => computeArcMainnetReceiptScore(wallet, events, { now });
-describe('Arc mainnet behavior score', () => {
+describe('Arc behavior score', () => {
   test('one payment credits only its observed face at the approved formula', () => {
     for (const face of ['provider', 'consumer'] as const) {
       const result = score([receipt(face)]);

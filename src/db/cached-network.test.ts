@@ -9,7 +9,7 @@ test('profile cache arguments and underlying readers retain network identity', (
       const memo = new Map();
       return (...args) => { const key=JSON.stringify([keys,args]); if(!memo.has(key))memo.set(key,fn(...args)); return memo.get(key); };
     }}));
-    // Live Arc mainnet RPC is down → the profile must fall back to the
+    // Live Arc RPC is down → the profile must fall back to the
     // arc-mainnet mirror rows, never the retired testnet's.
     mock.module('./src/integrations/erc8004-arc-mainnet', () => ({
       readAgent: async () => { throw new Error('rpc down'); },

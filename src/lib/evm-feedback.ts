@@ -81,7 +81,7 @@ export function encodeGiveFeedback(args: FeedbackArgs): Hex {
 }
 
 // Registry addresses mirror erc8004-celo.ts / erc8004-arc.ts /
-// erc8004-arc-mainnet.ts (Arc mainnet shares Celo's vanity address). Immutable deploys;
+// erc8004-arc-mainnet.ts (Arc shares Celo's vanity address). Immutable deploys;
 // kept here so this client module doesn't pull the server-side reader modules
 // (and their RPC clients) into the browser bundle.
 const REGISTRY: Record<EvmFeedbackChain, `0x${string}`> = {

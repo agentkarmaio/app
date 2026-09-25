@@ -272,7 +272,7 @@ function range(from: number, to: number): number[] {
   return blocks;
 }
 
-/** Production transport: batched JSON-RPC against the Arc mainnet endpoint.
+/** Production transport: batched JSON-RPC against the Arc endpoint.
  * Each request carries one `eth_getBlockReceipts` per block; entries map by id
  * so ordering never depends on the node's batch response order. */
 export function createArcMainnetWalkTransport(

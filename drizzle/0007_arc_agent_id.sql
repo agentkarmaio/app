@@ -13,7 +13,7 @@
 --
 -- Testnet marker: every row written by the backfill has arc_agent_id IS NOT
 -- NULL AND chain='arc'. Arc has no mainnet today (launches summer 2026), so
--- chain='arc' rows are testnet by definition. Once Arc mainnet ships, a
+-- chain='arc' rows are testnet by definition. Once Arc ships, a
 -- distinct 'arc-mainnet' chain (or network column) can fork; the existing
 -- testnet rows retain their visible chain='arc' marker.
 

@@ -1,4 +1,4 @@
--- Phase 1 of Arc mainnet rollout. Generated schema diff from 331d7b4,
+-- Phase 1 of Arc rollout. Generated schema diff from 331d7b4,
 -- split to retain legacy ON CONFLICT(tx_signature) writers during deployment.
 -- Apply this file explicitly BEFORE deploying composite-conflict writers.
 -- numeric widening can rewrite the transactions table and rebuild indexes;

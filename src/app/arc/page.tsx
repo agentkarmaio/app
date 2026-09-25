@@ -20,10 +20,10 @@ export default function ArcPage() {
         <h1 className="text-3xl font-medium tracking-tight">Arc testnet is retired</h1>
         <p className="max-w-xl text-muted-foreground">
           Testnet indexing, scoring, and writes have ended. Existing profiles and
-          payment history remain available read-only, separate from Arc mainnet.
+          payment history remain available read-only, separate from Arc.
         </p>
       </header>
-      <Link href="/arc/mainnet" className={linkClass}>View Arc mainnet coverage</Link>
+      <Link href="/arc/mainnet" className={linkClass}>View Arc coverage</Link>
       <section className="space-y-3 border-t border-border pt-6" aria-labelledby="archive-title">
         <h2 id="archive-title" className="text-base font-medium">Historical records</h2>
         <p className="text-sm text-muted-foreground">

@@ -1,5 +1,5 @@
 /**
- * ERC-8004 Arc Mainnet (chain 5042) — read surface.
+ * ERC-8004 Arc (chain 5042) — read surface.
  *
  * Folds over the parameterized erc8004-evm factory; canonical registries are
  * deployed at the same vanity-prefixed addresses as Celo's. arcMainnet's viem

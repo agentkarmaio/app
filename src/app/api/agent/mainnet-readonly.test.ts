@@ -11,6 +11,6 @@ for (const [name, handler] of [['prove', prove], ['edit', edit], ['claim/evm', c
       body: JSON.stringify({ chain: 'arc-mainnet', address: '0x558e7bfaf2cf1a494f44e50d92431afc060c9d12', walletAddress: '0x558e7bfaf2cf1a494f44e50d92431afc060c9d12', displayName: 'Agent', signature: 'legacy', message: 'legacy' }),
     }));
     expect(response.status).toBe(501);
-    expect(await response.json()).toEqual({ error: 'Arc mainnet ownership changes are not enabled' });
+    expect(await response.json()).toEqual({ error: 'Arc ownership changes are not enabled' });
   });
 }

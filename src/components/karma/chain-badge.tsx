@@ -112,7 +112,7 @@ const MARKS: Record<Chain, ChainMark> = {
     Mark: ArcMark,
   },
   'arc-mainnet': {
-    label: 'Arc mainnet',
+    label: 'Arc',
     tint: { bg: 'rgb(125_166_255/0.10)', border: 'rgb(125_166_255/0.22)', fg: '#a8bfff' },
     Mark: ArcMark,
   },

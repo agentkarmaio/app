@@ -18,7 +18,7 @@ function snapshot(): KarmaSnapshot {
 const overview = (value = snapshot(), registry: Record<string, unknown> | null = null, registryUnavailable = false) =>
   renderToStaticMarkup(<ArcMainnetProfileOverview snapshot={value} registry={registry} registryUnavailable={registryUnavailable} />);
 
-describe('Arc mainnet rich profile rendering', () => {
+describe('Arc rich profile rendering', () => {
   test('registry-only agents retain all overview sections without fake score rings', () => {
     const html = overview();
     for (const title of ['Provider Karma', 'Consumer Karma', 'Score Breakdown', 'Summary', 'Autonomy Confidence', 'Evidence &amp; Coverage', 'Registry Identity &amp; Services']) assert.ok(html.includes(title), title);
@@ -42,7 +42,7 @@ describe('Arc mainnet rich profile rendering', () => {
     assert.equal((html.match(/aria-label="(Provider|Consumer) Karma score:/g) ?? []).length, 2);
     assert.match(html, /aria-label="Provider Karma score: 12\.3"/);
     assert.match(html, /aria-label="Consumer Karma score: 4\.5"/);
-    assert.match(html, /Arc mainnet coverage/);
+    assert.match(html, /Arc coverage/);
     assert.match(html, /href="\/arc\/mainnet"/);
     assert.match(html, /Agent #228/);
     assert.match(html, /application\/ld\+json/);

@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (chain === 'arc-mainnet') {
-    return NextResponse.json({ error: 'Arc mainnet ownership changes are not enabled' }, { status: 501 });
+    return NextResponse.json({ error: 'Arc ownership changes are not enabled' }, { status: 501 });
   }
 
   if (!address || !chain || !displayName || !signature || !message) {

@@ -81,7 +81,7 @@ describe('persistent lease and success state', () => {
     expect(new Set([...first, ...second]).size).toBe(1500);
     expect(query(`SELECT id ${base} ORDER BY observed_at DESC,id DESC;`).split('\n')).toEqual([...first, ...second]);
   });
-  test('missing Arc mainnet state stays disabled even when acquisition requests enablement', () => {
+  test('missing Arc state stays disabled even when acquisition requests enablement', () => {
     expect(acquire(ownerA, 'arc-mainnet')).toBe('');
     const state = JSON.parse(query("SELECT row_to_json(s) FROM public.indexing_state s WHERE chain='arc-mainnet';"));
     expect(state.enabled).toBe(false);
@@ -96,7 +96,7 @@ describe('persistent lease and success state', () => {
     expect(query("SELECT enabled FROM public.indexing_state WHERE chain='arc-mainnet';")).toBe('f');
   });
 
-  test('Arc mainnet leases cannot collide with testnet ownership', () => {
+  test('Arc leases cannot collide with testnet ownership', () => {
     query("INSERT INTO public.indexing_state(chain,path,enabled,interval_ms) VALUES ('arc-mainnet','transfers',true,300000);");
     expect(acquire(ownerA, 'arc')).toBe('');
     expect(JSON.parse(acquire(ownerB, 'arc-mainnet')).owner).toBe(ownerB);

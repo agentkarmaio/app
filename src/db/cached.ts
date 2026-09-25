@@ -224,7 +224,7 @@ export interface EvmAgentOnchain {
 /**
  * Identity + feedback from the registry-scan mirror (erc8004_agents +
  * erc8004_feedback), no RPC. The only source for the retired Arc testnet, and
- * the fallback for Arc mainnet when its public RPC is unreachable.
+ * the fallback for Arc when its public RPC is unreachable.
  */
 async function mirroredEvmAgentOnchain(
   chain: 'arc' | 'arc-mainnet',

@@ -25,7 +25,7 @@ import {
 
 /**
  * Mainnet evidence + ERC-8004 feedback. Never dispatch to Solana/testnet claim
- * flows; feedback is written straight to the Arc mainnet ReputationRegistry
+ * flows; feedback is written straight to the Arc ReputationRegistry
  * from the visitor's own wallet (GiveFeedbackCard), never through AK.
  */
 export async function ArcMainnetAgentProfile({ wallet, agentId, deadMansSwitch }: {
@@ -34,7 +34,7 @@ export async function ArcMainnetAgentProfile({ wallet, agentId, deadMansSwitch }
   const snapshot = await resolveKarma(wallet, 'arc-mainnet', { agentId });
   if (agentId != null && !snapshot) notFound();
   if (!snapshot) return <div className="space-y-6">
-    <Link href="/arc/mainnet" className="inline-flex min-h-10 items-center text-sm underline">Arc mainnet coverage</Link>
+    <Link href="/arc/mainnet" className="inline-flex min-h-10 items-center text-sm underline">Arc coverage</Link>
     <h1 className="text-2xl font-medium">Agent profile</h1>
     <p className="break-all font-mono text-sm">{wallet}</p>
     <NotIndexedBlock chain="arc-mainnet" />
@@ -82,7 +82,7 @@ export async function ReceiptDetails({ address }: { address: string }) {
 
 /**
  * Registry records (AK validator attestations + third-party reviews) and the
- * give-feedback form. Live Arc mainnet RPC first, registry mirror when it is
+ * give-feedback form. Live Arc RPC first, registry mirror when it is
  * down (getCachedEvmAgentOnchain); the plain mirror list is the last resort.
  */
 async function RegistryFeedback({ agentId, owner }: { agentId?: number; owner?: string }) {
@@ -127,7 +127,7 @@ async function ScoreHistory({ address, tier }: { address: string; tier: TrustTie
       .order('calculated_at', { ascending: false }).limit(30);
     if (error) throw error;
     const points = profileScoreHistory((data ?? []) as Array<{ score: unknown; calculated_at: unknown }>);
-    return <ProfilePanel id="score-trend" title="Score Trend" intro="Latest 30 stored Arc mainnet score snapshots, shown chronologically. These are persisted values, not a reconstructed history of today's scoring model.">
+    return <ProfilePanel id="score-trend" title="Score Trend" intro="Latest 30 stored Arc score snapshots, shown chronologically. These are persisted values, not a reconstructed history of today's scoring model.">
       {points.length >= 2 ? <ScoreChart data={points} tier={tier} />
         : <p className="text-sm text-muted-foreground">{points.length ? 'One score snapshot is stored; at least two are needed for a trend.' : 'No score history is stored for this wallet yet.'} The current Karma snapshot above remains available. Missing history is not filled with zeroes.</p>}
     </ProfilePanel>;

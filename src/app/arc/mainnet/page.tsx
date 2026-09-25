@@ -6,8 +6,8 @@ import { INDEXING_STATUS_LABELS } from '@/components/karma/live-flow-state';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 export const metadata: Metadata = {
-  title: 'Arc mainnet coverage — AgentKarma',
-  description: 'Independent Arc mainnet agent receipt coverage and indexing status.',
+  title: 'Arc coverage — AgentKarma',
+  description: 'Independent Arc agent receipt coverage and indexing status.',
 };
 export const revalidate = 30;
 
@@ -20,7 +20,7 @@ export default async function ArcMainnetPage() {
     <main className="mx-auto max-w-3xl space-y-8 px-6 py-16">
       <header className="space-y-3">
         <p className="text-sm text-muted-foreground">Network coverage</p>
-        <h1 className="text-3xl font-medium tracking-tight">Arc mainnet</h1>
+        <h1 className="text-3xl font-medium tracking-tight">Arc</h1>
         <p className="text-muted-foreground">USDC receipts involving verified mainnet agent addresses. Testnet history is archived separately.</p>
       </header>
       <Card>

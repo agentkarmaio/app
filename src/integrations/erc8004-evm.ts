@@ -3,7 +3,7 @@
  *
  * Third instance of the identical per-chain module: `erc8004-celo.ts` and
  * `erc8004-arc.ts` (testnet) are near-byte-identical except for registry
- * constants, the viem chain object and the RPC env var name. Arc mainnet
+ * constants, the viem chain object and the RPC env var name. Arc
  * becomes the first consumer of this shared shape; Celo and retired Arc
  * testnet keep their own modules untouched (Celo's publish path is ARMED in
  * the celo-attest workflow — migrating it is a later, separate chore).

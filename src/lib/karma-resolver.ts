@@ -542,7 +542,7 @@ export async function searchAgents(query: string, limit = 8): Promise<KarmaSearc
 // (scoring/settlement-quality.ts) reads the Tier-1 receipts straight from
 // `signal_events` and renders on /arc with no persistence at all.
 //
-// WHAT FLIPS THIS: Arc mainnet with non-farmed settlement traffic, or the
+// WHAT FLIPS THIS: Arc with non-farmed settlement traffic, or the
 // dual-face rescore queue landing for another reason. Revisit then, not before.
 
 export interface EvmKarmaSnapshot {

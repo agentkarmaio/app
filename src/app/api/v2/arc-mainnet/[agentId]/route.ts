@@ -1,7 +1,7 @@
 /**
  * GET /api/v2/arc-mainnet/[agentId]
  *
- * Resolves an Arc Mainnet ERC-8004 agent: returns IdentityRegistry record +
+ * Resolves an Arc ERC-8004 agent: returns IdentityRegistry record +
  * parsed agent registration JSON + aggregate reputation summary. Mirrors
  * /api/v2/celo/[agentId] — this route is also the feedbackURI target AK's
  * attestation drip writes on-chain, so the records are inspectable end-to-end.
@@ -59,7 +59,7 @@ export async function GET(_req: Request, { params }: RouteParams) {
         );
       }
       return NextResponse.json(
-        { error: `no agent registered with id ${parsed} on Arc mainnet` },
+        { error: `no agent registered with id ${parsed} on Arc` },
         { status: 404 },
       );
     }

@@ -1,5 +1,5 @@
 /**
- * Batch metadata-quality feedback to the Arc Mainnet ReputationRegistry.
+ * Batch metadata-quality feedback to the Arc ReputationRegistry.
  *
  * AK acts as an honest ERC-8004 reputation validator: it reads each agent's
  * declared registration JSON, scores metadata quality (0-100, see

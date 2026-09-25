@@ -1,5 +1,5 @@
 /**
- * ERC-8004 Arc Mainnet write path — AgentKarma as a 8004 validator.
+ * ERC-8004 Arc write path — AgentKarma as a 8004 validator.
  *
  * Folds over the parameterized erc8004-evm factory. AK's mainnet wallet
  * (agentId 228, 0x246D…9e5a) signs giveFeedback records on the ReputationRegistry.

@@ -2,7 +2,7 @@
 
 /**
  * GiveFeedbackCard — lets any connected EVM wallet publish an ERC-8004
- * `giveFeedback` review about a Celo / Arc mainnet agent, on-chain, from the browser.
+ * `giveFeedback` review about a Celo / Arc agent, on-chain, from the browser.
  * This is AgentKarma's independent-attestation surface: a partner (e.g. another
  * agent operator) rates an agent and the record lands on the public
  * ReputationRegistry, flowing into the profile's on-chain feedback aggregate.
@@ -27,7 +27,7 @@ type Status = 'idle' | 'submitting' | 'success' | 'error';
 const CHAIN_LABEL: Record<EvmFeedbackChain, string> = {
   celo: 'Celo',
   arc: 'Arc testnet',
-  'arc-mainnet': 'Arc mainnet',
+  'arc-mainnet': 'Arc',
 };
 
 export function GiveFeedbackCard({

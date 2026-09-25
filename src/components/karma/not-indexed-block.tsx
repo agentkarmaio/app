@@ -23,8 +23,8 @@ function copyFor(chain: SupportedChain): CopyVariant {
   switch (chain) {
     case 'arc-mainnet':
       return {
-        title: 'Not indexed yet on Arc mainnet',
-        body: <><p>No Arc mainnet receipts have been indexed for this address. Mainnet coverage follows independently verified agent addresses.</p><p><Link href="/arc/mainnet" className="underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">View mainnet coverage</Link></p></>,
+        title: 'Not indexed yet on Arc',
+        body: <><p>No Arc receipts have been indexed for this address. Mainnet coverage follows independently verified agent addresses.</p><p><Link href="/arc/mainnet" className="underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">View mainnet coverage</Link></p></>,
       };
     case 'solana':
       return {
@@ -97,7 +97,7 @@ function copyFor(chain: SupportedChain): CopyVariant {
         body: (
           <>
             <p>No archived testnet profile is available for this address. Testnet indexing and new claims have ended.</p>
-            <p><Link href="/arc/mainnet" className="inline-flex min-h-10 items-center underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring">View Arc mainnet coverage</Link></p>
+            <p><Link href="/arc/mainnet" className="inline-flex min-h-10 items-center underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring">View Arc coverage</Link></p>
           </>
         ),
       };

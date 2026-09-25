@@ -100,7 +100,7 @@ const DAY = 24 * 60 * 60 * 1000;
  * projector marks underwriters settled and derives Surety Karma correctly.
  */
 function buildEventsForChain(chain: Chain): BondLifecycleEvent[] {
-  if (chain === 'arc-mainnet') throw new Error('Demo bonds are not enabled for Arc mainnet');
+  if (chain === 'arc-mainnet') throw new Error('Demo bonds are not enabled for Arc');
   const a = ACTORS[chain];
   const now = Date.now();
   const ts = (daysAgo: number) => new Date(now - daysAgo * DAY).toISOString();

@@ -14,7 +14,7 @@
  * TESTNET MARKER — Arc Testnet only today (mainnet launches summer 2026).
  * Every row written is visibly testnet because:
  *   1. chain='arc' + arc_agent_id != NULL is the durable schema marker;
- *      until Arc mainnet ships, chain='arc' IS testnet by definition.
+ *      until Arc ships, chain='arc' IS testnet by definition.
  *      When mainnet ships, a distinct chain value will fork and these rows
  *      stay visibly testnet via their arc_agent_id pedigree.
  *   2. payload.network='testnet' on the synthetic signal_event lets any

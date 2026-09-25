@@ -62,7 +62,7 @@ test('mainnet identity links retain the network and agent id', () => {
 
 test('Arc testnet and mainnet have distinct labels and navigation', () => {
   expect(CHAIN_META.arc.label).toBe('Arc testnet');
-  expect(CHAIN_META['arc-mainnet' as Chain]?.label).toBe('Arc mainnet');
+  expect(CHAIN_META['arc-mainnet' as Chain]?.label).toBe('Arc');
   expect(activeChainFromPath('/arc/mainnet')).toBe('arc-mainnet');
   expect(isEvmChain('arc-mainnet' as Chain)).toBe(true);
 });

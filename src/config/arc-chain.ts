@@ -48,7 +48,7 @@ export const arcTestnet = defineChain({
 });
 
 /**
- * Arc mainnet is a separate network (5042), never an alias for testnet (5042002).
+ * Arc is a separate network (5042), never an alias for testnet (5042002).
  * Callers require an explicit HTTPS endpoint and verify eth_chainId.
  * Public mainnet RPCs are available; no implicit gateway fallback is selected.
  *

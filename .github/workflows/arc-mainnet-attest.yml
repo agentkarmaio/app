@@ -1,8 +1,8 @@
-name: Arc mainnet attest
+name: Arc attest
 
-# Gives AgentKarma's Arc mainnet attestation drip a running cadence.
+# Gives AgentKarma's Arc attestation drip a running cadence.
 #
-# Arc mainnet is chain #4's production network: gas is USDC itself (18-decimal
+# Arc is chain #4's production network: gas is USDC itself (18-decimal
 # native view), one attestation costs cents-scale, and the validator wallet was
 # funded with 1 USDC at registration (~0.004 measured for register(), 2026-09-25).
 # The pool of eligible agents is small (~226 mirrored at launch) and grows with
@@ -41,7 +41,7 @@ on:
   workflow_dispatch:
     inputs:
       execute:
-        description: 'Write to Arc mainnet (unchecked = simulate)'
+        description: 'Write to Arc (unchecked = simulate)'
         type: boolean
         default: false
       count:

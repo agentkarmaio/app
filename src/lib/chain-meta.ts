@@ -32,7 +32,7 @@ export const CHAIN_META: Record<Chain, ChainMeta> = {
   // reserved for referencing the network (the yellow badge means the ARC
   // token). Its navy disc is part of the mark; never dim or recolor it.
   arc: { label: 'Arc testnet', logo: '/logos/arc-network.svg', href: '/arc' },
-  'arc-mainnet': { label: 'Arc mainnet', logo: '/logos/arc-network.svg', href: '/arc/mainnet' },
+  'arc-mainnet': { label: 'Arc', logo: '/logos/arc-network.svg', href: '/arc/mainnet' },
 };
 
 /** Active networks only; archived testnet metadata remains available by key.
