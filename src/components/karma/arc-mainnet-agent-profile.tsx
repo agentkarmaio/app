@@ -1,5 +1,4 @@
 import { Suspense, type ReactNode } from 'react';
-import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { resolveKarma } from '@/lib/karma-resolver';
 import { collectArcMainnetReceipts } from '@/scoring/arc-mainnet-receipts';
@@ -16,6 +15,7 @@ import {
 import type { TrustTier } from '@/db/schema';
 import { CardSkeleton } from './card-skeleton';
 import { NotIndexedBlock } from './not-indexed-block';
+import { AgentProfileShell } from './agent-profile-shell';
 import { ScoreChart } from './score-chart';
 import { FeedbackRecordsCard } from './feedback-records-card';
 import { GiveFeedbackCard } from './give-feedback-card';
@@ -33,12 +33,9 @@ export async function ArcMainnetAgentProfile({ wallet, agentId, deadMansSwitch }
 }) {
   const snapshot = await resolveKarma(wallet, 'arc-mainnet', { agentId });
   if (agentId != null && !snapshot) notFound();
-  if (!snapshot) return <div className="space-y-6">
-    <Link href="/arc/mainnet" className="inline-flex min-h-10 items-center text-sm underline">Arc coverage</Link>
-    <h1 className="text-2xl font-medium">Agent profile</h1>
-    <p className="break-all font-mono text-sm">{wallet}</p>
+  if (!snapshot) return <AgentProfileShell back={{ href: '/arc/mainnet', label: 'Arc coverage' }} address={wallet} chain="arc-mainnet">
     <NotIndexedBlock chain="arc-mainnet" />
-  </div>;
+  </AgentProfileShell>;
 
   // The resolver has ownership-checked agentId and selected the PAYMENT wallet.
   // Every supplementary read must use that address, never the owner in the URL.

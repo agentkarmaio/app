@@ -15,6 +15,7 @@ import { safeHref } from '@/lib/safe-url';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { AgentProfileShell } from './agent-profile-shell';
+import { ChainBadge } from './chain-badge';
 import { AutonomyChip } from './autonomy-chip';
 import { BadgeButton } from './badge-button';
 import { ConfidenceBadge } from './confidence-badge';
@@ -25,8 +26,12 @@ import { TierBadge } from './tier-badge';
 
 const SITE_URL = 'https://agentkarma.io';
 
-const linkStyle = 'inline-flex min-h-10 items-center gap-1.5 break-all text-sm underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
-const cellStyle = 'px-3 py-3 text-left align-top';
+const linkStyle = 'inline-flex items-center gap-1 break-all text-[#828fff] underline-offset-2 transition-colors hover:text-[#a3acff] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm';
+const cellStyle = 'px-3 py-2.5 text-left align-top';
+const CARD = 'min-w-0 scroll-mt-24 border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]';
+const CARD_TITLE = 'text-[15px] font-[590] tracking-[-0.165px] text-[#f7f8f8]';
+const NOTE = 'text-[11px] leading-relaxed text-[#62666d]';
+const CHIP = 'border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.04)] px-1.5 py-0 text-[10px] font-[510] text-[#8a8f98]';
 const numberStyle = 'break-all font-mono tabular-nums';
 const addressUrl = (address: string) => explorerAddressUrl('arc-mainnet', address);
 const transactionUrl = (hash: string) => explorerTxUrl('arc-mainnet', hash);
@@ -34,31 +39,37 @@ const transactionUrl = (hash: string) => explorerTxUrl('arc-mainnet', hash);
 export function ProfilePanel({ title, intro, children, id }: {
   title: string; intro?: ReactNode; children: ReactNode; id?: string;
 }) {
-  return <Card id={id} className="min-w-0 scroll-mt-24 border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)]">
-    <CardHeader><CardTitle className="text-[15px] font-semibold">{title}</CardTitle>
-      {intro && <p className="text-xs leading-relaxed text-muted-foreground">{intro}</p>}
+  return <Card id={id} className={CARD}>
+    <CardHeader className="pb-4"><CardTitle className={CARD_TITLE}>{title}</CardTitle>
+      {intro && <p className={`mt-1 ${NOTE}`}>{intro}</p>}
     </CardHeader><CardContent className="space-y-4">{children}</CardContent>
   </Card>;
 }
 
 function Stat({ label, children }: { label: string; children: ReactNode }) {
-  return <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1 border-b border-border/50 py-2.5 last:border-0">
+  return <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-[rgb(255_255_255/0.05)] py-3 first:pt-0 last:border-0 last:pb-0">
     <dt className="text-sm text-muted-foreground">{label}</dt>
-    <dd className="min-w-0 max-w-full break-words text-sm tabular-nums">{children}</dd>
+    <dd className="min-w-0 max-w-full break-words text-right text-sm tabular-nums">{children}</dd>
   </div>;
 }
 
-export function ProfileDate({ value, empty = 'Not observed' }: { value?: string | null; empty?: string }) {
+export function ProfileDate({ value, empty = 'Not observed', time = true }: {
+  value?: string | null; empty?: string;
+  /** false → date only, matching the Solana summary rows. */
+  time?: boolean;
+}) {
   if (!value || !Number.isFinite(Date.parse(value))) return <span className="text-muted-foreground">{empty}</span>;
   const iso = new Date(value).toISOString();
-  return <time dateTime={iso}>{new Intl.DateTimeFormat('en-US', {
-    timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).format(new Date(iso))} UTC</time>;
+  const format = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric',
+    ...(time ? { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' } as const : {}),
+  }).format(new Date(iso));
+  return <time dateTime={iso} title={`${iso.slice(0, 16).replace('T', ' ')} UTC`}>{format}{time ? ' UTC' : ''}</time>;
 }
 
 function External({ href, children }: { href: string; children: ReactNode }) {
   return <a href={href} target="_blank" rel="noopener noreferrer" className={linkStyle}>
-    {children}<ExternalLink aria-hidden className="size-3.5 shrink-0" />
+    {children}<ExternalLink aria-hidden className="size-3 shrink-0 opacity-70" />
   </a>;
 }
 
@@ -73,35 +84,51 @@ function Usdc({ raw }: { raw: string }) {
  * model caveats.
  */
 export function ArcMainnetFaceRings({ provider, consumer }: { provider: KarmaFaceBlock; consumer: KarmaFaceBlock }) {
-  return <div className="flex items-start gap-6">
+  return <div className="flex items-start gap-5">
     <FaceRing face={provider} label="Provider Karma" />
     <FaceRing face={consumer} label="Consumer Karma" />
   </div>;
 }
 
+const RING = 90;
+
 function FaceRing({ face, label }: { face: KarmaFaceBlock; label: string }) {
   const rated = hasDisplayScore(face);
-  return <div className="flex w-[72px] flex-col items-center gap-1.5">
-    {rated ? <ScoreRing score={face.score} tier={displayTier(face)} size={72} strokeWidth={6} label={`${label} score`} />
-      : <div className="flex size-[72px] items-center justify-center rounded-full border border-border text-[11px] text-muted-foreground">Unrated</div>}
-    <span className="text-center text-[11px] font-[510] text-[#8a8f98]">{label}</span>
+  return <div className="flex flex-col items-center gap-2">
+    {rated ? <ScoreRing score={face.score} tier={displayTier(face)} size={RING} strokeWidth={7} label={`${label} score`} />
+      : <div role="img" aria-label={`${label}: unrated`} style={{ width: RING, height: RING }}
+          className="flex items-center justify-center rounded-full border-[7px] border-[rgb(255_255_255/0.05)]">
+          <span className="text-lg font-[510] text-[#62666d]">—</span>
+        </div>}
+    <span className="text-[11px] font-[510] text-[#62666d]">{label.replace(' Karma', '')}</span>
   </div>;
 }
 
-function FaceCard({ face }: { face: KarmaFaceBlock }) {
-  const rated = hasDisplayScore(face);
-  const incoming = face.face === 'provider';
-  return <ProfilePanel title={incoming ? 'Provider Karma' : 'Consumer Karma'} intro={incoming ? 'Observed incoming payments' : 'Observed outgoing payments'}>
-    <div className="space-y-2">
-      <p className="font-mono text-2xl tabular-nums">{rated ? `${face.score.toFixed(1)} / 100` : 'Unrated'}</p>
-      <div className="flex flex-wrap gap-2"><TierBadge tier={displayTier(face)} size="sm" /><ConfidenceBadge badge={face.confidenceBadge} size="sm" /></div>
+/** Solana ScoreBreakdownCard's section header: tinted dot, overline label, weight, summary. */
+function TierSection({ label, weight, dotColor, summary, children }: {
+  label: string; weight?: string; dotColor: string; summary: string; children: ReactNode;
+}) {
+  return <section className="space-y-3">
+    <div className="flex items-baseline justify-between gap-3">
+      <div className="flex items-center gap-2">
+        <span aria-hidden className="size-1.5 rounded-full" style={{ background: dotColor }} />
+        <h3 className="text-[12px] font-[590] uppercase tracking-[0.08em] text-[#d0d6e0]">{label}</h3>
+        {weight && <span className="text-[10px] font-[510] text-[#62666d]">{weight}</span>}
+      </div>
+      <span className="text-[12px] font-[510] tabular-nums text-[#8a8f98]">{summary}</span>
     </div>
-    {!rated && <p className="text-xs text-muted-foreground">{face.hasSignal
-      ? 'A valid score is not available for this snapshot.' : face.metrics
-      ? 'Observed activity does not currently provide eligible scoring signal after the reciprocal-transfer guard.'
-      : `No eligible ${incoming ? 'incoming' : 'outgoing'} transfer activity is indexed yet. Unrated does not mean a score of zero.`}</p>}
-    <p className="text-xs text-muted-foreground">A settled transfer shows payment movement, not successful service delivery.</p>
-  </ProfilePanel>;
+    <div className="space-y-3">{children}</div>
+  </section>;
+}
+
+function faceSummary(face: KarmaFaceBlock): string {
+  return hasDisplayScore(face) ? `${face.score.toFixed(1)} / 100` : 'Unrated';
+}
+
+function unratedReason(face: KarmaFaceBlock): string {
+  return face.hasSignal ? 'A valid score is not available for this snapshot.'
+    : face.metrics ? 'Observed activity provides no eligible signal after the reciprocal-transfer guard.'
+    : `No eligible ${face.face === 'provider' ? 'incoming' : 'outgoing'} transfer activity is indexed yet. Unrated does not mean a score of zero.`;
 }
 
 const BEHAVIOR_METRICS = [
@@ -167,6 +194,8 @@ export function ArcMainnetProfileOverview({ snapshot, registry, registryUnavaila
   const name = snapshot.identity.displayName || 'Agent profile';
   const registration = readProfileRegistration(registry?.registration);
   const evidence = snapshot.receiptEvidence;
+  const tier = displayTier(snapshot.provider);
+  const autonomy = snapshot.autonomy;
   return <AgentProfileShell
     back={{ href: '/arc/mainnet', label: 'Arc coverage' }}
     address={snapshot.address}
@@ -178,9 +207,11 @@ export function ArcMainnetProfileOverview({ snapshot, registry, registryUnavaila
     category={snapshot.identity.category}
     website={snapshot.identity.website}
     chips={<>
-      <Badge variant="outline">Arc</Badge>
-      {snapshot.agentId != null && <Badge variant="outline">Agent #{snapshot.agentId}</Badge>}
-      <AutonomyChip score={snapshot.autonomy.score} label={snapshot.autonomy.label} size="sm" />
+      <TierBadge tier={tier} />
+      <ConfidenceBadge badge={snapshot.confidenceBadge} size="sm" />
+      <AutonomyChip score={autonomy.score} label={autonomy.label} size="sm" />
+      <ChainBadge chain="arc-mainnet" variant="label" />
+      {snapshot.agentId != null && <Badge variant="outline" className={CHIP}>Agent #{snapshot.agentId}</Badge>}
     </>}
     actions={<BadgeButton wallet={snapshot.address} chain="arc-mainnet" />}
     score={<ArcMainnetFaceRings provider={snapshot.provider} consumer={snapshot.consumer} />}
@@ -190,86 +221,100 @@ export function ArcMainnetProfileOverview({ snapshot, registry, registryUnavaila
       // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
       dangerouslySetInnerHTML={{ __html: jsonLd(profileLd(snapshot, name)) }}
     />
-    <nav aria-label="Agent profile sections" className="flex flex-wrap gap-x-5 border-y border-border py-2">
-      {[['score-breakdown', 'Scores'], ['identity', 'Identity'], ['score-trend', 'History'], ['feedback', 'Feedback'], ['payments', 'Payments']].map(([id, label]) =>
-        <a key={id} href={`#${id}`} className={linkStyle}>{label}</a>)}
-    </nav>
-    <div className="grid gap-6 md:grid-cols-2"><FaceCard face={snapshot.provider} /><FaceCard face={snapshot.consumer} /></div>
-    <div className="grid gap-6 lg:grid-cols-2">
-      <ProfilePanel id="score-breakdown" title="Score Breakdown" intro="Arc transfer model · Tier 2 behavioral evidence only. The scores above come from the shared Karma resolver.">
-        {[snapshot.provider, snapshot.consumer].map(face => <section key={face.face} className="space-y-4 border-b border-border pb-5 last:border-0 last:pb-0">
-          <h3 className="text-sm font-medium">{face.face === 'provider' ? 'Provider · Incoming' : 'Consumer · Outgoing'}</h3>
+    <div className="grid gap-6 md:grid-cols-2">
+      <ProfilePanel id="score-breakdown" title="Score Breakdown" intro="Transfer model · behavioral evidence only · missing tiers are not scored">
+        {[snapshot.provider, snapshot.consumer].map(face => <TierSection key={face.face}
+          label={face.face === 'provider' ? 'Provider · Incoming' : 'Consumer · Outgoing'}
+          dotColor={face.face === 'provider' ? '#f5a623' : '#5e6ad2'} summary={faceSummary(face)}>
           {BEHAVIOR_METRICS.map(([key, label, weight, hint]) => {
             const value = unitInterval(face.metrics?.[key]);
-            return value == null ? <p key={key} className="flex justify-between gap-3 text-xs text-muted-foreground"><span>{label}</span><span>No observations</span></p>
-              : <MetricBar key={key} label={label} value={value} weight={weight} maxLabel={hint} />;
+            return value == null ? null : <MetricBar key={key} label={label} value={value} weight={weight} maxLabel={hint} />;
           })}
-        </section>)}
-        <p className="text-xs leading-relaxed text-muted-foreground">The weighted behavior blend is multiplied by retained value share, then canonical recency decay and evidence-based tier limits apply. Transfer size has no positive score weight.</p>
-        <dl><Stat label="Tier 1 · Delivery receipts">Not used by this transfer-only model</Stat>
-          <Stat label="Tier 3 · Declared identity">Displayed separately; not scored</Stat>
-          <Stat label="Tier 4 · Social">Not used by this model</Stat>
-          <Stat label="Service success rate">Not established by settled transfers</Stat></dl>
-      </ProfilePanel>
-      <div className="min-w-0 space-y-6">
-        <ProfilePanel title="Summary" intro="Activity dates describe validated transfers, never registry scan times.">
-          <dl><Stat label="Network">Arc</Stat>
-            <Stat label="Unique transactions in score window">{snapshot.txCount.toLocaleString('en-US')}</Stat>
-            <Stat label="Received transfer logs">{evidence?.received.toLocaleString('en-US') ?? 'Unavailable'}</Stat>
-            <Stat label="Sent transfer logs">{evidence?.sent.toLocaleString('en-US') ?? 'Unavailable'}</Stat>
-            <Stat label="First transfer in score window"><ProfileDate value={evidence?.windowStart} /></Stat>
-            <Stat label="Last active"><ProfileDate value={snapshot.lastActive} /></Stat>
-            <Stat label="Status"><LivenessIndicator lastSeen={snapshot.lastActive} size="sm" /></Stat></dl>
-        </ProfilePanel>
-        <ProfilePanel title="Autonomy Confidence" intro="A separate behavioral axis, not a component of Karma or proof of autonomous operation.">
-          {snapshot.autonomy.score != null && snapshot.autonomy.label ? <>
-            <AutonomyChip score={snapshot.autonomy.score} label={snapshot.autonomy.label} />
-            <p className="text-xs text-muted-foreground">Based on {snapshot.autonomy.txCount.toLocaleString('en-US')} unique transactions.</p>
+          {!hasDisplayScore(face) && <p className={NOTE}>{unratedReason(face)}</p>}
+        </TierSection>)}
+        <TierSection label="Autonomy Confidence" dotColor="#8a8f98" summary={autonomy.score != null && autonomy.label ? `${Math.round(autonomy.score)}` : '—'}>
+          {autonomy.score != null && autonomy.label ? <>
             {AUTONOMY_METRICS.map(([key, label]) => {
-              const value = unitInterval(snapshot.autonomy.signals?.[key]);
-              const weight = unitInterval(snapshot.autonomy.effectiveWeights?.[key]);
-              return value == null ? <p key={key} className="flex justify-between gap-3 text-xs text-muted-foreground"><span>{label}</span><span>Not indexed</span></p>
+              const value = unitInterval(autonomy.signals?.[key]);
+              const weight = unitInterval(autonomy.effectiveWeights?.[key]);
+              return value == null ? <p key={key} className="flex justify-between gap-3 text-[12px] text-[#62666d]"><span>{label}</span><span>Not indexed</span></p>
                 : <MetricBar key={key} label={label} value={value} weight={weight == null ? undefined : `${Math.round(weight * 100)}%`} />;
             })}
-          </> : <p className="text-sm text-muted-foreground">Not enough activity to assess yet. At least {MIN_TX_FOR_AUTONOMY} unique transactions are required; {snapshot.txCount} are currently observed.</p>}
-        </ProfilePanel>
-      </div>
+            <p className={NOTE}>Separate axis from {autonomy.txCount.toLocaleString('en-US')} unique transactions — not a Karma component.</p>
+          </> : <p className={NOTE}>At least {MIN_TX_FOR_AUTONOMY} unique transactions are required; {snapshot.txCount} observed.</p>}
+        </TierSection>
+        <p className={`border-t border-[rgb(255_255_255/0.05)] pt-4 ${NOTE}`}>
+          Weighted blend × retained value share, then recency decay and evidence-gated tier limits. Transfer size carries no weight; a settled transfer shows payment, not service delivery.
+        </p>
+      </ProfilePanel>
+
+      <ProfilePanel title="Summary">
+        <dl>
+          <Stat label="Provider Karma"><span className="font-bold">{faceSummary(snapshot.provider)}</span></Stat>
+          <Stat label="Consumer Karma"><span className="font-bold text-muted-foreground">{faceSummary(snapshot.consumer)}</span></Stat>
+          <Stat label="Confidence"><ConfidenceBadge badge={snapshot.confidenceBadge} size="sm" /></Stat>
+          <Stat label="Autonomy">{autonomy.score != null && autonomy.label
+            ? <AutonomyChip score={autonomy.score} label={autonomy.label} size="sm" /> : <span className="text-xs text-muted-foreground">—</span>}</Stat>
+          <Stat label="Trust Tier"><TierBadge tier={tier} size="sm" /></Stat>
+          <Stat label="Status"><LivenessIndicator lastSeen={snapshot.lastActive} size="sm" /></Stat>
+          <Stat label="Transactions">{snapshot.txCount.toLocaleString('en-US')}</Stat>
+          <Stat label="First Seen"><span className="text-muted-foreground"><ProfileDate value={evidence?.windowStart} empty="—" time={false} /></span></Stat>
+          <Stat label="Last Active"><span className="text-muted-foreground"><ProfileDate value={snapshot.lastActive} empty="—" time={false} /></span></Stat>
+        </dl>
+        <div className="space-y-3 border-t border-[rgb(255_255_255/0.05)] pt-4">
+          <h3 className="text-[12px] font-[590] uppercase tracking-[0.08em] text-[#d0d6e0]">Evidence &amp; Coverage</h3>
+          {evidence ? <>
+            <dl>
+              <Stat label="Transfers in / out">{evidence.received.toLocaleString('en-US')} / {evidence.sent.toLocaleString('en-US')}</Stat>
+              <Stat label="Sampled / limit">{evidence.sampledEvents.toLocaleString('en-US')} / {evidence.sampleLimit.toLocaleString('en-US')}</Stat>
+              <Stat label="Rejected observations">{evidence.invalid.toLocaleString('en-US')}</Stat>
+              <Stat label="Matched reciprocal"><Usdc raw={evidence.matchedReciprocalRawAmount} /></Stat>
+            </dl>
+            <p className={NOTE}>{evidence.saturated
+              ? 'The scoring history limit was reached. Older activity is outside this score; these are not lifetime totals.'
+              : 'History limit not reached. Indexer coverage can still be incomplete.'} Model {evidence.model}.</p>
+          </> : <p className={NOTE}>Coverage details are unavailable for this snapshot.</p>}
+        </div>
+      </ProfilePanel>
     </div>
-    <ProfilePanel title="Evidence & Coverage" intro="Mainnet native-USDC transfers are observed payment evidence, not x402 delivery attestations.">
-      {evidence ? <>
-        <dl className="grid gap-x-8 md:grid-cols-2"><Stat label="Scoring model">{evidence.model}</Stat>
-          <Stat label="Sampled events / limit">{evidence.sampledEvents.toLocaleString('en-US')} / {evidence.sampleLimit.toLocaleString('en-US')}</Stat>
-          <Stat label="Rejected or conflicting observations">{evidence.invalid.toLocaleString('en-US')}</Stat>
-          <Stat label="Matched reciprocal amount"><Usdc raw={evidence.matchedReciprocalRawAmount} /></Stat></dl>
-        <p className="text-xs text-muted-foreground">{evidence.saturated
-          ? 'The scoring history limit was reached. Older activity is outside this score; these figures are not lifetime totals.'
-          : 'The scoring read did not reach its history limit. Indexer coverage can still be incomplete; no indexed receipts does not prove no on-chain activity.'} Reciprocal transfers are discounted only within the observed window. This is not proof of counterparty independence.</p>
-      </> : <p className="text-sm text-muted-foreground">Coverage details are unavailable for this snapshot.</p>}
-    </ProfilePanel>
-    <ProfilePanel id="identity" title="Registry Identity & Services" intro="Declared metadata from the Arc registry mirror. Neither metadata nor registry feedback increases the transfer score.">
+
+    <ProfilePanel id="identity" title="Registry Identity & Services" intro="Declared metadata from the Arc registry — displayed, never scored.">
       {registryUnavailable ? <p role="status" className="text-sm text-muted-foreground">Registry details could not be loaded. Refresh to retry; the Karma snapshot above is still available.</p>
         : !registry ? <p className="text-sm text-muted-foreground">No registry identity is associated with this payment-wallet profile.</p> : <>
-          <dl><Stat label="Registry agent">#{snapshot.agentId}</Stat>
-            <Stat label="Owner"><External href={addressUrl(String(registry.owner))}>{String(registry.owner)}</External></Stat>
-            <Stat label="Scored payment wallet"><External href={addressUrl(snapshot.address)}>{snapshot.address}</External></Stat>
-            <Stat label="Registration status">{metadataText(registry.registration_status) ?? 'Unknown'}</Stat>
-            <Stat label="Declared active">{registration.active == null ? 'Not declared' : registration.active ? 'Yes (self-declared)' : 'No (self-declared)'}</Stat>
-            <Stat label="Declared x402 support">{registration.x402Support == null ? 'Not declared' : registration.x402Support ? 'Yes (unverified)' : 'No (self-declared)'}</Stat>
-            <Stat label="Metadata URI">{safeHref(metadataText(registry.token_uri, 2048))
-              ? <External href={safeHref(metadataText(registry.token_uri, 2048))!}>View registration document</External>
-              : <span className="break-all">{metadataText(registry.token_uri, 200) ?? 'Not available'}</span>}</Stat>
-            <Stat label="Registry last indexed"><ProfileDate value={metadataText(registry.last_indexed_at)} empty="Not available" /></Stat></dl>
-          <h3 className="text-sm font-medium">Declared services</h3>
-          {registration.services.length ? <ul className="divide-y divide-border">{registration.services.map((service, index) => <li key={`${service.name}:${index}`} className="min-w-0 py-3">
-            <p className="text-sm font-medium">{service.name}</p>
-            {service.endpoint ? <External href={service.endpoint}>{service.endpoint}</External> : <p className="text-xs text-muted-foreground">No supported endpoint URL declared.</p>}
-          </li>)}</ul> : <p className="text-sm text-muted-foreground">No services are present in the indexed registration metadata.</p>}
-          {registration.servicesTruncated && <p className="text-xs text-muted-foreground">Only the first 10 declared service entries are shown.</p>}
-          <p className="text-xs text-muted-foreground">Endpoints are linked, not invoked or availability-checked. Declared active status is independent of observed liveness.</p>
+          <div className="grid gap-x-8 md:grid-cols-2">
+            <dl>
+              <Stat label="Registry agent">#{snapshot.agentId}</Stat>
+              <Stat label="Owner"><External href={addressUrl(String(registry.owner))}><span className="font-mono text-[12px]" title={String(registry.owner)}>{short(String(registry.owner))}</span></External></Stat>
+              <Stat label="Payment wallet"><External href={addressUrl(snapshot.address)}><span className="font-mono text-[12px]" title={snapshot.address}>{short(snapshot.address)}</span></External></Stat>
+              <Stat label="Registration">{metadataText(registry.registration_status) ?? 'Unknown'}</Stat>
+            </dl>
+            <dl>
+              <Stat label="Declared active">{registration.active == null ? '—' : registration.active ? 'Yes · self-declared' : 'No · self-declared'}</Stat>
+              <Stat label="Declared x402">{registration.x402Support == null ? '—' : registration.x402Support ? 'Yes · unverified' : 'No · self-declared'}</Stat>
+              <Stat label="Metadata URI">{safeHref(metadataText(registry.token_uri, 2048))
+                ? <External href={safeHref(metadataText(registry.token_uri, 2048))!}>Registration</External>
+                : <span className="break-all text-muted-foreground">{metadataText(registry.token_uri, 200) ?? '—'}</span>}</Stat>
+              <Stat label="Last indexed"><span className="text-muted-foreground"><ProfileDate value={metadataText(registry.last_indexed_at)} empty="—" time={false} /></span></Stat>
+            </dl>
+          </div>
+          {registration.services.length ? <div className="space-y-2">
+            {registration.services.map((service, index) => <div key={`${service.name}:${index}`}
+              className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-[rgb(255_255_255/0.05)] bg-[rgb(255_255_255/0.02)] px-3 py-2">
+              <span className="truncate text-[13px] font-[510] text-[#f7f8f8]">{service.name}</span>
+              {service.endpoint ? <External href={service.endpoint}><span className="truncate font-mono text-[11.5px]">{service.endpoint}</span></External>
+                : <span className="text-[11.5px] text-[#62666d]">No supported endpoint URL declared.</span>}
+            </div>)}
+          </div> : <p className={NOTE}>No services are present in the indexed registration metadata.</p>}
+          {registration.servicesTruncated && <p className={NOTE}>Only the first 10 declared service entries are shown.</p>}
+          <p className={NOTE}>Endpoints are linked, not invoked or availability-checked.</p>
         </>}
     </ProfilePanel>
     {children}
   </AgentProfileShell>;
+}
+
+function short(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
 function ReceiptTable({ receipts }: { receipts: ProfileActivity['receipts'] }) {
