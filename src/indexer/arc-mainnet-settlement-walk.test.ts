@@ -1,7 +1,7 @@
 import { afterEach, expect, setSystemTime, spyOn, test } from 'bun:test';
 import * as db from '@/db/client';
 import { runWithIndexingContext } from '@/db/indexing-context';
-import { walkArcMainnetSettlement } from './arc-mainnet-settlement-walk';
+import { createArcMainnetWalkTransport, walkArcMainnetSettlement } from './arc-mainnet-settlement-walk';
 import type { WalkChainTransport, WalkReceipt } from './arc-mainnet-settlement-walk';
 
 const address = (i: number) => `0x${i.toString(16).padStart(40, '0')}`;
@@ -17,54 +17,56 @@ interface SetupOptions {
   cursor?: string;
   priorStats?: StatsRow[];
   upsertError?: unknown;
+  rateError?: unknown;
+}
+/** PostgREST-shaped paged select: honours .range() and caps a page at 1000 rows. */
+function pagedSelect(rows: () => Array<Record<string, unknown>>, reads: Array<[number, number]>) {
+  const s: Record<string, unknown> = {};
+  let window: [number, number] = [0, Number.POSITIVE_INFINITY];
+  s.eq = (column: string, value: string) => {
+    expect(column).toBe('chain');
+    expect(value).toBe('arc-mainnet');
+    return s;
+  };
+  s.order = (column: string) => { expect(column).toBe('address'); return s; };
+  s.range = (from: number, to: number) => { window = [from, to]; reads.push(window); return s; };
+  s.then = (resolve: (value: unknown) => void) => {
+    const end = Math.min(window[1] + 1, window[0] + 1000);
+    resolve({ data: rows().slice(window[0], end), error: null });
+  };
+  return s;
 }
 function setup(options: SetupOptions) {
   setSystemTime(now);
   const { wallets, cursor = '', priorStats = [] } = options;
   const statsUpserted: Array<Record<string, unknown>> = [];
   const rateWrites: Array<Record<string, unknown>> = [];
+  const pageReads: Record<string, Array<[number, number]>> = { wallets: [], wallet_tx_stats: [] };
+  const order: string[] = [];
   const from = (table: string) => {
     if (table === 'wallets') {
       const b: Record<string, unknown> = {};
       b.update = (row: Record<string, unknown>) => {
         rateWrites.push(row);
+        order.push('rate');
         const u: Record<string, unknown> = {};
         u.eq = (column: string, value: string) => {
           if (column === 'address') (row as { __address?: string }).__address = value;
           return u;
         };
-        u.then = (resolve: (value: unknown) => void) => resolve({ error: null });
+        u.then = (resolve: (value: unknown) => void) => resolve({ error: options.rateError ?? null });
         return u;
       };
-      b.select = () => {
-        const s: Record<string, unknown> = {};
-        s.eq = (column: string, value: string) => {
-          expect(column).toBe('chain');
-          expect(value).toBe('arc-mainnet');
-          return s;
-        };
-        s.then = (resolve: (value: unknown) => void) =>
-          resolve({ data: wallets.map(address => ({ address })), error: null });
-        return s;
-      };
+      b.select = () => pagedSelect(() => wallets.map(address => ({ address })), pageReads.wallets);
       return b;
     }
     if (table === 'wallet_tx_stats') {
       const b: Record<string, unknown> = {};
-      b.select = () => {
-        const s: Record<string, unknown> = {};
-        s.eq = (column: string, value: string) => {
-          expect(column).toBe('chain');
-          expect(value).toBe('arc-mainnet');
-          return s;
-        };
-        s.then = (resolve: (value: unknown) => void) =>
-          resolve({ data: priorStats.map(r => ({ ...r })), error: null });
-        return s;
-      };
+      b.select = () => pagedSelect(() => priorStats.map(r => ({ ...r })), pageReads.wallet_tx_stats);
       b.upsert = (rows: Array<Record<string, unknown>>, opts: { onConflict: string }) => {
         expect(opts.onConflict).toBe('chain,address');
         statsUpserted.push(...rows);
+        order.push('stats');
         const u: Record<string, unknown> = {};
         u.then = (resolve: (value: unknown) => void) => resolve({ error: options.upsertError ?? null });
         return u;
@@ -84,7 +86,7 @@ function setup(options: SetupOptions) {
     expect(key).toBe('arc-mainnet-block-walk');
     return { chain: 'arc-mainnet', facilitator: key, last_signature: cursor, last_slot: null, updated_at: now.toISOString() };
   }));
-  return { statsUpserted, rateWrites, saveCursor };
+  return { statsUpserted, rateWrites, saveCursor, pageReads, order };
 }
 
 const CHAIN_ID = '0x13b2';
@@ -265,4 +267,63 @@ test('a malformed cursor value is refused', async () => {
   setup({ wallets: [W1], cursor: '0xzz' });
   await expect(managed({ transport: transport({ head: 104, receipts: new Map() }), startBlock: 100 }))
     .rejects.toThrow('arc_mainnet_walk_cursor_invalid');
+});
+test('work-set reads page past the 1000-row cap so prior counters are never lost', async () => {
+  // 1500 wallets with committed counters; the one that transacts sits on page 2.
+  const wallets = Array.from({ length: 1500 }, (_, i) => address(i + 1));
+  const late = wallets[1200];
+  const state = setup({
+    wallets,
+    cursor: '99',
+    priorStats: wallets.map(a => ({ address: a, settled_count: 7, failed_count: 3, last_block: 99 })),
+  });
+  const rpc = transport({ head: 101, receipts: new Map([[100, [ok(late)]]]) });
+  const result = await managed({ transport: rpc, startBlock: 100 });
+  expect(result).toEqual({ scanned: 1, walletsUpdated: 1, complete: true, cursor: '100' });
+  expect(state.pageReads.wallets).toEqual([[0, 999], [1000, 1999]]);
+  expect(state.pageReads.wallet_tx_stats).toEqual([[0, 999], [1000, 1999]]);
+  // Merged into the page-2 prior, not restarted from zero.
+  expect(state.statsUpserted).toEqual([
+    expect.objectContaining({ address: late, settled_count: 8, failed_count: 3, last_block: 100 }),
+  ]);
+  expect(state.rateWrites).toEqual([expect.objectContaining({ metric_success_rate: 8 / 11, __address: late })]);
+});
+
+test('rates land before counters so a failed rate write leaves the blocks recountable', async () => {
+  const state = setup({ wallets: [W1], rateError: { message: 'rate write failed' } });
+  const rpc = transport({ head: 102, receipts: new Map([[100, [ok(W1)]], [101, [failed(W1)]]]) });
+  await expect(managed({ transport: rpc, startBlock: 100 })).rejects.toThrow('rate write failed');
+  // No counter commit and no cursor advance: the next run recounts and re-derives.
+  expect(state.statsUpserted).toEqual([]);
+  expect(state.saveCursor).not.toHaveBeenCalled();
+});
+
+test('counter writes follow every rate write', async () => {
+  const state = setup({ wallets: [W1, W2] });
+  const rpc = transport({ head: 102, receipts: new Map([[100, [ok(W1)]], [101, [failed(W2)]]]) });
+  await managed({ transport: rpc, startBlock: 100 });
+  expect(state.order).toEqual(['rate', 'rate', 'stats']);
+});
+
+test('an unreachable chain id stops resumably and reports the held cursor', async () => {
+  setup({ wallets: [W1], cursor: '150' });
+  const rpc = {
+    ...transport({ head: 200, receipts: new Map() }),
+    getChainId: async () => { throw new Error('rpc_down'); },
+  };
+  const result = await managed({ transport: rpc, startBlock: 100, retryAttempts: 0 });
+  expect(result).toEqual({ scanned: 0, walletsUpdated: 0, complete: false, cursor: '150' });
+  expect(rpc.calls).toEqual([]);
+});
+
+test('a hung RPC request times out instead of waiting on the job abort', async () => {
+  const hung = track(spyOn(globalThis, 'fetch').mockImplementation(((_url: string, init?: RequestInit) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+    })) as unknown as typeof fetch));
+  const job = new AbortController();
+  const rpc = createArcMainnetWalkTransport('https://rpc.example', job.signal, 20);
+  await expect(rpc.getHead()).rejects.toThrow();
+  expect(job.signal.aborted).toBe(false);
+  expect(hung).toHaveBeenCalledTimes(1);
 });

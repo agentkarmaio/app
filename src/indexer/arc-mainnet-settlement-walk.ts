@@ -5,6 +5,8 @@ import { ARC_MAINNET_CHAIN_ID, parseArcMainnetRpcUrl, parseArcMainnetStartBlock 
 const CURSOR_KEY = 'arc-mainnet-block-walk';
 const UPDATE_CONCURRENCY = 4;
 const STATS_CHUNK = 1000;
+/** PostgREST caps a response at 1000 rows; every work-set read pages under it. */
+const READ_PAGE = 1000;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const DECIMAL = /^\d+$/;
 
@@ -32,6 +34,9 @@ export interface ArcMainnetWalkOptions {
   maxBlocks?: number;
   retryAttempts?: number;
   retryDelayMs?: number;
+  /** Per-request RPC timeout, so a hung node is a resumable stop instead of a
+   * job-level abort that discards the whole run's counted blocks. */
+  requestTimeoutMs?: number;
 }
 export interface ArcMainnetWalkResult {
   scanned: number;
@@ -62,12 +67,14 @@ export async function walkArcMainnetSettlement(
   const maxBlocks = options.maxBlocks ?? 60_000;
   const retryAttempts = options.retryAttempts ?? 2;
   const retryDelayMs = options.retryDelayMs ?? 250;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
   if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 500
     || !Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 10
     || !Number.isFinite(timeBudgetMs) || timeBudgetMs <= 0 || timeBudgetMs > 40_000
     || !Number.isSafeInteger(maxBlocks) || maxBlocks < 1 || maxBlocks > 500_000
     || !Number.isSafeInteger(retryAttempts) || retryAttempts < 0 || retryAttempts > 5
-    || !Number.isSafeInteger(retryDelayMs) || retryDelayMs < 0 || retryDelayMs > 5_000) {
+    || !Number.isSafeInteger(retryDelayMs) || retryDelayMs < 0 || retryDelayMs > 5_000
+    || !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 30_000) {
     throw new Error('arc_mainnet_walk_invalid');
   }
   function assertLease() {
@@ -96,14 +103,14 @@ export async function walkArcMainnetSettlement(
 
   const transport = options.transport
     ?? createArcMainnetWalkTransport(
-      parseArcMainnetRpcUrl(options.rpcUrl ?? process.env.ARC_MAINNET_RPC_URL), signal);
-  const chainId = await safeRpc(retry, transport.getChainId);
-  if (chainId === undefined) return resumableStop('');
-  if (parseInt(chainId, 16) !== ARC_MAINNET_CHAIN_ID) throw new Error('arc_mainnet_chain_mismatch');
-
+      parseArcMainnetRpcUrl(options.rpcUrl ?? process.env.ARC_MAINNET_RPC_URL), signal, requestTimeoutMs);
   const stored = await getCursor(CURSOR_KEY, 'arc-mainnet');
   const cursor = stored?.last_signature ?? '';
   if (cursor !== '' && !DECIMAL.test(cursor)) throw new Error('arc_mainnet_walk_cursor_invalid');
+
+  const chainId = await safeRpc(retry, transport.getChainId);
+  if (chainId === undefined) return resumableStop(cursor);
+  if (parseInt(chainId, 16) !== ARC_MAINNET_CHAIN_ID) throw new Error('arc_mainnet_chain_mismatch');
   let next: number;
   if (cursor !== '') {
     next = Number(cursor) + 1;
@@ -115,19 +122,17 @@ export async function walkArcMainnetSettlement(
   }
   const firstUnscanned = next;
 
-  const { data: walletRows, error: walletError } = await supabase.from('wallets')
-    .select('address').eq('chain', 'arc-mainnet');
-  if (walletError) throw walletError;
-  const walletSet = new Set(((walletRows ?? []) as Array<{ address: string }>)
-    .map(row => row.address.toLowerCase()));
+  // Both reads page: a truncated stats read would upsert counters from zero and
+  // silently erase history, which no later run can recover.
+  const walletRows = await readAll<{ address: string }>('wallets', 'address', signal);
+  const walletSet = new Set(walletRows.map(row => row.address.toLowerCase()));
   // No wallet subjects: nothing to measure and nothing to resume, ever.
   if (walletSet.size === 0) return { scanned: 0, walletsUpdated: 0, complete: true, cursor };
 
   const prior = new Map<string, WalletStats>();
-  const { data: statsRows, error: statsError } = await supabase.from('wallet_tx_stats')
-    .select('address,settled_count,failed_count,last_block').eq('chain', 'arc-mainnet');
-  if (statsError) throw statsError;
-  for (const row of (statsRows ?? []) as Array<Partial<WalletStats>>) {
+  const statsRows = await readAll<Partial<WalletStats>>(
+    'wallet_tx_stats', 'address,settled_count,failed_count,last_block', signal);
+  for (const row of statsRows) {
     if (typeof row.address === 'string' && ADDRESS.test(row.address)
       && Number.isSafeInteger(row.settled_count) && Number.isSafeInteger(row.failed_count)
       && Number.isSafeInteger(row.last_block)) {
@@ -198,12 +203,11 @@ export async function walkArcMainnetSettlement(
         updated_at: nowIso,
       };
     });
-    for (let i = 0; i < rows.length; i += STATS_CHUNK) {
-      const { error } = await supabase.from('wallet_tx_stats')
-        .upsert(rows.slice(i, i + STATS_CHUNK), { onConflict: 'chain,address' });
-      if (error) throw error;
-    }
-    // Rates re-derive from persisted counters; the walk never upserts wallets.
+    // Rates land before counters: once a wallet's counters commit, its
+    // high-water mark skips these blocks forever, so a rate write that failed
+    // after that commit would stay stale until the wallet transacts again.
+    // Rate-first keeps a failure anywhere here a clean recount next run
+    // (rates are idempotent in the counters). The walk never upserts wallets.
     const rateRows = rows.filter(row => row.settled_count + row.failed_count > 0);
     for (let i = 0; i < rateRows.length; i += UPDATE_CONCURRENCY) {
       signal?.throwIfAborted();
@@ -215,6 +219,11 @@ export async function walkArcMainnetSettlement(
       }));
     }
     walletsUpdated = rateRows.length;
+    for (let i = 0; i < rows.length; i += STATS_CHUNK) {
+      const { error } = await supabase.from('wallet_tx_stats')
+        .upsert(rows.slice(i, i + STATS_CHUNK), { onConflict: 'chain,address' });
+      if (error) throw error;
+    }
   }
   if (lastScanned > firstUnscanned - 1) {
     await upsertCursor(CURSOR_KEY, String(lastScanned), lastScanned, 'arc-mainnet');
@@ -240,6 +249,23 @@ async function safeRpc<T>(
   }
 }
 
+async function readAll<T>(
+  table: 'wallets' | 'wallet_tx_stats',
+  columns: string,
+  signal?: AbortSignal,
+): Promise<T[]> {
+  const rows: T[] = [];
+  for (let offset = 0; ; offset += READ_PAGE) {
+    signal?.throwIfAborted();
+    const { data, error } = await supabase.from(table).select(columns).eq('chain', 'arc-mainnet')
+      .order('address', { ascending: true }).range(offset, offset + READ_PAGE - 1);
+    if (error) throw error;
+    const page = (data ?? []) as T[];
+    rows.push(...page);
+    if (page.length < READ_PAGE) return rows;
+  }
+}
+
 function range(from: number, to: number): number[] {
   const blocks: number[] = [];
   for (let block = from; block <= to; block++) blocks.push(block);
@@ -252,12 +278,14 @@ function range(from: number, to: number): number[] {
 export function createArcMainnetWalkTransport(
   rpcUrl: string,
   signal?: AbortSignal,
+  requestTimeoutMs = 10_000,
 ): WalkChainTransport {
   const rpcPost = async (body: unknown) => {
+    const timeout = AbortSignal.timeout(requestTimeoutMs);
     const res = await fetch(rpcUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      signal,
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`arc_walk_http_${res.status}`);
