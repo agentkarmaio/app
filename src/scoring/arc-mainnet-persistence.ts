@@ -1,5 +1,6 @@
 import { getCursor, supabase, upsertCursor, upsertWallet } from '@/db/client';
 import { getIndexingHeaders } from '@/db/indexing-context';
+import { computeCadence } from './cadence';
 import { computeAgentLiveBundle } from './live-agent-score';
 
 const CURSOR_KEY = 'arc-mainnet-score-refresh';
@@ -67,6 +68,14 @@ export async function refreshArcMainnetScores(
         const bundle = await computeAgentLiveBundle(address, 'arc-mainnet');
         assertLease();
         const receipt = bundle.receiptScore!;
+        // Diversity and age reuse the provider face's own normalizations
+        // (breadth = counterparties/10, continuity = observed days/180).
+        // Cadence samples one timestamp per unique transaction hash, the same
+        // transaction identity the face recipe counts breadth and activity over.
+        const providerTxTimes = new Map<string, string>();
+        for (const row of receipt.observations) {
+          if (row.face === 'provider') providerTxTimes.set(row.rawTxHash, row.timestamp);
+        }
         await upsertWallet(address, receipt.provider.score, receipt.provider.trustTier, receipt.txCount, {
           providerScore: receipt.provider.score,
           consumerScore: receipt.consumer.hasSignal ? receipt.consumer.score : null,
@@ -74,9 +83,13 @@ export async function refreshArcMainnetScores(
           lastSeen: receipt.lastActive,
           autonomyScore: bundle.autonomy?.score ?? null,
           autonomyLabel: bundle.autonomy?.label ?? null,
-          // The legacy payment metrics do not describe native transfer evidence.
-          metricSuccessRate: null, metricDiversity: null, metricVolume: null,
-          metricAge: null, metricCadence: null,
+          metricDiversity: receipt.provider.metrics?.breadth ?? null,
+          metricAge: receipt.provider.metrics?.continuity ?? null,
+          metricCadence: computeCadence([...providerTxTimes.values()])?.automationScore ?? null,
+          // Volume stays unwritten — amount has no positive weight in the
+          // receipt model. Success rate needs failed-transaction evidence the
+          // transfer log stream cannot see, so it is omitted rather than nulled
+          // and a dedicated sweep may own the column.
         }, 'arc-mainnet');
       }));
       const failed = results.find(result => result.status === 'rejected');

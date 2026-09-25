@@ -4,6 +4,7 @@ import type { SignalEvent } from '@/db/schema';
 import { markIndexingLeaseLost, runWithIndexingContext } from '@/db/indexing-context';
 import { ARC_MAINNET_TRANSFER_EMITTER } from '@/config/arc-mainnet';
 import { computeAgentLiveBundle } from './live-agent-score';
+import { computeCadence } from './cadence';
 import { refreshArcMainnetScores } from './arc-mainnet-persistence';
 
 const address = (i: number) => `0x${i.toString(16).padStart(40, '0')}`;
@@ -12,14 +13,16 @@ const now = new Date('2026-09-19T12:00:00Z');
 const restores: Array<() => void> = [];
 afterEach(() => { restores.splice(0).reverse().forEach(restore => restore()); db.__setSupabaseForTest(null); setSystemTime(); });
 function track<T extends { mockRestore(): void }>(spy: T): T { restores.push(() => spy.mockRestore()); return spy; }
-function receipt(face: 'provider' | 'consumer', index = 1): SignalEvent {
+function receipt(face: 'provider' | 'consumer', index = 1,
+  opts: { counterparty?: string; observedAt?: string } = {}): SignalEvent {
   const hash = `0x${index.toString(16).padStart(64, '0')}`;
   return { id: String(index), chain: 'arc-mainnet', agent_wallet: wallet,
     kind: 'usdc_transfer_settled', tier: 2, face, weight: 0.6, value: 1,
-    tx_ref: `${hash}:0`, signed_by: null, observed_at: now.toISOString(), created_at: now.toISOString(),
+    tx_ref: `${hash}:0`, signed_by: null,
+    observed_at: opts.observedAt ?? now.toISOString(), created_at: now.toISOString(),
     payload: { source: 'arc_native_usdc_transfer', rawTxHash: hash, logIndex: 0,
       rawAmount: '1000000000000000000', amountDecimal: '1', amount: 1, decimals: 18,
-      emitter: ARC_MAINNET_TRANSFER_EMITTER, counterparty: address(2) } };
+      emitter: ARC_MAINNET_TRANSFER_EMITTER, counterparty: opts.counterparty ?? address(2) } };
 }
 function setup(addresses = [wallet], events: SignalEvent[] = []) {
   setSystemTime(now);
@@ -53,18 +56,43 @@ const managed = (opts: Parameters<typeof refreshArcMainnetScores>[0] = {}) => ru
   chain: 'arc-mainnet', path: 'transfers', owner: 'test-owner', signal: opts?.signal,
 }, () => refreshArcMainnetScores(opts));
 
-test.each(['provider', 'consumer'] as const)('persists shared %s face model without legacy metrics or cross-chain writes', async face => {
+test.each(['provider', 'consumer'] as const)('persists shared %s face model with measured legacy metrics and no cross-chain writes', async face => {
   const state = setup([wallet], [receipt(face), receipt(face)]);
   const bundle = await computeAgentLiveBundle(wallet, 'arc-mainnet');
   expect(await managed()).toMatchObject({ scored: 1, complete: true });
-  expect(state.write).toHaveBeenCalledWith(wallet, bundle.receiptScore!.provider.score, 'Unrated', 1, {
-    providerScore: bundle.receiptScore!.provider.score,
+  const provider = bundle.receiptScore!.provider;
+  expect(state.write).toHaveBeenCalledWith(wallet, provider.score, 'Unrated', 1, {
+    providerScore: provider.score,
     consumerScore: face === 'consumer' ? bundle.receiptScore!.consumer.score : null,
-    confidenceBadge: bundle.receiptScore!.provider.confidenceBadge,
+    confidenceBadge: provider.confidenceBadge,
     lastSeen: now.toISOString(), autonomyScore: bundle.autonomy?.score ?? null, autonomyLabel: bundle.autonomy?.label ?? null,
-    metricSuccessRate: null, metricDiversity: null, metricVolume: null, metricAge: null, metricCadence: null,
+    // One deduped receipt: 1 counterparty over 10, an observed span of 0 days.
+    // Cadence needs 10+ provider transactions; consumer-only evidence leaves
+    // the provider-face metrics unwritten rather than measured at zero.
+    metricDiversity: face === 'provider' ? 0.1 : null,
+    metricAge: face === 'provider' ? 0 : null,
+    metricCadence: null,
   }, 'arc-mainnet');
+  const opts = state.write.mock.calls[0][4] as Record<string, unknown>;
+  expect('metricSuccessRate' in opts).toBe(false);
+  expect('metricVolume' in opts).toBe(false);
   expect(state.pages.every(p => p.chain === 'arc-mainnet')).toBe(true);
+});
+test('measures provider diversity, cadence and observed age from real receipt evidence', async () => {
+  const DAY = 86_400_000;
+  const events = Array.from({ length: 12 }, (_, i) => receipt('provider', i + 1, {
+    counterparty: address(2 + (i % 5)),
+    observedAt: new Date(now.getTime() - (90 - i * (90 / 11)) * DAY).toISOString(),
+  }));
+  const state = setup([wallet], events);
+  const cadence = computeCadence(events.map(event => event.observed_at));
+  expect(await managed()).toMatchObject({ scored: 1, complete: true });
+  // 5 distinct counterparties over 10, a 90-day observed span over 180.
+  expect(state.write.mock.calls[0][4]).toMatchObject({
+    metricDiversity: 0.5, metricAge: 0.5, metricCadence: cadence!.automationScore,
+  });
+  const opts = state.write.mock.calls[0][4] as Record<string, unknown>;
+  expect('metricSuccessRate' in opts).toBe(false);
 });
 test('reciprocal evidence and then empty evidence clear stale ranking without fabricating activity', async () => {
   const state = setup([wallet], [receipt('provider'), receipt('consumer', 2)]);
