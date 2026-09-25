@@ -339,14 +339,19 @@ let shutdownHandlersInstalled = false;
 function installLeaseShutdownHandlers() {
   if (shutdownHandlersInstalled) return;
   shutdownHandlersInstalled = true;
+  // Reached through globalThis so the edge compile of instrumentation.ts —
+  // which traces into this module — does not flag process.once /
+  // listenerCount / kill / pid as unsupported edge APIs. Only the node path
+  // ever registers these.
+  const proc = globalThis.process;
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-    process.once(signal, () => {
+    proc.once(signal, () => {
       // Registering a listener SUPPRESSES Node's default terminate. Inside a
       // `once` handler this count excludes our own, so zero means we are the
       // only thing standing between the signal and the exit — release, then
       // re-raise so the default action runs. Bounded either way: an
       // unreachable DB must not wedge a container in shutdown.
-      const soleListener = process.listenerCount(signal) === 0;
+      const soleListener = proc.listenerCount(signal) === 0;
       const deadline = new Promise<number>((resolve) => {
         setTimeout(() => resolve(-1), 2_000).unref?.();
       });
@@ -355,7 +360,7 @@ function installLeaseShutdownHandlers() {
         .then((released) => {
           if (released > 0)
             console.log(`[indexing] released ${released} lease(s) on ${signal}`);
-          if (soleListener) process.kill(process.pid, signal);
+          if (soleListener) proc.kill(proc.pid, signal);
         });
     });
   }

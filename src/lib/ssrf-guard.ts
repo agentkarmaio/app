@@ -8,12 +8,24 @@
  * dangerous ranges are unit-testable without real DNS or sockets.
  */
 
-import { lookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
-
 export type DnsLookup = (host: string) => Promise<{ address: string; family: number }[]>;
 
-const defaultLookup: DnsLookup = (host) => lookup(host, { all: true });
+/**
+ * Resolved at call time rather than imported: a `node:dns/promises` import
+ * here is traced into Next's edge compile of `instrumentation.ts` — which
+ * reaches this module through `indexing-jobs` → chain adapters → the
+ * registry — and warns "A Node.js module is loaded". Reached through a
+ * globalThis binding because the edge checker also lists
+ * `process.getBuiltinModule` as unsupported. Only the node path
+ * (NEXT_RUNTIME === 'nodejs') ever fetches an untrusted URL, so
+ * `getBuiltinModule` (Bun and Node >= 22.3) is always available where this
+ * runs; a missing module throws and the caller fails closed.
+ */
+function defaultLookup(host: string): Promise<{ address: string; family: number }[]> {
+  const proc = globalThis.process;
+  const dns = proc.getBuiltinModule('node:dns/promises');
+  return dns.lookup(host, { all: true });
+}
 
 export class SsrfError extends Error {
   constructor(message: string) {
@@ -75,6 +87,47 @@ function v4Octets(ip: string): [number, number, number, number] | null {
   return nums as [number, number, number, number];
 }
 
+const DOTTED_QUAD = /^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}$/;
+const V6_GROUP = /^[0-9a-f]{1,4}$/i;
+
+/**
+ * Family of a strict IP literal, else 0. Stands in for `net.isIP` (a `node:net`
+ * import here would warn in the edge compile — see `defaultLookup` above).
+ * Accepts a subset of what Node accepts; under-detection is safe because the
+ * string then goes through DNS resolution (which returns normalized literals)
+ * or fails closed in {@link isPrivateIp}, while over-detection is not — so
+ * nothing Node would not call an IP literal is ever classified here.
+ */
+export function ipFamily(value: string): 0 | 4 | 6 {
+  if (DOTTED_QUAD.test(value)) return v4Octets(value) ? 4 : 0;
+  return isV6Literal(value) ? 6 : 0;
+}
+
+function isV6Literal(value: string): boolean {
+  if (!value.includes(':')) return false;
+  const elision = value.indexOf('::');
+  if (elision !== -1 && value.indexOf('::', elision + 2) !== -1) return false; // at most one '::'
+  const groupCount = (part: string): number | null => {
+    if (part === '') return 0;
+    const groups = part.split(':');
+    let count = 0;
+    for (let i = 0; i < groups.length; i++) {
+      const group = groups[i];
+      if (i === groups.length - 1 && group.includes('.')) {
+        if (!DOTTED_QUAD.test(group) || !v4Octets(group)) return null; // embedded IPv4 tail
+        count += 2;
+      } else if (V6_GROUP.test(group)) count += 1;
+      else return null;
+    }
+    return count;
+  };
+  if (elision === -1) return groupCount(value) === 8;
+  const head = groupCount(value.slice(0, elision));
+  const tail = groupCount(value.slice(elision + 2));
+  if (head === null || tail === null) return false;
+  return head + tail <= 7; // '::' must elide at least one group
+}
+
 function isPrivateV4(ip: string): boolean {
   const o = v4Octets(ip);
   if (!o) return true; // unparseable → unsafe
@@ -110,7 +163,7 @@ function isPrivateV6(ip: string): boolean {
 
 /** True for any IP a server should not fetch from. Invalid input → true (fail closed). */
 export function isPrivateIp(ip: string): boolean {
-  const family = isIP(ip);
+  const family = ipFamily(ip);
   if (family === 4) return isPrivateV4(ip);
   if (family === 6) return isPrivateV6(ip);
   return true;
@@ -136,7 +189,7 @@ export async function assertPublicHttpUrl(
   let host = url.hostname.replace(/\.$/, '').toLowerCase();
   if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1); // unwrap [ipv6]
 
-  if (isIP(host)) {
+  if (ipFamily(host)) {
     if (isPrivateIp(host)) throw new SsrfError(`blocked private address: ${host}`);
     return url;
   }

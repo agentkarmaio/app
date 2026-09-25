@@ -7,7 +7,8 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { isPrivateIp, assertPublicHttpUrl, SsrfError } from './ssrf-guard';
+import { isIP } from 'node:net';
+import { isPrivateIp, ipFamily, assertPublicHttpUrl, SsrfError } from './ssrf-guard';
 
 describe('isPrivateIp', () => {
   test.each([
@@ -25,6 +26,27 @@ describe('isPrivateIp', () => {
     '::ffff:8.8.8.8',
   ])('%s is public', (ip) => {
     expect(isPrivateIp(ip)).toBe(false);
+  });
+});
+
+describe('ipFamily', () => {
+  test('agrees with node:net isIP on well-formed literals', () => {
+    const literals = [
+      '8.8.8.8', '0.0.0.0', '255.255.255.255', '::', '::1', 'fc00::1',
+      '1:2:3:4:5:6:7:8', '1::2', '1:2:3:4:5:6:7::', '::1:2:3:4:5:6:7',
+      '::ffff:192.168.0.1', '1:2:3:4:5:6:1.2.3.4',
+    ];
+    expect(literals.filter((v) => ipFamily(v) !== isIP(v))).toEqual([]);
+  });
+
+  test('never over-detects: every disagreement is a 0', () => {
+    const adversarial = [
+      '', 'not-an-ip', '1.2.3.4.5', '01.2.3.4', '256.1.1.1', '1.2.3',
+      '1.2.3.-4', '0x7f.0.0.1', 'g::1', '::g', '1::2::3', ':::', ':1', '1:',
+      '1:2:3:4:5:6:7:8:9', '1:2:3:4:5:6:7:8::', 'fe80::1%eth0', ' 1.2.3.4',
+      '1.2.3.4 ', '1:2:3:4:5:6:7:1.2.3.4', '12345::1',
+    ];
+    expect(adversarial.filter((v) => ipFamily(v) !== 0 && ipFamily(v) !== isIP(v))).toEqual([]);
   });
 });
 
