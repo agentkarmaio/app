@@ -100,7 +100,7 @@ const FAQS: {
     id: 'what-is-agentkarma',
     question: 'What is AgentKarma?',
     answer:
-      "AgentKarma is the reputation layer for autonomous on-chain agents on Solana. It computes a passive, manipulation-resistant trust score for any wallet with a public on-chain footprint and publishes every score as a portable ERC-8004 attestation that any app can read. AgentKarma is x402-first, not x402-only — it ingests x402 payments, pay.sh routing receipts, behavioral signals, declared identity, and social signals across the full Solana agent economy.",
+      "AgentKarma is the reputation layer for autonomous on-chain agents across Solana, Stellar, Celo and Arc. It computes a passive, manipulation-resistant trust score for any wallet with a public on-chain footprint and publishes every score as a portable ERC-8004 attestation that any app can read. AgentKarma is x402-first, not x402-only — it ingests x402 payments, pay.sh routing receipts, behavioral signals, declared identity, and social signals, scored per chain.",
     renderAnswer: () => (
       <>
         AgentKarma is the reputation layer for autonomous on-chain agents on

@@ -8,13 +8,13 @@ const SITE_URL = 'https://agentkarma.io';
 
 export const metadata = {
   title: 'Karma Protocol — Specification',
-  description: 'Open specification for multi-tier reputation scoring of autonomous on-chain agents on Solana. Four-tier signal spectrum, two-faced karma, ERC-8004 export.',
+  description: 'Open specification for multi-tier reputation scoring of autonomous on-chain agents across Solana, Stellar, Celo and Arc. Four-tier signal spectrum, two-faced karma, evidence-gated tiers, ERC-8004 export.',
   alternates: { canonical: '/protocol' },
   openGraph: {
     type: 'article' as const,
     url: `${SITE_URL}/protocol`,
     title: 'Karma Protocol — open specification',
-    description: 'Multi-tier reputation scoring for autonomous on-chain agents on Solana.',
+    description: 'Multi-tier reputation scoring for autonomous on-chain agents across Solana, Stellar, Celo and Arc.',
   },
 };
 
@@ -35,7 +35,7 @@ export default async function ProtocolPage() {
     '@type': 'TechArticle',
     headline: `Karma Protocol — Specification (${status} v${version})`,
     description:
-      'Open specification for multi-tier reputation scoring of autonomous on-chain agents on Solana.',
+      'Open specification for multi-tier reputation scoring of autonomous on-chain agents across Solana, Stellar, Celo and Arc.',
     inLanguage: 'en',
     author: { '@type': 'Person', name: 'Kerem Noras' },
     publisher: {
@@ -48,7 +48,7 @@ export default async function ProtocolPage() {
     url: `${SITE_URL}/protocol`,
     mainEntityOfPage: { '@type': 'WebPage', '@id': `${SITE_URL}/protocol` },
     keywords:
-      'reputation, autonomous agents, Solana, x402, pay.sh, ERC-8004, MCP, Karma protocol',
+      'reputation, autonomous agents, Solana, Stellar, Celo, Arc, x402, pay.sh, ERC-8004, ERC-8183, MCP, Karma protocol',
     articleSection: 'Specification',
     isPartOf: { '@type': 'WebSite', name: 'AgentKarma', url: SITE_URL },
   };
@@ -87,7 +87,7 @@ export default async function ProtocolPage() {
           Karma Protocol
         </h1>
         <p className="mt-1.5 text-[15px] text-[#8a8f98] tracking-[-0.165px]">
-          Open specification for multi-tier reputation scoring of autonomous on-chain agents on Solana.
+          Open specification for multi-tier reputation scoring of autonomous on-chain agents across Solana, Stellar, Celo and Arc.
         </p>
         <div className="mt-3 flex items-center gap-3">
           <span className="inline-flex items-center rounded-md bg-[rgb(255_165_0/0.12)] px-2 py-0.5 text-[11px] font-[510] text-[#f5a623] border border-[rgb(255_165_0/0.2)]">
