@@ -2,7 +2,7 @@ import { Suspense, cache } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import type { Metadata } from 'next';
-import { ArrowLeft, ExternalLink, Globe, Verified } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Verified } from 'lucide-react';
 import {
   getTransactionCount,
   getScoreHistory,
@@ -50,6 +50,7 @@ import { EditProfile } from '@/components/wallet/edit-profile';
 import { StellarClaimBanner } from '@/components/wallet/stellar-claim-banner';
 import { EvmClaimBanner } from '@/components/wallet/evm-claim-banner';
 import { isStellarAddress } from '@/lib/stellar-verify';
+import { jsonLd } from '@/lib/json-ld';
 import { safeHref } from '@/lib/safe-url';
 import { FeedbackSection } from '@/components/karma/feedback-section';
 import { ScoreChart } from '@/components/karma/score-chart';
@@ -61,7 +62,7 @@ import { CeloAgentProfile } from '@/components/karma/celo-agent-profile';
 import { ArcAgentProfile } from '@/components/karma/arc-agent-profile';
 import { ArcMainnetAgentProfile } from '@/components/karma/arc-mainnet-agent-profile';
 import { StellarAgentProfile } from '@/components/karma/stellar-agent-profile';
-import { AgentAvatar } from '@/components/karma/agent-avatar';
+import { AgentProfileShell } from '@/components/karma/agent-profile-shell';
 import { CardSkeleton } from '@/components/karma/card-skeleton';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -140,16 +141,6 @@ async function probeRegistryChainByAgentId(address: string, agentId: number): Pr
   if (arcOwns && !celoOwns) return 'arc-mainnet';
   return null;
 }
-
-const CATEGORY_LABELS: Record<string, string> = {
-  ai: 'AI / ML',
-  data: 'Data Feed',
-  defi: 'DeFi',
-  infra: 'Infrastructure',
-  social: 'Social',
-  utility: 'Utility',
-  other: 'Other',
-};
 
 const SITE_URL = 'https://agentkarma.io';
 
@@ -716,7 +707,7 @@ export default async function AgentProfilePage({
   // feedback form, no score trend — the profile is built from on-chain
   // ERC-8004 registration + reputation reads keyed by agentId.
   if (resolved.addressClass === 'evm') {
-    if (resolved.chain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} agentId={agentIdHint != null ? agentIdNum ?? Number.NaN : undefined} />;
+    if (resolved.chain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} agentId={agentIdHint != null ? agentIdNum ?? Number.NaN : undefined} deadMansSwitch={deadMansSwitch} />;
     // Prefer a real wallet row's agentId; otherwise honor the ?agentId= hint
     // from the registry-mirror leaderboard (fleet owners aren't in `wallets`, so
     // most registry agents only resolve via this path). Build a minimal walletRow
@@ -733,7 +724,7 @@ export default async function AgentProfilePage({
     if (evmChain == null && agentIdNum != null) {
       evmChain = await probeRegistryChainByAgentId(wallet, agentIdNum);
     }
-    if (evmChain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} agentId={agentIdNum ?? undefined} />;
+    if (evmChain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} agentId={agentIdNum ?? undefined} deadMansSwitch={deadMansSwitch} />;
 
     const celoAgentId = resolved.wallet?.celo_agent_id
       ?? (evmChain === 'celo' ? agentIdNum : null);
@@ -823,11 +814,6 @@ export default async function AgentProfilePage({
   const isClaimed = walletRow?.claimed ?? false;
   const displayName = walletRow?.display_name;
   const agentDescription = walletRow?.description;
-  // Sanitize: walletRow.website is attacker-controlled (set via the wallet-
-  // signed claim flow, whose `new URL()` check accepts javascript:/data: URIs).
-  // safeHref rejects anything that isn't http(s) — same guard the EVM profiles
-  // and manifest-card use. Returns null for unsafe/unparseable values.
-  const agentWebsite = safeHref(walletRow?.website);
   const agentCategory = walletRow?.category;
 
   const breadcrumbLd = {
@@ -841,91 +827,44 @@ export default async function AgentProfilePage({
   };
 
   return (
-    <div className="space-y-6">
-      <script
-        type="application/ld+json"
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
-      />
-      <Link
-        href="/"
-        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-      >
-        <ArrowLeft className="size-4" />
-        Back to Leaderboard
-      </Link>
-
-      <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-4">
-          <AgentAvatar src={walletRow?.image_url} name={displayName ?? wallet} />
-          <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            {displayName ? (
-              <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
-                {displayName}
-              </h1>
-            ) : (
-              <h1 className="text-[24px] font-[510] tracking-[-0.288px] text-[#f7f8f8]">
-                Agent Profile
-              </h1>
-            )}
-            <Suspense fallback={<HeaderChipsSkeleton />}>
-              <LiveHeaderChips wallet={wallet} walletRow={walletRow} />
-            </Suspense>
-            <Suspense fallback={null}>
-              <DmsHeaderChips wallet={wallet} chain={chain} />
-            </Suspense>
-            {isClaimed && (
-              <Badge variant="outline" className="bg-[rgb(94_106_210/0.08)] text-[#828fff] border-[rgb(94_106_210/0.15)] text-[10px] px-1.5 py-0 font-[510]">
-                <Verified className="size-3 mr-0.5" />
-                Claimed
-              </Badge>
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            <WalletAddress address={wallet} truncate={false} className="text-muted-foreground" />
-            <a
-              href={explorerAccountUrl(wallet, chain)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <ExternalLink className="size-3.5" />
-            </a>
-            <BadgeButton wallet={wallet} chain={chain} />
-            <LivenessIndicator lastSeen={walletRow?.last_seen} size="sm" showRelative />
-          </div>
-          {agentDescription && (
-            <p className="text-[14px] text-[#8a8f98] leading-relaxed max-w-lg">
-              {agentDescription}
-            </p>
+    <AgentProfileShell
+      back={{ href: '/', label: 'Back to Leaderboard' }}
+      address={wallet}
+      chain={chain}
+      avatarSrc={walletRow?.image_url}
+      name={displayName}
+      lastSeen={walletRow?.last_seen}
+      description={agentDescription}
+      category={agentCategory}
+      website={walletRow?.website}
+      chips={
+        <>
+          <Suspense fallback={<HeaderChipsSkeleton />}>
+            <LiveHeaderChips wallet={wallet} walletRow={walletRow} />
+          </Suspense>
+          <Suspense fallback={null}>
+            <DmsHeaderChips wallet={wallet} chain={chain} />
+          </Suspense>
+          {isClaimed && (
+            <Badge variant="outline" className="bg-[rgb(94_106_210/0.08)] text-[#828fff] border-[rgb(94_106_210/0.15)] text-[10px] px-1.5 py-0 font-[510]">
+              <Verified className="size-3 mr-0.5" />
+              Claimed
+            </Badge>
           )}
-          <div className="flex items-center gap-3">
-            {agentCategory && (
-              <Badge variant="outline" className="bg-[rgb(255_255_255/0.04)] text-[#8a8f98] border-[rgb(255_255_255/0.08)] text-[11px] px-1.5 py-0">
-                {CATEGORY_LABELS[agentCategory] ?? agentCategory}
-              </Badge>
-            )}
-            {agentWebsite && (
-              <a
-                href={agentWebsite}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-[12px] text-[#8a8f98] hover:text-[#f7f8f8] transition-colors"
-              >
-                <Globe className="size-3" />
-                {new URL(agentWebsite).hostname}
-              </a>
-            )}
-          </div>
-          </div>
-        </div>
+        </>
+      }
+      actions={<BadgeButton wallet={wallet} chain={chain} />}
+      score={
         <Suspense fallback={<Skeleton className="size-[90px] rounded-full" />}>
           <LiveScoreRing wallet={wallet} walletRow={walletRow} />
         </Suspense>
-      </div>
-
-      <Separator />
+      }
+    >
+      <script
+        type="application/ld+json"
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
+        dangerouslySetInnerHTML={{ __html: jsonLd(breadcrumbLd) }}
+      />
 
       {!isClaimed && (isStellarAddress(wallet)
         ? <StellarClaimBanner walletAddress={wallet} />
@@ -966,7 +905,7 @@ export default async function AgentProfilePage({
           chain={chain}
         />
       </Suspense>
-    </div>
+    </AgentProfileShell>
   );
 }
 
@@ -1089,7 +1028,7 @@ async function SolanaProfileBody({
       <script
         type="application/ld+json"
         // biome-ignore lint/security/noDangerouslySetInnerHtml: structured-data emission
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(agentLd) }}
+        dangerouslySetInnerHTML={{ __html: jsonLd(agentLd) }}
       />
       <div className="grid gap-6 md:grid-cols-2">
         <ScoreBreakdownCard live={live} manifestValue={manifestValue} txCount={txCount} />
