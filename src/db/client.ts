@@ -3395,6 +3395,31 @@ export async function upsertErc8004Agents(chain: string, agents: ScannedAgent[])
   if (agents.length === 0) return 0;
   const nowIso = new Date().toISOString();
   const withFeedback = agents.every((a) => a.feedback != null);
+
+  // An unreachable registration is this run's failure to read an off-chain
+  // metadata host — never evidence that a stored registration disappeared.
+  // Read the stored registration block for such rows and write it back, so
+  // persisting unreachable members cannot clobber previously fetched metadata.
+  const unreachableIds = agents
+    .filter((a) => a.registrationStatus === 'unreachable')
+    .map((a) => a.agentId);
+  const stored = new Map<number, { registration: AgentRegistrationFile | null; registration_status: string; metadata_score: number }>();
+  for (let i = 0; i < unreachableIds.length; i += ADDRESS_IN_CHUNK) {
+    const chunk = unreachableIds.slice(i, i + ADDRESS_IN_CHUNK);
+    const { data, error } = await supabase
+      .from('erc8004_agents')
+      .select('agent_id, registration, registration_status, metadata_score')
+      .eq('chain', chain)
+      .in('agent_id', chunk);
+    if (error) throw error;
+    for (const row of (data ?? []) as Array<{ agent_id: number; registration: AgentRegistrationFile | null; registration_status: string; metadata_score: number | null }>) {
+      stored.set(row.agent_id, {
+        registration: row.registration, registration_status: row.registration_status,
+        metadata_score: row.metadata_score ?? 0,
+      });
+    }
+  }
+
   const rows = agents.map((a) => {
     const row: Record<string, unknown> = {
       chain,
@@ -3407,6 +3432,15 @@ export async function upsertErc8004Agents(chain: string, agents: ScannedAgent[])
       metadata_score: a.metadataScore,
       last_indexed_at: nowIso,
     };
+    // Retain the stored registration as one unit (registration + status +
+    // metadata_score describe the same saved read); on-chain identity columns
+    // stay fresh. Nothing stored to retain → persist the unreachable row as-is.
+    const prior = a.registrationStatus === 'unreachable' ? stored.get(a.agentId) : undefined;
+    if (prior?.registration != null) {
+      row.registration = prior.registration;
+      row.registration_status = prior.registration_status;
+      row.metadata_score = prior.metadata_score;
+    }
     // Only chains that HAVE a distinct identity object (Solana's asset NFT) set
     // this. Writing it unconditionally would blank the column on every
     // Celo/Arc/Stellar re-scan, which is why it is conditional rather than

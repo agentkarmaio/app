@@ -20,8 +20,10 @@ import {
   insertSignalEvents,
   getRecentTransactionsForWallet,
   upsertWallet,
+  upsertErc8004Agents,
 } from './client';
 import type { Transaction } from './schema';
+import type { ScannedAgent } from '@/indexer/erc8004-registry';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
 
 // The injected fake lives in a module-level singleton shared across the whole
@@ -1543,4 +1545,75 @@ describe('registry chains cannot satisfy a dated liveness bucket', () => {
       expect(page).toEqual({ wallets: [], total: 0 });
     });
   }
+});
+
+// A registration-stage unreachability is the scanner's failure to read an
+// off-chain metadata host — never evidence that a stored registration
+// disappeared (2026-09-25: 6 arc-mainnet agents with dead hosts kept their
+// 'fetched' registrations only because the scanner spliced them out; the merge
+// below is what makes persisting unreachable members safe).
+describe('upsertErc8004Agents retains stored registrations over unreachable reads', () => {
+  type Stored = { agent_id: number; registration: unknown; registration_status: string; metadata_score: number };
+  function fakeErc8004Upsert(stored: Stored[]) {
+    const captured: Captured[] = [];
+    const inCalls: number[][] = [];
+    const client = {
+      from(table: string) {
+        if (table !== 'erc8004_agents') throw new Error(`unexpected table ${table}`);
+        const b: Record<string, unknown> = {};
+        b.upsert = (rows: unknown, opts: unknown) => {
+          captured.push({ table, op: 'upsert', rows, opts });
+          return Promise.resolve({ error: null });
+        };
+        b.select = () => b;
+        b.eq = () => b;
+        b.in = (_col: string, list: number[]) => {
+          inCalls.push(list);
+          return Promise.resolve({ data: stored, error: null });
+        };
+        return b;
+      },
+    };
+    return { client, captured, inCalls };
+  }
+
+  const unreachableAgent = (agentId: number): ScannedAgent => ({
+    agentId, owner: '0xfresh', agentWallet: '0xfreshw', tokenURI: 'https://new-host/a.json',
+    registration: null, registrationStatus: 'unreachable', metadataScore: 10,
+  });
+
+  test('writes back the stored registration block with fresh identity columns', async () => {
+    const f = fakeErc8004Upsert([{ agent_id: 1, registration: { name: 'Stored' }, registration_status: 'fetched', metadata_score: 80 }]);
+    __setSupabaseForTest(f.client as never);
+    const written = await upsertErc8004Agents('arc-mainnet', [unreachableAgent(1)]);
+    expect(written).toBe(1);
+    const rows = f.captured[0].rows as Array<Record<string, unknown>>;
+    expect(rows[0].registration).toEqual({ name: 'Stored' });
+    expect(rows[0].registration_status).toBe('fetched');
+    expect(rows[0].metadata_score).toBe(80);
+    // On-chain identity columns stay fresh — only the unread metadata is retained.
+    expect(rows[0].token_uri).toBe('https://new-host/a.json');
+    expect(rows[0].owner).toBe('0xfresh');
+    expect(rows[0].registration_status).not.toBe('unreachable');
+    // The retained read is scoped to the chain and the unreachable ids.
+    expect(f.inCalls).toEqual([[1]]);
+  });
+
+  test('an unreachable member with no stored row is persisted as unreachable', async () => {
+    const f = fakeErc8004Upsert([]);
+    __setSupabaseForTest(f.client as never);
+    await upsertErc8004Agents('arc-mainnet', [unreachableAgent(142)]);
+    const rows = f.captured[0].rows as Array<Record<string, unknown>>;
+    expect(rows[0].registration).toBeNull();
+    expect(rows[0].registration_status).toBe('unreachable');
+  });
+
+  test('a stored row with no registration has nothing to retain', async () => {
+    const f = fakeErc8004Upsert([{ agent_id: 1, registration: null, registration_status: 'invalid', metadata_score: 0 }]);
+    __setSupabaseForTest(f.client as never);
+    await upsertErc8004Agents('celo', [unreachableAgent(1)]);
+    const rows = f.captured[0].rows as Array<Record<string, unknown>>;
+    expect(rows[0].registration).toBeNull();
+    expect(rows[0].registration_status).toBe('unreachable');
+  });
 });

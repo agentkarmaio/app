@@ -16,7 +16,7 @@ function fixture(overrides: Partial<ArcRegistryRefreshDeps> = {}) {
     writeCheckpoint: async (value, state) => { checkpoint = structuredClone(state); checkpoints.push(value); },
     scanIds: async (ids) => { calls.push(ids); return {
       chain: 'arc', tip: ids.at(-1) ?? 0, agentsScanned: ids.length, agentsPersisted: ids.length,
-      feedbackScanned: 0, feedbackPersisted: 0, errors: 0, failedMembers: [],
+      feedbackScanned: 0, feedbackPersisted: 0, errors: 0, registrationUnreachable: 0, failedMembers: [],
     }; },
     maxIds: 2, batchSize: 1, now: () => 0, timeBudgetMs: 120_000,
     ...overrides,
@@ -38,7 +38,7 @@ describe('bounded refresh never widens Arc membership', () => {
     expect(f.calls.slice(-2).flat()).toEqual([2, 70]);
   });
   test('unknown batch errors advance scheduling with durable conservative failures', async () => {
-    const f = fixture({ scanIds: async (ids) => ({ chain: 'arc', tip: ids.at(-1)!, agentsScanned: 0, agentsPersisted: 0, feedbackScanned: 0, feedbackPersisted: 0, errors: 1 }) });
+    const f = fixture({ scanIds: async (ids) => ({ chain: 'arc', tip: ids.at(-1)!, agentsScanned: 0, agentsPersisted: 0, feedbackScanned: 0, feedbackPersisted: 0, errors: 1, registrationUnreachable: 0 }) });
     const result = await arcRegistryRefresh(f.deps);
     expect(f.checkpoints).toEqual([2, 70]);
     expect(result.coverage).toMatchObject({ complete: false, pending: 1, unresolved: 2, checkpoint: '70' });
@@ -225,7 +225,7 @@ test('a retained ledger that this run did not add to is retry backlog, not a rea
 function alwaysFailing(stage: 'registration' | 'identity' | 'feedback') {
   return async (ids: number[]) => ({
     chain: 'arc' as const, tip: ids.at(-1) ?? 0, agentsScanned: ids.length, agentsPersisted: 0,
-    feedbackScanned: 0, feedbackPersisted: 0, errors: ids.length,
+    feedbackScanned: 0, feedbackPersisted: 0, errors: ids.length, registrationUnreachable: 0,
     failedMembers: ids.map(id => ({ agentId: id, stages: [stage] })),
   });
 }
@@ -291,7 +291,7 @@ test('an unreadable member leaves the persisted cursor shape byte-compatible', a
 test('an unidentifiable partial error summary is conservatively a read failure', async () => {
   const f = fixture({ maxIds: 1, batchSize: 1,
     scanIds: async (ids) => ({ chain: 'arc', tip: ids.at(-1) ?? 0, agentsScanned: ids.length, agentsPersisted: 0,
-      feedbackScanned: 0, feedbackPersisted: 0, errors: 1, failedMembers: [] }) });
+      feedbackScanned: 0, feedbackPersisted: 0, errors: 1, registrationUnreachable: 0, failedMembers: [] }) });
   const result = await arcRegistryRefresh(f.deps);
   expect(result.coverage.reason).toBe('registry_read_failure');
 });
