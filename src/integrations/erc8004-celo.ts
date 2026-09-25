@@ -15,7 +15,7 @@
 
 import { createPublicClient, http, parseAbi } from 'viem';
 import { celo } from 'viem/chains';
-import { gunzipSync } from 'zlib';
+import { decodeDataUriJson } from '@/lib/data-uri';
 import { safeFetchJson } from '@/lib/ssrf-guard';
 
 export const IDENTITY_REGISTRY_CELO = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432' as const;
@@ -161,22 +161,7 @@ async function fetchRegistration(uri: string): Promise<AgentRegistrationFile | n
   // encoded metadata. Gas-optimized agents commonly use this pattern. Parse
   // inline rather than treating as unsupported.
   if (uri.startsWith('data:application/json')) {
-    const commaIdx = uri.indexOf(',');
-    if (commaIdx < 0) throw new Error('data URI missing comma separator');
-    const header = uri.slice(5, commaIdx); // strip 'data:'
-    const body = uri.slice(commaIdx + 1);
-    const params = header.split(';');
-    const isBase64 = params.includes('base64');
-    const isGzip = params.some((p) => p.startsWith('enc=gzip'));
-
-    let buf: Buffer;
-    if (isBase64) {
-      buf = Buffer.from(body, 'base64');
-    } else {
-      buf = Buffer.from(decodeURIComponent(body), 'utf-8');
-    }
-    if (isGzip) buf = gunzipSync(buf);
-    return JSON.parse(buf.toString('utf-8')) as AgentRegistrationFile;
+    return decodeDataUriJson(uri) as AgentRegistrationFile;
   }
 
   if (!uri.startsWith('http://') && !uri.startsWith('https://')) {

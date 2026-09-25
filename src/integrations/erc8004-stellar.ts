@@ -261,9 +261,9 @@ export async function readStellarAgentUri(
 
 // ─── Full agent read (mirrors erc8004-celo.ts readAgent) ────────────────────
 
-import { gunzipSync } from 'zlib';
 import type { AgentRegistrationFile } from './erc8004-celo';
 import { safeFetchJson } from '@/lib/ssrf-guard';
+import { decodeDataUriJson } from '@/lib/data-uri';
 
 /** Re-export for downstream consumers — the same registration JSON spec. */
 export type { AgentRegistrationFile } from './erc8004-celo';
@@ -293,22 +293,7 @@ export interface StellarAgent {
  */
 async function fetchStellarRegistration(uri: string): Promise<AgentRegistrationFile | null> {
   if (uri.startsWith('data:application/json')) {
-    const commaIdx = uri.indexOf(',');
-    if (commaIdx < 0) throw new Error('data URI missing comma separator');
-    const header = uri.slice(5, commaIdx); // strip 'data:'
-    const body = uri.slice(commaIdx + 1);
-    const params = header.split(';');
-    const isBase64 = params.includes('base64');
-    const isGzip = params.some((p) => p.startsWith('enc=gzip'));
-
-    let buf: Buffer;
-    if (isBase64) {
-      buf = Buffer.from(body, 'base64');
-    } else {
-      buf = Buffer.from(decodeURIComponent(body), 'utf-8');
-    }
-    if (isGzip) buf = gunzipSync(buf);
-    return JSON.parse(buf.toString('utf-8')) as AgentRegistrationFile;
+    return decodeDataUriJson(uri) as AgentRegistrationFile;
   }
 
   if (!uri.startsWith('http://') && !uri.startsWith('https://')) {

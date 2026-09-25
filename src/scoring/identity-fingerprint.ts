@@ -17,27 +17,19 @@
  * Pure + synchronous: only decodes `data:application/json...` URIs already in
  * hand. http(s)/ipfs tokenURIs return false (unflagged) rather than fetching —
  * keeps this usable inline in the indexer without a network round-trip.
+ *
+ * Decoding goes through the shared `@/lib/data-uri` helper — see that module
+ * for why gzip is fflate rather than `node:zlib`.
  */
 
-import { gunzipSync } from 'node:zlib';
+import { decodeDataUriJson } from '@/lib/data-uri';
 
 /** `<Role>-<6 hex chars>`, e.g. "Trader-Bf70ab", "Bridge-21De32". Case-insensitive hex. */
 const TEMPLATE_NAME_PATTERN = /^[A-Za-z]+-[0-9a-f]{6}$/i;
 
 function decodeDataUri(uri: string): unknown {
-  const commaIdx = uri.indexOf(',');
-  if (commaIdx < 0) return null;
-  const header = uri.slice(5, commaIdx); // strip 'data:'
-  const body = uri.slice(commaIdx + 1);
-  const params = header.split(';');
-  const isBase64 = params.includes('base64');
-  const isGzip = params.some((p) => p.startsWith('enc=gzip'));
-
-  let buf: Buffer;
   try {
-    buf = isBase64 ? Buffer.from(body, 'base64') : Buffer.from(decodeURIComponent(body), 'utf-8');
-    if (isGzip) buf = gunzipSync(buf);
-    return JSON.parse(buf.toString('utf-8'));
+    return decodeDataUriJson(uri);
   } catch {
     return null;
   }

@@ -27,7 +27,7 @@ import {
 } from 'viem';
 import type { Chain } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { gunzipSync } from 'zlib';
+import { decodeDataUriJson } from '@/lib/data-uri';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { safeFetchJson } from '@/lib/ssrf-guard';
@@ -259,19 +259,7 @@ async function fetchRegistration(uri: string): Promise<AgentRegistrationFile | n
   // data:application/json[;enc=gzip[;level=N]];base64,XXXX — fully on-chain
   // encoded metadata. Gas-optimized agents commonly use this pattern.
   if (uri.startsWith('data:application/json')) {
-    const commaIdx = uri.indexOf(',');
-    if (commaIdx < 0) throw new Error('data URI missing comma separator');
-    const header = uri.slice(5, commaIdx); // strip 'data:'
-    const body = uri.slice(commaIdx + 1);
-    const params = header.split(';');
-    const isBase64 = params.includes('base64');
-    const isGzip = params.some((p) => p.startsWith('enc=gzip'));
-
-    let buf: Buffer;
-    if (isBase64) buf = Buffer.from(body, 'base64');
-    else buf = Buffer.from(decodeURIComponent(body), 'utf-8');
-    if (isGzip) buf = gunzipSync(buf);
-    return JSON.parse(buf.toString('utf-8')) as AgentRegistrationFile;
+    return decodeDataUriJson(uri) as AgentRegistrationFile;
   }
 
   if (!uri.startsWith('http://') && !uri.startsWith('https://')) {
