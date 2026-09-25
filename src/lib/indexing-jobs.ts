@@ -118,29 +118,50 @@ export function createIndexingJob(
       if (chain === 'arc-mainnet' && path === 'transfers') {
         const { runArcMainnetTransfersIndexer } = await import('@/indexer/arc-mainnet-transfers');
         const { refreshArcMainnetScores } = await import('@/scoring/arc-mainnet-persistence');
+        const { sweepArcMainnetFailedTxs } = await import('@/indexer/arc-mainnet-failed-tx');
         const [ingestion] = await Promise.allSettled([runArcMainnetTransfersIndexer({ signal })]);
-        // Stored evidence can still decay during an RPC outage. Attempt both
-        // phases under the same lease, preserving either or both failures.
-        const [refresh] = await Promise.allSettled([(async () => {
-          signal.throwIfAborted();
-          assertIndexingLease();
-          return refreshArcMainnetScores({ signal });
-        })()]);
-        if (ingestion.status === 'rejected') {
-          if (refresh.status === 'rejected') {
-            throw new AggregateError([ingestion.reason, refresh.reason],
-              indexingErrorCode(ingestion.reason), { cause: ingestion.reason });
-          }
-          throw ingestion.reason;
+        // Stored evidence can still decay during an RPC outage, and failed
+        // transactions never reach the transfer stream at all. Attempt all
+        // three phases under the same lease, preserving any failures.
+        const [refresh, sweep] = await Promise.allSettled([
+          (async () => {
+            signal.throwIfAborted();
+            assertIndexingLease();
+            return refreshArcMainnetScores({ signal });
+          })(),
+          (async () => {
+            signal.throwIfAborted();
+            assertIndexingLease();
+            return sweepArcMainnetFailedTxs({ signal });
+          })(),
+        ]);
+        const settled = [ingestion, refresh, sweep];
+        const rejected = settled.filter(r => r.status === 'rejected') as Array<PromiseRejectedResult>;
+        if (rejected.length === 1) throw rejected[0].reason;
+        if (rejected.length > 1) {
+          throw new AggregateError(rejected.map(r => r.reason),
+            indexingErrorCode(rejected[0].reason), { cause: rejected[0].reason });
         }
-        if (refresh.status === 'rejected') throw refresh.reason;
-        const result = ingestion.value;
-        const scores = refresh.value;
-        const outcome = coverageOutcome(result.coverage, result.inserted);
-        outcome.checkedCount = (outcome.checkedCount ?? 0) + scores.scored;
+        const result = ingestion as PromiseFulfilledResult<Awaited<ReturnType<typeof runArcMainnetTransfersIndexer>>>;
+        const scores = (refresh as PromiseFulfilledResult<Awaited<ReturnType<typeof refreshArcMainnetScores>>>).value;
+        const sweepResult = (sweep as PromiseFulfilledResult<Awaited<ReturnType<typeof sweepArcMainnetFailedTxs>>>).value;
+        const outcome = coverageOutcome(result.value.coverage, result.value.inserted);
+        outcome.checkedCount = (outcome.checkedCount ?? 0) + scores.scored + sweepResult.swept;
         if (!scores.complete && outcome.status !== 'failed') {
           return { ...outcome, status: 'catching_up',
             errorCode: outcome.errorCode ?? 'score_refresh_pending',
+            pendingCount: (outcome.pendingCount ?? 0) + 1 };
+        }
+        // A challenged explorer leg is pending-with-reason, never a dead
+        // chain: the sweep is resumable at its cursor.
+        if (sweepResult.challenged && outcome.status !== 'failed') {
+          return { ...outcome, status: 'catching_up',
+            errorCode: outcome.errorCode ?? 'explorer_challenged',
+            pendingCount: (outcome.pendingCount ?? 0) + 1 };
+        }
+        if (!sweepResult.complete && outcome.status !== 'failed') {
+          return { ...outcome, status: 'catching_up',
+            errorCode: outcome.errorCode ?? 'failed_tx_sweep_pending',
             pendingCount: (outcome.pendingCount ?? 0) + 1 };
         }
         return outcome;
