@@ -8,7 +8,7 @@ import { computeAgentLiveBundle } from './live-agent-score';
 import { resolveKarma } from '@/lib/karma-resolver';
 import { resolveAgentCardFields } from '@/lib/agent-card-fields';
 import { fullKarmaJson, resolveForChain } from '@/app/mcp/route';
-import { ArcMainnetAgentProfile } from '@/components/karma/arc-mainnet-agent-profile';
+import { ArcMainnetAgentProfile, ReceiptDetails } from '@/components/karma/arc-mainnet-agent-profile';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 afterEach(() => { __setSupabaseForTest(null); setSystemTime(); });
@@ -99,8 +99,10 @@ test('the real mainnet parser and ingestion engine emit both scoreable behavior 
     receiptEvidence: { model: 'arc-mainnet-transfers-v1', received: 1, sent: 0, matchedReciprocalRawAmount: '0' } });
   expect(reads.filter(read => read.table === 'signal_events').every(read => read.filters.chain === 'arc-mainnet' && read.range?.[1] === 999)).toBe(true);
   const html = renderToStaticMarkup(await ArcMainnetAgentProfile({ wallet: receiver }));
-  expect(html).toContain('Received');
-  expect(html).toContain('1.000000000000000001 USDC');
+  // Receipts stream behind Suspense on the page; render that section directly.
+  const receiptsHtml = renderToStaticMarkup(await ReceiptDetails({ address: receiver }));
+  expect(receiptsHtml).toContain('Received');
+  expect(receiptsHtml).toContain('1.000000000000000001 USDC');
   expect(html).toContain('5.1');
   expect(html).not.toContain('99.0');
   signalError = true;

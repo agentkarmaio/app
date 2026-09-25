@@ -518,6 +518,27 @@ export const indexerCursorsTable = pgTable('indexer_cursors', {
   index('idx_indexer_cursors_chain').on(table.chain),
 ]);
 
+// --- Per-wallet settlement counters (block-walk derived) ---------------------
+//
+// Cumulative outgoing receipt counts per wallet, maintained by the Arc mainnet
+// settlement walk (src/indexer/arc-mainnet-settlement-walk.ts) under the
+// transfers lease. `wallets.metric_success_rate` re-derives from these
+// counters; `last_block` is a per-wallet high-water mark that makes a run
+// crashed between stats commit and cursor advance idempotent. Composite PK
+// keeps it chain-generic like indexer_cursors. NO FK to wallets — derived
+// indexer-owned data, same stance as erc8004_agents.
+export const walletTxStatsTable = pgTable('wallet_tx_stats', {
+  chain:         text('chain').notNull().default('solana').$type<Chain>(),
+  address:       text('address').notNull(),
+  settled_count: integer('settled_count').notNull().default(0),
+  failed_count:  integer('failed_count').notNull().default(0),
+  // Blocks ≤ this are already counted for this wallet; the walk skips them.
+  last_block:    integer('last_block').notNull().default(0),
+  updated_at:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.chain, table.address], name: 'wallet_tx_stats_pkey' }),
+]);
+
 // --- ERC-8004 Registry Mirror (per-agent, keyed by agent_id not address) -----
 //
 // Registry-faithful mirror of every ERC-8004 IdentityRegistry NFT and

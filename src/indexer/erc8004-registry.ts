@@ -29,7 +29,7 @@ import {
   parseAbi,
   type PublicClient,
 } from 'viem';
-import { gunzipSync } from 'zlib';
+import { decodeDataUriJson } from '@/lib/data-uri';
 import type { Erc8004RegistryConfig } from '@/config/erc8004-registries';
 import { ARC_MAINNET_CHAIN_ID, parseArcMainnetRpcUrl } from '@/config/arc-mainnet';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
@@ -232,16 +232,7 @@ export async function decodeRegistration(
   // Inline, fully on-chain metadata: data:application/json[;base64][;enc=gzip],…
   if (uri.startsWith('data:')) {
     try {
-      const commaIdx = uri.indexOf(',');
-      if (commaIdx < 0) return { registration: null, status: 'invalid' };
-      const header = uri.slice(5, commaIdx);
-      const body = uri.slice(commaIdx + 1);
-      const params = header.split(';');
-      const isBase64 = params.includes('base64');
-      const isGzip = params.some((p) => p.startsWith('enc=gzip'));
-      let buf = isBase64 ? Buffer.from(body, 'base64') : Buffer.from(decodeURIComponent(body), 'utf-8');
-      if (isGzip) buf = Buffer.from(gunzipSync(buf));
-      return { registration: JSON.parse(buf.toString('utf-8')) as AgentRegistrationFile, status: 'inline' };
+      return { registration: decodeDataUriJson(uri) as AgentRegistrationFile, status: 'inline' };
     } catch {
       return { registration: null, status: 'invalid' };
     }

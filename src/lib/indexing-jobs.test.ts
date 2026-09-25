@@ -4,7 +4,7 @@ import * as registry from '@/indexer/erc8004-registry';
 import * as db from '@/db/client';
 import * as mainnetTransfers from '@/indexer/arc-mainnet-transfers';
 import * as mainnetScores from '@/scoring/arc-mainnet-persistence';
-import * as mainnetFailedTx from '@/indexer/arc-mainnet-failed-tx';
+import * as mainnetWalk from '@/indexer/arc-mainnet-settlement-walk';
 import { markIndexingLeaseLost, runWithIndexingContext } from '@/db/indexing-context';
 import { indexingErrorCode } from './indexing-runner';
 import type { IndexingJob, ScanOutcome } from './indexing-runner';
@@ -45,56 +45,56 @@ test.each(['celo', 'arc-mainnet'] as const)('%s partial registry run must not pu
     expect(outcome.checkpoint).toBeUndefined();
   } finally { scan.mockRestore(); }
 });
-const SWEPT = { swept: 0, complete: true, cursor: '', challenged: false };
+const WALKED = { scanned: 0, walletsUpdated: 0, complete: true, cursor: '' };
 test.each([true, false])('mainnet transfer ticks refresh persisted ranks even with no inserts (cycle complete=%s)', async complete => {
   const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockResolvedValue({
     fetched: 0, inserted: 0, cursors: new Map(),
     coverage: { complete: true, checked: 1, pending: 0, unresolved: 0, checkpoint: '10', head: '10' },
   });
   const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete, cursor: complete ? '' : 'address' });
-  const sweep = spyOn(mainnetFailedTx, 'sweepArcMainnetFailedTxs').mockResolvedValue({ ...SWEPT });
+  const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement').mockResolvedValue({ ...WALKED });
   const signal = new AbortController().signal;
   try {
     const outcome = await createIndexingJob('arc-mainnet', 'transfers').run(signal);
     expect(refresh).toHaveBeenCalledWith({ signal });
     expect(outcome).toMatchObject({ status: complete ? 'caught_up' : 'catching_up', insertedCount: 0, checkpoint: '10', checkedCount: 2 });
     if (!complete) expect(outcome).toMatchObject({ errorCode: 'score_refresh_pending', pendingCount: 1 });
-  } finally { scan.mockRestore(); refresh.mockRestore(); sweep.mockRestore(); }
+  } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
 test('RPC failure still refreshes DB-only decay and preserves the original ingestion error', async () => {
   const failure = new Error('rpc_unavailable');
   const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockRejectedValue(failure);
   const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete: true, cursor: '' });
-  const sweep = spyOn(mainnetFailedTx, 'sweepArcMainnetFailedTxs').mockResolvedValue({ ...SWEPT });
+  const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement').mockResolvedValue({ ...WALKED });
   const signal = new AbortController().signal;
   try {
     await expect(createIndexingJob('arc-mainnet', 'transfers').run(signal)).rejects.toBe(failure);
     expect(refresh).toHaveBeenCalledWith({ signal });
-  } finally { scan.mockRestore(); refresh.mockRestore(); sweep.mockRestore(); }
+  } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
 test('simultaneous ingestion and scoring errors remain available with ingestion failure classification', async () => {
   const ingestionError = new Error('rpc_rate_limited');
   const scoreError = new Error('score persistence unavailable');
   const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockRejectedValue(ingestionError);
   const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockRejectedValue(scoreError);
-  const sweep = spyOn(mainnetFailedTx, 'sweepArcMainnetFailedTxs').mockResolvedValue({ ...SWEPT });
+  const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement').mockResolvedValue({ ...WALKED });
   try {
     const failure = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal).catch(error => error);
     expect(failure).toBeInstanceOf(AggregateError);
     expect(failure.errors).toEqual([ingestionError, scoreError]);
     expect(failure.cause).toBe(ingestionError);
     expect(indexingErrorCode(failure)).toBe('rpc_rate_limited');
-  } finally { scan.mockRestore(); refresh.mockRestore(); sweep.mockRestore(); }
+  } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
 test('a scoring failure after successful ingestion fails the whole managed job', async () => {
   const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockResolvedValue({ fetched: 0, inserted: 0, cursors: new Map(),
     coverage: { complete: true, checked: 1, pending: 0, unresolved: 0, checkpoint: '10', head: '10' } });
   const failure = new Error('score persistence unavailable');
   const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockRejectedValue(failure);
-  const sweep = spyOn(mainnetFailedTx, 'sweepArcMainnetFailedTxs').mockResolvedValue({ ...SWEPT });
+  const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement').mockResolvedValue({ ...WALKED });
   try {
     await expect(createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal)).rejects.toBe(failure);
-  } finally { scan.mockRestore(); refresh.mockRestore(); sweep.mockRestore(); }
+  } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
 test.each(['abort', 'lease_lost'] as const)('%s during ingestion prevents the decay phase from starting', async mode => {
   const controller = new AbortController();
@@ -103,67 +103,57 @@ test.each(['abort', 'lease_lost'] as const)('%s during ingestion prevents the de
     throw new Error('rpc_unavailable');
   });
   const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete: true, cursor: '' });
-  const sweep = spyOn(mainnetFailedTx, 'sweepArcMainnetFailedTxs').mockResolvedValue({ ...SWEPT });
+  const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement').mockResolvedValue({ ...WALKED });
   try {
     await expect(runWithIndexingContext({ chain: 'arc-mainnet', path: 'transfers', owner: 'test-owner', signal: controller.signal },
       () => createIndexingJob('arc-mainnet', 'transfers').run(controller.signal))).rejects.toThrow();
     expect(refresh).not.toHaveBeenCalled();
-    expect(sweep).not.toHaveBeenCalled();
-  } finally { scan.mockRestore(); refresh.mockRestore(); sweep.mockRestore(); }
+    expect(walk).not.toHaveBeenCalled();
+  } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
 
-// The failed-tx sweep's states surface as pending-with-reason, never silent:
-// challenged = explorer.arc.io behind its Cloudflare challenge (resumable),
-// incomplete = rotation budget ran out mid-pass, and a refresh still pending
-// outranks both because scores gate the metrics the sweep only feeds.
-test('a challenged failed-tx sweep is catching up with its reason, not a failed job', async () => {
+// The settlement walk's short states surface as pending-with-reason, never
+// silent: an incomplete walk = throttled RPC or bounded budget (resumable at
+// its cursor), and a refresh still pending outranks it because scores gate the
+// metrics the walk only feeds.
+test('an incomplete settlement walk reports its own pending reason', async () => {
   const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockResolvedValue({
     fetched: 0, inserted: 0, cursors: new Map(),
     coverage: { complete: true, checked: 1, pending: 0, unresolved: 0, checkpoint: '10', head: '10' },
   });
   const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete: true, cursor: '' });
-  const sweep = spyOn(mainnetFailedTx, 'sweepArcMainnetFailedTxs').mockResolvedValue({ swept: 7, complete: false, cursor: '0xabc', challenged: true });
+  const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement')
+    .mockResolvedValue({ scanned: 30_000, walletsUpdated: 25, complete: false, cursor: '103' });
   try {
     const outcome = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal);
-    expect(outcome).toMatchObject({ status: 'catching_up', errorCode: 'explorer_challenged', checkedCount: 9, pendingCount: 1 });
-  } finally { scan.mockRestore(); refresh.mockRestore(); sweep.mockRestore(); }
+    expect(outcome).toMatchObject({ status: 'catching_up', errorCode: 'failed_tx_walk_pending', checkedCount: 27, pendingCount: 1 });
+  } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
-test('an incomplete failed-tx sweep rotation reports its own pending reason', async () => {
-  const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockResolvedValue({
-    fetched: 0, inserted: 0, cursors: new Map(),
-    coverage: { complete: true, checked: 1, pending: 0, unresolved: 0, checkpoint: '10', head: '10' },
-  });
-  const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete: true, cursor: '' });
-  const sweep = spyOn(mainnetFailedTx, 'sweepArcMainnetFailedTxs').mockResolvedValue({ swept: 25, complete: false, cursor: '0xabc', challenged: false });
-  try {
-    const outcome = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal);
-    expect(outcome).toMatchObject({ status: 'catching_up', errorCode: 'failed_tx_sweep_pending', checkedCount: 27 });
-  } finally { scan.mockRestore(); refresh.mockRestore(); sweep.mockRestore(); }
-});
-test('a pending score refresh outranks a pending failed-tx sweep', async () => {
+test('a pending score refresh outranks a pending settlement walk', async () => {
   const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockResolvedValue({
     fetched: 0, inserted: 0, cursors: new Map(),
     coverage: { complete: true, checked: 1, pending: 0, unresolved: 0, checkpoint: '10', head: '10' },
   });
   const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete: false, cursor: '0xabc' });
-  const sweep = spyOn(mainnetFailedTx, 'sweepArcMainnetFailedTxs').mockResolvedValue({ swept: 25, complete: false, cursor: '0xabc', challenged: false });
+  const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement')
+    .mockResolvedValue({ scanned: 30_000, walletsUpdated: 25, complete: false, cursor: '103' });
   try {
     const outcome = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal);
     expect(outcome).toMatchObject({ status: 'catching_up', errorCode: 'score_refresh_pending' });
-  } finally { scan.mockRestore(); refresh.mockRestore(); sweep.mockRestore(); }
+  } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
-test('a failed-tx sweep rejection joins the ingestion failure in the aggregate', async () => {
+test('a settlement walk rejection joins the ingestion failure in the aggregate', async () => {
   const ingestionError = new Error('rpc_rate_limited');
-  const sweepError = new Error('explorer ledger unavailable');
+  const walkError = new Error('settlement stats unavailable');
   const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockRejectedValue(ingestionError);
   const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockResolvedValue({ scored: 1, complete: true, cursor: '' });
-  const sweep = spyOn(mainnetFailedTx, 'sweepArcMainnetFailedTxs').mockRejectedValue(sweepError);
+  const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement').mockRejectedValue(walkError);
   try {
     const failure = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal).catch(error => error);
     expect(failure).toBeInstanceOf(AggregateError);
-    expect(failure.errors).toEqual([ingestionError, sweepError]);
+    expect(failure.errors).toEqual([ingestionError, walkError]);
     expect(failure.cause).toBe(ingestionError);
-  } finally { scan.mockRestore(); refresh.mockRestore(); sweep.mockRestore(); }
+  } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
 test('a first-window provider throttle is failed, not successful catch-up', () => {
   expect(

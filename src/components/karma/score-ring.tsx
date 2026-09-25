@@ -16,12 +16,15 @@ export function ScoreRing({
   size = 80,
   strokeWidth = 6,
   className,
+  label = 'Karma score',
 }: {
   score: number;
   tier: TrustTier;
   size?: number;
   strokeWidth?: number;
   className?: string;
+  /** Distinguishes the accessible name when both karma faces render side by side. */
+  label?: string;
 }) {
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
@@ -31,8 +34,8 @@ export function ScoreRing({
 
   return (
     <div className={cn('relative inline-flex items-center justify-center', className)}>
-      <svg width={size} height={size} className="-rotate-90" role="img" aria-label={`Karma score: ${score}`}>
-        <title>{`Score: ${score.toFixed(0)}`}</title>
+      <svg width={size} height={size} className="-rotate-90" role="img" aria-label={`${label}: ${score}`}>
+        <title>{`${label}: ${score.toFixed(0)}`}</title>
         <circle
           cx={size / 2}
           cy={size / 2}

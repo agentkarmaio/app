@@ -18,20 +18,11 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { resolveRaters, getFeedbackComments, type RaterInfo } from '@/db/client';
 import type { Wallet, TrustTier, ConfidenceBadge as ConfidenceBadgeValue } from '@/db/schema';
+import { categoryLabel } from '@/lib/agent-category';
 import { safeHref } from '@/lib/safe-url';
 import { FeedbackRecordsCard } from '@/components/karma/feedback-records-card';
 import { scoreMetadataQuality, METADATA_SCHEME_VERSION } from '@/scoring/celo-metadata';
 import { ClaimProof } from '@/components/karma/claim-proof';
-
-const CATEGORY_LABELS: Record<string, string> = {
-  ai: 'AI / ML',
-  data: 'Data Feed',
-  defi: 'DeFi',
-  infra: 'Infrastructure',
-  social: 'Social',
-  utility: 'Utility',
-  other: 'Other',
-};
 
 function shortAddr(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
@@ -136,7 +127,7 @@ export function ArcAgentProfile({
           <div className="flex min-w-0 flex-wrap items-center gap-3">
             {category && (
               <Badge variant="outline" className="bg-[rgb(255_255_255/0.04)] text-[#8a8f98] border-[rgb(255_255_255/0.08)] text-[11px] px-1.5 py-0">
-                {CATEGORY_LABELS[category] ?? category}
+                {categoryLabel(category) ?? category}
               </Badge>
             )}
             {website && (
