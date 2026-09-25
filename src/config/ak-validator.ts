@@ -59,10 +59,28 @@ export const AK_ARC = {
   identityRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
 } as const;
 
+/**
+ * AgentKarma's Arc MAINNET identity (chain 5042), registered 2026-09-25.
+ * Fresh per-chain key — never the retired testnet key (identity #72077).
+ * One wallet plays controller and validator until volume justifies a split
+ * (Stellar precedent); mainnet registration costs USDC itself as gas.
+ */
+export const AK_ARC_MAINNET = {
+  chain: 'arc-mainnet',
+  agentId: 228,
+  validator: '0x246D064adC7D3A597352E9247990aB466abC9e5a',
+  identityRegistry: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432',
+  reputationRegistry: '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63',
+  /** Same rubric + version as Celo — the scheme is chain-agnostic by design. */
+  scheme: AK_VALIDATOR.scheme,
+  keyfile: '.keys/agentkarma-arc-mainnet.json',
+} as const;
+
 /** Every address AK may sign attestations from — used to dedup AK's own ratings. */
 export const AK_RATER_ADDRESSES: readonly string[] = [
   AK_VALIDATOR.controller.toLowerCase(),
   AK_VALIDATOR.validator.toLowerCase(),
+  AK_ARC_MAINNET.validator.toLowerCase(),
 ];
 
 /** AK's algorithmic metadata-quality scheme tag (= AK_VALIDATOR.scheme.tag1). */
