@@ -44,9 +44,18 @@ export interface MetadataAssessment {
   schemeVersion: string;
 }
 
-const EXPLORER_ADDR: Record<'celo' | 'arc', string> = {
+type RecordsChain = 'celo' | 'arc' | 'arc-mainnet';
+
+const EXPLORER_ADDR: Record<RecordsChain, string> = {
   celo: 'https://celoscan.io/address/',
   arc: 'https://testnet.arcscan.app/address/',
+  'arc-mainnet': 'https://explorer.arc.io/address/',
+};
+
+const SUBTITLE: Record<RecordsChain, string> = {
+  celo: 'Every record from the Celo ReputationRegistry — independent and portable.',
+  arc: 'Saved Arc testnet records. The archive may have incomplete historical coverage.',
+  'arc-mainnet': 'Every record from the Arc mainnet ReputationRegistry — attestations and reviews, independent and portable.',
 };
 
 /** How many records render before "Show more", and the reveal increment. */
@@ -103,7 +112,7 @@ function FeedbackRecordRow({
   metadataAssessment,
 }: {
   record: FeedbackRecord;
-  chain: 'celo' | 'arc';
+  chain: RecordsChain;
   base: string;
   rater?: RaterInfo;
   review?: { comment: string; verified: boolean };
@@ -219,7 +228,7 @@ export function FeedbackRecordsCard({
   raters?: Map<string, RaterInfo>;
   /** On-chain review text keyed by `${lowercasedClient}-${index}` (getFeedbackComments). */
   comments?: Map<string, { comment: string; verified: boolean }>;
-  chain: 'celo' | 'arc';
+  chain: RecordsChain;
   /** AK's current metadata-quality assessment of THIS agent — drives the per-record
    *  "Why" breakdown on AK-metadata records. Omit/null when no registration is
    *  mirrored; third-party records never get a breakdown regardless. */
@@ -246,7 +255,7 @@ export function FeedbackRecordsCard({
           On-chain feedback
         </CardTitle>
         <p className="mt-1 text-[11px] text-[#62666d]">
-          {chain === 'arc' ? 'Saved Arc testnet records. The archive may have incomplete historical coverage.' : 'Every record from the Celo ReputationRegistry — independent and portable.'}
+          {SUBTITLE[chain]}
         </p>
       </CardHeader>
       <CardContent className="space-y-2">

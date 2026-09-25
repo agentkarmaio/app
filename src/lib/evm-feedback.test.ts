@@ -104,4 +104,12 @@ describe('feedbackChainConfig', () => {
     expect(c.addChainParams.chainId).toBe('0x4cef52');
     expect(Array.isArray(c.addChainParams.rpcUrls)).toBe(true);
   });
+
+  test('arc-mainnet: chainId 0x13b2, mainnet registry, explicit add-chain RPC', () => {
+    const c = feedbackChainConfig('arc-mainnet');
+    expect(c.chainIdHex).toBe('0x13b2');
+    expect(c.registry).toBe('0x8004BAa17C55a88189AE136b182e5fdA19dE9b63');
+    expect(c.explorerTxUrl('0xabc')).toBe('https://explorer.arc.io/tx/0xabc');
+    expect(c.addChainParams.rpcUrls).toEqual(['https://rpc.mainnet.arc.io']);
+  });
 });

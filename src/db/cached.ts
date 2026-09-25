@@ -38,6 +38,10 @@ import {
   type CeloAgent,
   type FeedbackRecord,
 } from '@/integrations/erc8004-celo';
+import {
+  readAgent as readArcMainnetAgent,
+  aggregateFeedback as aggregateArcMainnetFeedback,
+} from '@/integrations/erc8004-arc-mainnet';
 
 // --- JSON-safety guard -------------------------------------------------------
 // Compile error if a wrapper tries to return a Map/Set/Date/class instance.
@@ -177,12 +181,18 @@ interface EvmOnchainJson {
   } | null;
 }
 
+const LIVE_EVM_READS = {
+  celo: { readAgent: readCeloAgent, aggregateFeedback: aggregateCeloFeedback },
+  'arc-mainnet': { readAgent: readArcMainnetAgent, aggregateFeedback: aggregateArcMainnetFeedback },
+} as const;
+
 const cachedEvmAgentOnchainJson = defineCache(
-  async (chain: 'celo', agentId: number): Promise<EvmOnchainJson> => {
-    if (chain !== 'celo') throw new Error('Registry network unsupported');
+  async (chain: 'celo' | 'arc-mainnet', agentId: number): Promise<EvmOnchainJson> => {
+    const reads = LIVE_EVM_READS[chain];
+    if (!reads) throw new Error('Registry network unsupported');
     const [agent, feedback] = await Promise.all([
-      readCeloAgent(BigInt(agentId)).catch(() => null),
-      aggregateCeloFeedback(BigInt(agentId), { includeRevoked: true }).catch(() => null),
+      reads.readAgent(BigInt(agentId)).catch(() => null),
+      reads.aggregateFeedback(BigInt(agentId), { includeRevoked: true }).catch(() => null),
     ]);
     if (agent === null && feedback === null) {
       throw new Error(`on-chain reads failed for ${chain} agent ${agentId}`);
@@ -202,7 +212,7 @@ const cachedEvmAgentOnchainJson = defineCache(
         : null,
     };
   },
-  { key: 'evm-agent-onchain', tag: CacheTags.AgentProfile, revalidate: 120 },
+  { key: 'evm-agent-onchain-v2-network', tag: CacheTags.AgentProfile, revalidate: 120 },
 );
 
 export interface EvmAgentOnchain {
@@ -211,51 +221,63 @@ export interface EvmAgentOnchain {
 }
 
 /** Hydration helper — call sites get real bigint-typed records back. */
-export async function getCachedEvmAgentOnchain(
-  chain: 'celo' | 'arc',
+/**
+ * Identity + feedback from the registry-scan mirror (erc8004_agents +
+ * erc8004_feedback), no RPC. The only source for the retired Arc testnet, and
+ * the fallback for Arc mainnet when its public RPC is unreachable.
+ */
+async function mirroredEvmAgentOnchain(
+  chain: 'arc' | 'arc-mainnet',
   agentId: number,
 ): Promise<EvmAgentOnchain> {
-  if (chain === 'arc') {
-    // Retirement freezes the mirror. Never refresh this identity/feedback from
-    // the former RPC or registration URL, even if the archive is missing.
-    const [row, savedFeedback] = await Promise.all([
-      getErc8004Agent('arc', agentId).catch(() => null),
-      getErc8004Feedback('arc', agentId).catch(() => null),
-    ]);
-    const agent: CeloAgent | null = row ? {
-      agentId: BigInt(agentId),
-      owner: row.owner as `0x${string}`,
-      agentWallet: (row.agent_wallet ?? row.owner) as `0x${string}`,
-      tokenURI: typeof row.token_uri === 'string' ? row.token_uri : '',
-      registration: row.registration as CeloAgent['registration'],
-    } : null;
-    const records: FeedbackRecord[] = (savedFeedback ?? []).flatMap(record => {
-      // Null exact values are unavailable, never invented as zero.
-      if (record.raw_value == null || !/^-?\d+$/.test(record.raw_value)) return [];
-      const value = record.value == null ? Number(record.raw_value) / 10 ** record.value_decimals : Number(record.value);
-      if (!Number.isFinite(value)) return [];
-      return [{
-        client: record.client as `0x${string}`,
-        feedbackIndex: BigInt(record.feedback_index), rawValue: BigInt(record.raw_value),
-        valueDecimals: record.value_decimals, value,
-        tag1: record.tag1, tag2: record.tag2, revoked: record.revoked,
-      }];
-    });
-    // Preserve the saved aggregate independently of partial mirrored records.
-    const count = row?.feedback_count == null ? null : Number(row.feedback_count);
-    const average = row?.feedback_avg == null ? null : Number(row.feedback_avg);
-    return {
-      agent,
-      feedback: savedFeedback && row && count != null && Number.isSafeInteger(count) && count >= 0
-        ? { count, average: average != null && Number.isFinite(average) ? average : null, records }
-        : null,
-    };
-  }
+  const [row, savedFeedback] = await Promise.all([
+    getErc8004Agent(chain, agentId).catch(() => null),
+    getErc8004Feedback(chain, agentId).catch(() => null),
+  ]);
+  const agent: CeloAgent | null = row ? {
+    agentId: BigInt(agentId),
+    owner: row.owner as `0x${string}`,
+    agentWallet: (row.agent_wallet ?? row.owner) as `0x${string}`,
+    tokenURI: typeof row.token_uri === 'string' ? row.token_uri : '',
+    registration: row.registration as CeloAgent['registration'],
+  } : null;
+  const records: FeedbackRecord[] = (savedFeedback ?? []).flatMap(record => {
+    // Null exact values are unavailable, never invented as zero.
+    if (record.raw_value == null || !/^-?\d+$/.test(record.raw_value)) return [];
+    const value = record.value == null ? Number(record.raw_value) / 10 ** record.value_decimals : Number(record.value);
+    if (!Number.isFinite(value)) return [];
+    return [{
+      client: record.client as `0x${string}`,
+      feedbackIndex: BigInt(record.feedback_index), rawValue: BigInt(record.raw_value),
+      valueDecimals: record.value_decimals, value,
+      tag1: record.tag1, tag2: record.tag2, revoked: record.revoked,
+    }];
+  });
+  // Preserve the saved aggregate independently of partial mirrored records.
+  const count = row?.feedback_count == null ? null : Number(row.feedback_count);
+  const average = row?.feedback_avg == null ? null : Number(row.feedback_avg);
+  return {
+    agent,
+    feedback: savedFeedback && row && count != null && Number.isSafeInteger(count) && count >= 0
+      ? { count, average: average != null && Number.isFinite(average) ? average : null, records }
+      : null,
+  };
+}
+
+export async function getCachedEvmAgentOnchain(
+  chain: 'celo' | 'arc' | 'arc-mainnet',
+  agentId: number,
+): Promise<EvmAgentOnchain> {
+  // Retirement freezes the mirror. Never refresh this identity/feedback from
+  // the former RPC or registration URL, even if the archive is missing.
+  if (chain === 'arc') return mirroredEvmAgentOnchain('arc', agentId);
   let raw: EvmOnchainJson;
   try {
     raw = await cachedEvmAgentOnchainJson(chain, agentId);
   } catch {
-    return { agent: null, feedback: null };
+    return chain === 'arc-mainnet'
+      ? mirroredEvmAgentOnchain('arc-mainnet', agentId)
+      : { agent: null, feedback: null };
   }
   return {
     agent: raw.agent ? { ...raw.agent, agentId: BigInt(raw.agent.agentId) } : null,

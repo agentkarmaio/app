@@ -979,7 +979,7 @@ export interface RaterInfo {
  */
 export async function resolveRaters(
   addresses: string[],
-  chain: 'celo' | 'arc',
+  chain: 'celo' | 'arc' | 'arc-mainnet',
 ): Promise<Map<string, RaterInfo>> {
   const out = new Map<string, RaterInfo>();
   const unique = [...new Set(addresses.map((a) => a.toLowerCase()))];

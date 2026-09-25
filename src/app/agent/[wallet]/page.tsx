@@ -711,12 +711,20 @@ export default async function AgentProfilePage({
   ) : null;
 
   // ── EVM branch ─────────────────────────────────────────────────────────────
-  // Celo (and Arc, once richer integration lands) take a separate render path
-  // because the data shape is different: no x402 receipt history, no consumer
-  // feedback form, no score trend — the profile is built from on-chain
-  // ERC-8004 registration + reputation reads keyed by agentId.
+  // Celo and Arc take a separate render path because the data shape is
+  // different: no x402 receipt history, no Solana delivery-feedback form — the
+  // profile is built from ERC-8004 registration + reputation reads keyed by
+  // agentId (Arc mainnet adds its transfer-based Karma on top).
   if (resolved.addressClass === 'evm') {
-    if (resolved.chain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} agentId={agentIdHint != null ? agentIdNum ?? Number.NaN : undefined} />;
+    if (resolved.chain === 'arc-mainnet') {
+      return (
+        <ArcMainnetAgentProfile
+          wallet={wallet}
+          agentId={agentIdHint != null ? agentIdNum ?? Number.NaN : undefined}
+          deadMansSwitch={deadMansSwitch}
+        />
+      );
+    }
     // Prefer a real wallet row's agentId; otherwise honor the ?agentId= hint
     // from the registry-mirror leaderboard (fleet owners aren't in `wallets`, so
     // most registry agents only resolve via this path). Build a minimal walletRow
@@ -733,7 +741,19 @@ export default async function AgentProfilePage({
     if (evmChain == null && agentIdNum != null) {
       evmChain = await probeRegistryChainByAgentId(wallet, agentIdNum);
     }
-    if (evmChain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} agentId={agentIdNum ?? undefined} />;
+    if (evmChain === 'arc-mainnet') {
+      return (
+        <ArcMainnetAgentProfile
+          wallet={wallet}
+          agentId={agentIdNum ?? undefined}
+          deadMansSwitch={
+            <Suspense fallback={null}>
+              <DeadMansSwitchSection wallet={wallet} chain="arc-mainnet" />
+            </Suspense>
+          }
+        />
+      );
+    }
 
     const celoAgentId = resolved.wallet?.celo_agent_id
       ?? (evmChain === 'celo' ? agentIdNum : null);

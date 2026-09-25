@@ -12,12 +12,12 @@
  */
 import { encodeFunctionData, keccak256, parseAbi, toHex, type Hex } from 'viem';
 import { celo } from 'viem/chains';
-import { arcTestnet } from '@/config/arc-chain';
+import { arcTestnet, arcMainnet } from '@/config/arc-chain';
 import { AK_REVIEW_TAG1 } from '@/config/ak-validator';
 import { buildFeedbackCommentBytes, encodeFeedbackCommentDataUri } from '@/lib/feedback-comment';
 import type { Eip1193Provider } from '@/components/wallet/evm-wallet-provider';
 
-export type EvmFeedbackChain = 'celo' | 'arc';
+export type EvmFeedbackChain = 'celo' | 'arc' | 'arc-mainnet';
 
 /** AK's human-review scheme — distinct from the algorithmic 'agentkarma_metadata'
  *  tag. Defined once in @/config/ak-validator (a viem-free module the server DB
@@ -80,15 +80,24 @@ export function encodeGiveFeedback(args: FeedbackArgs): Hex {
   });
 }
 
-// Registry addresses mirror erc8004-celo.ts / erc8004-arc.ts. Immutable deploys;
+// Registry addresses mirror erc8004-celo.ts / erc8004-arc.ts /
+// erc8004-arc-mainnet.ts (Arc mainnet shares Celo's vanity address). Immutable deploys;
 // kept here so this client module doesn't pull the server-side reader modules
 // (and their RPC clients) into the browser bundle.
 const REGISTRY: Record<EvmFeedbackChain, `0x${string}`> = {
   celo: '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63',
   arc: '0x8004B663056A597Dffe9eCcC1965A193B7388713',
+  'arc-mainnet': '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63',
 };
 
-const VIEM_CHAIN = { celo, arc: arcTestnet } as const;
+const VIEM_CHAIN = { celo, arc: arcTestnet, 'arc-mainnet': arcMainnet } as const;
+
+/** arcMainnet's viem object declares no rpcUrls (server callers must pin one
+ *  explicitly); wallets still need one for EIP-3085, so use the official public
+ *  endpoint the read module defaults to. */
+const ADD_CHAIN_RPC: Partial<Record<EvmFeedbackChain, string>> = {
+  'arc-mainnet': 'https://rpc.mainnet.arc.io',
+};
 
 export interface EvmFeedbackChainConfig {
   chainIdHex: `0x${string}`;
@@ -109,7 +118,7 @@ export function feedbackChainConfig(chain: EvmFeedbackChain): EvmFeedbackChainCo
       chainId: toHex(vc.id),
       chainName: vc.name,
       nativeCurrency: vc.nativeCurrency,
-      rpcUrls: [vc.rpcUrls.default.http[0]],
+      rpcUrls: [ADD_CHAIN_RPC[chain] ?? vc.rpcUrls.default.http[0]],
       blockExplorerUrls: [explorer],
     },
   };

@@ -2,7 +2,7 @@
 
 /**
  * GiveFeedbackCard — lets any connected EVM wallet publish an ERC-8004
- * `giveFeedback` review about a Celo / Arc agent, on-chain, from the browser.
+ * `giveFeedback` review about a Celo / Arc mainnet agent, on-chain, from the browser.
  * This is AgentKarma's independent-attestation surface: a partner (e.g. another
  * agent operator) rates an agent and the record lands on the public
  * ReputationRegistry, flowing into the profile's on-chain feedback aggregate.
@@ -23,6 +23,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
 type Status = 'idle' | 'submitting' | 'success' | 'error';
+
+const CHAIN_LABEL: Record<EvmFeedbackChain, string> = {
+  celo: 'Celo',
+  arc: 'Arc testnet',
+  'arc-mainnet': 'Arc mainnet',
+};
 
 export function GiveFeedbackCard({
   agentId,
@@ -122,7 +128,7 @@ export function GiveFeedbackCard({
           Leave on-chain feedback
         </CardTitle>
         <p className="mt-1 text-[11px] text-[#62666d]">
-          Publishes an ERC-8004 review to the {chain === 'celo' ? 'Celo' : 'Arc'} ReputationRegistry
+          Publishes an ERC-8004 review to the {CHAIN_LABEL[chain]} ReputationRegistry
           from your wallet. Independent, portable, public.
         </p>
       </CardHeader>
@@ -190,7 +196,9 @@ export function GiveFeedbackCard({
                   ? 'Publish feedback'
                   : 'Connect & publish'}
             </Button>
-            <span className="text-[11px] text-[#62666d]">Gas paid by your wallet</span>
+            <span className="text-[11px] text-[#62666d]">
+              Gas paid by your wallet{chain === 'arc-mainnet' ? ' (in USDC)' : ''}
+            </span>
           </div>
         )}
 

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, setSystemTime, test } from 'bun:test';
 import type { SignalEvent } from '@/db/schema';
 import { __setSupabaseForTest, type InsertSignalEventInput, type TransactionInsert } from '@/db/client';
 import { ARC_MAINNET_TRANSFER_EMITTER } from '@/config/arc-mainnet';
@@ -11,13 +11,16 @@ import { fullKarmaJson, resolveForChain } from '@/app/mcp/route';
 import { ArcMainnetAgentProfile } from '@/components/karma/arc-mainnet-agent-profile';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-afterEach(() => __setSupabaseForTest(null));
+afterEach(() => { __setSupabaseForTest(null); setSystemTime(); });
 
 test('the real mainnet parser and ingestion engine emit both scoreable behavior faces with lossless identity', async () => {
   const sender = `0x${'1'.repeat(40)}`;
   const receiver = `0x${'2'.repeat(40)}`;
   const hash = `0x${'a'.repeat(64)}`;
   const timestamp = '2026-09-12T00:00:00.000Z';
+  // Recency decay reads the wall clock; pin it so the expected scores don't
+  // drift as the fixture ages.
+  setSystemTime(new Date('2026-09-13T00:00:00.000Z'));
   const signals: InsertSignalEventInput[] = [];
   const transactions: TransactionInsert[] = [];
   const ensured = new Set<string>();
