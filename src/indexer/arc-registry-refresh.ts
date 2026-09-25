@@ -127,7 +127,7 @@ export async function arcRegistryRefresh(deps: ArcRegistryRefreshDeps): Promise<
   let readFailure = false;
   const result: ArcRegistryRefreshResult = {
     chain: 'arc', tip: head, agentsScanned: 0, agentsPersisted: 0,
-    feedbackScanned: 0, feedbackPersisted: 0, errors: 0,
+    feedbackScanned: 0, feedbackPersisted: 0, errors: 0, registrationUnreachable: 0,
     coverage: { complete: false, head: String(head), checkpoint: String(state.position), checked: 0,
       pending: remaining.length, unresolved: state.failures.length },
   };
@@ -153,6 +153,7 @@ export async function arcRegistryRefresh(deps: ArcRegistryRefreshDeps): Promise<
     result.feedbackScanned += scanned.feedbackScanned;
     result.feedbackPersisted += scanned.feedbackPersisted;
     result.errors += scanned.errors;
+    result.registrationUnreachable += scanned.registrationUnreachable;
 
     const failures = new Map(state.failures.map(member => [member.agentId, new Set(member.stages)]));
     const details = scanned.failedMembers;

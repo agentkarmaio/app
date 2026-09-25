@@ -145,7 +145,7 @@ describe('registry discovery fails closed', () => {
     expect(f.feedback.size).toBe(2);
   });
 
-  test('remote outage preserves prior metadata and blocks discovery cursor advancement', async () => {
+  test('remote outage marks the member unreachable without holding the run', async () => {
     const f = registryFixture();
     const clean = f.client.multicall as FixtureMulticall;
     f.client.multicall = (async (params: Parameters<typeof clean>[0]) => {
@@ -159,11 +159,44 @@ describe('registry discovery fails closed', () => {
     try {
       const result = await f.run();
       expect(fetch).toHaveBeenCalledTimes(1);
-      expect(result.errors).toBe(1);
-      expect(f.setCursor).not.toHaveBeenCalled();
-      expect(f.agents.get(1)?.registration?.name).toBe('Previously fetched');
-      expect(f.agents.get(1)?.tokenURI).toBe('old-uri');
+      // A dead metadata host is the operator's content debt, not a run fault —
+      // it is counted separately and cannot hold the discovery cursor.
+      expect(result.errors).toBe(0);
+      expect(result.registrationUnreachable).toBe(1);
+      expect(f.setCursor).toHaveBeenCalled();
+      expect(f.cursors.get('celo')).toBe(2);
+      // The member still flows to the mirror with fresh on-chain identity;
+      // protecting a previously fetched registration is upsertErc8004Agents's job.
+      const persisted = f.writes.flatMap(w => w.rows).find(r => r.agentId === 1)!;
+      expect(persisted.registrationStatus).toBe('unreachable');
+      expect(persisted.tokenURI).toBe('https://93.184.216.34/agent.json');
+      expect(persisted.registration).toBeNull();
       expect(f.agents.has(2)).toBe(true);
+    } finally { globalThis.fetch = previousFetch; }
+  });
+
+  test('explicit-id scans count registration unreachability per member and keep reading feedback', async () => {
+    const f = registryFixture();
+    const clean = f.client.multicall as FixtureMulticall;
+    f.client.multicall = (async (params: Parameters<typeof clean>[0]) => {
+      const rows = await clean(params);
+      return rows.map((row, i) => params.contracts[i].functionName === 'tokenURI' && Number(params.contracts[i].args?.[0]) === 1
+        ? { status: 'success', result: 'https://93.184.216.34/agent.json' } : row);
+    }) as never;
+    const previousFetch = globalThis.fetch;
+    const fetch = mock(async () => new Response('gateway unavailable', { status: 503 }));
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      const result = await runRegistryScan(ERC8004_REGISTRIES.celo, f.persistAgents, f.persistFeedback, {
+        client: f.client, agentIds: [1, 2],
+      });
+      expect(result.registrationUnreachable).toBe(1);
+      expect(result.errors).toBe(0);
+      expect(result.failedMembers).toEqual([{ agentId: 1, stages: ['registration'] }]);
+      expect(result.agentsScanned).toBe(2);
+      // Feedback does not depend on registration — the unreachable member's
+      // feedback is still read and persisted.
+      expect([...f.feedback.keys()].filter(k => k.startsWith('celo:1:')).length).toBeGreaterThan(0);
     } finally { globalThis.fetch = previousFetch; }
   });
 
@@ -798,7 +831,7 @@ describe('explicit registry membership', () => {
       expect(result.failedMembers).toEqual([{ agentId: 2, stages: [stage] }, { agentId: 70, stages: [stage] }]);
     }
   });
-  test('failed remote metadata keeps prior metadata untouched while valid empty and invalid metadata are observed', async () => {
+  test('failed remote metadata persists the member unreachable while valid empty and invalid metadata are observed', async () => {
     const persisted: ScannedAgent[] = [];
     const result = await runRegistryScan(config, async (_chain, rows) => { persisted.push(...rows); return rows.length; }, async () => 0, {
       agentIds: [2, 70, 80], scanFeedback: false, fetchRemote: true,
@@ -811,8 +844,11 @@ describe('explicit registry membership', () => {
       },
     });
     expect(result.failedMembers).toEqual([{ agentId: 2, stages: ['registration'] }]);
-    expect(result.errors).toBe(1);
-    expect(persisted.map(row => [row.agentId, row.registrationStatus])).toEqual([[70, 'empty'], [80, 'invalid']]);
+    expect(result.registrationUnreachable).toBe(1);
+    expect(result.errors).toBe(0);
+    expect(persisted.map(row => [row.agentId, row.registrationStatus])).toEqual(
+      [[2, 'unreachable'], [70, 'empty'], [80, 'invalid']],
+    );
   });
   test.each([
     { reply: [] }, { reply: [[], [], [], [], [], []] }, { reply: [['0xAA'], [], [], [], [], [], []] },

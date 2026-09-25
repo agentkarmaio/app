@@ -110,6 +110,14 @@ export interface RegistryScanResult {
   feedbackScanned: number;
   feedbackPersisted: number;
   errors: number;
+  /**
+   * Members whose off-chain metadata host was unreachable. This is a per-member
+   * content verdict (dead operator host), not a run fault: the member is
+   * persisted with its on-chain identity and registration_status 'unreachable'
+   * (upsertErc8004Agents retains any previously fetched registration), and it
+   * does NOT count into `errors`, so it cannot hold the discovery cursor.
+   */
+  registrationUnreachable: number;
   /** Exhaustive failed members for explicit agentIds scans; absent for discovery. */
   failedMembers?: RegistryFailedMember[];
   /**
@@ -483,7 +491,7 @@ async function scanRegistry(
 
   const result: RegistryScanResult = {
     chain: config.chain, tip, agentsScanned: 0, agentsPersisted: 0,
-    feedbackScanned: 0, feedbackPersisted: 0, errors: 0,
+    feedbackScanned: 0, feedbackPersisted: 0, errors: 0, registrationUnreachable: 0,
   };
   if (explicitIds) { result.failedMembers = []; result.unreadableMembers = []; }
   const unreadable = new Set<number>();
@@ -567,16 +575,13 @@ async function scanRegistry(
           tokenURI: agent.tokenURI ?? undefined,
         }).score;
         if (dec.status === 'unreachable') {
-          result.errors++;
+          // A dead metadata host is the operator's content debt, not a run
+          // fault: persist the member (the upsert retains any previously
+          // fetched registration) and let the run complete.
+          result.registrationUnreachable++;
           failed([agent.agentId], 'registration');
         }
       }, opts.signal);
-    }
-
-    // An outage is not evidence that previously saved registration disappeared.
-    // Retain the whole stored identity until all its metadata reads succeed.
-    for (let i = live.length - 1; i >= 0; i--) {
-      if (live[i].registrationStatus === 'unreachable') live.splice(i, 1);
     }
 
     // Persist identities first so the feedback FK target (chain, agent_id) exists.
@@ -719,7 +724,7 @@ export async function runIncrementalRegistryScan(
   if (to < (config.firstAgentId ?? 1)) {
     return {
       chain: config.chain, tip: currentTip, agentsScanned: 0, agentsPersisted: 0,
-      feedbackScanned: 0, feedbackPersisted: 0, errors: 0,
+      feedbackScanned: 0, feedbackPersisted: 0, errors: 0, registrationUnreachable: 0,
     };
   }
 
@@ -731,11 +736,15 @@ export async function runIncrementalRegistryScan(
   });
 
   // Advance the cursor only on a clean run so error-skipped ids are retried.
+  // Registration unreachability does not count as an error — dead metadata
+  // hosts are persisted per-member and re-attempted by the re-scan window
+  // instead of freezing the whole chain's registry cursor (2026-09-25).
   opts.signal?.throwIfAborted();
   if (result.errors === 0) {
     await setCursorTip(config.chain, currentTip);
     opts.signal?.throwIfAborted();
-    log(`incremental: cursor advanced to ${currentTip}`);
+    log(`incremental: cursor advanced to ${currentTip}`
+      + (result.registrationUnreachable > 0 ? ` (${result.registrationUnreachable} registration(s) unreachable)` : ''));
   } else {
     log(`incremental: ${result.errors} error(s) — cursor held at ${lastTip} for retry`);
   }

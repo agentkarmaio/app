@@ -21,7 +21,7 @@ test.each(['celo', 'arc-mainnet'] as const)('%s managed registry job uses increm
     expect(opts?.signal).toBe(signal);
     expect(await getCursor(config.chain)).toBe(7);
     await setCursor(config.chain, 9);
-    return { chain, tip: 9, agentsScanned: 2, agentsPersisted: 2, feedbackScanned: 0, feedbackPersisted: 0, errors: 0 };
+    return { chain, tip: 9, agentsScanned: 2, agentsPersisted: 2, feedbackScanned: 0, feedbackPersisted: 0, errors: 0, registrationUnreachable: 0 };
   });
   const signal = new AbortController().signal;
   try {
@@ -36,7 +36,7 @@ test.each(['celo', 'arc-mainnet'] as const)('%s managed registry job uses increm
 
 test.each(['celo', 'arc-mainnet'] as const)('%s partial registry run must not publish the discovered tip as its checkpoint', async chain => {
   const scan = spyOn(registry, 'runIncrementalRegistryScan').mockResolvedValue({
-    chain, tip: 9, agentsScanned: 1, agentsPersisted: 1, feedbackScanned: 0, feedbackPersisted: 0, errors: 1,
+    chain, tip: 9, agentsScanned: 1, agentsPersisted: 1, feedbackScanned: 0, feedbackPersisted: 0, errors: 1, registrationUnreachable: 0,
   });
   try {
     const outcome = await createIndexingJob(chain, 'registry').run(new AbortController().signal);
