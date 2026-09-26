@@ -192,6 +192,12 @@ REVOKE ALL ON FUNCTION public.fence_indexing_write() FROM PUBLIC, anon, authenti
 ALTER TABLE public.wallet_tx_stats ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.wallet_tx_stats FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.wallet_tx_stats TO service_role;
+-- Neither public metrics nor genesis provenance may be forged through the
+-- REST table API. Public wallet reads remain available; all writes go through
+-- the server's service-role client and its authorization/lease checks.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.wallets FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TABLE public.indexer_cursors FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.indexer_cursors TO service_role;
 GRANT EXECUTE ON FUNCTION public.acquire_indexing_lease(text,text,uuid,integer,integer,boolean) TO service_role;
 GRANT EXECUTE ON FUNCTION public.renew_indexing_lease(text,text,uuid,integer) TO service_role;
 GRANT EXECUTE ON FUNCTION public.release_indexing_lease(text,text,uuid) TO service_role;
