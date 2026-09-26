@@ -74,7 +74,7 @@ export function AgentProfileShell({
       </Link>
 
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-4">
+        <div className="flex min-w-0 items-start gap-4">
           <AgentAvatar src={avatarSrc} name={name ?? address} />
           <div className="min-w-0 space-y-3">
             <div className="flex flex-wrap items-center gap-3">
@@ -85,7 +85,11 @@ export function AgentProfileShell({
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              <WalletAddress address={address} truncate={false} className="text-muted-foreground" />
+              <WalletAddress
+                address={address}
+                truncate={false}
+                className="max-w-full text-muted-foreground [&>span]:min-w-0 [&>span]:break-all [&>button]:shrink-0"
+              />
               <a
                 href={explorerAddressUrl(chain, address)}
                 target="_blank"
