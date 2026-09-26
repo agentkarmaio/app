@@ -622,3 +622,62 @@ test('invalid sparse work budget rejects before any database or RPC calls', asyn
   expect(rpc.calls).toEqual([]);
   expect(state.saveCursor).not.toHaveBeenCalled();
 });
+
+test('sparse first wallet publishes its verified success before spending a second genesis turn', async () => {
+  const state = setup({ wallets: [W1, W2] });
+  const rpc = sparse(101, new Map([[80, [ok(W1)]]]));
+  expect((await managed({ transport: rpc, maxBlocks: 2 })).complete).toBe(false);
+  expect(rpc.calls).toEqual([[0], [80]]);
+  expect(state.rateWrites.some(row => row.__address === W1 && row.metric_success_rate === 1)).toBe(true);
+  expect(state.statsUpserted.some(row => row.address === W2)).toBe(false);
+});
+
+test('sparse shares validated genesis receipts across wallets while preserving each outgoing outcome', async () => {
+  const state = setup({ wallets: [W1, W2] });
+  const rpc = sparse(101, new Map([[0, [ok(W1), failed(W2)]]]));
+  const result = await managed({ transport: rpc });
+  expect(result.complete).toBe(true);
+  expect(result.scanned).toBe(1);
+  expect(rpc.calls).toEqual([[0]]);
+  expect(state.statsUpserted).toEqual([
+    expect.objectContaining({ address: W1, settled_count: 1, failed_count: 0, last_block: 100 }),
+    expect.objectContaining({ address: W2, settled_count: 0, failed_count: 1, last_block: 100 }),
+  ]);
+});
+
+test('sparse banks verified genesis when a later nonce read fails and resumes without recounting it', async () => {
+  const initial = setup({ wallets: [W1] });
+  const receipts = new Map([[0, [ok(W1)]], [80, [failed(W1)]]]);
+  const broken = { ...sparse(101, receipts), getNonce: async () => { throw new Error('archive_down'); } };
+  expect((await managed({ transport: broken, retryAttempts: 0 })).complete).toBe(false);
+  const committed = initial.statsUpserted.at(-1) as unknown as StatsRow;
+  expect(committed).toEqual(expect.objectContaining({ last_block: 0, settled_count: 1, failed_count: 0 }));
+  expect(initial.rateWrites.at(-1)?.metric_success_rate).toBeNull();
+  const restarted = setup({ wallets: [W1], target: '100', priorStats: [committed] });
+  const rpc = sparse(101, receipts);
+  expect((await managed({ transport: rpc })).complete).toBe(true);
+  expect(rpc.calls).toEqual([[80]]);
+  expect(restarted.statsUpserted.at(-1)).toEqual(expect.objectContaining({ last_block: 100, settled_count: 1, failed_count: 1 }));
+});
+
+test('sparse genesis continuation preserves one non-genesis candidate per wallet turn', async () => {
+  const state = setup({ wallets: [W1, W2] });
+  const rpc = sparse(101, new Map([[10, [ok(W1)]], [20, [ok(W1)]], [15, [failed(W2)]]]));
+  const result = await managed({ transport: rpc, maxBlocks: 3 });
+  expect(result.scanned).toBe(3);
+  expect(result.complete).toBe(false);
+  expect(rpc.calls).toEqual([[0], [10], [15]]);
+  expect(state.statsUpserted.at(-1)).toEqual(expect.objectContaining({ address: W2, failed_count: 1, last_block: 100 }));
+});
+
+test('sparse never caches malformed genesis evidence for the next wallet', async () => {
+  const state = setup({ wallets: [W1, W2] });
+  let calls = 0;
+  const rpc = { ...sparse(101, new Map()), fetchReceipts: async () => {
+    calls++;
+    return calls === 1 ? [[r(W1, '0x2')]] : [[]];
+  } };
+  expect((await managed({ transport: rpc, retryAttempts: 0 })).complete).toBe(false);
+  expect(calls).toBe(2);
+  expect(state.statsUpserted).toEqual([expect.objectContaining({ address: W2, settled_count: 0, failed_count: 0, last_block: 100 })]);
+});

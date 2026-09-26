@@ -299,6 +299,7 @@ async function walkSparseSettlement(
   const heads = new Map<string, number>();
   const nonces = new Map<string, number>();
   let scanned = 0;
+  let genesisReceipts: WalkReceipt[] | undefined;
   const updated = new Set<string>();
   let index = addresses.findIndex(address => address > lastAddress);
   if (index < 0) index = 0;
@@ -351,10 +352,27 @@ async function walkSparseSettlement(
       // Keep candidate changes local until every required RPC response is
       // validated. Exceptions never advance coverage over unknown evidence.
       let next = { ...state };
+      let verifiedPrefix = { ...state };
       try {
+        if (next.last_block < 0) {
+          if (!genesisReceipts) {
+            const batches = await boundedRead(() => transport.fetchReceipts([0]));
+            if (!Array.isArray(batches) || batches.length !== 1) throw new Error('arc_walk_batch_malformed');
+            genesisReceipts = validatedReceipts(batches[0]);
+            scanned++;
+          }
+          for (const receipt of genesisReceipts) {
+            if (receipt.from!.toLowerCase() !== address) continue;
+            if (receipt.status === '0x1') next.settled_count++;
+            else next.failed_count++;
+          }
+          next.last_block = 0;
+          verifiedPrefix = { ...next };
+        }
         let candidate: number | undefined;
-        if (next.last_block < 0) candidate = 0;
-        else {
+        // Genesis is shared evidence, not a wallet scheduling turn. Continue
+        // immediately, but read the archive nonce rather than assume it is 0.
+        if (next.last_block < target && budget()) {
           const baseline = nonces.get(address) ?? await boundedRead(async () => quantity(await transport.getNonce(address, next.last_block)));
           const latest = heads.get(address) ?? await boundedRead(async () => quantity(await transport.getNonce(address, target)));
           if (latest < baseline) throw new Error('arc_mainnet_walk_nonce_decreased');
@@ -387,7 +405,6 @@ async function walkSparseSettlement(
           }
           next.last_block = candidate;
           scanned++;
-          if (candidate === 0) nonces.delete(address);
           // A known candidate nonce equal to the frozen head proves the tail
           // empty, including authority bumps with no outgoing receipt.
           if (nonces.has(address) && nonces.get(address) === heads.get(address)) next.last_block = target;
@@ -395,7 +412,7 @@ async function walkSparseSettlement(
       } catch {
         signal?.throwIfAborted();
         failed.add(address);
-        next = state;
+        next = verifiedPrefix;
       }
       if (next.last_block > state.last_block) await persist(next);
       if (next.last_block >= target) complete.add(address);
