@@ -62,6 +62,42 @@ beforeEach(() => {
 });
 
 describe('persistent lease and success state', () => {
+  for (const table of ['wallets', 'indexer_cursors'] as const) {
+    for (const role of ['anon', 'authenticated'] as const) {
+      test(`${table} denies ${role} mutation while preserving intended reads and service-role operations`, () => {
+        query(`GRANT ALL ON public.${table} TO PUBLIC, anon, authenticated;`);
+        query(readFileSync(resolve('src/db/sql/indexing-state.sql'), 'utf8'));
+        query("INSERT INTO public.indexing_state(chain,path,enabled,interval_ms) VALUES ('arc-mainnet','transfers',true,300000);");
+        acquire(ownerA, 'arc-mainnet');
+        const key = table === 'wallets' ? 'address' : 'facilitator';
+        const value = table === 'wallets' ? 'metric_success_rate' : 'last_signature';
+        const original = table === 'wallets' ? '0.5' : "'100'";
+        const updated = table === 'wallets' ? '0.75' : "'101'";
+        const protectedWhere = "chain='arc-mainnet' AND " + key + "='protected-source'";
+        const serviceWrite = (sql: string) => query(`BEGIN; SET LOCAL ROLE service_role;
+          SET LOCAL request.headers='{"x-indexing-chain":"arc-mainnet","x-indexing-path":"transfers","x-indexing-owner":"${ownerA}"}';
+          ${sql}; COMMIT;`);
+        serviceWrite(`INSERT INTO public.${table}(chain,${key},${value}) VALUES ('arc-mainnet','protected-source',${original})`);
+        expect(query(`SET ROLE service_role; SELECT count(*) FROM public.${table} WHERE ${protectedWhere};`)).toBe('1');
+        if (table === 'wallets') {
+          expect(query(`SET ROLE ${role}; SELECT metric_success_rate::numeric=0.5 FROM public.wallets WHERE ${protectedWhere};`)).toBe('t');
+        }
+        expect(() => query(`SET ROLE ${role}; INSERT INTO public.${table}(chain,${key},${value})
+          VALUES ('arc-mainnet','injected-source',${original});`)).toThrow();
+        expect(() => query(`SET ROLE ${role}; UPDATE public.${table} SET ${value}=${updated} WHERE ${protectedWhere};`)).toThrow();
+        expect(() => query(`SET ROLE ${role}; DELETE FROM public.${table} WHERE ${protectedWhere};`)).toThrow();
+        if (table === 'indexer_cursors') {
+          expect(() => query(`SET ROLE ${role}; SELECT * FROM public.indexer_cursors;`)).toThrow();
+        }
+        expect(query(`SELECT count(*) FROM public.${table} WHERE ${key}='injected-source';`)).toBe('0');
+        serviceWrite(`UPDATE public.${table} SET ${value}=${updated} WHERE ${protectedWhere}`);
+        expect(query(`SET ROLE service_role; SELECT ${value}=${updated} FROM public.${table} WHERE ${protectedWhere};`)).toBe('t');
+        serviceWrite(`DELETE FROM public.${table} WHERE ${protectedWhere}`);
+        expect(query(`SET ROLE service_role; SELECT count(*) FROM public.${table} WHERE ${protectedWhere};`)).toBe('0');
+      });
+    }
+  }
+
   test('settlement counters reject public writes without lease headers despite default grants', () => {
     // Reproduce Supabase public-schema defaults before applying the repeatable
     // hardening SQL; absent context must not bypass table authorization.
