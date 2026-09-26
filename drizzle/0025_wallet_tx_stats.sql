@@ -1,4 +1,4 @@
--- Per-wallet settlement counters for the Arc settlement walk
+-- Per-wallet settlement counters for the Arc mainnet settlement walk
 -- (src/indexer/arc-mainnet-settlement-walk.ts). Generated from
 -- src/db/schema.ts (walletTxStatsTable); additive only — no destructive
 -- statements, so this is applied directly instead of an interactive
