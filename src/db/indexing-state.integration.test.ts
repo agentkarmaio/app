@@ -383,6 +383,90 @@ describe('actual ingestion write fencing', () => {
 });
 
 
+test('registry explorer replaces the deployed 7c2c7fc view without changing existing column types', () => {
+  // Frozen deployed SQL, not reconstructed from the replacement implementation.
+  // A private schema in this temporary database exercises actual CREATE OR
+  // REPLACE compatibility without dropping the public view or its dependents.
+  const deployedView = `
+CREATE OR REPLACE VIEW explore_agents AS
+  SELECT
+    chain, address, display_name, claimed,
+    provider_score, consumer_score, trust_tier, confidence_badge,
+    autonomy_score, autonomy_label, tx_count, last_seen,
+    metric_success_rate, metric_diversity, metric_volume, metric_age, metric_cadence,
+    celo_agent_id::bigint   AS celo_agent_id,
+    arc_agent_id::bigint    AS arc_agent_id,
+    stellar_agent_id::bigint AS stellar_agent_id,
+    score,
+    image_url,
+    rank_score
+  FROM wallets
+  WHERE chain = 'solana' AND score > 0
+  UNION ALL
+  SELECT
+    chain,
+    COALESCE(NULLIF(agent_wallet, '0x0000000000000000000000000000000000000000'), owner) AS address,
+    registration->>'name'                AS display_name,
+    false                                AS claimed,
+    metadata_score::numeric              AS provider_score,
+    NULL::numeric                        AS consumer_score,
+    CASE
+      WHEN metadata_score <= 20 THEN 'Unrated'
+      WHEN metadata_score <= 40 THEN 'Poor'
+      WHEN metadata_score <= 60 THEN 'Fair'
+      WHEN metadata_score <= 75 THEN 'Good'
+      WHEN metadata_score <= 90 THEN 'Very Good'
+      ELSE 'Excellent'
+    END                                  AS trust_tier,
+    'declared'                           AS confidence_badge,
+    NULL::numeric                        AS autonomy_score,
+    NULL::text                           AS autonomy_label,
+    0                                    AS tx_count,
+    NULL::timestamptz                    AS last_seen,
+    NULL::numeric AS metric_success_rate,
+    NULL::numeric AS metric_diversity,
+    NULL::numeric AS metric_volume,
+    NULL::numeric AS metric_age,
+    NULL::numeric AS metric_cadence,
+    CASE WHEN chain = 'celo'    THEN agent_id END AS celo_agent_id,
+    CASE WHEN chain = 'arc'     THEN agent_id END AS arc_agent_id,
+    CASE WHEN chain = 'stellar' THEN agent_id END AS stellar_agent_id,
+    metadata_score::numeric              AS score,
+    registration->>'image'               AS image_url,
+    (metadata_score::numeric * 0.7)      AS rank_score
+  FROM erc8004_agents
+  WHERE chain IN ('celo', 'stellar')
+  UNION ALL
+  SELECT
+    r.chain,
+    COALESCE(NULLIF(r.agent_wallet, '0x0000000000000000000000000000000000000000'), r.owner),
+    r.registration->>'name', COALESCE(w.claimed, false),
+    CASE WHEN w.confidence_badge = 'behavior-inferred' THEN w.provider_score END,
+    w.consumer_score, COALESCE(w.trust_tier, 'Unrated'), COALESCE(w.confidence_badge, 'declared'),
+    w.autonomy_score, w.autonomy_label, COALESCE(w.tx_count, 0), w.last_seen,
+    w.metric_success_rate, w.metric_diversity, w.metric_volume, w.metric_age, w.metric_cadence,
+    NULL::bigint, r.agent_id, NULL::bigint,
+    COALESCE(w.score, 0), r.registration->>'image', COALESCE(w.rank_score, 0)
+  FROM erc8004_agents r
+  LEFT JOIN wallets w ON w.chain = r.chain
+    AND w.address = COALESCE(NULLIF(r.agent_wallet, '0x0000000000000000000000000000000000000000'), r.owner)
+  WHERE r.chain = 'arc-mainnet';
+`;
+  const currentSql = readFileSync(resolve('src/db/sql/explore-agents-view.sql'), 'utf8');
+  query(`BEGIN;
+    CREATE SCHEMA deployed_explorer_fixture;
+    SET LOCAL search_path=deployed_explorer_fixture,public;
+    ALTER TABLE public.wallets ADD COLUMN IF NOT EXISTS image_url text;
+    ALTER TABLE public.wallets ADD COLUMN IF NOT EXISTS rank_score numeric(6,2)
+      GENERATED ALWAYS AS (score * CASE WHEN confidence_badge='declared' THEN 0.7 ELSE 1.0 END) STORED;
+    ${deployedView}
+    CREATE VIEW dependent_explorer AS SELECT autonomy_score,metric_cadence FROM explore_agents;
+    ${currentSql}
+    SELECT * FROM dependent_explorer LIMIT 1;
+    ${currentSql}
+    ROLLBACK;`);
+});
+
 test('registry explorer preserves measured metrics, unknowns, identities and chain isolation before pagination', () => {
   query(readFileSync(resolve('src/db/sql/explore-agents-view.sql'), 'utf8'));
   seedArchivedRows(`INSERT INTO wallets(chain,address,score,provider_score,confidence_badge,trust_tier,

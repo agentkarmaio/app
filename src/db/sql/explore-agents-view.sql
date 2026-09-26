@@ -74,10 +74,17 @@ CREATE OR REPLACE VIEW explore_agents AS
       ELSE 'Excellent'
     END                                  AS trust_tier,
     'declared'                           AS confidence_badge,
-    w.autonomy_score, w.autonomy_label, COALESCE(w.tx_count, 0) AS tx_count,
+    -- Preserve the deployed view's unconstrained numeric types: the former
+    -- NULL::numeric branches erased wallet precision/scale during UNION.
+    -- CREATE OR REPLACE cannot narrow these existing column types.
+    w.autonomy_score::numeric AS autonomy_score, w.autonomy_label, COALESCE(w.tx_count, 0) AS tx_count,
     -- Only observed activity; registry scan timestamps are not liveness.
     w.last_seen,
-    w.metric_success_rate, w.metric_diversity, w.metric_volume, w.metric_age, w.metric_cadence,
+    w.metric_success_rate::numeric AS metric_success_rate,
+    w.metric_diversity::numeric AS metric_diversity,
+    w.metric_volume::numeric AS metric_volume,
+    w.metric_age::numeric AS metric_age,
+    w.metric_cadence::numeric AS metric_cadence,
     CASE WHEN r.chain = 'celo'    THEN r.agent_id END AS celo_agent_id,
     NULL::bigint AS arc_agent_id,
     CASE WHEN r.chain = 'stellar' THEN r.agent_id END AS stellar_agent_id,
