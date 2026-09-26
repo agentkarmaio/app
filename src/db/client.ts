@@ -19,9 +19,6 @@ import type {
 // Type-only: erased at runtime, so this does NOT pull viem/the scanner into the
 // db-client bundle that API routes + the Docker build load.
 import type { ScannedAgent, ScannedFeedback } from '@/indexer/erc8004-registry';
-// Pure tier-from-score helper (scoring/index imports only types from schema, so
-// no runtime cycle). Used to derive trust_tier for registry-mirror rows.
-import { getTrustTier } from '@/scoring/index';
 // Pure predicate (no React/browser deps) — names the chains whose agent
 // population is the erc8004_agents mirror rather than the wallets table.
 import { isRegistryMirrorChain } from '@/lib/chain-meta';
@@ -498,203 +495,10 @@ export interface AgentsExploreSort {
   direction: 'asc' | 'desc';
 }
 
-// Trust-tier → metadata_score band (inverse of getTrustTier). Used to translate
-// the explore tier-chip filter into a PostgREST score-range query for registry
-// rows, which have no stored trust_tier column.
-const TIER_SCORE_BAND: Record<TrustTier, [number, number]> = {
-  Unrated:     [0, 20],
-  Poor:        [21, 40],
-  Fair:        [41, 60],
-  Good:        [61, 75],
-  'Very Good': [76, 90],
-  Excellent:   [91, 100],
-};
-
-/** Map an erc8004_agents row into the Wallet shape the leaderboard renders.
- *  The agent's on-chain identity is the agent_id; address carries the agent
- *  wallet (or owner) for display + the existing /agent link, and the
- *  chain-specific agentId column lets the agent page resolve the profile. */
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 /**
- * Behavioral metrics for one address, looked up from `wallets`. These are a
- * property of the ADDRESS, not the agentId, so every registry row sharing an
- * owner shares them. Absent for addresses with no observed activity.
- */
-export interface RegistryRowBehavior {
-  autonomy_score: number | null;
-  autonomy_label: AutonomyLabel | null;
-  metric_cadence: number | null;
-}
-
-/** Resolve the display address for a registry row (see registryRowToWallet). */
-function registryRowAddress(row: Record<string, unknown>): string {
-  const aw = row.agent_wallet as string | null;
-  return aw && aw.toLowerCase() !== ZERO_ADDRESS ? aw : (row.owner as string);
-}
-
-function registryRowToWallet(
-  row: Record<string, unknown>,
-  chain: Chain,
-  behavior?: RegistryRowBehavior,
-): Wallet {
-  const score = Number(row.metadata_score ?? 0);
-  const reg = (row.registration ?? null) as { name?: string; description?: string; image?: string } | null;
-  // EVM getAgentWallet() returns the zero address when an agent never set a
-  // custom wallet; Soroban returns NULL for the same case. Either way the
-  // effective operator IS the owner — fall back so we never surface 0x000…000.
-  const address = registryRowAddress(row);
-  const indexedAt = (row.last_indexed_at as string) ?? new Date().toISOString();
-  const agentId = Number(row.agent_id);
-  return {
-    chain,
-    address,
-    first_seen: (row.first_indexed_at as string) ?? indexedAt,
-    // NULL, not `last_indexed_at`: the mirror stores when WE scanned the
-    // registry, so using it here made every declared agent read "Active" on
-    // /explore while the same agent read "Inactive" on the leaderboard. We have
-    // observed no activity for these addresses — say so.
-    last_seen: null,
-    tx_count: 0,
-    score,
-    trust_tier: getTrustTier(score),
-    updated_at: indexedAt,
-    claimed: false,
-    display_name: reg?.name ?? null,
-    image_url: reg?.image ?? null,
-    description: reg?.description ?? null,
-    provider_score: score,
-    consumer_score: null,
-    confidence_badge: 'declared',
-    // Orthogonal to the declared metadata score (RFC §5.5) — present only when
-    // a behavioral pass has observed the address's on-chain activity.
-    autonomy_score: behavior?.autonomy_score ?? null,
-    autonomy_label: behavior?.autonomy_label ?? null,
-    metric_cadence: behavior?.metric_cadence ?? null,
-    celo_agent_id: chain === 'celo' ? agentId : null,
-    arc_agent_id: chain === 'arc' ? agentId : null,
-    stellar_agent_id: chain === 'stellar' ? agentId : null,
-  } as Wallet;
-}
-
-/**
- * Batch-load behavioral metrics for the addresses on one registry page.
- * Bounded by page size (one `.in()` over ≤ limit addresses), so it never grows
- * into the full-population join the `explore_agents` view deliberately avoids.
- * Best-effort: a failed lookup degrades to "no behavioral data", never a 500.
- */
-async function getBehaviorForAddresses(
-  chain: Chain,
-  addresses: string[],
-): Promise<Map<string, RegistryRowBehavior>> {
-  const out = new Map<string, RegistryRowBehavior>();
-  const unique = [...new Set(addresses)];
-  if (unique.length === 0) return out;
-
-  const { data, error } = await supabase
-    .from('wallets')
-    .select('address,autonomy_score,autonomy_label,metric_cadence')
-    .eq('chain', chain)
-    .in('address', unique);
-  if (error || !data) return out;
-
-  for (const row of data as Array<Record<string, unknown>>) {
-    const autonomyScore = row.autonomy_score;
-    const cadence = row.metric_cadence;
-    if (autonomyScore == null && cadence == null) continue;
-    out.set(row.address as string, {
-      autonomy_score: autonomyScore == null ? null : Number(autonomyScore),
-      autonomy_label: (row.autonomy_label as AutonomyLabel | null) ?? null,
-      metric_cadence: cadence == null ? null : Number(cadence),
-    });
-  }
-  return out;
-}
-
-/**
- * Leaderboard page sourced from the ERC-8004 registry mirror (erc8004_agents),
- * not `wallets`. EVM 8004 chains (Celo/Arc) register agents as NFTs — a single
- * owner controls many — so the address-keyed `wallets` table can't represent
- * the true per-agent population. This reads one row per agent_id so the explore
- * count + list match 8004scan. Filters that don't apply to declared-only
- * registry rows (autonomy, Tier-2 metrics) short-circuit to empty when set.
- */
-async function getRegistryAgentsPage(
-  chain: Chain,
-  limit: number,
-  offset: number,
-  filters: AgentsExploreFilters,
-  sort: AgentsExploreSort,
-): Promise<LeaderboardPage> {
-  // Registry rows are Tier-3 declared only. A confidence filter that excludes
-  // 'declared', any autonomy-label filter, or a Tier-2 metric threshold can
-  // never match → return empty rather than a misleading full list.
-  if (filters.confidenceBadges?.length && !filters.confidenceBadges.includes('declared')) {
-    return { wallets: [], total: 0 };
-  }
-  if (filters.autonomyLabels?.length) return { wallets: [], total: 0 };
-  if (filters.minCadence != null || filters.minDiversity != null || filters.minSuccessRate != null) {
-    return { wallets: [], total: 0 };
-  }
-  // Every registry row is Unobserved (tx_count 0, last_seen NULL). A dated
-  // liveness bucket therefore matches none of them — this used to ignore
-  // `status` entirely and return the full list for "Active".
-  if (filters.status && filters.status !== 'Unobserved') return { wallets: [], total: 0 };
-
-  let q = supabase
-    .from('erc8004_agents')
-    .select('*', { count: 'exact' })
-    .eq('chain', chain);
-
-  if (filters.minProviderScore != null) q = q.gte('metadata_score', filters.minProviderScore);
-
-  if (filters.tiers?.length) {
-    // OR of per-tier score bands → e.g. or(and(metadata_score.gte.0,...lte.20),…).
-    const groups = filters.tiers.map((t) => {
-      const [lo, hi] = TIER_SCORE_BAND[t];
-      return `and(metadata_score.gte.${lo},metadata_score.lte.${hi})`;
-    });
-    q = q.or(groups.join(','));
-  }
-
-  if (filters.search) {
-    const term = escapeSearchTerm(filters.search);
-    // The declared name lives in the `registration` JSONB, not a column — the
-    // all-chains `explore_agents` view projects it as `display_name`, so
-    // omitting it here made a name search on a registry chain address-only
-    // (searching "agentkarma" on Celo returned 0 while "All" returned it).
-    if (term) {
-      q = q.or(
-        `owner.ilike.%${term}%,agent_wallet.ilike.%${term}%,registration->>name.ilike.%${term}%`,
-      );
-    }
-  }
-
-  // Sort: map the wallet-oriented sort fields onto registry columns. Unmappable
-  // fields fall back to metadata_score (the registry's headline metric).
-  // `last_seen` is deliberately unmapped: `last_indexed_at` is our scan clock,
-  // and ordering "Last active" by it ranked registry agents on indexer cadence.
-  // They have no observed activity, so fall through to the headline metric.
-  const col =
-    sort.field === 'tx_count' ? 'feedback_count'
-    : 'metadata_score';
-  const { data, error, count } = await q
-    .order(col, { ascending: sort.direction === 'asc', nullsFirst: false })
-    .order('agent_id', { ascending: true })
-    .range(offset, offset + limit - 1);
-
-  if (error) throw error;
-  const rows = (data ?? []) as Record<string, unknown>[];
-  // Registry rows carry declared metadata only. Behavioral metrics live on the
-  // owner/agent-wallet row in `wallets` — attach them so agents whose address
-  // has observed activity show their autonomy + cadence instead of blanks.
-  const behavior = await getBehaviorForAddresses(chain, rows.map(registryRowAddress));
-  const wallets = rows.map((r) => registryRowToWallet(r, chain, behavior.get(registryRowAddress(r))));
-  return { wallets, total: count ?? 0 };
-}
-
-/**
- * "All chains" leaderboard page — queries the `explore_agents` view, which
+ * All and registry-chain leaderboard pages — query the `explore_agents` view, which
  * unions Solana `wallets` (score-gated) with the Celo/Arc/Stellar registry
  * mirror (per-agent). This is what makes the unfiltered explore count include
  * the real 8004 agent population instead of the handful of owner rows. The view
@@ -722,7 +526,7 @@ async function getUnifiedAgentsPage(
 
   if (filters.search) {
     const term = escapeSearchTerm(filters.search);
-    if (term) q = q.or(`address.ilike.%${term}%,display_name.ilike.%${term}%`);
+    if (term) q = q.or(`address.ilike.%${term}%,display_name.ilike.%${term}%,registry_owner.ilike.%${term}%`);
   }
 
   const { data, error, count } = await q
@@ -745,30 +549,14 @@ export async function getAgents(
   sort: AgentsExploreSort = { field: 'provider_score', direction: 'desc' },
 ): Promise<LeaderboardPage> {
   if (filters.chain === 'arc') return { wallets: [], total: 0 };
-  // ERC-8004 registry chains read the registry mirror (per-agent), not the
-  // owner-keyed `wallets` table — see getRegistryAgentsPage. Solana falls
-  // through. Stellar joined this set on 2026-08-05: its 67 registered agentIds
-  // collapse to 11 owner rows in `wallets` (one registrant holds ~10 agents),
-  // so the wallets path hid 56 agents.
-  //
-  // Exception: claimed=true. Claims land in `wallets` (claimWallet), never in
-  // the registry mirror — every registry row maps to claimed:false. Routing a
-  // claimed=true query to the registry would ignore the filter and return the
-  // entire declared-only population. So claimed=true always reads `wallets`,
-  // even for these chains. (claimed=false keeps reading the registry: it is the
-  // full unclaimed population; the handful of claimed rows that also live in
-  // wallets are an accepted, marginal overcount there.)
-  // Mainnet identities use persisted transfer scores, never metadata quality.
+  // The view keeps registry agentIds distinct and joins chain-scoped wallet
+  // measurements before filtering, sorting and pagination. Arc mainnet retains
+  // its transfer-derived score semantics; Celo/Stellar keep declared scores.
   if (filters.chain === 'arc-mainnet') return getUnifiedAgentsPage(limit, offset, filters, sort);
-  if (isRegistryMirrorChain(filters.chain) && filters.claimed !== true) {
-    return getRegistryAgentsPage(filters.chain, limit, offset, filters, sort);
-  }
-  // "All chains" (no chain filter) unions wallets + the registry mirror via the
-  // `explore_agents` view so the count + list reflect every agent, not just the
-  // owner rows. claimed=true is the same exception as above — claims live only
-  // in `wallets`, and the view drops registry-chain wallet rows — so it falls
-  // through to the wallets path below, which spans all chains.
-  if (filters.chain == null && filters.claimed !== true) {
+  // Claims on Celo/Stellar live in wallets, outside the registry population.
+  // Preserve that explicit claimed=true path, including newly claimed score=0
+  // wallets; all other registry and All queries share the canonical view.
+  if ((filters.chain == null || isRegistryMirrorChain(filters.chain)) && filters.claimed !== true) {
     return getUnifiedAgentsPage(limit, offset, filters, sort);
   }
 
@@ -3839,7 +3627,7 @@ export async function getAkConnectedFeedback(
       registration: AgentRegistrationFile | null; token_uri: string | null;
       metadata_score: number | null; feedback_count: number | null;
     }>) {
-      // Same rule as registryRowToWallet: a never-set agent wallet reads as the
+      // Same effective-address rule as explore_agents: a never-set agent wallet reads as the
       // zero address — fall back to the owner so we never link 0x000…000.
       const aw = a.agent_wallet;
       const address = aw && aw.toLowerCase() !== ZERO_ADDRESS ? aw : a.owner;

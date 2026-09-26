@@ -3,6 +3,9 @@ import { getIndexingHeaders } from '@/db/indexing-context';
 import { ARC_MAINNET_CHAIN_ID, parseArcMainnetRpcUrl, parseArcMainnetStartBlock } from '@/config/arc-mainnet';
 
 const CURSOR_KEY = 'arc-mainnet-block-walk';
+const TARGET_KEY = 'arc-mainnet-settlement-target-v1';
+const ROTATION_KEY = 'arc-mainnet-settlement-rotation';
+const PROVENANCE_PREFIX = 'arc-mainnet-settlement-v1:';
 const UPDATE_CONCURRENCY = 4;
 const STATS_CHUNK = 1000;
 /** PostgREST caps a response at 1000 rows; every work-set read pages under it. */
@@ -13,11 +16,13 @@ const DECIMAL = /^\d+$/;
 /** One block's receipts, reduced to the fields settlement attribution needs. */
 export interface WalkReceipt { from?: string; status?: string }
 
-/** Chain transport seam. The production implementation speaks batched JSON-RPC
- * (`eth_getBlockReceipts`, one call per block); tests feed synthetic batches. */
+/** Production archive nonce reads locate receipt-bearing blocks. Transports
+ * without the nonce seam retain the bounded synthetic block-walk path. */
 export interface WalkChainTransport {
   getChainId: () => Promise<string>;
   getHead: () => Promise<string>;
+  /** Archive account nonce locates candidate blocks, never receipt outcomes. */
+  getNonce?: (address: string, block: number) => Promise<string>;
   fetchReceipts: (blocks: number[]) => Promise<WalkReceipt[][]>;
 }
 
@@ -25,12 +30,12 @@ export interface ArcMainnetWalkOptions {
   signal?: AbortSignal;
   transport?: WalkChainTransport;
   rpcUrl?: string;
-  /** Chain height where the walk begins when no cursor exists (the transfer
-   * stream's start block). Required in production via the shared repo variable. */
+  /** Legacy block-walk seam only. Production sparse history starts at genesis. */
   startBlock?: number;
   batchSize?: number;
   concurrency?: number;
   timeBudgetMs?: number;
+  /** Maximum receipt blocks processed; sparse empty spans cost no block work. */
   maxBlocks?: number;
   retryAttempts?: number;
   retryDelayMs?: number;
@@ -61,8 +66,8 @@ export async function walkArcMainnetSettlement(
   options: ArcMainnetWalkOptions = {},
 ): Promise<ArcMainnetWalkResult> {
   const { signal } = options;
-  const batchSize = options.batchSize ?? 100;
-  const concurrency = options.concurrency ?? 3;
+  const batchSize = options.batchSize ?? 10;
+  const concurrency = options.concurrency ?? 1;
   const timeBudgetMs = options.timeBudgetMs ?? 30_000;
   const maxBlocks = options.maxBlocks ?? 60_000;
   const retryAttempts = options.retryAttempts ?? 2;
@@ -104,6 +109,10 @@ export async function walkArcMainnetSettlement(
   const transport = options.transport
     ?? createArcMainnetWalkTransport(
       parseArcMainnetRpcUrl(options.rpcUrl ?? process.env.ARC_MAINNET_RPC_URL), signal, requestTimeoutMs);
+  if (transport.getNonce) {
+    return walkSparseSettlement(transport as WalkChainTransport & Required<Pick<WalkChainTransport, 'getNonce'>>,
+      { signal, started, timeBudgetMs, maxBlocks, retry, assertLease });
+  }
   const stored = await getCursor(CURSOR_KEY, 'arc-mainnet');
   const cursor = stored?.last_signature ?? '';
   if (cursor !== '' && !DECIMAL.test(cursor)) throw new Error('arc_mainnet_walk_cursor_invalid');
@@ -117,7 +126,7 @@ export async function walkArcMainnetSettlement(
   } else {
     const startBlock = options.startBlock
       ?? parseArcMainnetStartBlock(process.env.ARC_MAINNET_TRANSFERS_START_BLOCK);
-    if (!Number.isSafeInteger(startBlock) || startBlock <= 0) throw new Error('arc_mainnet_walk_start_missing');
+    if (!Number.isSafeInteger(startBlock) || startBlock < 0) throw new Error('arc_mainnet_walk_start_missing');
     next = startBlock;
   }
   const firstUnscanned = next;
@@ -236,6 +245,200 @@ export async function walkArcMainnetSettlement(
   };
 }
 
+/** Each committed stats row is trusted only when its v1 provenance checkpoint
+ * matches. Legacy/non-genesis counters and interrupted stats→marker writes are
+ * safely replayed from zero. The global block walker cursor has no authority
+ * over newly discovered wallets. */
+async function walkSparseSettlement(
+  transport: WalkChainTransport & Required<Pick<WalkChainTransport, 'getNonce'>>,
+  options: {
+    signal?: AbortSignal; started: number; timeBudgetMs: number; maxBlocks: number;
+    retry: <T>(read: () => Promise<T>) => Promise<T>; assertLease: () => void;
+  },
+): Promise<ArcMainnetWalkResult> {
+  const { signal, assertLease, retry } = options;
+  const rotation = await getCursor(ROTATION_KEY, 'arc-mainnet');
+  let lastAddress = rotation?.last_signature ?? '';
+  if (lastAddress && !ADDRESS.test(lastAddress)) throw new Error('arc_mainnet_walk_cursor_invalid');
+  const stopped = () => ({ scanned: 0, walletsUpdated: 0, complete: false, cursor: lastAddress });
+  const chain = await safeRpc(retry, transport.getChainId);
+  if (chain === undefined) return stopped();
+  if (quantity(chain) !== ARC_MAINNET_CHAIN_ID) throw new Error('arc_mainnet_chain_mismatch');
+  const head = await safeRpc(retry, async () => quantity(await transport.getHead()));
+  if (head === undefined || head < 1) return stopped();
+  const safeHead = head - 1;
+  const storedTarget = await getCursor(TARGET_KEY, 'arc-mainnet');
+  const targetValue = storedTarget?.last_signature ?? '';
+  if (targetValue && (!DECIMAL.test(targetValue) || !Number.isSafeInteger(Number(targetValue)))) throw new Error('arc_mainnet_walk_cursor_invalid');
+  let target = targetValue ? Number(targetValue) : safeHead;
+  if (target > safeHead) throw new Error('arc_mainnet_walk_head_behind');
+  const walletRows = await readAll<{ address: string }>('wallets', 'address', signal);
+  const addresses = [...new Set(walletRows.map(row => row.address.toLowerCase()))].sort();
+  if (addresses.some(address => !ADDRESS.test(address))) throw new Error('arc_mainnet_walk_wallet_invalid');
+  if (!addresses.length) return { ...stopped(), complete: true };
+  const rows = await readAll<WalletStats>('wallet_tx_stats', 'address,settled_count,failed_count,last_block', signal);
+  const storedStats = new Map(rows.map(row => [row.address, row]));
+  const provenance = await readProvenance(signal);
+  const states = new Map<string, WalletStats>();
+  for (const address of addresses) {
+    const prior = storedStats.get(address);
+    if (prior && !validStats(prior)) throw new Error('arc_mainnet_walk_stats_invalid');
+    const verified = prior && provenance.get(address) === String(prior.last_block);
+    if (verified && prior.last_block > safeHead) throw new Error('arc_mainnet_walk_head_behind');
+    states.set(address, verified ? { ...prior } : { address, settled_count: 0, failed_count: 0, last_block: -1 });
+  }
+  if ([...states.values()].every(state => state.last_block >= target)) target = safeHead;
+  if (targetValue !== String(target)) {
+    assertLease();
+    await upsertCursor(TARGET_KEY, String(target), target, 'arc-mainnet');
+  }
+  const complete = new Set<string>();
+  const failed = new Set<string>();
+  for (const [address, state] of states) if (state.last_block >= target) complete.add(address);
+  const admitted = new Set<string>();
+  const heads = new Map<string, number>();
+  const nonces = new Map<string, number>();
+  let scanned = 0;
+  const updated = new Set<string>();
+  let index = addresses.findIndex(address => address > lastAddress);
+  if (index < 0) index = 0;
+  const budget = () => performance.now() - options.started < options.timeBudgetMs && scanned < options.maxBlocks;
+  const boundedRead = async <T>(read: () => Promise<T>) => {
+    assertLease();
+    if (!budget()) throw new Error('arc_mainnet_walk_budget');
+    return retry(read);
+  };
+  const persist = async (state: WalletStats) => {
+    assertLease();
+    const denominator = state.settled_count + state.failed_count;
+    if (!Number.isSafeInteger(denominator)) throw new Error('arc_mainnet_walk_stats_invalid');
+    // Preserve a previously verified published ratio while adding a partial
+    // new tail. New/unproven histories were cleared at admission below.
+    if (state.last_block >= target) {
+      const rate = denominator > 0 ? state.settled_count / denominator : null;
+      const { error: rateError } = await supabase.from('wallets').update({ metric_success_rate: rate })
+        .eq('chain', 'arc-mainnet').eq('address', state.address);
+      if (rateError) throw rateError;
+    }
+    assertLease();
+    const { error } = await supabase.from('wallet_tx_stats').upsert([
+      { ...state, chain: 'arc-mainnet', updated_at: new Date().toISOString() },
+    ], { onConflict: 'chain,address' });
+    if (error) throw error;
+    assertLease();
+    await upsertCursor(PROVENANCE_PREFIX + state.address, String(state.last_block), state.last_block, 'arc-mainnet');
+    states.set(state.address, state);
+    updated.add(state.address);
+  };
+  // One receipt-bearing candidate per turn keeps dense wallets from starving
+  // sparse/new wallets. Remaining budget permits additional fair rotations.
+  while (budget() && complete.size + failed.size < addresses.length) {
+    assertLease();
+    const address = addresses[index];
+    index = (index + 1) % addresses.length;
+    if (complete.has(address) || failed.has(address)) continue;
+    const state = states.get(address)!;
+    if (state.last_block < 0 && !admitted.has(address)) {
+      assertLease();
+      const { error } = await supabase.from('wallets').update({ metric_success_rate: null })
+        .eq('chain', 'arc-mainnet').eq('address', address);
+      if (error) throw error;
+      admitted.add(address);
+    }
+    if (state.last_block >= target) {
+      complete.add(address);
+    } else {
+      // Keep candidate changes local until every required RPC response is
+      // validated. Exceptions never advance coverage over unknown evidence.
+      let next = { ...state };
+      try {
+        let candidate: number | undefined;
+        if (next.last_block < 0) candidate = 0;
+        else {
+          const baseline = nonces.get(address) ?? await boundedRead(async () => quantity(await transport.getNonce(address, next.last_block)));
+          const latest = heads.get(address) ?? await boundedRead(async () => quantity(await transport.getNonce(address, target)));
+          if (latest < baseline) throw new Error('arc_mainnet_walk_nonce_decreased');
+          heads.set(address, latest);
+          nonces.set(address, baseline);
+          if (latest === baseline) next.last_block = target;
+          else {
+            let low = next.last_block + 1;
+            let high = target;
+            let highNonce = latest;
+            while (low < high) {
+              const middle = low + Math.floor((high - low) / 2);
+              const nonce = await boundedRead(async () => quantity(await transport.getNonce(address, middle)));
+              if (nonce < baseline || nonce > highNonce) throw new Error('arc_mainnet_walk_nonce_inconsistent');
+              if (nonce > baseline) { high = middle; highNonce = nonce; }
+              else low = middle + 1;
+            }
+            candidate = low;
+            nonces.set(address, highNonce);
+          }
+        }
+        if (candidate !== undefined) {
+          const batches = await boundedRead(() => transport.fetchReceipts([candidate!]));
+          if (!Array.isArray(batches) || batches.length !== 1) throw new Error('arc_walk_batch_malformed');
+          const receipts = validatedReceipts(batches[0]);
+          for (const receipt of receipts) {
+            if (receipt.from!.toLowerCase() !== address) continue;
+            if (receipt.status === '0x1') next.settled_count++;
+            else next.failed_count++;
+          }
+          next.last_block = candidate;
+          scanned++;
+          if (candidate === 0) nonces.delete(address);
+          // A known candidate nonce equal to the frozen head proves the tail
+          // empty, including authority bumps with no outgoing receipt.
+          if (nonces.has(address) && nonces.get(address) === heads.get(address)) next.last_block = target;
+        }
+      } catch {
+        signal?.throwIfAborted();
+        failed.add(address);
+        next = state;
+      }
+      if (next.last_block > state.last_block) await persist(next);
+      if (next.last_block >= target) complete.add(address);
+    }
+    assertLease();
+    await upsertCursor(ROTATION_KEY, address, undefined, 'arc-mainnet');
+    lastAddress = address;
+  }
+  return { scanned, walletsUpdated: updated.size, complete: complete.size === addresses.length && target === safeHead, cursor: lastAddress };
+}
+
+async function readProvenance(signal?: AbortSignal): Promise<Map<string, string>> {
+  const markers = new Map<string, string>();
+  for (let offset = 0; ; offset += READ_PAGE) {
+    signal?.throwIfAborted();
+    const { data, error } = await supabase.from('indexer_cursors').select('facilitator,last_signature')
+      .eq('chain', 'arc-mainnet').like('facilitator', `${PROVENANCE_PREFIX}%`)
+      .order('facilitator', { ascending: true }).range(offset, offset + READ_PAGE - 1);
+    if (error) throw error;
+    const page = (data ?? []) as Array<{ facilitator: string; last_signature: string }>;
+    for (const row of page) markers.set(row.facilitator.slice(PROVENANCE_PREFIX.length), row.last_signature);
+    if (page.length < READ_PAGE) return markers;
+  }
+}
+
+function validStats(row: WalletStats): boolean {
+  return ADDRESS.test(row.address) && [row.settled_count, row.failed_count, row.last_block]
+    .every(value => Number.isSafeInteger(value) && value >= 0);
+}
+function quantity(value: string): number {
+  if (!/^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(value)) throw new Error('arc_walk_quantity_malformed');
+  const result = Number(BigInt(value));
+  if (!Number.isSafeInteger(result)) throw new Error('arc_walk_quantity_malformed');
+  return result;
+}
+function validatedReceipts(value: unknown): WalkReceipt[] {
+  if (!Array.isArray(value) || value.some(receipt => !receipt || typeof receipt.from !== 'string'
+    || !ADDRESS.test(receipt.from.toLowerCase()) || !['0x0', '0x1'].includes(receipt.status))) {
+    throw new Error('arc_walk_receipt_malformed');
+  }
+  return value;
+}
+
 /** An RPC hiccup is a resumable stop, never a page: bounded retries, then the
  * run gives up its slot for the next lease rotation. */
 async function safeRpc<T>(
@@ -280,7 +483,13 @@ export function createArcMainnetWalkTransport(
   signal?: AbortSignal,
   requestTimeoutMs = 10_000,
 ): WalkChainTransport {
+  let lastRequest = 0;
   const rpcPost = async (body: unknown) => {
+    // Leave room for transfer/registry traffic on the shared public quota.
+    const delay = 100 - (performance.now() - lastRequest);
+    if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+    signal?.throwIfAborted();
+    lastRequest = performance.now();
     const timeout = AbortSignal.timeout(requestTimeoutMs);
     const res = await fetch(rpcUrl, {
       method: 'POST',
@@ -291,9 +500,9 @@ export function createArcMainnetWalkTransport(
     if (!res.ok) throw new Error(`arc_walk_http_${res.status}`);
     return await res.json() as Array<{ id: number; result?: unknown; error?: { message?: string } }>;
   };
-  const single = async (method: string): Promise<string> => {
-    const rows = await rpcPost([{ jsonrpc: '2.0', id: 0, method, params: [] }]);
-    if (!Array.isArray(rows) || rows.length !== 1 || rows[0].error
+  const single = async (method: string, params: unknown[] = []): Promise<string> => {
+    const rows = await rpcPost([{ jsonrpc: '2.0', id: 0, method, params }]);
+    if (!Array.isArray(rows) || rows.length !== 1 || rows[0].id !== 0 || rows[0].error
       || typeof rows[0].result !== 'string') {
       throw new Error(`arc_walk_${method}_unavailable`);
     }
@@ -302,6 +511,7 @@ export function createArcMainnetWalkTransport(
   return {
     getChainId: () => single('eth_chainId'),
     getHead: () => single('eth_blockNumber'),
+    getNonce: (address, block) => single('eth_getTransactionCount', [address, `0x${block.toString(16)}`]),
     fetchReceipts: async (blocks: number[]) => {
       const rows = await rpcPost(blocks.map((block, id) => ({
         jsonrpc: '2.0', id, method: 'eth_getBlockReceipts',
@@ -316,7 +526,7 @@ export function createArcMainnetWalkTransport(
         if (!row || row.error || !Array.isArray(row.result)) {
           throw new Error('arc_walk_receipt_unavailable');
         }
-        return row.result as WalkReceipt[];
+        return validatedReceipts(row.result);
       });
     },
   };

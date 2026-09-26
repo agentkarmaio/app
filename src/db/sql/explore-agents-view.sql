@@ -17,11 +17,10 @@
 -- collapsed to 11 owner rows in `wallets`, hiding 56 agents.
 -- Column projection matches the `wallets` shape getAgents() filters/sorts on.
 --
--- Registry rows project NULL autonomy/Tier-2 metrics. Behavioral data is a
--- property of the ADDRESS and lives in `wallets`; joining it here would put a
--- ~85k-row join behind every all-chains count. The per-chain registry page
--- enriches from `wallets` in a bounded per-page lookup instead
--- (getRegistryAgentsPage).
+-- Registry identities keep their declared score semantics while measured wallet
+-- metrics join on (chain, effective address). This preserves every agentId and
+-- lets All and per-chain filters/sorts operate before pagination. Missing wallet
+-- measurements remain NULL; the composite wallet primary key prevents fan-out.
 
 -- Agent logo, denormalized onto wallets so list queries reading `wallets`
 -- directly (the homepage leaderboard) can render it. Idempotent + co-located so
@@ -52,53 +51,45 @@ CREATE OR REPLACE VIEW explore_agents AS
     -- Appended last: CREATE OR REPLACE VIEW only permits adding columns at the
     -- end, never inserting mid-list.
     image_url,
-    rank_score
+    rank_score,
+    -- Appended for registry-owner search when the payment wallet differs.
+    NULL::text AS registry_owner
   FROM wallets
   WHERE chain = 'solana' AND score > 0
   UNION ALL
   SELECT
-    chain,
-    -- EVM getAgentWallet() returns the zero address when no custom wallet was
-    -- set — the effective operator is the owner, so coalesce zero → owner.
-    -- Soroban returns Option<Address>, so an unset Stellar wallet is NULL and
-    -- the same COALESCE resolves it to the owner.
-    COALESCE(NULLIF(agent_wallet, '0x0000000000000000000000000000000000000000'), owner) AS address,
-    registration->>'name'                AS display_name,
+    r.chain,
+    -- EVM zero address and Soroban NULL both mean the owner is the operator.
+    COALESCE(NULLIF(r.agent_wallet, '0x0000000000000000000000000000000000000000'), r.owner) AS address,
+    r.registration->>'name'              AS display_name,
     false                                AS claimed,
-    metadata_score::numeric              AS provider_score,
+    r.metadata_score::numeric            AS provider_score,
     NULL::numeric                        AS consumer_score,
     CASE
-      WHEN metadata_score <= 20 THEN 'Unrated'
-      WHEN metadata_score <= 40 THEN 'Poor'
-      WHEN metadata_score <= 60 THEN 'Fair'
-      WHEN metadata_score <= 75 THEN 'Good'
-      WHEN metadata_score <= 90 THEN 'Very Good'
+      WHEN r.metadata_score <= 20 THEN 'Unrated'
+      WHEN r.metadata_score <= 40 THEN 'Poor'
+      WHEN r.metadata_score <= 60 THEN 'Fair'
+      WHEN r.metadata_score <= 75 THEN 'Good'
+      WHEN r.metadata_score <= 90 THEN 'Very Good'
       ELSE 'Excellent'
     END                                  AS trust_tier,
     'declared'                           AS confidence_badge,
-    NULL::numeric                        AS autonomy_score,
-    NULL::text                           AS autonomy_label,
-    0                                    AS tx_count,
-    -- NULL, not last_indexed_at: that column is when WE scanned the registry.
-    -- Projecting it as last_seen made every declared agent read "Active" here
-    -- (refreshed each scan) while the leaderboard read "Inactive" for the same
-    -- agent. tx_count is 0, so last_seen must be NULL — the invariant in
-    -- docs/superpowers/specs/2026-09-13-observed-liveness.md.
-    NULL::timestamptz                    AS last_seen,
-    NULL::numeric AS metric_success_rate,
-    NULL::numeric AS metric_diversity,
-    NULL::numeric AS metric_volume,
-    NULL::numeric AS metric_age,
-    NULL::numeric AS metric_cadence,
-    CASE WHEN chain = 'celo'    THEN agent_id END AS celo_agent_id,
-    CASE WHEN chain = 'arc'     THEN agent_id END AS arc_agent_id,
-    CASE WHEN chain = 'stellar' THEN agent_id END AS stellar_agent_id,
-    metadata_score::numeric              AS score,
-    registration->>'image'               AS image_url,
-    -- Registry rows are 100% declared, so the weight applies unconditionally.
-    (metadata_score::numeric * 0.7)      AS rank_score
-  FROM erc8004_agents
-  WHERE chain IN ('celo', 'stellar')
+    w.autonomy_score, w.autonomy_label, COALESCE(w.tx_count, 0) AS tx_count,
+    -- Only observed activity; registry scan timestamps are not liveness.
+    w.last_seen,
+    w.metric_success_rate, w.metric_diversity, w.metric_volume, w.metric_age, w.metric_cadence,
+    CASE WHEN r.chain = 'celo'    THEN r.agent_id END AS celo_agent_id,
+    NULL::bigint AS arc_agent_id,
+    CASE WHEN r.chain = 'stellar' THEN r.agent_id END AS stellar_agent_id,
+    r.metadata_score::numeric            AS score,
+    r.registration->>'image'             AS image_url,
+    -- This score remains declared even when orthogonal wallet metrics exist.
+    (r.metadata_score::numeric * 0.7)    AS rank_score,
+    r.owner AS registry_owner
+  FROM erc8004_agents r
+  LEFT JOIN wallets w ON w.chain = r.chain
+    AND w.address = COALESCE(NULLIF(r.agent_wallet, '0x0000000000000000000000000000000000000000'), r.owner)
+  WHERE r.chain IN ('celo', 'stellar')
   UNION ALL
   -- Mainnet metadata identifies agents; only observed transfers supply Karma.
   -- Join on the composite wallet key so testnet scores cannot leak across.
@@ -111,7 +102,7 @@ CREATE OR REPLACE VIEW explore_agents AS
     w.autonomy_score, w.autonomy_label, COALESCE(w.tx_count, 0), w.last_seen,
     w.metric_success_rate, w.metric_diversity, w.metric_volume, w.metric_age, w.metric_cadence,
     NULL::bigint, r.agent_id, NULL::bigint,
-    COALESCE(w.score, 0), r.registration->>'image', COALESCE(w.rank_score, 0)
+    COALESCE(w.score, 0), r.registration->>'image', COALESCE(w.rank_score, 0), r.owner
   FROM erc8004_agents r
   LEFT JOIN wallets w ON w.chain = r.chain
     AND w.address = COALESCE(NULLIF(r.agent_wallet, '0x0000000000000000000000000000000000000000'), r.owner)

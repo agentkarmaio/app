@@ -704,11 +704,10 @@ describe('getAgents routes claimed=true for registry chains to wallets', () => {
     };
   }
 
-  // A raw erc8004_agents row (declared-only, always claimed:false once mapped).
+  // A projected registry identity from explore_agents (SQL join covered by the PG suite).
   const registryRow = {
-    agent_id: 1, metadata_score: 100, registration: { name: 'Arca' },
-    owner: '0xowner', agent_wallet: '0xwallet',
-    first_indexed_at: '2026-06-20T00:00:00Z', last_indexed_at: '2026-06-20T00:00:00Z',
+    chain: 'celo', celo_agent_id: 1, stellar_agent_id: null, provider_score: 100,
+    display_name: 'Arca', address: '0xwallet', claimed: false,
   };
   // A claimed wallet row for the same chain (this is where claims actually land).
   const claimedWalletRow = {
@@ -730,16 +729,14 @@ describe('getAgents routes claimed=true for registry chains to wallets', () => {
     expect(total).toBe(1);
   });
 
-  test('celo without claimed=true still reads the registry mirror (full population)', async () => {
+  test('celo without claimed=true reads the full registry population via the unified view', async () => {
     const fake = makeAgentsFake({ registryRows: [registryRow], walletRows: [claimedWalletRow] });
     __setSupabaseForTest(fake);
 
     const { wallets } = await getAgents(25, 0, { chain: 'celo' }, SORT);
 
-    expect(fake.__tablesQueried).toContain('erc8004_agents');
-    // The POPULATION must come from the mirror: exactly the registry row, never
-    // the claimed wallet row. (`wallets` is also touched, but only for the
-    // bounded per-page behavioral lookup — see getBehaviorForAddresses.)
+    expect(fake.__tablesQueried).toEqual(['explore_agents']);
+    // The population preserves registry identities, never owner-wallet rows.
     expect(wallets.length).toBe(1);
     expect(wallets[0].display_name).toBe('Arca');
     expect(wallets[0].claimed).toBe(false);
@@ -748,18 +745,17 @@ describe('getAgents routes claimed=true for registry chains to wallets', () => {
   // Stellar joined the registry-mirror set on 2026-08-05. Its 67 registered
   // agentIds collapse to 11 owner rows in `wallets` (one registrant holds ~10
   // agents), so routing it through the wallets path hid 56 agents.
-  test('stellar without claimed=true reads the registry mirror', async () => {
+  test('stellar without claimed=true reads registry identities through the unified view', async () => {
     const stellarRegistryRow = {
-      agent_id: 66, metadata_score: 90, registration: { name: 'AgentKarma' },
-      owner: 'GA6OBKNS', agent_wallet: 'GA6OBKNS',
-      first_indexed_at: '2026-08-05T00:00:00Z', last_indexed_at: '2026-08-05T00:00:00Z',
+      chain: 'stellar', stellar_agent_id: 66, celo_agent_id: null, provider_score: 90,
+      display_name: 'AgentKarma', address: 'GA6OBKNS', claimed: false,
     };
     const fake = makeAgentsFake({ registryRows: [stellarRegistryRow], walletRows: [claimedWalletRow] });
     __setSupabaseForTest(fake);
 
     const { wallets } = await getAgents(25, 0, { chain: 'stellar' }, SORT);
 
-    expect(fake.__tablesQueried).toContain('erc8004_agents');
+    expect(fake.__tablesQueried).toEqual(['explore_agents']);
     expect(wallets.length).toBe(1);
     expect(wallets[0].display_name).toBe('AgentKarma');
     // The agentId must land on the Stellar-specific column so /agent/G… resolves.
@@ -1363,13 +1359,8 @@ describe('declared rank weight is consistent across SQL definitions', () => {
 
 // ── Registry-mirror search must cover the declared agent name ────────────────
 //
-// Regression for 2026-09-02: `/explore?chain=celo&q=agentkarma` returned 0
-// agents while the same query on "All chains" returned AgentKarma on both Celo
-// and Stellar. The two paths search different things — the all-chains
-// `explore_agents` view exposes `display_name`, but the per-chain registry path
-// queries `erc8004_agents` directly, where the name lives in the `registration`
-// JSONB and the filter only matched `owner`/`agent_wallet`. Searching a
-// registry chain by name was therefore address-only.
+// Registry names and owner addresses remain searchable after per-chain queries
+// move to the canonical view, including when agent_wallet differs from owner.
 describe('registry-chain search matches the declared name, not just addresses', () => {
   const SORT = { field: 'provider_score' as const, direction: 'desc' as const };
 
@@ -1382,7 +1373,7 @@ describe('registry-chain search matches the declared name, not just addresses', 
         for (const m of ['select', 'neq', 'eq', 'gt', 'gte', 'lt', 'in', 'order', 'not', 'limit']) {
           b[m] = () => b;
         }
-        b.or = (f: string) => { if (table === 'erc8004_agents') orFilters.push(f); return b; };
+        b.or = (f: string) => { if (table === 'explore_agents') orFilters.push(f); return b; };
         b.range = async () => ({ data: table === 'wallets' ? [] : rows, error: null, count: rows.length });
         return b;
       },
@@ -1397,7 +1388,7 @@ describe('registry-chain search matches the declared name, not just addresses', 
     first_indexed_at: '2026-06-20T00:00:00Z', last_indexed_at: '2026-09-01T00:00:00Z',
   };
 
-  test('a name search on celo filters on registration->>name', async () => {
+  test('a name search on celo filters on the projected display_name', async () => {
     const fake = makeSearchFake([akCelo]);
     __setSupabaseForTest(fake);
 
@@ -1405,9 +1396,10 @@ describe('registry-chain search matches the declared name, not just addresses', 
 
     const searchFilter = fake.__orFilters.find((f) => f.includes('ilike'));
     expect(searchFilter).toBeDefined();
-    expect(searchFilter).toContain('registration->>name.ilike.%agentkarma%');
-    // Address matching must survive — searching by owner address still works.
-    expect(searchFilter).toContain('owner.ilike.%agentkarma%');
+    expect(searchFilter).toContain('display_name.ilike.%agentkarma%');
+    // Effective wallet/owner address matching remains available.
+    expect(searchFilter).toContain('address.ilike.%agentkarma%');
+    expect(searchFilter).toContain('registry_owner.ilike.%agentkarma%');
   });
 
   test('the same holds for the other registry chains', async () => {
@@ -1415,7 +1407,7 @@ describe('registry-chain search matches the declared name, not just addresses', 
       const fake = makeSearchFake([akCelo]);
       __setSupabaseForTest(fake);
       await getAgents(25, 0, { chain, search: 'AgentKarma' }, SORT);
-      expect(fake.__orFilters.some((f) => f.includes('registration->>name.ilike.'))).toBe(true);
+      expect(fake.__orFilters.some((f) => f.includes('display_name.ilike.'))).toBe(true);
     }
   });
 
@@ -1472,9 +1464,13 @@ describe('liveness status filters read observed activity', () => {
     const preds: Pred[] = [];
     return {
       __preds: preds,
-      from() {
+      from(table: string) {
+        preds.push({ method: 'from', column: table, value: null });
         const b: Record<string, unknown> = {};
-        for (const m of ['select', 'or', 'in', 'limit', 'order']) b[m] = () => b;
+        for (const m of ['select', 'or', 'limit']) b[m] = () => b;
+        for (const m of ['in', 'order']) b[m] = (column: string, value: unknown) => {
+          preds.push({ method: m, column, value }); return b;
+        };
         for (const m of ['neq', 'eq', 'gt', 'gte', 'lt', 'is', 'not']) {
           b[m] = (column: string, value: unknown) => {
             preds.push({ method: m, column, value });
@@ -1488,6 +1484,35 @@ describe('liveness status filters read observed activity', () => {
   }
 
   const lastSeenPreds = (preds: Pred[]) => preds.filter((p) => p.column === 'last_seen');
+
+  for (const chain of ['celo', 'stellar'] as const) {
+    for (const status of ['Active', 'Recent', 'Dormant', 'Inactive', 'Unobserved'] as const) {
+      test(`${chain} ${status} filters measured liveness instead of short-circuiting`, async () => {
+        const fake = makePredicateRecordingFake();
+        __setSupabaseForTest(fake);
+        await getAgents(25, 0, { chain, status });
+        expect(fake.__preds[0]).toEqual({ method: 'from', column: 'explore_agents', value: null });
+        expect(fake.__preds).toContainEqual({ method: 'eq', column: 'chain', value: chain });
+        const liveness = lastSeenPreds(fake.__preds);
+        expect(liveness.length).toBeGreaterThan(0);
+        expect(liveness.some(p => p.method === 'is')).toBe(status === 'Unobserved');
+      });
+    }
+    test(`${chain} applies all measured metric filters and sorts through SQL`, async () => {
+      const fake = makePredicateRecordingFake();
+      __setSupabaseForTest(fake);
+      await getAgents(1, 1, { chain, minCadence: 0.3, minDiversity: 0.2, minSuccessRate: 0,
+        autonomyLabels: ['agent-like'] }, { field: 'metric_diversity', direction: 'desc' });
+      expect(fake.__preds[0].column).toBe('explore_agents');
+      expect(fake.__preds).toContainEqual({ method: 'gte', column: 'metric_cadence', value: 0.3 });
+      expect(fake.__preds).toContainEqual({ method: 'gte', column: 'metric_diversity', value: 0.2 });
+      expect(fake.__preds).toContainEqual({ method: 'gte', column: 'metric_success_rate', value: 0 });
+      expect(fake.__preds).toContainEqual({ method: 'in', column: 'autonomy_label', value: ['agent-like'] });
+      expect(fake.__preds.find(p => p.method === 'order')).toEqual({ method: 'order', column: 'metric_diversity',
+        value: { ascending: false, nullsFirst: false } });
+    });
+  }
+
 
   test('Unobserved asks for IS NULL, not an old date', async () => {
     const fake = makePredicateRecordingFake();
@@ -1524,27 +1549,6 @@ describe('liveness status filters read observed activity', () => {
       { method: 'is', column: 'last_seen', value: null },
     ]);
   });
-});
-
-describe('registry chains cannot satisfy a dated liveness bucket', () => {
-  // Registry rows are declared-only: tx_count 0, last_seen NULL. This path used
-  // to ignore `status` entirely, so filtering "Active" on Celo returned the full
-  // declared list — a liveness claim for agents we have never observed.
-  function makeThrowingFake() {
-    return {
-      from() {
-        throw new Error('registry page must short-circuit before querying');
-      },
-    };
-  }
-
-  for (const status of ['Active', 'Recent', 'Dormant', 'Inactive'] as const) {
-    test(`${status} on a registry chain returns empty without querying`, async () => {
-      __setSupabaseForTest(makeThrowingFake());
-      const page = await getAgents(25, 0, { chain: 'celo', status }, { field: 'provider_score', direction: 'desc' });
-      expect(page).toEqual({ wallets: [], total: 0 });
-    });
-  }
 });
 
 // A registration-stage unreachability is the scanner's failure to read an

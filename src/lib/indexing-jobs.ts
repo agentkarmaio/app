@@ -5,6 +5,8 @@ import {
   upsertErc8004Feedback,
   getRegistryCursorTip,
   setRegistryCursorTip,
+  getCursor,
+  upsertCursor,
 } from '@/db/client';
 import {
   acquireIndexingLease,
@@ -185,7 +187,17 @@ export function createIndexingJob(
           upsertErc8004Feedback,
           (c) => getRegistryCursorTip(c as Chain),
           (c, tip) => setRegistryCursorTip(c as Chain, tip),
-          { rescanWindow: options.rescanWindow ?? 100, signal },
+          { rescanWindow: options.rescanWindow ?? 100, signal,
+            ...(chain === 'arc-mainnet' ? { refreshCursor: {
+              load: async () => {
+                const row = await getCursor('arc-mainnet-registry-refresh', chain);
+                if (!row) return 0;
+                if (!/^\d+$/.test(row.last_signature)) throw new Error('configuration_invalid');
+                return Number(row.last_signature);
+              },
+              save: async (nextId: number) => upsertCursor('arc-mainnet-registry-refresh', String(nextId), undefined, chain),
+            } } : {}),
+          },
         );
         return coverageOutcome({
           complete: r.errors === 0,

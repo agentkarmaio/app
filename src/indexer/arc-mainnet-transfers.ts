@@ -18,7 +18,7 @@ import {
 } from '@/db/client';
 import { getIndexingHeaders } from '@/db/indexing-context';
 import { isRateLimitedError } from '@/lib/rpc-retry';
-import { arcTransfersIndexer, TRANSFER_EVENT, type ArcTransfer, type ArcTransfersIndexerDeps } from './arc-transfers';
+import { arcTransfersIndexer, arcTransfersCursorKey, TRANSFER_EVENT, type ArcTransfer, type ArcTransfersIndexerDeps, type TransferFace } from './arc-transfers';
 import { isArcLogRangeError, withArcLogRetry, type ArcIndexRunResult } from './arc-log-range';
 
 interface MainnetTransferLog {
@@ -100,6 +100,136 @@ export async function loadArcMainnetSeedRows(signal?: AbortSignal): Promise<ArcM
 export interface ArcMainnetTransfersDeps extends Omit<ArcTransfersIndexerDeps, 'chain' | 'seed' | 'usdcContract'> {
   getChainId: () => Promise<number>;
   loadSeedRows: () => Promise<ArcMainnetSeedRows>;
+  /** Production coverage store. A global stream cursor cannot prove when an
+   * address joined the seed set; only these per-address frontiers can. */
+  history?: ArcMainnetSeedHistory;
+}
+
+export interface ArcMainnetSeedHistory {
+  read: (seeds: ReadonlySet<string>) => Promise<Map<string, number>>;
+  write: (rows: Array<{ address: string; block: number }>) => Promise<void>;
+  getLogs: (from: bigint, to: bigint, face: TransferFace, seeds: ReadonlySet<string>) => Promise<ArcTransfer[]>;
+}
+
+const SEED_CURSOR_PREFIX = 'arc-mainnet-transfer-seed:';
+// Cursor keys include a prefix as well as the address. 200 encoded keys make
+// a 14.7KB URI; Kong's cap is 8KB (see db/client.ts ADDRESS_IN_CHUNK).
+const SEED_CURSOR_READ_BATCH = 75;
+const SEED_CURSOR_WRITE_BATCH = 200;
+
+/** Batched membership reads avoid one DB round trip per registry address and
+ * stay below PostgREST's response cap. Removed seeds keep their saved history. */
+export async function readArcMainnetSeedCoverage(seeds: ReadonlySet<string>, signal?: AbortSignal): Promise<Map<string, number>> {
+  const addresses = [...seeds];
+  const result = new Map<string, number>();
+  for (let offset = 0; offset < addresses.length; offset += SEED_CURSOR_READ_BATCH) {
+    signal?.throwIfAborted();
+    const { data, error } = await supabase.from('indexer_cursors')
+      .select('facilitator,last_slot').eq('chain', 'arc-mainnet')
+      .in('facilitator', addresses.slice(offset, offset + SEED_CURSOR_READ_BATCH).map(address => SEED_CURSOR_PREFIX + address));
+    signal?.throwIfAborted();
+    if (error) throw error;
+    for (const row of data ?? []) {
+      const address = row.facilitator.slice(SEED_CURSOR_PREFIX.length);
+      if (!seeds.has(address) || !Number.isSafeInteger(row.last_slot) || row.last_slot < 0) {
+        throw new Error('arc_mainnet_seed_cursor_invalid');
+      }
+      result.set(address, row.last_slot);
+    }
+  }
+  return result;
+}
+
+export async function writeArcMainnetSeedCoverage(rows: Array<{ address: string; block: number }>, signal?: AbortSignal): Promise<void> {
+  for (let offset = 0; offset < rows.length; offset += SEED_CURSOR_WRITE_BATCH) {
+    signal?.throwIfAborted();
+    const { error } = await supabase.from('indexer_cursors').upsert(
+      rows.slice(offset, offset + SEED_CURSOR_WRITE_BATCH).map(row => ({
+        chain: 'arc-mainnet', facilitator: SEED_CURSOR_PREFIX + row.address,
+        last_signature: String(row.block), last_slot: row.block, updated_at: new Date().toISOString(),
+      })), { onConflict: 'chain,facilitator' });
+    signal?.throwIfAborted();
+    if (error) throw error;
+  }
+}
+
+/** Live windows run first, reserving half the budget for membership recovery.
+ * Resume the most advanced incomplete cohort before admitting new seeds, so
+ * registrations during recovery cannot continually reset that cohort to zero. */
+async function scanWithSeedHistory(deps: ArcMainnetTransfersDeps, seeds: ReadonlySet<string>): Promise<ArcIndexRunResult> {
+  const history = deps.history!;
+  const now = deps.now ?? Date.now;
+  const deadline = now() + (deps.timeBudgetMs ?? 120_000);
+  // Registered agents with only failed/non-USDC transactions have no transfer
+  // row to create them. Materialize the admitted seed subjects so settlement
+  // can inspect them too; the shared helper inserts identities only, preserving
+  // existing metrics and never claiming activity that was not observed.
+  await deps.ensureWallets([...seeds]);
+  deps.signal?.throwIfAborted();
+  const coverage = await history.read(seeds);
+  deps.signal?.throwIfAborted();
+  for (const [address, block] of coverage) {
+    if (!seeds.has(address) || !Number.isSafeInteger(block) || block < 0) throw new Error('arc_mainnet_seed_cursor_invalid');
+  }
+  const globalKey = arcTransfersCursorKey(ARC_MAINNET_USDC_CONTRACT, 'arc-mainnet');
+  const previous = await deps.getCursor(globalKey);
+  const previousBlock = previous?.last_slot ?? -1;
+  if (!Number.isSafeInteger(previousBlock) || previousBlock < -1) throw new Error('arc_mainnet_seed_cursor_invalid');
+  deps.signal?.throwIfAborted();
+  const live = await arcTransfersIndexer({
+    ...deps, chain: 'arc-mainnet', usdcContract: ARC_MAINNET_USDC_CONTRACT, seed: seeds,
+    getCursor: async () => previous ?? { last_signature: '-1', last_slot: -1 },
+    timeBudgetMs: Math.max(0, (deadline - now()) / 2),
+  });
+  if (live.coverage.reason === 'head_behind_cursor') return live;
+  const liveBlock = Number(live.coverage.checkpoint ?? previousBlock);
+  const head = Number(live.coverage.head);
+  if (!Number.isSafeInteger(head) || head < 0 || !Number.isSafeInteger(liveBlock)
+    || liveBlock < -1 || liveBlock > head) throw new Error('arc_mainnet_seed_cursor_invalid');
+  if ([...coverage.values()].some(block => block > head)) throw new Error('arc_mainnet_seed_cursor_invalid');
+  // A seed is continuous only if its prior verified prefix reaches the start
+  // of this live scan. Missing seeds never inherit an existing stream cursor.
+  const continuous = [...seeds].filter(address => (coverage.get(address) ?? -1) >= previousBlock);
+  if (liveBlock >= 0 && liveBlock > previousBlock && continuous.length > 0) {
+    await history.write(continuous.filter(address => (coverage.get(address) ?? -1) < liveBlock)
+      .map(address => ({ address, block: liveBlock })));
+    deps.signal?.throwIfAborted();
+    for (const address of continuous) coverage.set(address, Math.max(coverage.get(address) ?? -1, liveBlock));
+  }
+
+  const pending = [...seeds].filter(address => (coverage.get(address) ?? -1) < liveBlock);
+  let replay: ArcIndexRunResult | undefined;
+  if (pending.length > 0 && now() < deadline) {
+    const frontier = Math.max(...pending.map(address => coverage.get(address) ?? -1));
+    const cohort = new Set(pending.filter(address => (coverage.get(address) ?? -1) === frontier));
+    replay = await arcTransfersIndexer({
+      ...deps, chain: 'arc-mainnet', usdcContract: ARC_MAINNET_USDC_CONTRACT, seed: cohort,
+      getHead: async () => BigInt(liveBlock),
+      getCursor: async () => ({ last_signature: String(frontier), last_slot: frontier }),
+      getLogs: (from, to, face) => history.getLogs(from, to, face, cohort),
+      timeBudgetMs: Math.max(0, deadline - now()),
+      upsertCursor: async (_key, _last, block) => {
+        if (block === undefined) throw new Error('arc_mainnet_seed_cursor_invalid');
+        await history.write([...cohort].map(address => ({ address, block })));
+        deps.signal?.throwIfAborted();
+        for (const address of cohort) coverage.set(address, block);
+      },
+    });
+  }
+  const floor = Math.min(...[...seeds].map(address => coverage.get(address) ?? -1));
+  const backlog = Math.max(0, head - floor);
+  const unresolved = live.coverage.unresolved + (replay?.coverage.unresolved ?? 0);
+  return {
+    fetched: live.fetched + (replay?.fetched ?? 0), inserted: live.inserted + (replay?.inserted ?? 0),
+    cursors: new Map([...live.cursors, ...[...coverage].map(([address, block]) => [SEED_CURSOR_PREFIX + address, String(block)] as const)]),
+    coverage: {
+      ...live.coverage, checkpoint: String(floor),
+      checked: live.coverage.checked + (replay?.coverage.checked ?? 0), pending: backlog,
+      unresolved,
+      complete: backlog === 0 && unresolved === 0 && live.coverage.complete && (replay?.coverage.complete ?? true),
+      reason: live.coverage.reason ?? replay?.coverage.reason ?? (backlog > 0 ? 'budget' : undefined),
+    },
+  };
 }
 
 function safeMainnetError(error: unknown): Error {
@@ -127,9 +257,11 @@ export async function arcMainnetTransfersIndexer(deps: ArcMainnetTransfersDeps):
     if (chainId !== ARC_MAINNET_CHAIN_ID) throw new Error('arc_mainnet_chain_mismatch');
     const rows = await deps.loadSeedRows();
     deps.signal?.throwIfAborted();
+    const seed = buildArcMainnetSeedSet(rows);
+    if (deps.history && seed.size > 0) return await scanWithSeedHistory(deps, seed);
     return await arcTransfersIndexer({
       ...deps, chain: 'arc-mainnet', usdcContract: ARC_MAINNET_USDC_CONTRACT,
-      seed: buildArcMainnetSeedSet(rows),
+      seed,
     });
   } catch (error) {
     deps.signal?.throwIfAborted();
@@ -151,6 +283,19 @@ export async function runArcMainnetTransfersIndexer(opts: { signal?: AbortSignal
     return result;
   };
   let seedList: `0x${string}`[] = [];
+  const readLogs = async (fromBlock: bigint, toBlock: bigint, face: TransferFace, seeds: readonly `0x${string}`[]) => {
+    if (seeds.length === 0) throw new Error('arc_mainnet_seed_empty');
+    const logs = await rpc(() => client.getLogs({
+      address: ARC_MAINNET_TRANSFER_EMITTER, event: TRANSFER_EVENT,
+      args: face === 'from' ? { from: [...seeds] } : { to: [...seeds] }, fromBlock, toBlock,
+    }));
+    const transfers: ArcTransfer[] = [];
+    for (const log of logs) {
+      const transfer = parseArcMainnetTransfer(log);
+      if (transfer) transfers.push(transfer);
+    }
+    return transfers;
+  };
   return arcMainnetTransfersIndexer({
     signal: opts.signal, windowSize: 10_000, maxWindows: opts.maxWindows ?? 50, timeBudgetMs: 120_000,
     getChainId: () => rpc(() => client.getChainId()),
@@ -160,18 +305,11 @@ export async function runArcMainnetTransfersIndexer(opts: { signal?: AbortSignal
       return rows;
     },
     getHead: () => rpc(() => client.getBlockNumber()),
-    getLogs: async (fromBlock, toBlock, face) => {
-      if (seedList.length === 0) throw new Error('arc_mainnet_seed_empty');
-      const logs = await rpc(() => client.getLogs({
-        address: ARC_MAINNET_TRANSFER_EMITTER, event: TRANSFER_EVENT,
-        args: face === 'from' ? { from: seedList } : { to: seedList }, fromBlock, toBlock,
-      }));
-      const transfers: ArcTransfer[] = [];
-      for (const log of logs) {
-        const transfer = parseArcMainnetTransfer(log);
-        if (transfer) transfers.push(transfer);
-      }
-      return transfers;
+    getLogs: (from, to, face) => readLogs(from, to, face, seedList),
+    history: {
+      read: seeds => readArcMainnetSeedCoverage(seeds, opts.signal),
+      write: rows => writeArcMainnetSeedCoverage(rows, opts.signal),
+      getLogs: (from, to, face, seeds) => readLogs(from, to, face, [...seeds] as `0x${string}`[]),
     },
     blockTimestamp: async (blockNumber) => {
       const block = await rpc(() => client.getBlock({ blockNumber }));

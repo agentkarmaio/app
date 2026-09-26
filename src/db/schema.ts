@@ -537,7 +537,7 @@ export const walletTxStatsTable = pgTable('wallet_tx_stats', {
   updated_at:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.chain, table.address], name: 'wallet_tx_stats_pkey' }),
-]);
+]).enableRLS();
 
 // --- ERC-8004 Registry Mirror (per-agent, keyed by agent_id not address) -----
 //

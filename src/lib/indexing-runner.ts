@@ -82,8 +82,11 @@ export function indexingErrorCode(error: unknown): string {
   if (/PGRST301|jwt|authentication|unauthorized|forbidden/i.test(`${code} ${m}`)) return 'rpc_authentication_failed';
   if (/^429$|429|rate.limit|quota|max usage/i.test(`${code} ${m}`)) return 'rpc_rate_limited';
   if (m === 'arc_mainnet_chain_mismatch') return 'rpc_chain_mismatch';
-  if (m === 'arc_mainnet_rpc_missing') return 'configuration_missing';
-  if (['arc_mainnet_rpc_invalid', 'arc_mainnet_start_invalid', 'arc_mainnet_seed_invalid', 'arc_mainnet_seed_limit'].includes(m)) return 'configuration_invalid';
+  if (m === 'arc_mainnet_walk_head_behind') return 'head_behind_cursor';
+  if (['arc_mainnet_rpc_missing', 'arc_mainnet_walk_start_missing'].includes(m)) return 'configuration_missing';
+  if (['arc_mainnet_rpc_invalid', 'arc_mainnet_start_invalid', 'arc_mainnet_seed_invalid', 'arc_mainnet_seed_limit',
+    'arc_mainnet_seed_cursor_invalid', 'arc_mainnet_walk_cursor_invalid', 'arc_mainnet_walk_invalid',
+    'arc_mainnet_walk_stats_invalid', 'arc_mainnet_walk_wallet_invalid'].includes(m)) return 'configuration_invalid';
   if (ERROR_CODES.has(m)) return m;
   if (/429|rate.limit|quota|max usage/i.test(m)) return 'rpc_rate_limited';
   if (/range.*block|block.*range/i.test(m)) return 'rpc_range_rejected';

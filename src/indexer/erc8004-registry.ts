@@ -682,6 +682,9 @@ export interface IncrementalScanOptions extends RegistryScanOptions {
   /** Recent re-scan window — re-reads the most recent N ids so feedback added to
    *  already-mirrored agents is caught (default DEFAULT_RESCAN_WINDOW = 500). */
   rescanWindow?: number;
+  /** Rotate a second bounded window over older members, including owner and
+   * agent-wallet changes. Persist only after the complete scan succeeds. */
+  refreshCursor?: { load: () => Promise<number>; save: (nextId: number) => Promise<void> };
 }
 
 /**
@@ -719,11 +722,29 @@ export async function runIncrementalRegistryScan(
     };
   }
 
+  let agentIds: number[] | undefined;
+  let refreshNext: number | undefined;
+  if (opts.refreshCursor) {
+    const first = config.firstAgentId ?? 1;
+    const saved = await opts.refreshCursor.load();
+    if (!Number.isSafeInteger(saved) || saved < first || !Number.isSafeInteger(window) || window < 1) {
+      throw new Error('configuration_invalid');
+    }
+    const start = saved > currentTip ? first : saved;
+    const end = Math.min(currentTip, start + window - 1);
+    const ids = new Set<number>();
+    for (let id = from; id <= to; id++) ids.add(id);
+    for (let id = start; id <= end; id++) ids.add(id);
+    agentIds = [...ids].sort((a, b) => a - b);
+    refreshNext = end >= currentTip ? first : end + 1;
+  }
+
   const result = await scanRegistry(config, persistAgents, persistFeedback, client, {
     ...opts,
     client,
     fromId: from,
     toId: to,
+    ...(agentIds ? { agentIds } : {}),
   });
 
   // Advance the cursor only on a clean run so error-skipped ids are retried.
@@ -733,6 +754,7 @@ export async function runIncrementalRegistryScan(
   opts.signal?.throwIfAborted();
   if (result.errors === 0) {
     await setCursorTip(config.chain, currentTip);
+    if (refreshNext !== undefined) await opts.refreshCursor!.save(refreshNext);
     opts.signal?.throwIfAborted();
     log(`incremental: cursor advanced to ${currentTip}`
       + (result.registrationUnreachable > 0 ? ` (${result.registrationUnreachable} registration(s) unreachable)` : ''));

@@ -41,7 +41,7 @@
     "specimen:server": "bun run specimen/server.ts",
     "specimen:call": "bun run specimen/scripts/call.ts",
     "specimen:cron": "bun run specimen/scripts/cron.ts",
-    "db:indexing": "servel infra sql @agentkarma-db --remote KN --service db drizzle/0018_indexing_state.sql --track && bun run db:mainnet:expand && servel infra sql @agentkarma-db --remote KN --service db drizzle/0023_stats_snapshots.sql --track && servel infra sql @agentkarma-db --remote KN --service db drizzle/0024_retire_arc_testnet.sql --track",
+    "db:indexing": "servel infra sql @agentkarma-db --remote KN --service db drizzle/0018_indexing_state.sql --track && bun run db:mainnet:expand && servel infra sql @agentkarma-db --remote KN --service db drizzle/0023_stats_snapshots.sql --track && servel infra sql @agentkarma-db --remote KN --service db drizzle/0024_retire_arc_testnet.sql --track && servel infra sql @agentkarma-db --remote KN --service db drizzle/0025_wallet_tx_stats.sql --track",
     "db:mainnet:expand": "servel infra sql @agentkarma-db --remote KN --service db drizzle/0019_arc_mainnet_expand.sql --track",
     "db:mainnet:contract": "servel infra sql @agentkarma-db --remote KN --service db drizzle/0020_arc_mainnet_contract.sql --track"
   },
