@@ -58,10 +58,52 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  query('TRUNCATE public.indexing_state, public.indexer_cursors, public.erc8004_agents, public.wallets, public.organizations, public.celo_x402_payees CASCADE;');
+  query('TRUNCATE public.wallet_tx_stats, public.indexing_state, public.indexer_cursors, public.erc8004_agents, public.wallets, public.organizations, public.celo_x402_payees CASCADE;');
 });
 
 describe('persistent lease and success state', () => {
+  test('settlement counters reject public writes without lease headers despite default grants', () => {
+    // Reproduce Supabase public-schema defaults before applying the repeatable
+    // hardening SQL; absent context must not bypass table authorization.
+    query('GRANT ALL ON public.wallet_tx_stats TO anon, authenticated;');
+    query(readFileSync(resolve('src/db/sql/indexing-state.sql'), 'utf8'));
+    query("INSERT INTO public.indexing_state(chain,path,enabled,interval_ms) VALUES ('arc-mainnet','transfers',true,300000);");
+    acquire(ownerA, 'arc-mainnet');
+    query(`BEGIN; SET LOCAL ROLE service_role;
+      SET LOCAL request.headers='{"x-indexing-chain":"arc-mainnet","x-indexing-path":"transfers","x-indexing-owner":"${ownerA}"}';
+      INSERT INTO public.wallet_tx_stats(chain,address,settled_count,last_block)
+      VALUES ('arc-mainnet','protected-counter',2,100); COMMIT;`);
+    for (const role of ['anon', 'authenticated']) {
+      expect(() => query(`SET ROLE ${role}; INSERT INTO public.wallet_tx_stats(chain,address,settled_count)
+        VALUES ('arc-mainnet','injected-counter',99);`)).toThrow();
+      expect(() => query(`SET ROLE ${role}; UPDATE public.wallet_tx_stats SET settled_count=99
+        WHERE chain='arc-mainnet' AND address='protected-counter';`)).toThrow();
+      expect(() => query(`SET ROLE ${role}; DELETE FROM public.wallet_tx_stats
+        WHERE chain='arc-mainnet' AND address='protected-counter';`)).toThrow();
+    }
+    expect(query("SELECT settled_count FROM public.wallet_tx_stats WHERE address='protected-counter';")).toBe('2');
+    expect(query("SELECT count(*) FROM public.wallet_tx_stats WHERE address='injected-counter';")).toBe('0');
+  });
+
+  test('Arc wallet receipt counters reject expired and wrong owners while accepting the live lease', () => {
+    query("INSERT INTO public.indexing_state(chain,path,enabled,interval_ms) VALUES ('arc-mainnet','transfers',true,300000);");
+    acquire(ownerA, 'arc-mainnet');
+    const writeCounters = (owner: string, settled: number) => query(`BEGIN; SET LOCAL ROLE service_role;
+      SET LOCAL request.headers='{"x-indexing-chain":"arc-mainnet","x-indexing-path":"transfers","x-indexing-owner":"${owner}"}';
+      INSERT INTO public.wallet_tx_stats(chain,address,settled_count,failed_count,last_block)
+      VALUES ('arc-mainnet','fenced-counter',${settled},0,100)
+      ON CONFLICT(chain,address) DO UPDATE SET settled_count=EXCLUDED.settled_count; COMMIT;`);
+    writeCounters(ownerA, 2);
+    expect(query("SELECT settled_count FROM wallet_tx_stats WHERE chain='arc-mainnet' AND address='fenced-counter';")).toBe('2');
+    expect(() => writeCounters(ownerB, 9)).toThrow('indexing_lease_lost');
+    query("UPDATE indexing_state SET lease_until=clock_timestamp()-interval '1 second' WHERE chain='arc-mainnet';");
+    expect(() => writeCounters(ownerA, 9)).toThrow('indexing_lease_lost');
+    acquire(ownerB, 'arc-mainnet');
+    writeCounters(ownerB, 3);
+    expect(() => writeCounters(ownerA, 9)).toThrow('indexing_lease_lost');
+    expect(query("SELECT settled_count FROM wallet_tx_stats WHERE chain='arc-mainnet' AND address='fenced-counter';")).toBe('3');
+  });
+
   test('mainnet receipt keyset pages preserve tied PostgreSQL timestamps and isolate chains', () => {
     seedArchivedRows("INSERT INTO public.wallets(chain,address) VALUES ('arc-mainnet','page-wallet'),('arc','page-wallet');");
     seedArchivedRows(`INSERT INTO public.signal_events(id,chain,agent_wallet,tier,kind,observed_at)
@@ -340,6 +382,47 @@ describe('actual ingestion write fencing', () => {
   });
 });
 
+
+test('registry explorer preserves measured metrics, unknowns, identities and chain isolation before pagination', () => {
+  query(readFileSync(resolve('src/db/sql/explore-agents-view.sql'), 'utf8'));
+  seedArchivedRows(`INSERT INTO wallets(chain,address,score,provider_score,confidence_badge,trust_tier,
+      autonomy_score,autonomy_label,tx_count,last_seen,metric_cadence,metric_success_rate,metric_diversity,metric_volume,metric_age)
+    VALUES ('stellar','shared',12,12,'behavior-inferred','Unrated',82,'agent-like',8,'2026-09-25T00:00:00Z',0.6,0.75,0.4,0.25,1),
+      ('celo','shared',99,99,'receipt-backed','Excellent',0,'human-like',2,'2026-09-24T00:00:00Z',0,0,0,0,0),
+      ('arc-mainnet','shared',90,90,'behavior-inferred','Very Good',99,'agent-like',999,now(),0.99,1,0.99,0.99,0.99);
+    INSERT INTO erc8004_agents(chain,agent_id,owner,agent_wallet,metadata_score,registration)
+    VALUES ('stellar',0,'owner','shared',80,'{"name":"First"}'),
+      ('stellar',1,'owner','shared',100,'{"name":"Second"}'),
+      ('stellar',2,'missing',NULL,100,'{"name":"Unknown"}'),
+      ('celo',0,'shared','0x0000000000000000000000000000000000000000',70,'{"name":"Zero"}'),
+      ('celo',1,'missing',NULL,100,'{"name":"Missing"}');`);
+  const rows = JSON.parse(query(`SELECT json_agg(t) FROM (SELECT * FROM explore_agents
+    ORDER BY chain,stellar_agent_id,celo_agent_id) t;`));
+  expect(rows).toHaveLength(5);
+  expect(rows[0]).toMatchObject({ chain: 'celo', address: 'shared', celo_agent_id: 0, stellar_agent_id: null,
+    provider_score: 70, score: 70, rank_score: 49, confidence_badge: 'declared', trust_tier: 'Good',
+    autonomy_score: 0, autonomy_label: 'human-like', tx_count: 2, metric_cadence: 0,
+    metric_success_rate: 0, metric_diversity: 0, metric_volume: 0, metric_age: 0 });
+  for (const row of [rows[1], rows[4]]) {
+    expect(row).toMatchObject({ address: 'missing', autonomy_score: null, autonomy_label: null,
+      tx_count: 0, last_seen: null, metric_cadence: null, metric_success_rate: null,
+      metric_diversity: null, metric_volume: null, metric_age: null });
+  }
+  expect(rows[2]).toMatchObject({ chain: 'stellar', stellar_agent_id: 0, celo_agent_id: null,
+    address: 'shared', display_name: 'First', provider_score: 80, rank_score: 56,
+    autonomy_score: 82, autonomy_label: 'agent-like', tx_count: 8, metric_cadence: 0.6,
+    metric_success_rate: 0.75, metric_diversity: 0.4, metric_volume: 0.25, metric_age: 1 });
+  expect(new Date(rows[2].last_seen).toISOString()).toBe('2026-09-25T00:00:00.000Z');
+  expect(rows[3]).toMatchObject({ stellar_agent_id: 1, display_name: 'Second', tx_count: 8, metric_diversity: 0.4 });
+  // Same metric population in All and a pinned chain; zero is measured, NULL is unknown.
+  expect(query('SELECT count(*) FROM explore_agents WHERE metric_success_rate>=0;')).toBe('3');
+  expect(query("SELECT count(*) FROM explore_agents WHERE chain='stellar' AND registry_owner ILIKE '%owner%';")).toBe('2');
+  expect(query("SELECT count(*) FROM explore_agents WHERE chain='celo' AND registry_owner ILIKE '%owner%';")).toBe('0');
+  expect(query("SELECT count(*) FROM explore_agents WHERE chain='stellar' AND metric_cadence>=0.3 AND metric_diversity>=0.2 AND metric_success_rate>=0.5 AND autonomy_label='agent-like';")).toBe('2');
+  expect(query("SELECT stellar_agent_id FROM explore_agents WHERE chain='stellar' AND metric_diversity>=0.2 ORDER BY metric_diversity DESC,stellar_agent_id LIMIT 1 OFFSET 1;")).toBe('1');
+  expect(query('SELECT count(*) FROM explore_agents WHERE last_seen IS NULL;')).toBe('2');
+  expect(query("SELECT count(*) FROM explore_agents WHERE last_seen>='2026-09-25T00:00:00Z';")).toBe('2');
+});
 
 test('mainnet ranking view joins only mainnet scores and preserves every agent identity', () => {
   query(readFileSync(resolve('src/db/sql/explore-agents-view.sql'), 'utf8'));

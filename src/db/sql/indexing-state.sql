@@ -187,6 +187,11 @@ REVOKE ALL ON FUNCTION public.renew_indexing_lease(text,text,uuid,integer) FROM 
 REVOKE ALL ON FUNCTION public.release_indexing_lease(text,text,uuid) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.finish_indexing_run(text,text,uuid,text,text,text,text,integer,integer,integer,integer,integer) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.fence_indexing_write() FROM PUBLIC, anon, authenticated, service_role;
+-- Derived receipt counters are worker-owned, never public input. Supabase
+-- default table grants otherwise allow writes that omit indexing headers.
+ALTER TABLE public.wallet_tx_stats ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.wallet_tx_stats FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.wallet_tx_stats TO service_role;
 GRANT EXECUTE ON FUNCTION public.acquire_indexing_lease(text,text,uuid,integer,integer,boolean) TO service_role;
 GRANT EXECUTE ON FUNCTION public.renew_indexing_lease(text,text,uuid,integer) TO service_role;
 GRANT EXECUTE ON FUNCTION public.release_indexing_lease(text,text,uuid) TO service_role;
@@ -195,7 +200,7 @@ GRANT EXECUTE ON FUNCTION public.finish_indexing_run(text,text,uuid,text,text,te
 DO $$
 DECLARE target text;
 BEGIN
-  FOREACH target IN ARRAY ARRAY['indexer_cursors','transactions','signal_events','wallets','erc8004_agents','erc8004_feedback','scores','successions','feedback','organization_members','agent_manifests','bonds','bond_underwriters','celo_x402_payees'] LOOP
+  FOREACH target IN ARRAY ARRAY['indexer_cursors','transactions','signal_events','wallets','wallet_tx_stats','erc8004_agents','erc8004_feedback','scores','successions','feedback','organization_members','agent_manifests','bonds','bond_underwriters','celo_x402_payees'] LOOP
     EXECUTE format('DROP TRIGGER IF EXISTS indexing_write_fence ON public.%I', target);
     EXECUTE format('CREATE TRIGGER indexing_write_fence BEFORE INSERT OR UPDATE OR DELETE ON public.%I FOR EACH ROW EXECUTE FUNCTION public.fence_indexing_write()', target);
   END LOOP;

@@ -27,6 +27,20 @@ private
 # build before the ES2020 target bump). Matches the top-level dir only.
 scripts
 
+# Rust/Soroban build output for the bond-escrow contract: `target/debug` alone
+# is 848 MB across 1954 files (2026-09-26), and it was the whole reason the
+# build context sat at 302 MB. `.gitignore:54` already ignores it — which did
+# NOT help, because servel packages the tree minus `.dockerignore` and does not
+# read `.gitignore` at all. Hence the duplicate entry here. Nothing under `src/`
+# reads `contracts/` (only doc-comment mentions), so the Next build never needs
+# it. Excluding this plus `.worktrees` takes the context from 928 MB to 23 MB.
+# `contracts/*/target` rather than a literal path so a second contract is covered.
+contracts/*/target
+
+# Git worktrees for in-flight branches — other branches' full trees, not this
+# app's source. Their node_modules/.next are already matched above.
+.worktrees
+
 # OS / editor / logs
 *.log
 .DS_Store

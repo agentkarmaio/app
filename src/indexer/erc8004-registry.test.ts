@@ -696,18 +696,18 @@ describe('incrementalScanRange', () => {
 describe('runIncrementalRegistryScan (cursor-driven)', () => {
   // A fake client whose registry tip is `maxId`; every id 1..maxId has an owner
   // and zero feedback. Lets us assert which id range the scan actually touched.
-  function fakeClient(maxId: number, scannedIds: Set<number>) {
+  function fakeClient(maxId: number, scannedIds: Set<number>, firstId = 1) {
     return {
       readContract: (async ({ args }: { args: readonly unknown[] }) => {
         const id = Number(args[0] as bigint);
-        if (id >= 1 && id <= maxId) return '0xowner';
+        if (id >= firstId && id <= maxId) return '0xowner';
         throw contractRevert('ERC721NonexistentToken');
       }) as never,
       multicall: (async ({ contracts }: { contracts: { functionName: string; args: readonly unknown[] }[] }) =>
         contracts.map((c) => {
           const id = Number(c.args[0] as bigint);
           if (c.functionName === 'readAllFeedback') return { status: 'success', result: [[], [], [], [], [], [], []] };
-          if (id < 1 || id > maxId) return { status: 'failure' };
+          if (id < firstId || id > maxId) return { status: 'failure' };
           if (c.functionName === 'ownerOf') { scannedIds.add(id); return { status: 'success', result: '0xowner' }; }
           if (c.functionName === 'getAgentWallet') return { status: 'success', result: '0xowner' };
           if (c.functionName === 'tokenURI') return { status: 'success', result: '' };
@@ -722,6 +722,49 @@ describe('runIncrementalRegistryScan (cursor-driven)', () => {
   } as unknown as Erc8004RegistryConfig;
 
   const noopPersist = async (_c: string, items: unknown[]) => items.length;
+
+  test('rotates through older identities without dropping the recent discovery window', async () => {
+    let next = 1;
+    const all = new Set<number>();
+    for (let run = 0; run < 8; run++) {
+      const scanned = new Set<number>();
+      await runIncrementalRegistryScan(config, noopPersist, noopPersist,
+        async () => 40, async () => {}, {
+          client: fakeClient(40, scanned), rescanWindow: 5, fetchRemote: false,
+          refreshCursor: { load: async () => next, save: async (value: number) => { next = value; } },
+        });
+      expect([...scanned]).toEqual(expect.arrayContaining([36, 37, 38, 39, 40]));
+      expect(scanned.size).toBeLessThanOrEqual(10);
+      scanned.forEach(id => all.add(id));
+    }
+    expect([...all].sort((a,b) => a-b)).toEqual(Array.from({ length: 40 }, (_,i) => i+1));
+    expect(next).toBe(1);
+  });
+
+  test('refresh rotation includes ID zero and clamps a cursor beyond the current tip', async () => {
+    const scanned = new Set<number>();
+    let next = 900;
+    await runIncrementalRegistryScan({ ...config, firstAgentId: 0 }, noopPersist, noopPersist,
+      async () => 40, async () => {}, {
+        client: fakeClient(40, scanned, 0), rescanWindow: 5, fetchRemote: false,
+        refreshCursor: { load: async () => next, save: async value => { next = value; } },
+      });
+    expect([...scanned]).toEqual([0, 1, 2, 3, 4, 36, 37, 38, 39, 40]);
+    expect(next).toBe(5);
+  });
+
+  test('failed refresh retains its old-member cursor for retry', async () => {
+    const client = fakeClient(40, new Set());
+    client.multicall = (async () => { throw new Error('network unavailable'); }) as never;
+    let writes = 0;
+    const result = await runIncrementalRegistryScan(config, noopPersist, noopPersist,
+      async () => 40, async () => { writes++; }, {
+        client, rescanWindow: 5, fetchRemote: false,
+        refreshCursor: { load: async () => 1, save: async () => { writes++; } },
+      });
+    expect(result.errors).toBeGreaterThan(0);
+    expect(writes).toBe(0);
+  });
 
   test('scans only [new-ids ∪ window] and advances the cursor on a clean run', async () => {
     const scanned = new Set<number>();

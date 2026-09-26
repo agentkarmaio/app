@@ -18,6 +18,16 @@ test('structured provider errors retain their actionable classification', () => 
   expect(indexingErrorCode({ code: 'PGRST301', message: 'JWT expired' })).toBe('rpc_authentication_failed');
   expect(indexingErrorCode({ code: '429', message: 'rate limit exceeded' })).toBe('rpc_rate_limited');
 });
+
+test('settlement history configuration faults have actionable bounded codes', () => {
+  expect(indexingErrorCode(Error('arc_mainnet_walk_start_missing'))).toBe('configuration_missing');
+  expect(indexingErrorCode(Error('arc_mainnet_walk_cursor_invalid'))).toBe('configuration_invalid');
+  expect(indexingErrorCode(Error('arc_mainnet_walk_invalid'))).toBe('configuration_invalid');
+  expect(indexingErrorCode(Error('arc_mainnet_seed_cursor_invalid'))).toBe('configuration_invalid');
+  expect(indexingErrorCode(Error('arc_mainnet_walk_stats_invalid'))).toBe('configuration_invalid');
+  expect(indexingErrorCode(Error('arc_mainnet_walk_wallet_invalid'))).toBe('configuration_invalid');
+  expect(indexingErrorCode(Error('arc_mainnet_walk_head_behind'))).toBe('head_behind_cursor');
+});
 const job: IndexingJob = {
   chain: 'arc',
   path: 'escrow',
