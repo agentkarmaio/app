@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { activityStatus, orderActivityChains, parseActivityStats, parseActivityHealth, startActivityPoll, type ActivityStats } from './live-flow-state';
+import { activityStatus, activeActivityChains, activityTone, parseActivityStats, parseActivityHealth, startActivityPoll, type ActivityStats } from './live-flow-state';
 import type { IndexingHealth } from '@/lib/indexing-health';
 
 const stats: ActivityStats = { totalTransactions: 42, totalAgents: 17 };
@@ -64,12 +64,18 @@ test('rejects incomplete or malformed network status instead of crashing the dis
   expect(() => parseActivityHealth({ status: 'toString', chains: [] })).toThrow();
 });
 
-test('keeps Arc testnet last without changing the remaining network order', async () => {
+test('hides retired Arc testnet without changing the remaining network order', async () => {
   const { buildIndexingHealth } = await import('@/lib/indexing-health');
   const health = buildIndexingHealth([]);
-  expect(orderActivityChains(health.chains).map((chain) => chain.chain)).toEqual([
-    'solana', 'celo', 'stellar', 'arc-mainnet', 'arc',
+  expect(activeActivityChains(health.chains).map((chain) => chain.chain)).toEqual([
+    'solana', 'celo', 'stellar', 'arc-mainnet',
   ]);
+});
+
+test('delayed updates always read as a warning regardless of chain health', () => {
+  expect(activityTone(health('current'), true)).toBe('warn');
+  expect(activityTone(health('current'), false)).toBe('ok');
+  expect(activityTone(null, false)).toBe('idle');
 });
 
 test('timeout becomes visible even if an in-flight reader ignores abort', async () => {
