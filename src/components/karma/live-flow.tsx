@@ -1,13 +1,40 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
-import type { IndexingHealth } from '@/lib/indexing-health';
+import { ChevronDown, RefreshCw } from 'lucide-react';
+import type { IndexingHealth, IndexingStatus } from '@/lib/indexing-health';
 import {
-  activityStatus, INDEXING_STATUS_LABELS, INDEXING_ISSUE_MESSAGES, orderActivityChains, parseActivityStats, parseActivityHealth, startActivityPoll, type ActivityStats,
+  activeActivityChains, activityStatus, activityTone, INDEXING_ISSUE_MESSAGES, INDEXING_STATUS_LABELS, INDEXING_STATUS_TONES,
+  parseActivityHealth, parseActivityStats, startActivityPoll, type ActivityStats, type StatusTone,
 } from './live-flow-state';
 
-const CHAIN_LABELS = { solana: 'Solana', arc: 'Arc testnet', 'arc-mainnet': 'Arc', celo: 'Celo', stellar: 'Stellar' };
+const CHAIN_LABELS: Record<string, string> = { solana: 'Solana', 'arc-mainnet': 'Arc', celo: 'Celo', stellar: 'Stellar' };
+
+const TONE_DOT: Record<StatusTone, string> = {
+  ok: 'bg-emerald-400',
+  busy: 'bg-sky-400',
+  warn: 'bg-amber-400',
+  error: 'bg-red-400',
+  idle: 'bg-muted-foreground/50',
+};
+
+function StatusDot({ tone, pulse = false }: { tone: StatusTone; pulse?: boolean }) {
+  return (
+    <span aria-hidden="true" className="relative inline-flex size-1.5 shrink-0">
+      {pulse && <span className={`absolute inset-0 animate-ping rounded-full opacity-60 motion-reduce:hidden ${TONE_DOT[tone]}`} />}
+      <span className={`relative inline-flex size-1.5 rounded-full ${TONE_DOT[tone]}`} />
+    </span>
+  );
+}
+
+function StatusBadge({ status }: { status: IndexingStatus }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
+      <StatusDot tone={INDEXING_STATUS_TONES[status]} />
+      {INDEXING_STATUS_LABELS[status]}
+    </span>
+  );
+}
 
 function CheckedTime({ value, empty }: { value: string | null | undefined; empty: string }) {
   if (!value || !Number.isFinite(Date.parse(value))) return <span>{empty}</span>;
@@ -58,8 +85,10 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
   const status = activityStatus(stats, health, statsFailed, healthFailed);
   const delayed = status === 'Updates delayed';
 
+  const tone = activityTone(health, delayed);
+
   return (
-    <div aria-label="Indexed activity" className="relative inline-flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-[510] text-muted-foreground">
+    <div aria-label="Indexed activity" className="relative inline-flex">
       <details
         ref={detailsRef}
         className="group"
@@ -70,58 +99,78 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
           }
         }}
       >
-        <summary className="flex min-h-10 cursor-pointer list-none items-center gap-1 rounded px-1 uppercase tracking-[0.12em] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-          Indexed activity
+        <summary className="flex min-h-10 cursor-pointer list-none flex-wrap items-center gap-x-2.5 gap-y-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 py-1.5 text-[11px] font-[510] text-muted-foreground backdrop-blur-sm transition-colors hover:border-white/[0.14] hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-open:border-white/[0.14] group-open:bg-white/[0.05] motion-reduce:transition-none [&::-webkit-details-marker]:hidden">
+          <StatusDot tone={tone} pulse={tone === 'ok' || tone === 'busy'} />
+          <span className="uppercase tracking-[0.12em]">Indexed activity</span>
+          <span aria-hidden="true" className="h-3 w-px bg-white/[0.1]" />
+          {stats ? (
+            <span className="inline-flex items-center gap-1.5">
+              <span key={`tx-${pulseKey}`} className="font-mono tabular-nums text-foreground karma-live-flash motion-reduce:animate-none">{stats.totalTransactions.toLocaleString('en-US')}</span>
+              <span>receipts</span>
+              <span aria-hidden="true" className="text-white/20">·</span>
+              <span className="font-mono tabular-nums text-foreground">{stats.totalAgents.toLocaleString('en-US')}</span>
+              <span>agents</span>
+            </span>
+          ) : <span>{statsFailed ? 'Counts unavailable' : 'Loading counts…'}</span>}
+          <span aria-hidden="true" className="h-3 w-px bg-white/[0.1]" />
+          <span role="status" className={delayed ? 'text-amber-300' : undefined}>{status}</span>
           <ChevronDown aria-hidden="true" className="size-3 transition-transform group-open:rotate-180 motion-reduce:transition-none" />
         </summary>
-        <div className="absolute left-0 top-full z-40 mt-2 max-h-[70vh] w-[min(28rem,calc(100vw-3rem))] overflow-y-auto rounded-lg border border-border bg-popover p-4 text-xs font-normal text-popover-foreground shadow-lg">
-          <p className="font-medium">Network coverage</p>
-          <p className="mt-1 text-muted-foreground">Relevant agent activity across active networks. Archived testnet records are excluded from these counts.</p>
-          {healthFailed && <p className="mt-3 text-muted-foreground">Status updates are delayed. Showing the last available report.</p>}
+        <div className="absolute left-0 top-full z-40 mt-2 max-h-[70vh] w-[min(26rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-border bg-popover text-xs text-popover-foreground shadow-2xl shadow-black/40">
+          <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+            <div>
+              <p className="text-[13px] font-medium">Network coverage</p>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">Agent activity indexed across live networks.</p>
+            </div>
+            <span className="mt-0.5 inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+              <StatusDot tone={tone} />
+              {status}
+            </span>
+          </div>
+          {healthFailed && <p className="border-b border-border bg-amber-400/[0.06] px-4 py-2 text-[11px] text-amber-200/90">Status updates are delayed. Showing the last available report.</p>}
           {health ? (
-            <div className="mt-4 space-y-4">
-              {orderActivityChains(health.chains).map((chain) => (
-                <section key={chain.chain} aria-label={`${CHAIN_LABELS[chain.chain]} indexing`}>
-                  <div className="flex items-baseline justify-between gap-3">
-                    <h3 className="font-medium">{CHAIN_LABELS[chain.chain]}</h3>
-                    <span className="text-muted-foreground">{chain.chain === 'arc' ? 'Retired' : INDEXING_STATUS_LABELS[chain.status]}</span>
+            <div className="divide-y divide-border">
+              {activeActivityChains(health.chains).map((chain) => (
+                <section key={chain.chain} aria-label={`${CHAIN_LABELS[chain.chain]} indexing`} className="px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-[12px] font-medium">{CHAIN_LABELS[chain.chain]}</h3>
+                    <StatusBadge status={chain.status} />
                   </div>
-                  <ul className="mt-2 space-y-2 border-l border-border pl-3">
+                  <ul className="mt-2 space-y-1.5">
                     {chain.paths.map((path) => (
-                      <li key={path.path}>
-                        <div className="flex items-baseline justify-between gap-2">
-                          <span>{path.label}</span>
-                          <span className="text-right text-muted-foreground">{chain.chain === 'arc' ? 'Archived' : INDEXING_STATUS_LABELS[path.status]}</span>
+                      <li key={path.path} className="rounded-md bg-white/[0.02] px-2.5 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-foreground/90">{path.label}</span>
+                          <StatusBadge status={path.status} />
                         </div>
-                        <p className="mt-0.5 text-[11px] text-muted-foreground">Last checked: <CheckedTime value={path.lastCheckedAt} empty="Never checked" /></p>
-                        <p className="text-[11px] text-muted-foreground">Last complete scan: <CheckedTime value={path.lastSuccessAt} empty="Not yet completed" /></p>
-                        {chain.chain !== 'arc' && path.unresolved > 0 && <p className="text-[11px] text-muted-foreground">At least {path.unresolved.toLocaleString('en-US')} coverage issues</p>}
-                        {chain.chain !== 'arc' && path.issue && <p className="mt-1 text-[11px] text-muted-foreground">{INDEXING_ISSUE_MESSAGES[path.issue]}</p>}
+                        <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 text-[11px] text-muted-foreground">
+                          <dt>Last checked</dt>
+                          <dd className="text-right tabular-nums"><CheckedTime value={path.lastCheckedAt} empty="Never checked" /></dd>
+                          <dt>Last complete scan</dt>
+                          <dd className="text-right tabular-nums"><CheckedTime value={path.lastSuccessAt} empty="Not yet completed" /></dd>
+                        </dl>
+                        {path.unresolved > 0 && <p className="mt-1 text-[11px] text-amber-200/80">At least {path.unresolved.toLocaleString('en-US')} coverage issues</p>}
+                        {path.issue && <p className="mt-1 text-[11px] text-muted-foreground">{INDEXING_ISSUE_MESSAGES[path.issue]}</p>}
                       </li>
                     ))}
                   </ul>
                 </section>
               ))}
             </div>
-          ) : <p className="mt-4 text-muted-foreground">{healthFailed ? 'Network status is unavailable. Retrying automatically.' : 'Checking network status…'}</p>}
-          <div className="mt-4 border-t border-border pt-3 text-[11px] text-muted-foreground">
-            <p>Transaction count checked: <CheckedTime value={stats?.freshness?.transactionsUpdatedAt} empty="Time unavailable" /></p>
-            <p>Agent count checked: <CheckedTime value={stats?.freshness?.agentsUpdatedAt} empty="Time unavailable" /></p>
-            {delayed && <p className="mt-2">Updates delayed. Existing counts are preserved; checks retry automatically.</p>}
-            <button type="button" onClick={() => setRefresh((value) => value + 1)} className="mt-2 min-h-10 rounded px-2 text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Check again</button>
+          ) : <p className="px-4 py-4 text-muted-foreground">{healthFailed ? 'Network status is unavailable. Retrying automatically.' : 'Checking network status…'}</p>}
+          <div className="flex items-end justify-between gap-3 border-t border-border px-4 py-3 text-[11px] text-muted-foreground">
+            <div className="space-y-0.5">
+              <p>Receipts checked: <CheckedTime value={stats?.freshness?.transactionsUpdatedAt} empty="Time unavailable" /></p>
+              <p>Agents checked: <CheckedTime value={stats?.freshness?.agentsUpdatedAt} empty="Time unavailable" /></p>
+              {delayed && <p className="pt-1 text-amber-200/90">Updates delayed. Existing counts are preserved; checks retry automatically.</p>}
+            </div>
+            <button type="button" onClick={() => setRefresh((value) => value + 1)} className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-foreground transition-colors hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none">
+              <RefreshCw aria-hidden="true" className="size-3" />
+              Check again
+            </button>
           </div>
         </div>
       </details>
-      {stats ? (
-        <span className="inline-flex items-center gap-2">
-          <span key={`tx-${pulseKey}`} className="font-mono tabular-nums karma-live-flash motion-reduce:animate-none">{stats.totalTransactions.toLocaleString('en-US')}</span>
-          <span>receipts</span>
-          <span aria-hidden="true">·</span>
-          <span className="font-mono tabular-nums">{stats.totalAgents.toLocaleString('en-US')}</span>
-          <span>agents</span>
-        </span>
-      ) : <span>{statsFailed ? 'Counts unavailable' : 'Loading counts…'}</span>}
-      <span role="status" className={delayed ? 'text-foreground' : 'text-muted-foreground'}>{status}</span>
     </div>
   );
 }

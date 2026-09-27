@@ -34,9 +34,22 @@ export function activityStatus(
   return INDEXING_STATUS_LABELS[health.status];
 }
 
-/** Keep Arc testnet as the final network in the homepage disclosure. */
-export function orderActivityChains(chains: IndexingHealth['chains']): IndexingHealth['chains'] {
-  return chains.filter((chain) => chain.chain !== 'arc').concat(chains.filter((chain) => chain.chain === 'arc'));
+/** Retired Arc testnet stays in the API payload but is not shown on the homepage. */
+export function activeActivityChains(chains: IndexingHealth['chains']): IndexingHealth['chains'] {
+  return chains.filter((chain) => chain.chain !== 'arc');
+}
+
+export type StatusTone = 'ok' | 'busy' | 'warn' | 'error' | 'idle';
+
+export const INDEXING_STATUS_TONES: Record<IndexingStatus, StatusTone> = {
+  current: 'ok', running: 'busy', catching_up: 'busy',
+  dormant: 'idle', disabled: 'idle', failed: 'error',
+  delayed: 'warn', unknown: 'idle',
+};
+
+export function activityTone(health: IndexingHealth | null, delayed: boolean): StatusTone {
+  if (delayed) return 'warn';
+  return health ? INDEXING_STATUS_TONES[health.status] : 'idle';
 }
 
 /** A malformed successful response must never overwrite last-known counts. */
