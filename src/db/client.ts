@@ -4,6 +4,9 @@
  * Env vars required:
  *   NEXT_PUBLIC_SUPABASE_URL
  *   SUPABASE_SERVICE_ROLE_KEY
+ * Optional:
+ *   SUPABASE_INTERNAL_URL — in-cluster gateway (prod: http://kong:8000). The
+ *   public URL routes through Cloudflare: 130-400 ms per query vs 30-65 ms.
  */
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
@@ -100,10 +103,15 @@ export function __setSupabaseForTest(client: unknown): void {
   staleStats = {};
 }
 
+/** Server-side gateway URL: the in-cluster one when deployed, else the public one. */
+export function supabaseServerUrl(env: Record<string, string | undefined> = process.env): string | undefined {
+  return env.SUPABASE_INTERNAL_URL || env.NEXT_PUBLIC_SUPABASE_URL;
+}
+
 function getSupabase(): SupabaseClient {
   if (_testClient) return _testClient;
   if (_client) return _client;
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const url = supabaseServerUrl();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error('NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set');
   _client = createClient(url, key, { global: { fetch: makeIndexingFetch() } });
