@@ -30,6 +30,7 @@ import { SolanaSDK } from '8004-solana';
 import { Keypair } from '@solana/web3.js';
 import { makeSolanaRegistryReader, scanSolanaRegistry } from '@/indexer/solana-registry';
 import { requireEnv } from '@/lib/require-env';
+import type { ScannedAgent } from '@/indexer/erc8004-registry';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -82,16 +83,17 @@ const execution = await runIndexerCli({
       pageSize,
       maxAgents,
       fetchRemote,
+      ...(dryRun ? {} : {
+        onPage: async (agents: ScannedAgent[]) => {
+          const { upsertErc8004Agents } = await import('@/db/client');
+          written += await upsertErc8004Agents('solana', agents);
+        },
+      }),
       onProgress: (total, offset) => {
         const elapsed = ((Date.now() - startedAt) / 1000).toFixed(0);
         console.log(`[${elapsed.padStart(4)}s] offset ${String(offset).padStart(5)} — ${total} agents mapped`);
       },
     });
-    if (!dryRun) {
-      signal?.throwIfAborted();
-      const { upsertErc8004Agents } = await import('@/db/client');
-      written = await upsertErc8004Agents('solana', scanned.agents);
-    }
     return scanned;
   },
   summarize: (r) => {

@@ -29,6 +29,7 @@ import type { Erc8004RegistrationStatus } from '@/db/schema';
 import { scoreMetadataQuality } from '@/scoring/celo-metadata';
 import { decodeRegistration, type ScannedAgent } from './erc8004-registry';
 import { withRateLimitRetry, type RateLimitRetryOpts } from '@/lib/rpc-retry';
+import { withConcurrency } from '@/lib/concurrency';
 
 /** Upstream page cap. `searchAgents` never returns more than this per call. */
 export const SOLANA_INDEXER_PAGE_SIZE = 250;
@@ -159,9 +160,22 @@ export interface ScanSolanaOpts extends MapOpts, RateLimitRetryOpts {
   fromOffset?: number;
   /** Stop after this many mapped agents. Default: the whole registry. */
   maxAgents?: number;
+  /** Registration fetches in flight per page. */
+  concurrency?: number;
+  /**
+   * Persist one page's mapped agents; awaited before the next page is read, so
+   * a sweep cut short by the job budget keeps every page it already mapped.
+   */
+  onPage?: (agents: ScannedAgent[]) => Promise<void>;
   /** Called after each page with the running mapped-agent total. */
   onProgress?: (total: number, offset: number) => void;
 }
+
+/**
+ * One slow or dead metadata host costs up to the fetch timeout. Mapped one at a
+ * time, a few hundred of those pushed the daily sweep past its 20-minute budget.
+ */
+export const SOLANA_REGISTRATION_CONCURRENCY = 8;
 
 export interface ScanSolanaResult {
   agents: ScannedAgent[];
@@ -227,9 +241,9 @@ export async function scanSolanaRegistry(opts: ScanSolanaOpts): Promise<ScanSola
     pagesFetched++;
     consecutivePageErrors = 0;
 
+    const fresh: SolanaIndexedAgent[] = [];
     for (const row of rows) {
-      opts.signal?.throwIfAborted();
-      if (agents.length >= maxAgents) break;
+      if (agents.length + fresh.length >= maxAgents) break;
       const agentId = parseAgentId(row.agent_id);
       if (agentId === null) {
         skippedNoAgentId++;
@@ -240,10 +254,16 @@ export async function scanSolanaRegistry(opts: ScanSolanaOpts): Promise<ScanSola
         continue;
       }
       seen.add(agentId);
-      const mapped = await mapSolanaAgentToScanned(row, opts);
-      opts.signal?.throwIfAborted();
-      agents.push(mapped);
+      fresh.push(row);
     }
+    const mapped = await withConcurrency(
+      fresh,
+      Math.max(1, opts.concurrency ?? SOLANA_REGISTRATION_CONCURRENCY),
+      (row) => mapSolanaAgentToScanned(row, opts),
+    );
+    opts.signal?.throwIfAborted();
+    if (mapped.length > 0) await opts.onPage?.(mapped);
+    agents.push(...mapped);
 
     onProgress?.(agents.length, offset);
     offset += limit;

@@ -252,3 +252,55 @@ describe('registry cancellation and finite failure budget', () => {
     expect(calls).toBe(1);
   });
 });
+
+describe('sweep throughput and durability (2026-09 scan_timeout)', () => {
+  // The daily sweep mapped registrations one at a time, each able to wait out
+  // an 8s fetch timeout, and persisted only after the whole walk. Slow hosts
+  // pushed it past the 20-minute job budget and every row of work was dropped.
+  const remoteRows = (n: number) =>
+    Array.from({ length: n }, (_, i) => row({ agent_id: i, asset: `asset${i}`, agent_uri: `https://93.184.216.34/reg/${i}` }));
+
+  test("maps a page's remote registrations concurrently, preserving order", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      peak = Math.max(peak, ++inFlight);
+      await Bun.sleep(20);
+      inFlight--;
+      return new Response(JSON.stringify(REG), { headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const res = await scanSolanaRegistry({ reader: readerOver(remoteRows(8)), pageSize: 10, concurrency: 4 });
+      expect(peak).toBe(4);
+      expect(res.agents.map((a) => a.agentId)).toEqual([...Array(8).keys()]);
+      expect(res.agents.every((a) => a.registrationStatus === 'fetched')).toBe(true);
+    } finally { globalThis.fetch = previousFetch; }
+  });
+
+  test('hands each page to onPage before the next page is read', async () => {
+    const events: string[] = [];
+    const rows = Array.from({ length: 5 }, (_, i) => row({ agent_id: i, asset: `asset${i}` }));
+    const base = readerOver(rows);
+    await scanSolanaRegistry({
+      reader: { page: async (offset, limit) => { events.push(`read@${offset}`); return base.page(offset, limit); } },
+      pageSize: 2,
+      onPage: async (agents) => { events.push(`persist:${agents.map((a) => a.agentId).join(',')}`); },
+    });
+    expect(events).toEqual(['read@0', 'persist:0,1', 'read@2', 'persist:2,3', 'read@4', 'persist:4']);
+  });
+
+  test('pages persisted before an abort survive it', async () => {
+    const controller = new AbortController();
+    const persisted: number[] = [];
+    const rows = Array.from({ length: 6 }, (_, i) => row({ agent_id: i, asset: `asset${i}` }));
+    const base = readerOver(rows);
+    await expect(scanSolanaRegistry({
+      signal: controller.signal,
+      pageSize: 2,
+      reader: { page: async (offset, limit) => { if (offset === 4) controller.abort(Error('scan_timeout')); return base.page(offset, limit); } },
+      onPage: async (agents) => { persisted.push(...agents.map((a) => a.agentId)); },
+    })).rejects.toThrow('scan_timeout');
+    expect(persisted).toEqual([0, 1, 2, 3]);
+  });
+});
