@@ -114,7 +114,7 @@ async function synthesizeRegistryWalletRow(
     arc_agent_id: chain === 'arc' ? agentId : null,
   } as Wallet;
 }
-import { resolveAgentChain } from './resolve-chain';
+import { parseAgentIdHint, resolveAgentChain } from './resolve-chain';
 
 /**
  * Disambiguate which EVM chain an agentId belongs to using the address already
@@ -341,11 +341,13 @@ export async function generateMetadata(
   if (!wallet || wallet.length < 32) {
     return { title: 'Agent not found' };
   }
-  const agentId = agentIdHint != null && /^\d+$/.test(agentIdHint) ? Number(agentIdHint) : null;
+  const { agentId, malformed } = parseAgentIdHint(agentIdHint);
+  // The Arc page 404s a malformed id; its unfurl must not resolve the address instead.
+  if (chainHint === 'arc-mainnet' && malformed) return { title: 'Agent not found' };
 
   // Resolve the SAME fields the OG image uses — handles ERC-8004 registry agents
   // (not in `wallets`) so the unfurl shows real score/tier/chain, not 0/Unrated.
-  const f = await cachedAgentCardFields(wallet, chainHint === 'arc-mainnet' && agentIdHint != null ? agentId ?? Number.NaN : agentId, isChain(chainHint) ? chainHint : undefined);
+  const f = await cachedAgentCardFields(wallet, agentId, isChain(chainHint) ? chainHint : undefined);
   const badgeLabel = f.badge === 'receipt-backed'
     ? 'Receipt-backed'
     : f.badge === 'behavior-inferred'
@@ -673,7 +675,7 @@ export default async function AgentProfilePage({
 }) {
   const { wallet } = await params;
   const { chain: chainHint, agentId: agentIdHint } = await searchParams;
-  const agentIdNum = agentIdHint != null && /^\d+$/.test(agentIdHint) ? Number(agentIdHint) : null;
+  const { agentId: agentIdNum, malformed: agentIdMalformed } = parseAgentIdHint(agentIdHint);
   // Solana base58 is the shortest accepted format at 32 chars. EVM is exactly
   // 42 (0x + 40 hex); Stellar is 56. Anything below 32 is junk.
   if (!wallet || wallet.length < 32) notFound();
@@ -707,7 +709,10 @@ export default async function AgentProfilePage({
   // profile is built from ERC-8004 registration + reputation reads keyed by
   // agentId (Arc adds its transfer-based Karma on top).
   if (resolved.addressClass === 'evm') {
-    if (resolved.chain === 'arc-mainnet') return <ArcMainnetAgentProfile wallet={wallet} agentId={agentIdHint != null ? agentIdNum ?? Number.NaN : undefined} deadMansSwitch={deadMansSwitch} />;
+    if (resolved.chain === 'arc-mainnet') {
+      if (agentIdMalformed) notFound();
+      return <ArcMainnetAgentProfile wallet={wallet} agentId={agentIdNum} deadMansSwitch={deadMansSwitch} />;
+    }
     // Prefer a real wallet row's agentId; otherwise honor the ?agentId= hint
     // from the registry-mirror leaderboard (fleet owners aren't in `wallets`, so
     // most registry agents only resolve via this path). Build a minimal walletRow

@@ -109,3 +109,14 @@ export async function resolveAgentChain(
     candidates,
   };
 }
+
+/**
+ * `?agentId=` → a registry id, or `malformed` when present but not a
+ * non-negative safe integer. Never yields NaN: cache keys are JSON, where NaN
+ * collapses into null and would share the address-only entry.
+ */
+export function parseAgentIdHint(hint: string | undefined): { agentId: number | null; malformed: boolean } {
+  if (hint == null) return { agentId: null, malformed: false };
+  const agentId = /^\d+$/.test(hint) ? Number(hint) : Number.NaN;
+  return Number.isSafeInteger(agentId) ? { agentId, malformed: false } : { agentId: null, malformed: true };
+}
