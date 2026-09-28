@@ -26,6 +26,9 @@ import {
 export async function ArcMainnetAgentProfile({ wallet, agentId, deadMansSwitch }: {
   wallet: string; agentId?: number | null; deadMansSwitch?: ReactNode;
 }) {
+  // Reject before the cache: its key is JSON, where NaN serializes as null and
+  // would share the address-only entry (?agentId=abc serving or poisoning it).
+  if (agentId != null && !Number.isSafeInteger(agentId)) notFound();
   const profile = await cachedArcMainnetProfile(wallet, agentId ?? null);
   const snapshot = profile?.snapshot ?? null;
   if (agentId != null && !snapshot) notFound();
