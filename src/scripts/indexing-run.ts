@@ -1,4 +1,5 @@
 import { runIndexingJob } from '@/lib/indexing-jobs';
+import { indexingErrorCode } from '@/lib/indexing-runner';
 import { shouldPageIndexingOutcome } from '@/lib/indexing-exit';
 import { INDEXING_PATHS } from '@/lib/indexing-health';
 import { requireEnv } from '@/lib/require-env';
@@ -24,7 +25,9 @@ try {
   });
   console.log(JSON.stringify({ chain: job.chain, path: job.path, ...result }));
   process.exit(shouldPageIndexingOutcome(result) ? 1 : 0);
-} catch {
-  console.error(`[indexing] ${job.chain}/${job.path} run_failed`);
+} catch (error) {
+  // Name the cause: a bare run_failed left the 2026-09-28 page undiagnosable.
+  const detail = error instanceof Error ? error.message.split('\n')[0] : String(error);
+  console.error(`[indexing] ${job.chain}/${job.path} run_failed (${indexingErrorCode(error)}): ${detail}`);
   process.exit(1);
 }

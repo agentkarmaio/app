@@ -241,13 +241,18 @@ export function createIndexingJob(
             ? { rpcUrl: process.env.SOLANA_RPC_URL }
             : {}),
         });
+        // Persisted page by page: a sweep cut short by the job budget keeps
+        // every page it already mapped instead of dropping the whole walk.
+        let count = 0;
         const r = await scanSolanaRegistry({
           reader: makeSolanaRegistryReader(sdk),
           fromOffset: options.fromOffset ?? 0,
           fetchRemote: true,
           signal,
+          onPage: async (agents) => {
+            count += await upsertErc8004Agents('solana', agents);
+          },
         });
-        const count = await upsertErc8004Agents('solana', r.agents);
         const unresolved = r.errors.length + r.skippedNoAgentId;
         const pending = options.fromOffset ?? 0;
         return coverageOutcome({
