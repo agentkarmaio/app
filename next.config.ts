@@ -1,6 +1,13 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  experimental: {
+    // Revisiting a dynamic page within 60s reuses the client router cache
+    // instead of refetching behind loading.tsx. 60s = the server profile cache
+    // TTL, so a revisit is never staler than a fresh render. Claim, edit and
+    // delivery-feedback flows refresh/reload after writing, bypassing it.
+    staleTimes: { dynamic: 60 },
+  },
   async redirects() {
     return [
       // The actual PDF lives at /files/deck.pdf so iframe/PDF.js can fetch it;

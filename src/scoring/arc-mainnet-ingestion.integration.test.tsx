@@ -5,10 +5,10 @@ import { ARC_MAINNET_TRANSFER_EMITTER } from '@/config/arc-mainnet';
 import { arcMainnetTransfersIndexer, parseArcMainnetTransfer } from '@/indexer/arc-mainnet-transfers';
 import { collectArcMainnetReceipts } from './arc-mainnet-receipts';
 import { computeAgentLiveBundle } from './live-agent-score';
-import { resolveKarma } from '@/lib/karma-resolver';
+import { resolveArcMainnetProfile, resolveKarma } from '@/lib/karma-resolver';
 import { resolveAgentCardFields } from '@/lib/agent-card-fields';
 import { fullKarmaJson, resolveForChain } from '@/app/mcp/route';
-import { ArcMainnetAgentProfile, ReceiptDetails } from '@/components/karma/arc-mainnet-agent-profile';
+import { ArcMainnetActivityDetails, ArcMainnetProfileOverview } from '@/components/karma/arc-mainnet-profile-details';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 afterEach(() => { __setSupabaseForTest(null); setSystemTime(); });
@@ -98,11 +98,15 @@ test('the real mainnet parser and ingestion engine emit both scoreable behavior 
   expect(mcp).toMatchObject({ chain: 'arc-mainnet', provider: { score: 5.06 }, consumer: { score: null },
     receiptEvidence: { model: 'arc-mainnet-transfers-v1', received: 1, sent: 0, matchedReciprocalRawAmount: '0' } });
   expect(reads.filter(read => read.table === 'signal_events').every(read => read.filters.chain === 'arc-mainnet' && read.range?.[1] === 999)).toBe(true);
-  const html = renderToStaticMarkup(await ArcMainnetAgentProfile({ wallet: receiver }));
-  // Receipts stream behind Suspense on the page; render that section directly.
-  const receiptsHtml = renderToStaticMarkup(await ReceiptDetails({ address: receiver }));
-  expect(receiptsHtml).toContain('Received');
-  expect(receiptsHtml).toContain('1.000000000000000001 USDC');
+  // The page renders exactly this, via cachedArcMainnetProfile (Next runtime only).
+  const profile = (await resolveArcMainnetProfile(receiver))!;
+  expect(profile.snapshot).toEqual(snapshot!);
+  const html = renderToStaticMarkup(<ArcMainnetProfileOverview snapshot={profile.snapshot} registry={null} registryUnavailable={false}>
+    <ArcMainnetActivityDetails address={profile.snapshot.address} activity={profile.activity}
+      saturated={profile.saturated} sampled={profile.sampled} invalid={profile.invalid} />
+  </ArcMainnetProfileOverview>);
+  expect(html).toContain('Received');
+  expect(html).toContain('1.000000000000000001 USDC');
   expect(html).toContain('5.1');
   expect(html).not.toContain('99.0');
   signalError = true;

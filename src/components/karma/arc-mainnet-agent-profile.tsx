@@ -1,17 +1,12 @@
 import { Suspense, type ReactNode } from 'react';
 import { notFound } from 'next/navigation';
-import { resolveKarma } from '@/lib/karma-resolver';
-import { collectArcMainnetReceipts } from '@/scoring/arc-mainnet-receipts';
 import {
-  getArcMainnetReceiptEvents, getErc8004Agent, getFeedbackComments, resolveRaters, supabase, type RaterInfo,
+  getErc8004Agent, getFeedbackComments, resolveRaters, supabase, type RaterInfo,
 } from '@/db/client';
-import { getCachedEvmAgentOnchain } from '@/db/cached';
+import { cachedArcMainnetProfile, getCachedEvmAgentOnchain } from '@/db/cached';
 import { getRegistryFeedbackForAgents } from '@/db/enrichment-queries';
 import { scoreMetadataQuality, METADATA_SCHEME_VERSION } from '@/scoring/celo-metadata';
-import {
-  buildProfileActivity, displayTier, matchesProfileRegistry, profileScoreHistory,
-  PROFILE_FEEDBACK_LIMIT, PROFILE_RECEIPT_LIMIT,
-} from '@/lib/arc-mainnet-profile';
+import { displayTier, matchesProfileRegistry, profileScoreHistory, PROFILE_FEEDBACK_LIMIT } from '@/lib/arc-mainnet-profile';
 import type { TrustTier } from '@/db/schema';
 import { CardSkeleton } from './card-skeleton';
 import { NotIndexedBlock } from './not-indexed-block';
@@ -31,7 +26,8 @@ import {
 export async function ArcMainnetAgentProfile({ wallet, agentId, deadMansSwitch }: {
   wallet: string; agentId?: number | null; deadMansSwitch?: ReactNode;
 }) {
-  const snapshot = await resolveKarma(wallet, 'arc-mainnet', { agentId });
+  const profile = await cachedArcMainnetProfile(wallet, agentId ?? null);
+  const snapshot = profile?.snapshot ?? null;
   if (agentId != null && !snapshot) notFound();
   if (!snapshot) return <AgentProfileShell back={{ href: '/arc/mainnet', label: 'Arc coverage' }} address={wallet} chain="arc-mainnet">
     <NotIndexedBlock chain="arc-mainnet" />
@@ -56,25 +52,10 @@ export async function ArcMainnetAgentProfile({ wallet, agentId, deadMansSwitch }
     <Suspense fallback={<CardSkeleton title="Registry Feedback" rows={3} />}>
       <RegistryFeedback agentId={snapshot.agentId} owner={registry ? String(registry.owner ?? '') || undefined : undefined} />
     </Suspense>
-    <Suspense fallback={<CardSkeleton title="Payment Relationships & Receipts" rows={6} />}>
-      <ReceiptDetails address={snapshot.address} />
-    </Suspense>
+    <ArcMainnetActivityDetails address={snapshot.address} activity={profile!.activity}
+      saturated={profile!.saturated} sampled={profile!.sampled} invalid={profile!.invalid} />
     {deadMansSwitch}
   </ArcMainnetProfileOverview>;
-}
-
-/** Exported for tests: server-rendered in isolation, since the profile streams it. */
-export async function ReceiptDetails({ address }: { address: string }) {
-  try {
-    const window = await getArcMainnetReceiptEvents(address, PROFILE_RECEIPT_LIMIT);
-    const validated = collectArcMainnetReceipts(address, window.events);
-    return <ArcMainnetActivityDetails activity={buildProfileActivity(validated.observations)}
-      saturated={window.saturated} sampled={window.events.length} invalid={validated.invalid} />;
-  } catch {
-    return <ProfilePanel id="payments" title="Payment Relationships & Receipts">
-      <p role="status" className="text-sm text-muted-foreground">Recent activity could not be loaded. Refresh to retry. This is a read failure, not evidence of zero payments.</p>
-    </ProfilePanel>;
-  }
 }
 
 /**

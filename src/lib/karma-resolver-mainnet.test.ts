@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as db from '@/db/client';
 import * as enrichment from '@/db/enrichment-queries';
-import { resolveKarma } from './karma-resolver';
+import { resolveArcMainnetProfile, resolveKarma } from './karma-resolver';
 import { resolveAgentCardFields } from './agent-card-fields';
 import { ARC_MAINNET_TRANSFER_EMITTER } from '@/config/arc-mainnet';
 import type { SignalEvent, Wallet } from '@/db/schema';
@@ -81,5 +81,47 @@ describe('Arc registry identity and receipt binding', () => {
       profileUrl: `/agent/${effective}?chain=arc-mainnet&agentId=0`,
     });
     expect(receipts).toHaveBeenCalledWith(effective, 10000);
+  });
+});
+
+function transferEvent(i: number, counterparty: string): SignalEvent {
+  const hash = `0x${i.toString(16).padStart(64, '0')}`;
+  const at = new Date(Date.now() - (i + 1) * 60_000).toISOString();
+  return { id: `00000000-0000-4000-8000-${i.toString(16).padStart(12, '0')}`, created_at: at, chain: 'arc-mainnet',
+    agent_wallet: effective, kind: 'usdc_transfer_settled', tier: 2, face: 'provider', weight: 0.6, value: 1,
+    tx_ref: `${hash}:0`, signed_by: null, observed_at: at, payload: { source: 'arc_native_usdc_transfer', rawTxHash: hash,
+      logIndex: 0, rawAmount: '1000000000000000000', amountDecimal: '1', amount: 1, decimals: 18,
+      emitter: ARC_MAINNET_TRANSFER_EMITTER, counterparty } } as SignalEvent;
+}
+const counterparty = (i: number) => `0x${(i + 0x100).toString(16).padStart(40, '4')}`;
+
+describe('resolveArcMainnetProfile — one receipt read feeds score and display', () => {
+  test('reads the receipt window once and returns the same snapshot resolveKarma does', async () => {
+    const events = Array.from({ length: 3 }, (_, i) => transferEvent(i, counterparty(i)));
+    receipts.mockResolvedValue({ events, saturated: false });
+    const profile = await resolveArcMainnetProfile(owner, 0);
+    expect(receipts).toHaveBeenCalledTimes(1);
+    expect(receipts).toHaveBeenCalledWith(effective, 10000);
+    expect(profile?.snapshot).toEqual((await resolveKarma(owner, 'arc-mainnet', { agentId: 0 }))!);
+    expect(profile).toMatchObject({ sampled: 3, saturated: false, invalid: 0 });
+  });
+  test('display activity covers the newest 500 events; rendered lists are capped, totals are not', async () => {
+    const events = Array.from({ length: 501 }, (_, i) => transferEvent(i, counterparty(i)));
+    receipts.mockResolvedValue({ events, saturated: false });
+    const profile = await resolveArcMainnetProfile(owner, 0);
+    expect(profile).toMatchObject({ sampled: 500, saturated: true });
+    expect(profile!.activity.receipts).toHaveLength(50);
+    expect(profile!.activity.relationships).toHaveLength(20);
+    expect(profile!.activity).toMatchObject({ receiptCount: 500, relationshipCount: 500, transactions: 500,
+      receivedRaw: (500n * 10n ** 18n).toString() });
+  });
+  test('an ownership mismatch is null and never reads receipts', async () => {
+    expect(await resolveArcMainnetProfile(other, 0)).toBeNull();
+    expect(receipts).not.toHaveBeenCalled();
+  });
+  test('the result survives a JSON round trip unchanged (cacheable)', async () => {
+    receipts.mockResolvedValue({ events: [transferEvent(0, counterparty(0))], saturated: false });
+    const profile = await resolveArcMainnetProfile(owner, 0);
+    expect(JSON.parse(JSON.stringify(profile))).toEqual(profile);
   });
 });

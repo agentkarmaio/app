@@ -5,7 +5,7 @@ import type { KarmaFaceBlock, KarmaSnapshot } from '@/lib/karma-resolver';
 import type { EnrichmentFeedbackRow } from '@/lib/karma-enrichment';
 import {
   displayTier, formatRawUnits, hasDisplayScore, metadataText, readProfileRegistration,
-  unitInterval, PROFILE_FEEDBACK_LIMIT, PROFILE_RECEIPT_LIMIT, type ProfileActivity,
+  unitInterval, PROFILE_FEEDBACK_LIMIT, PROFILE_RECEIPT_LIMIT, type ProfileActivity, type ProfileActivitySummary,
 } from '@/lib/arc-mainnet-profile';
 import { ARC_MAINNET_TRANSFER_DECIMALS } from '@/config/arc-mainnet';
 import { MIN_TX_FOR_AUTONOMY } from '@/scoring/autonomy';
@@ -346,24 +346,32 @@ function RelationshipTable({ rows }: { rows: ProfileActivity['relationships'] })
   </table></div>;
 }
 
-export function ArcMainnetActivityDetails({ activity, saturated, sampled, invalid }: {
-  activity: ProfileActivity; saturated: boolean; sampled: number; invalid: number;
+/** Rows beyond the rendered cap stay one click away on the explorer. */
+function MoreOnExplorer({ hidden, noun, address }: { hidden: number; noun: string; address: string }) {
+  if (hidden <= 0) return null;
+  return <p className="py-3 text-sm text-muted-foreground">
+    {hidden} more {noun} in this window. <External href={addressUrl(address)}>View all on Arc explorer</External>
+  </p>;
+}
+
+export function ArcMainnetActivityDetails({ address, activity, saturated, sampled, invalid }: {
+  address: string; activity: ProfileActivitySummary; saturated: boolean; sampled: number; invalid: number;
 }) {
   return <div id="payments" className="scroll-mt-24 space-y-6">
-    <ProfilePanel title="Payment Relationships" intro={`Recent indexed window: ${sampled} of at most ${PROFILE_RECEIPT_LIMIT} events, ${activity.receipts.length} validated transfer logs, ${activity.transactions} unique transactions. These are gross observed amounts before reciprocal discounting, not lifetime totals or the full scoring window.`}>
+    <ProfilePanel title="Payment Relationships" intro={`Recent indexed window: ${sampled} of at most ${PROFILE_RECEIPT_LIMIT} events, ${activity.receiptCount} validated transfer logs, ${activity.transactions} unique transactions. These are gross observed amounts before reciprocal discounting, not lifetime totals or the full scoring window.`}>
       <dl className="grid gap-x-8 md:grid-cols-3"><Stat label="Received"><Usdc raw={activity.receivedRaw} /></Stat>
-        <Stat label="Sent"><Usdc raw={activity.sentRaw} /></Stat><Stat label="Counterparties">{activity.relationships.length}</Stat></dl>
+        <Stat label="Sent"><Usdc raw={activity.sentRaw} /></Stat><Stat label="Counterparties">{activity.relationshipCount}</Stat></dl>
       {activity.relationships.length ? <>
-        <RelationshipTable rows={activity.relationships.slice(0, 20)} />
-        {activity.relationships.length > 20 && <details><summary className="cursor-pointer py-3 text-sm underline">Additional {activity.relationships.length - 20} counterparties</summary><RelationshipTable rows={activity.relationships.slice(20)} /></details>}
+        <RelationshipTable rows={activity.relationships} />
+        <MoreOnExplorer hidden={activity.relationshipCount - activity.relationships.length} noun="counterparties" address={address} />
       </> : <p className="text-sm text-muted-foreground">No payment relationships can be derived from the indexed transfer window yet.</p>}
       {saturated && <p className="text-xs text-muted-foreground">The recent-event limit was reached; older transfers and relationships are not included here.</p>}
       {invalid > 0 && <p className="text-xs text-muted-foreground">{invalid} invalid or conflicting observations were excluded.</p>}
     </ProfilePanel>
     <ProfilePanel title="Recent mainnet receipts" intro="Native USDC · received and sent directions · amounts preserve the full 18-decimal precision. A transaction can contain multiple transfer logs.">
       {activity.receipts.length ? <>
-        <ReceiptTable receipts={activity.receipts.slice(0, 50)} />
-        {activity.receipts.length > 50 && <details><summary className="cursor-pointer py-3 text-sm underline">Additional {activity.receipts.length - 50} indexed transfers</summary><ReceiptTable receipts={activity.receipts.slice(50)} /></details>}
+        <ReceiptTable receipts={activity.receipts} />
+        <MoreOnExplorer hidden={activity.receiptCount - activity.receipts.length} noun="transfers" address={address} />
       </> : <p className="text-sm text-muted-foreground">No valid mainnet receipts are indexed in this window yet. This does not establish the absence of on-chain activity.</p>}
     </ProfilePanel>
   </div>;

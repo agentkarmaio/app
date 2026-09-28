@@ -2,7 +2,7 @@ import { describe, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { KarmaSnapshot } from '@/lib/karma-resolver';
-import { buildProfileActivity } from '@/lib/arc-mainnet-profile';
+import { buildProfileActivity, trimProfileActivity } from '@/lib/arc-mainnet-profile';
 import { ArcMainnetActivityDetails, ArcMainnetProfileOverview, ArcMainnetRegistryFeedback } from './arc-mainnet-profile-details';
 
 const address = `0x${'1'.repeat(40)}`;
@@ -83,7 +83,7 @@ describe('Arc rich profile rendering', () => {
     assert.match(html, /38%/);
   });
   test('empty activity stays distinct from failed reads', () => {
-    const html = renderToStaticMarkup(<ArcMainnetActivityDetails activity={buildProfileActivity([])} sampled={0} saturated={false} invalid={0} />);
+    const html = renderToStaticMarkup(<ArcMainnetActivityDetails address={address} activity={trimProfileActivity(buildProfileActivity([]))} sampled={0} saturated={false} invalid={0} />);
     assert.match(html, /Payment Relationships/);
     assert.match(html, /Recent mainnet receipts/);
     assert.match(html, /No valid mainnet receipts are indexed/);
@@ -93,12 +93,28 @@ describe('Arc rich profile rendering', () => {
     const hash = `0x${'a'.repeat(64)}`;
     const activity = buildProfileActivity([{ rawTxHash: hash, eventKey: `${hash}:7`, logIndex: 7, face: 'consumer',
       counterparty: owner, rawAmount: '1', amountDecimal: '0.000000000000000001', timestamp: '2026-01-01T00:00:00.000Z' }]);
-    const html = renderToStaticMarkup(<ArcMainnetActivityDetails activity={activity} sampled={1} saturated={true} invalid={0} />);
+    const html = renderToStaticMarkup(<ArcMainnetActivityDetails address={address} activity={trimProfileActivity(activity)} sampled={1} saturated={true} invalid={0} />);
     assert.match(html, /0\.000000000000000001/);
     assert.ok(html.includes(`https://explorer.arc.io/tx/${hash}`));
     assert.ok(!html.includes(`/tx/${hash}:7`));
     assert.match(html, /chain=arc-mainnet/);
     assert.match(html, /older transfers and relationships are not included/);
+  });
+  test('renders only the capped rows and points to the explorer for the rest', () => {
+    const observations = Array.from({ length: 60 }, (_, i) => {
+      const hash = `0x${i.toString(16).padStart(64, '0')}`;
+      return { rawTxHash: hash, eventKey: `${hash}:0`, logIndex: 0, face: 'provider' as const,
+        counterparty: `0x${(i + 0x100).toString(16).padStart(40, '4')}`, rawAmount: '1', amountDecimal: '0.000000000000000001',
+        timestamp: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString() };
+    });
+    const html = renderToStaticMarkup(<ArcMainnetActivityDetails address={address} activity={trimProfileActivity(buildProfileActivity(observations))}
+      sampled={60} saturated={false} invalid={0} />);
+    assert.equal(html.match(/\/tx\/0x/g)?.length, 50);
+    assert.equal(html.includes('<details'), false);
+    assert.match(html, /60 validated transfer logs/);
+    assert.match(html, /10 more transfers/);
+    assert.match(html, /40 more counterparties/);
+    assert.ok(html.includes(`https://explorer.arc.io/address/${address}`));
   });
   test('revoked feedback and heterogeneous units are explicit', () => {
     const html = renderToStaticMarkup(<ArcMainnetRegistryFeedback rows={[{

@@ -32,6 +32,7 @@ import { CacheTags, type CacheTag } from './cache-tags';
 import type { TrustTier, Chain } from './schema';
 import { computeAgentLiveBundle, type AgentLiveBundle } from '@/scoring/live-agent-score';
 import { resolveAgentCardFields } from '@/lib/agent-card-fields';
+import { resolveArcMainnetProfile } from '@/lib/karma-resolver';
 import {
   readAgent as readCeloAgent,
   aggregateFeedback as aggregateCeloFeedback,
@@ -154,6 +155,17 @@ export async function getCachedWalletTierMap(
 export const cachedAgentLiveBundle: (wallet: string, chain?: Chain) => Promise<AgentLiveBundle> = defineCache(
   (wallet: string, chain: Chain = 'solana') => computeAgentLiveBundle(wallet, chain),
   { key: 'agent-live-bundle-v2-network', tag: CacheTags.AgentProfile, revalidate: 60 },
+);
+
+/**
+ * Arc mainnet profile: Karma snapshot + capped receipt display from one
+ * receipt-window read. Arc's counterpart of cachedAgentLiveBundle (same 60s
+ * budget). agentId is part of the key, so agents sharing an owner never share
+ * an entry; read failures throw and are not cached.
+ */
+export const cachedArcMainnetProfile = defineCache(
+  (wallet: string, agentId: number | null) => resolveArcMainnetProfile(wallet, agentId),
+  { key: 'arc-mainnet-profile-v1', tag: CacheTags.AgentProfile, revalidate: 60 },
 );
 
 /** Shared unfurl fields for generateMetadata + the OG image (2-3 DB reads). */

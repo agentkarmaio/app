@@ -14,7 +14,7 @@ import { calculateScore, type WalletScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy, type AutonomyResult } from '@/scoring/autonomy';
 import { readAttestation } from '@/integrations/attestation';
-import type { Chain } from '@/db/schema';
+import type { Chain, SignalEvent } from '@/db/schema';
 import { ARC_MAINNET_RECEIPT_LIMIT, computeArcMainnetReceiptScore, type ArcMainnetReceiptScore } from './arc-mainnet-receipts';
 
 export interface FeedbackSummaryLite {
@@ -39,16 +39,23 @@ export interface AgentLiveBundle {
 
 const EMPTY_FEEDBACK: FeedbackSummaryLite = { total: 0, delivered: 0, failed: 0, deliveryRate: 0 };
 
+/** Arc scoring over an already-read receipt window, so callers that also
+ *  display the window (the profile) read it once. */
+export function arcMainnetBundleFromWindow(
+  wallet: string, window: { events: readonly SignalEvent[]; saturated: boolean },
+): AgentLiveBundle {
+  const receiptScore = computeArcMainnetReceiptScore(wallet, window.events, { saturated: window.saturated });
+  const unique = new Map(receiptScore.observations.map(row => [row.rawTxHash, row]));
+  const autonomy = unique.size ? computeAutonomy([...unique.values()].map(row => ({
+    timestamp: row.timestamp, counterparty: row.counterparty,
+  }))) : null;
+  return { feedback: EMPTY_FEEDBACK, live: null, manifestValue: null,
+    txCount: receiptScore.txCount, autonomy, receiptScore };
+}
+
 export async function computeAgentLiveBundle(wallet: string, chain: Chain = 'solana'): Promise<AgentLiveBundle> {
   if (chain === 'arc-mainnet') {
-    const window = await getArcMainnetReceiptEvents(wallet, ARC_MAINNET_RECEIPT_LIMIT);
-    const receiptScore = computeArcMainnetReceiptScore(wallet, window.events, { saturated: window.saturated });
-    const unique = new Map(receiptScore.observations.map(row => [row.rawTxHash, row]));
-    const autonomy = unique.size ? computeAutonomy([...unique.values()].map(row => ({
-      timestamp: row.timestamp, counterparty: row.counterparty,
-    }))) : null;
-    return { feedback: EMPTY_FEEDBACK, live: null, manifestValue: null,
-      txCount: receiptScore.txCount, autonomy, receiptScore };
+    return arcMainnetBundleFromWindow(wallet, await getArcMainnetReceiptEvents(wallet, ARC_MAINNET_RECEIPT_LIMIT));
   }
   const [feedback, txs, attestation, manifestMap] = await Promise.all([
     getFeedbackSummary(wallet, chain).catch(() => EMPTY_FEEDBACK),

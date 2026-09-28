@@ -7,6 +7,10 @@ import { safeEndpointHref, safeHref } from './safe-url';
 export const PROFILE_RECEIPT_LIMIT = 500;
 export const PROFILE_FEEDBACK_LIMIT = 50;
 export const PROFILE_SERVICE_LIMIT = 10;
+/** Rendered rows. Beyond these the profile links to the explorer instead of
+ *  shipping every row in the HTML + RSC payload (was 3.2 MB for 440 tx). */
+export const PROFILE_RECEIPT_ROWS = 50;
+export const PROFILE_RELATIONSHIP_ROWS = 20;
 
 export function hasDisplayScore(face: KarmaFaceBlock): boolean {
   return face.hasSignal && Number.isFinite(face.score) && face.score >= 0 && face.score <= 100;
@@ -111,6 +115,29 @@ export function buildProfileActivity(observations: readonly ArcMainnetReceiptObs
 }
 
 export type ProfileActivity = ReturnType<typeof buildProfileActivity>;
+
+export interface ProfileActivitySummary {
+  receipts: ProfileActivity['receipts'];
+  relationships: ProfileActivity['relationships'];
+  /** Counts over the whole display window, not the capped lists. */
+  receiptCount: number;
+  relationshipCount: number;
+  receivedRaw: string;
+  sentRaw: string;
+  transactions: number;
+}
+
+export function trimProfileActivity(activity: ProfileActivity): ProfileActivitySummary {
+  return {
+    receipts: activity.receipts.slice(0, PROFILE_RECEIPT_ROWS),
+    relationships: activity.relationships.slice(0, PROFILE_RELATIONSHIP_ROWS),
+    receiptCount: activity.receipts.length,
+    relationshipCount: activity.relationships.length,
+    receivedRaw: activity.receivedRaw,
+    sentRaw: activity.sentRaw,
+    transactions: activity.transactions,
+  };
+}
 
 /** Stored history is never backfilled with synthetic zeroes for missing values. */
 export function profileScoreHistory(rows: readonly { score: unknown; calculated_at: unknown }[]) {
