@@ -22,7 +22,6 @@ function ConnectButton() {
 
 const PRIMARY_ITEMS = [
   { href: '/', label: 'Home' },
-  { href: '/agent-enact', label: 'AgentEnact' },
   { href: '/explore', label: 'Explore' },
   { href: '/protocol', label: 'Protocol' },
 ];
