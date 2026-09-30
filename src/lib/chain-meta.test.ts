@@ -39,8 +39,8 @@ describe('chain-meta', () => {
 
   test('chainOptions() lists active networks and preserves the historical schema', () => {
     const opts = chainOptions();
-    expect(opts[0]).toBe('solana');
-    expect(opts).toEqual(['solana', 'celo', 'stellar', 'arc-mainnet']);
+    expect(opts[0]).toBe(UI_DEFAULT_CHAIN);
+    expect(opts).toEqual(['stellar', 'solana', 'celo', 'arc-mainnet']);
     expect(CHAINS).toContain('arc');
     expect(opts).not.toContain('arc');
     expect(new Set(opts).size).toBe(opts.length); // no dupes
