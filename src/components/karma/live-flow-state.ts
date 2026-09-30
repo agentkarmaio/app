@@ -78,10 +78,24 @@ export function parseActivityHealth(value: unknown): IndexingHealth {
         && (path.issue == null || (typeof path.issue === 'string' && Object.hasOwn(INDEXING_ISSUE_MESSAGES, path.issue)))
         && typeof path.path === 'string' && typeof path.label === 'string' && validStatus(path.status)
         && validTime(path.lastCheckedAt) && validTime(path.lastSuccessAt) && validTime(path.lastAttemptAt)
-        && validCount(path.checked) && validCount(path.pending) && validCount(path.unresolved) && validCount(path.inserted)))) {
+        && validCount(path.checked) && validCount(path.pending) && validCount(path.unresolved) && validCount(path.gaps)
+        && validCount(path.inserted)))) {
     throw new Error('Invalid network coverage');
   }
   return health;
+}
+
+export type CoveragePath = IndexingHealth['chains'][number]['paths'][number];
+
+/** Retryable signatures warn; the retained gap ledger is disclosure, not an alarm. */
+export function coverageNotes(path: CoveragePath): { tone: 'warn' | 'muted'; text: string }[] {
+  const plural = (n: number, one: string, many: string) => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
+  const notes: { tone: 'warn' | 'muted'; text: string }[] = [];
+  if (path.unresolved > 0) notes.push({ tone: 'warn', text: `${path.path === 'registry' ? plural(path.unresolved, 'agent record', 'agent records') : plural(path.unresolved, 'record', 'records')} could not be fetched yet. Retrying each run.` });
+  if (path.gaps > 0) notes.push({ tone: 'muted', text: `${plural(path.gaps, 'older history range', 'older history ranges')} not yet verified. Current data is unaffected.` });
+  else if (path.issue) notes.push({ tone: 'muted', text: INDEXING_ISSUE_MESSAGES[path.issue] });
+  if (path.gaps > 0 && path.issue && path.issue !== 'history_gap') notes.push({ tone: 'muted', text: INDEXING_ISSUE_MESSAGES[path.issue] });
+  return notes;
 }
 
 /** One request at a time; cleanup aborts IO and rejects any late result. */

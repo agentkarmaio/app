@@ -172,7 +172,9 @@ export function buildIndexingHealth(rows: HealthStateRow[], now = Date.now()) {
             lastCheckedAt: row?.last_finished_at ?? null,
             checked: row?.checked_count ?? 0,
             pending: row?.pending_count ?? 0,
-            unresolved: (row?.unresolved_count ?? 0) + (row?.gaps_count ?? 0),
+            // Retryable unserved work vs the retained gap ledger: never summed.
+            unresolved: row?.unresolved_count ?? 0,
+            gaps: row?.gaps_count ?? 0,
             inserted: row?.inserted_count ?? 0,
           };
         },

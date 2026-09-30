@@ -199,3 +199,22 @@ test('archived testnet health never downgrades active chain health', () => {
   expect(result.chains.find(chain => chain.chain === 'arc')?.status).toBe('disabled');
   expect(result.status).toBe('current');
 });
+
+// Unserved signatures (retried every run) and retained history gaps (a
+// permanent ledger) are different claims; summing them published "31 coverage
+// issues" for 12 retryable signatures + 19 re-anchored cursors.
+describe('coverage counts are reported separately', () => {
+  test('unresolved excludes gaps; gaps are their own field', () => {
+    const path = buildIndexingHealth(
+      [row('solana', 'payments', { unresolved_count: 12, gaps_count: 19 })],
+      now,
+    ).chains.find((c) => c.chain === 'solana')?.paths.find((p) => p.path === 'payments');
+    expect(path?.unresolved).toBe(12);
+    expect(path?.gaps).toBe(19);
+  });
+  test('missing gaps column reads as zero', () => {
+    const path = buildIndexingHealth([row('solana', 'payments')], now)
+      .chains.find((c) => c.chain === 'solana')?.paths.find((p) => p.path === 'payments');
+    expect(path?.gaps).toBe(0);
+  });
+});

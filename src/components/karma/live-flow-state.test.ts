@@ -105,3 +105,26 @@ test('coverage accepts only known public issue codes', async () => {
   value.chains[0].paths[0].issue = 'http://provider.invalid/SECRET' as never;
   expect(() => parseActivityHealth(value)).toThrow('Invalid network coverage');
 });
+
+test('coverage rejects a malformed gaps count', async () => {
+  const { buildIndexingHealth } = await import('@/lib/indexing-health');
+  const value = buildIndexingHealth([]);
+  value.chains[0].paths[0].gaps = -1;
+  expect(() => parseActivityHealth(value)).toThrow('Invalid network coverage');
+});
+
+test('coverage notes never merge retryable signatures with the gap ledger', async () => {
+  const { buildIndexingHealth } = await import('@/lib/indexing-health');
+  const { coverageNotes } = await import('./live-flow-state');
+  const path = buildIndexingHealth([]).chains[0].paths[0];
+  expect(coverageNotes({ ...path, unresolved: 12, gaps: 19, issue: 'history_gap' })).toEqual([
+    { tone: 'warn', text: '12 records could not be fetched yet. Retrying each run.' },
+    { tone: 'muted', text: '19 older history ranges not yet verified. Current data is unaffected.' },
+  ]);
+  expect(coverageNotes({ ...path, unresolved: 0, gaps: 1, issue: 'history_gap' })).toEqual([
+    { tone: 'muted', text: '1 older history range not yet verified. Current data is unaffected.' },
+  ]);
+  expect(coverageNotes({ ...path, unresolved: 0, gaps: 0, issue: 'rate_limited' })[0].tone).toBe('muted');
+  expect(coverageNotes({ ...path, unresolved: 0, gaps: 0, issue: null })).toEqual([]);
+  expect(coverageNotes({ ...path, path: 'registry', unresolved: 1, gaps: 0, issue: null })[0].text).toBe('1 agent record could not be fetched yet. Retrying each run.');
+});

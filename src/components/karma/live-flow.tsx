@@ -5,8 +5,8 @@ import { ChevronDown, RefreshCw } from 'lucide-react';
 import type { IndexingHealth, IndexingStatus } from '@/lib/indexing-health';
 import { formatRelativePast } from '@/lib/succession-format';
 import {
-  activeActivityChains, activityStatus, activityTone, INDEXING_ISSUE_MESSAGES, INDEXING_STATUS_LABELS, INDEXING_STATUS_TONES,
-  parseActivityHealth, parseActivityStats, startActivityPoll, type ActivityStats, type StatusTone,
+  activeActivityChains, activityStatus, activityTone, coverageNotes, INDEXING_STATUS_LABELS, INDEXING_STATUS_TONES,
+  parseActivityHealth, parseActivityStats, startActivityPoll, type ActivityStats, type CoveragePath, type StatusTone,
 } from './live-flow-state';
 
 const CHAIN_LABELS: Record<string, string> = { solana: 'Solana', 'arc-mainnet': 'Arc', celo: 'Celo', stellar: 'Stellar' };
@@ -54,8 +54,6 @@ function AgoTime({ value, empty }: { value: string | null; empty: string }) {
   return <time dateTime={value} title={formatUtc(value)}>{formatRelativePast(value)}</time>;
 }
 
-type CoveragePath = IndexingHealth['chains'][number]['paths'][number];
-
 /** A full-scan time only adds information when it diverges from the last check. */
 function scanLagged(path: CoveragePath): boolean {
   if (!path.lastSuccessAt || !path.lastCheckedAt) return true;
@@ -78,12 +76,9 @@ function CoverageRow({ path }: { path: CoveragePath }) {
         {scanLagged(path) && (
           <p className="text-[11px] text-muted-foreground">Last full scan <AgoTime value={path.lastSuccessAt} empty="not yet completed" /></p>
         )}
-        {(path.unresolved > 0 || path.issue) && (
-          <p className="mt-1 text-[11px] leading-relaxed text-amber-200/80">
-            {path.unresolved > 0 && `At least ${path.unresolved.toLocaleString('en-US')} coverage issues. `}
-            {path.issue && <span className="text-muted-foreground">{INDEXING_ISSUE_MESSAGES[path.issue]}</span>}
-          </p>
-        )}
+        {coverageNotes(path).map((note) => (
+          <p key={note.text} className={`mt-1 text-[11px] leading-relaxed ${note.tone === 'warn' ? 'text-amber-200/80' : 'text-muted-foreground'}`}>{note.text}</p>
+        ))}
       </div>
     </li>
   );
