@@ -147,8 +147,8 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
       >
         <summary className="flex min-h-10 cursor-pointer list-none items-center gap-2.5 whitespace-nowrap rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 py-1.5 text-[11px] font-[510] text-muted-foreground backdrop-blur-sm transition-colors hover:border-white/[0.14] hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-open:border-white/[0.14] group-open:bg-white/[0.05] motion-reduce:transition-none [&::-webkit-details-marker]:hidden">
           <StatusDot tone={tone} pulse={tone === 'ok' || tone === 'busy'} />
-          <span className="hidden uppercase tracking-[0.12em] sm:inline">Indexed activity</span>
-          <span aria-hidden="true" className="hidden h-3 w-px bg-white/[0.1] sm:block" />
+          <span className="hidden uppercase tracking-[0.12em] sm:inline xl:hidden">Indexed activity</span>
+          <span aria-hidden="true" className="hidden h-3 w-px bg-white/[0.1] sm:block xl:hidden" />
           {stats ? (
             <span className="inline-flex items-center gap-1.5">
               <span key={`tx-${pulseKey}`} className="font-mono tabular-nums text-foreground karma-live-flash motion-reduce:animate-none">{stats.totalTransactions.toLocaleString('en-US')}</span>
@@ -159,7 +159,8 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
             </span>
           ) : <span>{statsFailed ? 'Counts unavailable' : 'Loading counts…'}</span>}
           <span aria-hidden="true" className="hidden h-3 w-px bg-white/[0.1] md:block" />
-          <span role="status" className={`sr-only md:not-sr-only ${delayed ? 'text-amber-300' : ''}`}>{status}</span>
+          <span role="status" className="sr-only">{status}</span>
+          <span aria-hidden="true" className={`hidden md:inline ${delayed ? 'text-amber-300' : ''}`}>{status}</span>
           <ChevronDown aria-hidden="true" className="size-3 transition-transform group-open:rotate-180 motion-reduce:transition-none" />
         </summary>
         <div className="absolute left-0 top-full z-40 mt-2 max-h-[70vh] w-[min(26rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-border bg-popover text-xs text-popover-foreground shadow-2xl shadow-black/40">

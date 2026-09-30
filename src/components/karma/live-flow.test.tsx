@@ -27,4 +27,10 @@ describe('LiveFlow honest initial rendering', () => {
     expect(html).toContain('09:00');
     expect(html).toContain('UTC');
   });
+
+  test('visible status text never uses not-sr-only (it resets white-space and wraps the pill)', () => {
+    const html = renderToStaticMarkup(<LiveFlow initial={{ totalAgents: 17, totalTransactions: 42 }} />);
+    expect(html).not.toContain('not-sr-only');
+    expect(html).toMatch(/<span role="status" class="sr-only">/);
+  });
 });
