@@ -10,15 +10,9 @@
  * Soroban RPC blips we fall back to the DB row alone, same resilience pattern
  * as Celo/Arc.
  *
- * Feedback note: Stellar's get_summary REVERTS on an empty client list and is
- * scoped to a specific rater set (Soroban quirk, caps at 5 clients). AK has no
- * standing on-chain validator client list to aggregate against here, so the
- * feedback figure is intentionally best-effort and renders "no feedback yet"
- * rather than ever blanking the profile.
- *
- * Receipt-gated Tier-1 history is x402/Solana-only today; this view stays
- * focused on declared identity. No tx list, no score trend, no consumer
- * feedback form (those wire to Solana data shapes).
+ * Independent reviews use the reviewer's Stellar wallet. The reputation
+ * reader enumerates registered clients and records; unavailable reads remain
+ * distinct from an empty registry. Paid delivery feedback is a separate flow.
  */
 import { Suspense } from 'react';
 import Link from 'next/link';
@@ -44,6 +38,9 @@ import { safeHref } from '@/lib/safe-url';
 import { ClaimProof } from '@/components/karma/claim-proof';
 import { ProveOwnership } from '@/components/wallet/prove-ownership';
 import { EditProfile } from '@/components/wallet/edit-profile';
+import { StellarGiveFeedbackCard } from '@/components/karma/stellar-give-feedback-card';
+import { StellarFeedbackRecordsCard } from '@/components/karma/stellar-feedback-records-card';
+import { readStellarFeedback } from '@/integrations/stellar-feedback-read';
 
 function shortAddr(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
@@ -172,6 +169,11 @@ export function StellarAgentProfile({
 
       <Suspense fallback={<StellarOnchainSectionsSkeleton />}>
         <StellarOnchainSections walletRow={walletRow} agentId={agentId} />
+      </Suspense>
+
+      <StellarGiveFeedbackCard key={agentId} agentId={agentId} />
+      <Suspense fallback={<CardSkeleton title="On-chain feedback" rows={3} />}>
+        <StellarFeedbackRecords agentId={agentId} />
       </Suspense>
 
       {isClaimed && !walletRow.claim_signature && (
@@ -316,7 +318,7 @@ async function StellarOnchainSections({
               <Separator />
               <Row
                 label="Feedback (on-chain)"
-                value={<span className="text-muted-foreground">no feedback yet</span>}
+                value={<a href="#stellar-feedback" className="text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring">View records</a>}
               />
               <Separator />
               <Row
@@ -378,6 +380,13 @@ async function StellarOnchainSections({
       )}
     </>
   );
+}
+
+async function StellarFeedbackRecords({ agentId }: { agentId: number }) {
+  const feedback = await readStellarFeedback(getStellarRpc(), agentId).catch(() => ({
+    records: [], count: null, complete: false, commentsComplete: false,
+  }));
+  return <StellarFeedbackRecordsCard {...feedback} />;
 }
 
 /** Card-shaped placeholder matching the layout StellarOnchainSections fills in. */
