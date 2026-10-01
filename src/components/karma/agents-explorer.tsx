@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import {
   ArrowDown, ArrowUp, ChevronsUpDown, Search, SlidersHorizontal, Verified, X,
 } from 'lucide-react';
@@ -102,10 +102,8 @@ function parseNum(sp: URLSearchParams, key: string): number | null {
 }
 
 export function AgentsExplorer() {
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [isPending, startTransition] = useTransition();
 
   const filters = useMemo(() => {
     // No `?chain=` lands on UI_DEFAULT_CHAIN, not every chain — the explorer
@@ -143,6 +141,7 @@ export function AgentsExplorer() {
   const [error, setError] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState(filters.search);
   const firstMountRef = useRef(true);
+  const requestRef = useRef<AbortController | null>(null);
   const [sortOpen, setSortOpen] = useState(false);
 
   // Build query-string for the API from current URL params.
@@ -166,7 +165,12 @@ export function AgentsExplorer() {
   // Fetch whenever filter/sort URL changes; reset to offset 0.
   useEffect(() => {
     let cancelled = false;
+    requestRef.current?.abort();
     const controller = new AbortController();
+    requestRef.current = controller;
+    setEntries([]);
+    setTotal(null);
+    setOffset(0);
     setLoading(true);
     setError(null);
     const q = new URLSearchParams(apiQuery);
@@ -185,7 +189,7 @@ export function AgentsExplorer() {
         setError(err.message);
       })
       .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; controller.abort(); };
+    return () => { cancelled = true; requestRef.current?.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterKey]);
 
@@ -195,13 +199,13 @@ export function AgentsExplorer() {
   }, [filters.search]);
 
   const updateParams = useCallback((mutate: (p: URLSearchParams) => void) => {
-    const next = new URLSearchParams(searchParams);
+    const next = new URLSearchParams(window.location.search);
     mutate(next);
     if (next.get('tab') == null) next.set('tab', 'agents');
-    startTransition(() => {
-      router.replace(`${pathname}?${next.toString()}`, { scroll: false });
-    });
-  }, [pathname, router, searchParams]);
+    // These filters are read by the client API fetch, not the server page.
+    // History updates sync useSearchParams without an extra RSC round trip.
+    window.history.replaceState(null, '', `${pathname}?${next.toString()}`);
+  }, [pathname]);
 
   const toggleIn = useCallback(<T extends string>(key: string, allowed: readonly T[], v: T) => {
     const current = parseArr(searchParams, key, allowed);
@@ -247,31 +251,33 @@ export function AgentsExplorer() {
 
   const resetAll = useCallback(() => {
     setSearchInput('');
-    startTransition(() => {
-      router.replace(`${pathname}?tab=agents`, { scroll: false });
-    });
-  }, [pathname, router]);
+    window.history.replaceState(null, '', `${pathname}?tab=agents`);
+  }, [pathname]);
 
   const loadMore = useCallback(async () => {
     if (loading || total == null || entries.length >= total) return;
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
     setError(null);
     try {
       const q = new URLSearchParams(apiQuery);
       q.set('limit',  String(filters.pageSize));
       q.set('offset', String(offset));
-      const r = await fetch(`/api/explore/agents?${q.toString()}`, { cache: 'no-store' });
+      const r = await fetch(`/api/explore/agents?${q.toString()}`, { signal: controller.signal, cache: 'no-store' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = (await r.json()) as { wallets: ApiEntry[]; total: number };
+      if (controller.signal.aborted) return;
       setEntries((prev) => [...prev, ...data.wallets]);
       setOffset((prev) => prev + data.wallets.length);
       setTotal(data.total);
     } catch (err) {
-      setError((err as Error).message);
+      if (!controller.signal.aborted) setError((err as Error).message);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
-  }, [apiQuery, entries.length, loading, offset, total]);
+  }, [apiQuery, entries.length, filters.pageSize, loading, offset, total]);
 
   const activeCount =
     filters.tiers.length +
@@ -364,7 +370,7 @@ export function AgentsExplorer() {
               : ' '}
           </span>
           <div className="flex items-center gap-3">
-            {isPending && <span className="text-[#62666d]">Updating…</span>}
+            {loading && <span className="text-[#62666d]">Updating…</span>}
             <PageSizeSelector
               value={filters.pageSize}
               onChange={(n) =>
@@ -380,7 +386,7 @@ export function AgentsExplorer() {
         {/* Table */}
         <div className="rounded-lg border border-[rgb(255_255_255/0.06)] overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-[12.5px]">
+            <table aria-busy={loading} className="w-full text-[12.5px]">
               <thead>
                 <tr className="border-b border-[rgb(255_255_255/0.06)] bg-[rgb(255_255_255/0.015)]">
                   <Th className="w-10">#</Th>
