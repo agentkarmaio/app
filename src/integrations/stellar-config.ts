@@ -11,6 +11,7 @@
  * 2026-04-11, deployLedger 62071546).
  */
 import { Networks } from '@stellar/stellar-sdk';
+import { USDC_ISSUER, USDC_SAC, STELLAR_USDC_DECIMALS, type StellarNetwork } from '@/config/stellar-x402';
 
 // ─── Pinned mainnet contract IDs ────────────────────────────────────────────
 export const STELLAR_IDENTITY_REGISTRY = 'CBGPDCJIHQ32G42BE7F2CIT3YW6XRN5ED6GQJHCRZSNAYH6TGMCL6X35' as const;
@@ -60,6 +61,61 @@ export function resolveStellarRpcUrl(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
   return env.STELLAR_RPC_URL || DEFAULT_MAINNET_RPC;
+}
+
+// ─── Per-network config ─────────────────────────────────────────────────────
+//
+// Testnet is indexed under its OWN chain key ('stellar-testnet', decided by
+// Kerem 2026-10-14) so it can never pollute mainnet reputation: erc8004_agents
+// is keyed (chain, agent_id) and testnet ids overlap mainnet ids. Testnet rows
+// are API-only — see NON_PUBLIC_CHAINS in db/schema.ts.
+//
+// Testnet reads never consult the mainnet env overrides: a STELLAR_RPC_URL
+// pointed at mainnet must not silently serve testnet reads (or vice versa).
+
+/**
+ * trionlabs/stellar-8004 testnet IdentityRegistry — the registry AgentEnact's
+ * agents live on (agentenact/src/networks.ts NETWORKS['stellar:testnet']).
+ * Verified 2026-10-14: total_agents() = 92, matching api.agentenact.io stats.
+ */
+export const STELLAR_TESTNET_IDENTITY_REGISTRY =
+  'CDE3K4COIAGWNNJQQLL26SYI3KBJF5FUDHXG5FA6GYDJCG7T5V7FIWZH' as const;
+
+export interface StellarNetworkConfig {
+  network: StellarNetwork;
+  /** AK chain key every row from this network is written under. */
+  chain: 'stellar' | 'stellar-testnet';
+  passphrase: string;
+  identityRegistry: string;
+  rpcUrl: string;
+  horizonUrl: string;
+  /** Circle USDC, pinned CODE:ISSUER plus its SAC. Amounts are 7-decimal. */
+  usdc: { code: 'USDC'; issuer: string; sac: string; decimals: number };
+}
+
+const blankAsUnset = (v: string | undefined): string | undefined => v?.trim() || undefined;
+
+export function stellarNetwork(
+  network: StellarNetwork,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): StellarNetworkConfig {
+  const usdc = { code: 'USDC' as const, issuer: USDC_ISSUER[network], sac: USDC_SAC[network], decimals: STELLAR_USDC_DECIMALS };
+  if (network === 'pubnet') {
+    return {
+      network, chain: 'stellar', passphrase: STELLAR_NETWORK_PASSPHRASE,
+      identityRegistry: STELLAR_IDENTITY_REGISTRY,
+      rpcUrl: resolveStellarRpcUrl(env),
+      horizonUrl: blankAsUnset(env.STELLAR_HORIZON_URL) ?? 'https://horizon.stellar.org',
+      usdc,
+    };
+  }
+  return {
+    network, chain: 'stellar-testnet', passphrase: Networks.TESTNET,
+    identityRegistry: STELLAR_TESTNET_IDENTITY_REGISTRY,
+    rpcUrl: blankAsUnset(env.STELLAR_TESTNET_RPC_URL) ?? 'https://soroban-testnet.stellar.org',
+    horizonUrl: blankAsUnset(env.STELLAR_TESTNET_HORIZON_URL) ?? 'https://horizon-testnet.stellar.org',
+    usdc,
+  };
 }
 
 export interface AssertPinnedWasmOpts {
