@@ -15,7 +15,7 @@
  *   - optional per-heir `share` must be a positive finite number when present.
  */
 
-import { isChain, type Chain, type SuccessionHeir } from '@/db/schema';
+import { isSiteChain, type Chain, type SuccessionHeir } from '@/db/schema';
 import { getAdapter } from '@/chain-adapters/registry';
 
 /** One hour — fast enough for demos, slow enough to never false-lapse a healthy agent. */
@@ -124,7 +124,7 @@ function validateHeir(
   }
 
   const chainVal = obj.chain;
-  if (!isChain(chainVal)) {
+  if (!isSiteChain(chainVal)) {
     return { ok: false, error: `heir at index ${index} has an invalid or missing chain` };
   }
 

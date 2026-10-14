@@ -13,7 +13,7 @@
 
 import { detectChain } from '@/lib/chain-detect';
 import { getWallet, getWalletsByAddressAnyChain } from '@/db/client';
-import { isChain, type Chain, type Wallet } from '@/db/schema';
+import { isSiteChain, type Chain, type Wallet } from '@/db/schema';
 import { isEvmChain } from '@/lib/chain-meta';
 
 export type AddressClass = 'solana' | 'stellar' | 'evm' | 'unknown';
@@ -62,7 +62,7 @@ export async function resolveAgentChain(
   chainHint?: string,
 ): Promise<ResolvedChain> {
   const addressClass = classifyAddress(address);
-  const hint: Chain | undefined = isChain(chainHint) ? chainHint : undefined;
+  const hint: Chain | undefined = isSiteChain(chainHint) ? chainHint : undefined;
 
   if (addressClass === 'unknown') {
     return { addressClass, chain: null, wallet: null, candidates: [] };

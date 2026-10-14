@@ -20,3 +20,14 @@ test('sitemap includes the mainnet landing route and pins mainnet agent URLs wit
   expect(urls).toContain('https://agentkarma.io/agent/other?chain=arc-mainnet');
   expect(urls).toContain('https://agentkarma.io/agent/solana-wallet');
 });
+
+test('sitemap never publishes an API-only stellar-testnet agent, even if a row slips through', async () => {
+  track(spyOn(db, 'getLeaderboard').mockResolvedValue({ total: 2, wallets: [
+    { chain: 'stellar-testnet', address: 'GTESTNETONLY' },
+    { chain: 'stellar', address: 'GMAINNET' },
+  ] as Wallet[] }));
+  track(spyOn(db, 'listOrganizations').mockResolvedValue([]));
+  const urls = (await sitemap()).map(entry => entry.url);
+  expect(urls).toContain('https://agentkarma.io/agent/GMAINNET');
+  expect(urls.some(u => u.includes('GTESTNETONLY'))).toBe(false);
+});

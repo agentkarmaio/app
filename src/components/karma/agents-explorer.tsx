@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils';
 import { agentHref } from '@/lib/agent-href';
 import { UI_DEFAULT_CHAIN } from '@/lib/chain-meta';
 import type { TrustTier, ConfidenceBadge, AutonomyLabel, Chain } from '@/db/schema';
-import { isChain } from '@/db/schema';
+import { isSiteChain } from '@/db/schema';
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 const DEFAULT_PAGE_SIZE = 25;
@@ -112,7 +112,7 @@ export function AgentsExplorer() {
     // now means the default chain.
     const chainRaw = searchParams.get('chain');
     const chain: ChainFilter = chainRaw === 'all' ? 'All'
-      : isChain(chainRaw) ? (chainRaw as Chain)
+      : isSiteChain(chainRaw) ? (chainRaw as Chain)
       : UI_DEFAULT_CHAIN;
     return {
       tiers:            parseArr(searchParams, 'tier', TIER_OPTIONS),

@@ -718,3 +718,55 @@ describe('Stellar transfer cancellation', () => {
     expect(rotations).toEqual([]);
   });
 });
+
+// ─── Network isolation (stellar-testnet chain key) ───────────────────────────
+
+describe('chain key is the network\'s, never mixed', () => {
+  test('default run stamps every row and signal chain=stellar (pubnet unchanged)', async () => {
+    const { deps, state } = makeDeps({ [AGENT_A]: [CLASSIC_PAYMENT] });
+    await stellarTransfersIndexer(deps);
+    expect(state.inserted.length).toBeGreaterThan(0);
+    for (const row of state.inserted) expect(row.chain).toBe('stellar');
+    for (const s of state.signals) expect(s.chain).toBe('stellar');
+  });
+
+  test('a stellar-testnet run stamps every row and signal chain=stellar-testnet', async () => {
+    const { deps, state } = makeDeps({ [AGENT_A]: [CLASSIC_PAYMENT] }, { chain: 'stellar-testnet' });
+    await stellarTransfersIndexer(deps);
+    expect(state.inserted.length).toBeGreaterThan(0);
+    for (const row of state.inserted) expect(row.chain).toBe('stellar-testnet');
+    expect(state.signals.length).toBeGreaterThan(0);
+    for (const s of state.signals) expect(s.chain).toBe('stellar-testnet');
+  });
+
+  test('toTransactionRow takes the chain explicitly', () => {
+    const [t] = extractUsdcTransfers(CLASSIC_PAYMENT, USDC);
+    expect(toTransactionRow(t, SAC, 'stellar-testnet').chain).toBe('stellar-testnet');
+  });
+
+  test('the testnet seed set takes no mainnet partner extras', () => {
+    const seed = buildStellarSeedSet({ registryRows: [{ owner: AGENT_A, agent_wallet: AGENT_B }], extra: [] });
+    expect([...seed].sort()).toEqual([AGENT_A, AGENT_B].sort());
+  });
+});
+
+describe('rescore enqueueing (testnet opt-in)', () => {
+  test('markDirty receives both faces of every kept transfer, after the rows commit', async () => {
+    const order: string[] = [];
+    const dirty: string[] = [];
+    const { deps } = makeDeps({ [AGENT_A]: [CLASSIC_PAYMENT] }, {
+      insertTransactions: async (rows) => { order.push('rows'); return rows.length; },
+      markDirty: async (addresses) => { order.push('dirty'); dirty.push(...addresses); },
+    });
+    await stellarTransfersIndexer(deps);
+    expect(order).toEqual(['rows', 'dirty']);
+    expect(dirty.sort()).toEqual([AGENT_A, AGENT_B].sort());
+  });
+
+  test('without markDirty (pubnet default) nothing is enqueued and the run is unchanged', async () => {
+    const { deps, state } = makeDeps({ [AGENT_A]: [CLASSIC_PAYMENT] });
+    expect(deps.markDirty).toBeUndefined();
+    await stellarTransfersIndexer(deps);
+    expect(state.inserted.length).toBeGreaterThan(0);
+  });
+});

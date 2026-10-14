@@ -1,9 +1,10 @@
 /**
- * CLI entrypoint: bun run src/indexer/stellar-transfers-run.ts [--dry-run]
+ * CLI entrypoint: bun run src/indexer/stellar-transfers-run.ts [--testnet] [--dry-run]
  *
  * Walks each seeded Stellar account's Horizon payment feed and persists
- * issuer-pinned USDC transfers as Tier-1 receipts. MAINNET ONLY — there is no
- * --testnet flag, deliberately (see the spec's "Mainnet only" section).
+ * issuer-pinned USDC transfers as Tier-1 receipts. Pubnet by default, under
+ * chain 'stellar'. --testnet runs the API-only network under its own chain key
+ * 'stellar-testnet' (approved by Kerem 2026-10-14) — never under 'stellar'.
  *
  * --dry-run swaps in counting no-ops for every write, so the reported match
  * count comes from the real seed set, parser and filters without touching the
@@ -32,6 +33,8 @@ import {
 requireEnv(['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']);
 
 const DRY_RUN = process.argv.includes('--dry-run');
+const NETWORK = process.argv.includes('--testnet') ? 'testnet' : 'pubnet';
+const CHAIN = NETWORK === 'testnet' ? 'stellar-testnet' : 'stellar';
 
 /** Counting no-ops: exercise the real read path, write nothing. */
 function dryRunOverrides(sink: {
@@ -43,6 +46,7 @@ function dryRunOverrides(sink: {
     insertTransactions: async (rows) => { sink.rows.push(...rows); return rows.length; },
     insertSignalEvents: async (s) => { sink.signals += s.length; return s.length; },
     ensureWallets: async (addresses) => { for (const a of addresses) sink.wallets.add(a); },
+    markDirty: async () => { /* never enqueue rescoring in a dry run */ },
     upsertCursor: async () => { /* never advance a cursor in a dry run */ },
     writeTargetCheckpoint: async () => { /* no scheduling writes in a dry run */ },
   };
@@ -50,14 +54,14 @@ function dryRunOverrides(sink: {
 
 const sink = { rows: [] as Omit<Transaction, 'id'>[], signals: 0, wallets: new Set<string>() };
 
-console.log(`[stellar-transfers] Network: pubnet (mainnet only)`);
+console.log(`[stellar-transfers] Network: ${NETWORK} (chain '${CHAIN}')`);
 console.log(`[stellar-transfers] Mode: ${DRY_RUN ? 'DRY RUN — no writes' : 'live'}`);
 
 const start = Date.now();
 
 runIndexerCli({
-  chain: 'stellar', path: 'transfers', dryRun: DRY_RUN,
-  run: async (signal) => runStellarTransfersIndexer({ signal, ...(DRY_RUN ? { overrides: dryRunOverrides(sink) } : {}) }),
+  chain: CHAIN, path: 'transfers', dryRun: DRY_RUN,
+  run: async (signal) => runStellarTransfersIndexer({ signal, network: NETWORK, ...(DRY_RUN ? { overrides: dryRunOverrides(sink) } : {}) }),
   summarize: (result) => coverageOutcome(result.coverage, result.inserted),
 })
   .then(({ result, status, exitCode, errorCode }) => {

@@ -17,7 +17,8 @@ import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
 import { resolveKarma, resolveKarmaEnrichment, type EnrichmentCore } from '@/lib/karma-resolver';
 import { stellarAccountExists } from '@/integrations/stellar-flows';
 import { isStellarAccount } from '@/config/stellar-x402';
-import type { Chain, Wallet } from '@/db/schema';
+import { CHAINS, isPublicChain, type Chain, type Wallet } from '@/db/schema';
+import { networkTag } from '@/lib/api-only-chain';
 import {
   buildSuccessionView, buildBondView, buildSuretyView, isBondSettled, toSuretyPosition,
 } from '@/lib/succession-view';
@@ -66,7 +67,7 @@ export async function GET(
   const pinned = chainParam ? resolveChainParam(chainParam, wallet) : null;
   if (chainParam && !pinned) {
     return NextResponse.json(
-      { error: `chain must be one of solana, celo, stellar, arc, arc-mainnet and match the address format` },
+      { error: `chain must be one of ${CHAINS.join(', ')} and match the address format` },
       { status: 400 },
     );
   }
@@ -157,6 +158,7 @@ export async function GET(
   const response: Record<string, unknown> = {
     address: wallet,
     chain: walletRow?.chain ?? pinned ?? detectChain(wallet) ?? null,
+    ...networkTag(pinned),
     face,
     identity,
     txCount: live?.txCount ?? walletRow?.tx_count ?? 0,
@@ -255,7 +257,9 @@ export async function GET(
  */
 export function pickWalletRow(rows: Wallet[], wallet: string, pinned: Chain | null): Wallet | null {
   if (pinned) return rows.find((r) => r.chain === pinned) ?? null;
-  rows = rows.filter((r) => r.chain !== 'arc');
+  // Unpinned reads see public chains only: never the Arc archive, never the
+  // API-only stellar-testnet row that shares a mainnet G-address.
+  rows = rows.filter((r) => isPublicChain(r.chain));
   if (rows.length === 0) return null;
   if (rows.length === 1) return rows[0];
   const detected = detectChain(wallet);

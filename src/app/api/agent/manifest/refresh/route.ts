@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectApiOnlyChain } from '@/lib/api-only-chain';
+import { isApiOnlyChain } from '@/db/schema';
 import { isRecognizedAddress, canonicalAddress, resolveChainParam } from '@/lib/chain-detect';
 import {
   getWallet,
@@ -47,6 +49,8 @@ export async function POST(request: NextRequest) {
   if (body.chain === 'arc') {
     return NextResponse.json({ error: 'Arc testnet is retired. Historical profiles remain read-only.' }, { status: 410, headers: ipGate.headers });
   }
+  const apiOnly = rejectApiOnlyChain(body.chain, ipGate.headers);
+  if (apiOnly) return apiOnly;
 
   if (typeof body.wallet !== 'string' || !body.wallet) {
     return NextResponse.json(
@@ -84,7 +88,9 @@ export async function POST(request: NextRequest) {
   // addresses require a pin before any website fetch or mutation.
   let walletRow = await getWallet(wallet, pinned ?? undefined);
   if (!walletRow && !pinned) {
-    const rows = await getWalletsByAddressAnyChain(wallet);
+    // API-only rows (stellar-testnet) share mainnet's G-address format; an
+    // unpinned refresh must never resolve to one, nor 409 because of one.
+    const rows = (await getWalletsByAddressAnyChain(wallet)).filter((r) => !isApiOnlyChain(r.chain));
     if (rows.length === 1) {
       walletRow = rows[0];
     } else if (rows.length > 1) {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectApiOnlyChain } from '@/lib/api-only-chain';
 import { isAddress } from 'viem';
 import { PublicKey } from '@solana/web3.js';
 import { isChain, type Chain } from '@/db/schema';
@@ -58,6 +59,9 @@ export async function POST(request: NextRequest) {
   if (chain === 'arc-mainnet') {
     return NextResponse.json({ error: 'Arc ownership changes are not enabled' }, { status: 501 });
   }
+
+  const apiOnly = rejectApiOnlyChain(chain);
+  if (apiOnly) return apiOnly;
 
   if (!address || !chain || !displayName || !signature || !message) {
     return NextResponse.json(

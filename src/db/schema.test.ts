@@ -11,8 +11,8 @@ import {
 import type { IndexerCursor, Wallet } from './schema';
 
 describe('CHAINS dimension', () => {
-  test('includes arc alongside solana, celo and stellar', () => {
-    expect([...CHAINS]).toEqual(['solana', 'celo', 'stellar', 'arc', 'arc-mainnet']);
+  test('includes arc alongside solana, celo and stellar, plus API-only stellar-testnet', () => {
+    expect([...CHAINS]).toEqual(['solana', 'celo', 'stellar', 'arc', 'arc-mainnet', 'stellar-testnet']);
   });
 
   test('isChain accepts stellar, rejects unknown', () => {

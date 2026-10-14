@@ -1,0 +1,73 @@
+name: Stellar testnet refresh
+
+# Keeps AgentKarma's API-only stellar-testnet index current (Kerem, 2026-10-14):
+# the stellar-8004 TESTNET IdentityRegistry mirror and the testnet USDC
+# transfers of those agents, both written under chain 'stellar-testnet'.
+# Partner explorers (agentenact.io/explore) read it through
+# /api/explore/agents?chain=stellar-testnet and
+# /api/v2/agent/stellar-testnet/{id}[/payments]; it never appears on
+# agentkarma.io's own pages, rankings or totals.
+#
+# Runs here, NOT in the in-app indexing workers (startIndexingWorkers skips
+# API-only chains), so a testnet sweep can never compete with mainnet work in
+# the web process. Same managed path as stellar-refresh: indexing-run.ts takes
+# the (chain, path) lease from indexing_state (rows added by migration 0026).
+#
+# Cost: ~92 agents x 4 Soroban reads at concurrency 2 against the public
+# testnet RPC (throttled; the scanner backs off on 429), then one bounded
+# Horizon walk per seeded account. Scores follow through the normal rescore
+# queue — the transfers job marks touched testnet wallets dirty.
+#
+# Required repo secrets:
+#   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+# Optional repo secrets:
+#   STELLAR_TESTNET_RPC_URL      Soroban RPC override (default soroban-testnet.stellar.org)
+#   STELLAR_TESTNET_HORIZON_URL  Horizon override (default horizon-testnet.stellar.org)
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_ALERT_CHAT_ID   failure alerts
+
+on:
+  schedule:
+    - cron: '50 * * * *' # hourly, offset from stellar-refresh (:30) and keep-fresh
+  workflow_dispatch:
+
+concurrency:
+  group: stellar-testnet-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/bun-setup
+
+      # Registry first, so a newly registered agent is in the transfers seed set
+      # of the same run.
+      - name: Mirror the stellar-8004 testnet registry
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          STELLAR_TESTNET_RPC_URL: ${{ secrets.STELLAR_TESTNET_RPC_URL }}
+        run: bun run src/scripts/indexing-run.ts stellar-testnet registry
+
+      # Independent of the mirror: a registry hiccup must not skip transfers
+      # for the agents already mirrored, but it must still page.
+      - name: Index testnet USDC transfers
+        if: ${{ !cancelled() }}
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          STELLAR_TESTNET_HORIZON_URL: ${{ secrets.STELLAR_TESTNET_HORIZON_URL }}
+        run: bun run src/scripts/indexing-run.ts stellar-testnet transfers
+
+      - name: Page on failure
+        if: failure()
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            🛟 <b>AgentKarma stellar-testnet-refresh FAILED</b>
+            The API-only testnet mirror/transfers job crashed — agentenact.io/explore data may stall.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

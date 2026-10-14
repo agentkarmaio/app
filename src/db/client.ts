@@ -19,6 +19,7 @@ import type {
   Chain, Succession, SuccessionStatus, SuccessionSourceType, SuccessionHeir,
   Bond, BondUnderwriter, BondStatus,
 } from './schema';
+import { NON_PUBLIC_CHAINS, isApiOnlyChain } from './schema';
 // Type-only: erased at runtime, so this does NOT pull viem/the scanner into the
 // db-client bundle that API routes + the Docker build load.
 import type { ScannedAgent, ScannedFeedback } from '@/indexer/erc8004-registry';
@@ -125,6 +126,29 @@ export const supabase = new Proxy({} as SupabaseClient, {
     return typeof value === 'function' ? value.bind(client) : value;
   },
 });
+
+// --- Public-surface chain filter ----------------------------------------------
+
+/**
+ * Hide NON_PUBLIC_CHAINS (retired Arc testnet, API-only stellar-testnet) from a
+ * public read. Applied before pagination so hidden rows can't eat page slots.
+ * Every ranking/search/activity read goes through this one helper; the
+ * isolation tests (stellar-testnet-isolation.test.ts) pin each call site.
+ */
+function publicChainsOnly<Q>(q: Q): Q {
+  // Unconstrained Q on purpose: constraining it to supabase-js's builder type
+  // trips TS2589 (instantiation too deep) at every call site.
+  type Filterable = { neq(column: string, value: string): Filterable };
+  return NON_PUBLIC_CHAINS.reduce(
+    (acc: Filterable, chain) => acc.neq('chain', chain),
+    q as unknown as Filterable,
+  ) as unknown as Q;
+}
+
+/** A public ranking asked for a non-public chain is empty — never queried. */
+function isHiddenChain(chain: Chain | undefined): boolean {
+  return chain != null && (NON_PUBLIC_CHAINS as readonly Chain[]).includes(chain);
+}
 
 // --- Wallet Queries ----------------------------------------------------------
 
@@ -414,7 +438,7 @@ export async function getLeaderboard(
   filters: LeaderboardFilters = {},
   opts: { withCount?: boolean } = {},
 ): Promise<LeaderboardPage> {
-  if (filters.chain === 'arc') return { wallets: [], total: 0 };
+  if (isHiddenChain(filters.chain)) return { wallets: [], total: 0 };
   // count: 'exact' over 86k+ wallets is the slow path. Skip when caller doesn't
   // need the total (e.g. homepage cache, where only the page rows are used).
   if (filters.chain === 'arc-mainnet') {
@@ -422,11 +446,10 @@ export async function getLeaderboard(
       tiers: filters.tier ? [filters.tier] : undefined }, { field: 'provider_score', direction: 'desc' });
   }
   const withCount = opts.withCount ?? true;
-  let q = supabase
+  let q = publicChainsOnly(supabase
     .from('wallets')
     .select('*', withCount ? { count: 'exact' } : {})
-    .gt('score', 0)
-    .neq('chain', 'arc');
+    .gt('score', 0));
 
   if (filters.chain) q = q.eq('chain', filters.chain);
 
@@ -517,8 +540,9 @@ async function getUnifiedAgentsPage(
   offset: number,
   filters: AgentsExploreFilters,
   sort: AgentsExploreSort,
+  view: 'explore_agents' | 'stellar_testnet_agents' = 'explore_agents',
 ): Promise<LeaderboardPage> {
-  let q = supabase.from('explore_agents').select('*', { count: 'exact' });
+  let q = supabase.from(view).select('*', { count: 'exact' });
   if (filters.chain) q = q.eq('chain', filters.chain);
 
   if (filters.tiers?.length) q = q.in('trust_tier', filters.tiers);
@@ -557,6 +581,8 @@ export async function getAgents(
   sort: AgentsExploreSort = { field: 'provider_score', direction: 'desc' },
 ): Promise<LeaderboardPage> {
   if (filters.chain === 'arc') return { wallets: [], total: 0 };
+  // API-only testnet agents have their own view; the public view never unions them.
+  if (isApiOnlyChain(filters.chain)) return getUnifiedAgentsPage(limit, offset, filters, sort, 'stellar_testnet_agents');
   // The view keeps registry agentIds distinct and joins chain-scoped wallet
   // measurements before filtering, sorting and pagination. Arc mainnet retains
   // its transfer-derived score semantics; Celo/Stellar keep declared scores.
@@ -574,8 +600,8 @@ export async function getAgents(
   // tx_count > 0 always carry score > 0, so this doesn't regress them.
   let q = supabase
     .from('wallets')
-    .select('*', { count: 'exact' })
-    .neq('chain', 'arc');
+    .select('*', { count: 'exact' });
+  q = publicChainsOnly(q);
 
   // The score>0 gate hides untracked/noise wallets from the default population.
   // When the caller explicitly filters for claimed agents, drop it: a freshly
@@ -682,10 +708,9 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
     ...idClauses,
   ].join(',');
 
-  const { data, error } = await supabase
+  const { data, error } = await publicChainsOnly(supabase
     .from('wallets')
-    .select('address, chain, display_name, score, trust_tier, tx_count, celo_agent_id, arc_agent_id, stellar_agent_id')
-    .neq('chain', 'arc')
+    .select('address, chain, display_name, score, trust_tier, tx_count, celo_agent_id, arc_agent_id, stellar_agent_id'))
     .or(orFilter)
     .order('score', { ascending: false })
     .limit(Math.max(1, Math.min(50, limit)));
@@ -718,10 +743,15 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
  * highest-scored match deterministically rather than risk a multi-row throw.
  */
 export async function getWalletByAgentId(chain: Chain, agentId: number): Promise<Wallet | null> {
-  if (chain === 'arc-mainnet') {
+  if (chain === 'arc-mainnet' || isApiOnlyChain(chain)) {
     if (!Number.isSafeInteger(agentId) || agentId < 0 || agentId > MAX_INT32) return null;
-    const { data, error } = await supabase.from('explore_agents').select('*')
-      .eq('chain', chain).eq('arc_agent_id', agentId).limit(1);
+    // Registry identity is per agentId in the view (owner-collapsed `wallets`
+    // rows can't carry it). Testnet projects its id into stellar_agent_id.
+    const [view, col] = chain === 'arc-mainnet'
+      ? ['explore_agents', 'arc_agent_id'] as const
+      : ['stellar_testnet_agents', 'stellar_agent_id'] as const;
+    const { data, error } = await supabase.from(view).select('*')
+      .eq('chain', chain).eq(col, agentId).limit(1);
     if (error) throw error;
     return ((data ?? [])[0] as Wallet) ?? null;
   }
@@ -1185,6 +1215,91 @@ export async function getTransactions(
   return (data ?? []) as Transaction[];
 }
 
+// --- Received payments (API-only partner read) -------------------------------
+
+/** One inbound USDC payment, as served by /api/v2/agent/[chain]/[id]/payments. */
+export interface ReceivedPayment {
+  txHash: string;
+  /** Payer account (`transactions.wallet_address`). */
+  from: string;
+  /** USDC in whole units, fixed 7 decimals (Stellar's USDC precision), e.g. "0.0010000". */
+  amount: string;
+  timestamp: string;
+  success: boolean;
+}
+
+export interface PaymentsCursor { timestamp: string; id: string }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function encodePaymentsCursor(c: PaymentsCursor): string {
+  return Buffer.from(`${c.timestamp}|${c.id}`).toString('base64url');
+}
+
+/**
+ * Parse an opaque cursor. Both halves are shape-validated because they are
+ * interpolated into a PostgREST `or` filter — anything else is rejected.
+ */
+export function decodePaymentsCursor(raw: string): PaymentsCursor | null {
+  const decoded = Buffer.from(raw, 'base64url').toString('utf8');
+  const [timestamp, id, ...rest] = decoded.split('|');
+  if (rest.length || !timestamp || !id || !UUID_RE.test(id) || !/^[0-9T:.+\-Z ]+$/.test(timestamp)
+    || Number.isNaN(Date.parse(timestamp))) return null;
+  return { timestamp, id };
+}
+
+/**
+ * `transactions.amount` (numeric(38,18), read as text so no float ever touches
+ * it) → USDC with exactly 7 decimals. Stellar USDC has 7-decimal precision, so
+ * a nonzero 8th+ digit means the row is not a Stellar USDC amount: fail loud
+ * rather than truncate money.
+ */
+export function formatUsdc7(text: string): string {
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(text.trim());
+  if (!m) throw new Error(`formatUsdc7: not a decimal amount: ${text}`);
+  const frac = m[2] ?? '';
+  if (/[1-9]/.test(frac.slice(7))) throw new Error(`formatUsdc7: more than 7 decimals: ${text}`);
+  return `${m[1]}.${frac.slice(0, 7).padEnd(7, '0')}`;
+}
+
+/**
+ * Inbound payments to `payee` on one chain, newest first. Keyset-paginated on
+ * (timestamp, id) — stable under concurrent inserts, unlike offset paging.
+ * Served by idx_transactions_counterparty.
+ */
+export async function getReceivedPayments(
+  chain: Chain,
+  payee: string,
+  opts: { limit: number; cursor?: PaymentsCursor | null },
+): Promise<{ payments: ReceivedPayment[]; nextCursor: string | null }> {
+  let q = supabase
+    .from('transactions')
+    .select('id, tx_signature, wallet_address, amount::text, timestamp, success')
+    .eq('chain', chain)
+    .eq('counterparty', payee);
+  if (opts.cursor) {
+    const ts = opts.cursor.timestamp;
+    q = q.or(`timestamp.lt."${ts}",and(timestamp.eq."${ts}",id.lt.${opts.cursor.id})`);
+  }
+  const { data, error } = await q
+    .order('timestamp', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(opts.limit + 1);
+  if (error) throw error;
+
+  const rows = (data ?? []) as unknown as Array<{ id: string; tx_signature: string; wallet_address: string;
+    amount: string; timestamp: string; success: boolean }>;
+  const page = rows.slice(0, opts.limit);
+  const last = page.at(-1);
+  return {
+    payments: page.map((r) => ({
+      txHash: r.tx_signature, from: r.wallet_address, amount: formatUsdc7(String(r.amount)),
+      timestamp: r.timestamp, success: r.success,
+    })),
+    nextCursor: rows.length > opts.limit && last ? encodePaymentsCursor({ timestamp: last.timestamp, id: last.id }) : null,
+  };
+}
+
 export async function getTransactionCount(walletAddress: string, chain: Chain = DEFAULT_CHAIN): Promise<number> {
   const { count, error } = await supabase
     .from('transactions')
@@ -1467,6 +1582,8 @@ export async function enqueueWalletScan(
   chain: Chain = DEFAULT_CHAIN,
 ): Promise<EnqueueWalletScanResult> {
   if (chain === 'arc') throw new Error('arc_testnet_retired');
+  // No chain adapter scans testnet history; its data comes from the indexer.
+  if (isApiOnlyChain(chain)) throw new Error('api_only_chain');
   if (!address || typeof address !== 'string') {
     return { enqueued: false, reason: 'invalid' };
   }
@@ -1863,10 +1980,9 @@ export async function getFacilitatorStats(): Promise<{
   }
 
   // Fallback: JS aggregation (bounded to recent activity to avoid full-table scans)
-  const { data, error } = await supabase
+  const { data, error } = await publicChainsOnly(supabase
     .from('transactions')
-    .select('facilitator, wallet_address, amount, timestamp')
-    .neq('chain', 'arc')
+    .select('facilitator, wallet_address, amount, timestamp'))
     .order('timestamp', { ascending: false })
     .limit(5000);
 
@@ -1909,10 +2025,9 @@ export async function getRecentTransactions(
   limit = 30,
   since?: Date,
 ): Promise<Transaction[]> {
-  let query = supabase
+  let query = publicChainsOnly(supabase
     .from('transactions')
-    .select('*')
-    .neq('chain', 'arc')
+    .select('*'))
     .order('timestamp', { ascending: false })
     .limit(limit);
 
@@ -2801,14 +2916,13 @@ export async function getReapableSuccessions(
   offset = 0,
   filters: ReapableFilters = {},
 ): Promise<ReapablePage> {
-  if (filters.chain === 'arc') return { successions: [], total: 0 };
+  if (isHiddenChain(filters.chain)) return { successions: [], total: 0 };
   const statuses = filters.statuses?.length ? filters.statuses : REAPABLE_STATUSES;
 
-  let q = supabase
+  let q = publicChainsOnly(supabase
     .from('successions')
     .select('*', { count: 'exact' })
-    .in('status', statuses)
-    .neq('chain', 'arc');
+    .in('status', statuses));
 
   if (filters.chain) q = q.eq('chain', filters.chain);
 
@@ -3061,12 +3175,11 @@ export async function getSuretyLeaderboard(
   offset = 0,
   filters: SuretyLeaderboardFilters = {},
 ): Promise<SuretyLeaderboardPage> {
-  if (filters.chain === 'arc') return { wallets: [], total: 0 };
-  let q = supabase
+  if (isHiddenChain(filters.chain)) return { wallets: [], total: 0 };
+  let q = publicChainsOnly(supabase
     .from('wallets')
     .select('*', { count: 'exact' })
-    .not('surety_score', 'is', null)
-    .neq('chain', 'arc');
+    .not('surety_score', 'is', null));
 
   if (filters.chain) q = q.eq('chain', filters.chain);
 

@@ -15,7 +15,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getReapableSuccessions, REAPABLE_STATUSES } from '@/db/client';
-import { isChain, type Chain, type SuccessionStatus } from '@/db/schema';
+import { isSiteChain, type Chain, type SuccessionStatus } from '@/db/schema';
 import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
@@ -51,13 +51,13 @@ export async function GET(request: NextRequest) {
   const sp = new URL(request.url).searchParams;
 
   const chainParam = sp.get('chain');
-  if (chainParam && !isChain(chainParam)) {
+  if (chainParam && !isSiteChain(chainParam)) {
     return NextResponse.json(
       { error: 'Unknown chain' },
       { status: 400, headers: corsHeaders() },
     );
   }
-  const chainFilter: Chain | undefined = chainParam && isChain(chainParam) ? chainParam : undefined;
+  const chainFilter: Chain | undefined = chainParam && isSiteChain(chainParam) ? chainParam : undefined;
 
   const limit = clampInt(sp.get('limit'), 25, 1, 100);
   const offset = clampInt(sp.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER);

@@ -8,11 +8,21 @@
  * scanner (src/indexer/erc8004-registry.ts).
  */
 
-import { NextResponse } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 import { getRegistryStats } from '@/db/client';
+import { isApiOnlyChain } from '@/db/schema';
+import { networkTag } from '@/lib/api-only-chain';
 
-export async function GET() {
-  const chains = await getRegistryStats();
+/**
+ * `?chain=stellar-testnet` returns that API-only network's mirror totals
+ * (rows tagged `network: 'testnet'`). Without it the response is the public
+ * mainnet set, unchanged — testnet never enters the default totals.
+ */
+export async function GET(request: NextRequest) {
+  const chainParam = request.nextUrl.searchParams.get('chain');
+  // Any other value is ignored, exactly as before this parameter existed.
+  const chains = (await getRegistryStats(isApiOnlyChain(chainParam) ? [chainParam] : undefined))
+    .map((c) => ({ ...c, ...networkTag(c.chain) }));
   const totals = chains.reduce(
     (acc, c) => ({ agents: acc.agents + c.agents, feedbacks: acc.feedbacks + c.feedbacks }),
     { agents: 0, feedbacks: 0 },

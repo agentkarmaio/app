@@ -1,5 +1,9 @@
 /**
- * CLI entrypoint: bun run src/indexer/stellar-run.ts [--testnet]
+ * CLI entrypoint: bun run src/indexer/stellar-run.ts
+ *
+ * PUBNET ONLY. `--testnet` is refused: this path writes chain='stellar'. Index
+ * testnet with `bun run src/indexer/stellar-transfers-run.ts --testnet`, which
+ * writes under the API-only 'stellar-testnet' key.
  *
  * Reads Stellar USDC SAC transfer events via Soroban RPC, attributes x402/MPP
  * receipts, persists to Supabase, and advances the ledger cursor.

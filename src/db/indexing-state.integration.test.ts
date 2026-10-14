@@ -633,3 +633,59 @@ test('active listing and transaction aggregates exclude archived testnet without
   expect(query("SELECT count(*) FROM erc8004_agents WHERE chain='arc';")).toBe('1');
   expect(query("SELECT amount::numeric FROM transactions WHERE chain='arc';")).toBe('100.000000000000000000');
 });
+
+describe('stellar-testnet (API-only) at the database', () => {
+  test('migration 0026 widens the chain check, registers both paths, and is re-runnable', () => {
+    const migration = readFileSync(resolve('drizzle/0026_stellar_testnet.sql'), 'utf8');
+    query(migration); query(migration);
+    expect(query("SELECT string_agg(path || ':' || enabled, ',' ORDER BY path) FROM indexing_state WHERE chain='stellar-testnet';"))
+      .toBe('registry:true,transfers:true');
+    expect(JSON.parse(acquire(ownerA, 'stellar-testnet', 'registry')).chain).toBe('stellar-testnet');
+    expect(() => query("INSERT INTO indexing_state(chain,path,enabled,interval_ms) VALUES ('bitcoin','registry',true,1);")).toThrow();
+  });
+
+  test('public view, tier distribution and transaction totals never see testnet; the testnet view does', () => {
+    query(readFileSync(resolve('src/db/sql/explore-agents-view.sql'), 'utf8'));
+    query(readFileSync(resolve('src/db/sql/aggregate-functions.sql'), 'utf8'));
+    query(readFileSync(resolve('src/db/sql/stellar-testnet-agents-view.sql'), 'utf8'));
+    query(`INSERT INTO wallets(chain,address,score,provider_score,consumer_score,confidence_badge,trust_tier,tx_count) VALUES
+      ('stellar','G-shared',10,10,NULL,'declared','Unrated',0),
+      ('stellar-testnet','G-paid',55,55,40,'receipt-backed','Fair',3),
+      ('stellar-testnet','G-payer',0,0,NULL,'declared','Unrated',0);
+    INSERT INTO erc8004_agents(chain,agent_id,owner,agent_wallet,metadata_score,registration) VALUES
+      ('stellar',0,'G-owner','G-shared',80,'{"name":"Mainnet"}'),
+      ('stellar-testnet',0,'G-owner','G-paid',30,'{"name":"Paid"}'),
+      ('stellar-testnet',1,'G-owner',NULL,100,'{"name":"Declared"}');
+    INSERT INTO transactions(chain,wallet_address,facilitator,counterparty,timestamp,tx_signature,amount) VALUES
+      ('stellar','G-shared','sac',NULL,now(),'main',2),
+      ('stellar-testnet','G-payer','sac','G-paid',now(),'test',0.001);`);
+    expect(query("SELECT count(*) FROM explore_agents WHERE chain='stellar-testnet';")).toBe('0');
+    expect(query("SELECT sum(count) FROM get_tier_distribution();")).toBe(query('SELECT count(*) FROM explore_agents;'));
+    expect(query("SELECT total_count || ':' || total_volume::numeric FROM get_transaction_stats();")).toBe('1:2.000000000000000000');
+    expect(query("SELECT count(*) FROM get_facilitator_stats() WHERE tx_count > 1;")).toBe('0');
+
+    const rows = JSON.parse(query(`SELECT json_agg(t ORDER BY stellar_agent_id) FROM (SELECT chain,address,display_name,
+      stellar_agent_id,provider_score,consumer_score,score,trust_tier,confidence_badge,rank_score,tx_count,registry_owner
+      FROM stellar_testnet_agents) t;`));
+    expect(rows).toEqual([
+      // Observed receipts present → observed Karma.
+      { chain: 'stellar-testnet', address: 'G-paid', display_name: 'Paid', stellar_agent_id: 0, provider_score: 55,
+        consumer_score: 40, score: 55, trust_tier: 'Fair', confidence_badge: 'receipt-backed', rank_score: 55, tx_count: 3, registry_owner: 'G-owner' },
+      // Nothing observed (no wallet row; NULL agent_wallet → owner) → declared metadata score.
+      { chain: 'stellar-testnet', address: 'G-owner', display_name: 'Declared', stellar_agent_id: 1, provider_score: 100,
+        consumer_score: null, score: 100, trust_tier: 'Excellent', confidence_badge: 'declared', rank_score: 70, tx_count: 0, registry_owner: 'G-owner' },
+    ]);
+  });
+
+  test('snapshot cleanup keeps the latest snapshot per (chain, wallet), not per address', () => {
+    query(readFileSync(resolve('src/db/sql/cleanup-score-snapshots.sql'), 'utf8'));
+    query(`INSERT INTO wallets(chain,address) VALUES ('stellar','G-both'),('stellar-testnet','G-both') ON CONFLICT DO NOTHING;
+      INSERT INTO scores(chain,wallet_address,score,calculated_at) VALUES
+      ('stellar','G-both',1,now()-interval '200 days'),
+      ('stellar-testnet','G-both',2,now()-interval '150 days'),
+      ('stellar-testnet','G-both',3,now()-interval '120 days');`);
+    query('SELECT cleanup_score_snapshots(90);');
+    expect(query("SELECT string_agg(chain || ':' || score::int, ',' ORDER BY chain) FROM scores WHERE wallet_address='G-both';"))
+      .toBe('stellar:1,stellar-testnet:3');
+  });
+});

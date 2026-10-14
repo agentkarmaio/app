@@ -36,7 +36,7 @@
  */
 
 import type { ParsedManifest, ManifestSourceType, ManifestSuccessionPlan, SuccessionHeir } from '@/db/schema';
-import { isTempoAddress, isChain } from '@/db/schema';
+import { isTempoAddress, isSiteChain } from '@/db/schema';
 import { PublicKey } from '@solana/web3.js';
 import nacl from 'tweetnacl';
 import { safeFetchText, SsrfBlockedError } from '@/lib/ssrf';
@@ -315,7 +315,7 @@ function parseManifestSuccession(raw: unknown): ManifestSuccessionPlan | null {
   for (const h of obj.heirs) {
     if (!h || typeof h !== 'object') continue;
     const he = h as Record<string, unknown>;
-    if (typeof he.address !== 'string' || !isChain(he.chain)) continue;
+    if (typeof he.address !== 'string' || !isSiteChain(he.chain)) continue;
     const heir: SuccessionHeir = { address: he.address, chain: he.chain };
     if (he.share != null && Number.isFinite(Number(he.share))) heir.share = Number(he.share);
     if (typeof he.label === 'string') heir.label = he.label;

@@ -422,6 +422,14 @@ describe('backfillFromHorizon — asset identity (defect 2)', () => {
       horizonUrl: 'https://horizon-testnet.stellar.org', fetchJson: h.fetchJson,
     });
     expect(rows).toHaveLength(1);
+    // Testnet rows must never be stamped with the mainnet chain key.
+    expect(rows[0].chain).toBe('stellar-testnet');
+  });
+
+  test('pubnet backfill rows stay chain=stellar', async () => {
+    const h = fakeHorizon([soroban([transferLeg(PAYER, PAYEE, '5', USDC_ISSUER.pubnet)])]);
+    const { rows } = await backfillFromHorizon({ facilitator: FACILITATOR, fetchJson: h.fetchJson });
+    expect(rows[0]?.chain).toBe('stellar');
   });
 
   test('a declared network contradicting a known Horizon host throws rather than returning nothing', async () => {
@@ -492,5 +500,12 @@ describe('backfillFromHorizon — cursor (defect 3)', () => {
     expect(url.searchParams.get('cursor')).toBe('4242');
     expect(url.searchParams.get('order')).toBe('asc');
     expect(url.searchParams.get('limit')).toBe('50');
+  });
+});
+
+describe('runStellarIndexer network guard', () => {
+  test('refuses testnet: its receipts would be written under the mainnet chain key', async () => {
+    const { runStellarIndexer } = await import('./stellar-x402');
+    await expect(runStellarIndexer({ network: 'testnet' })).rejects.toThrow('stellar-testnet');
   });
 });

@@ -11,6 +11,8 @@
  *   --concurrency <n>  parallel workers (default 2; the public RPC throttles above that)
  *   --no-remote        skip http/ipfs registration fetches (inline-only, fast)
  *   --dry-run          scan + log, NO DB writes
+ *   --testnet          mirror the stellar-8004 TESTNET registry under chain
+ *                      'stellar-testnet' (API-only; never under 'stellar')
  *
  * Feedback is NOT mirrored: the Soroban ReputationRegistry's `get_summary` caps
  * at 5 client addresses per call and offers no rater enumeration, so there is no
@@ -22,7 +24,7 @@
 
 import { runIndexerCli } from './managed-cli';
 
-import { getStellarRpc } from '@/integrations/erc8004-stellar';
+import { getStellarRpc, identityTarget } from '@/integrations/erc8004-stellar';
 import { makeStellarRegistryReader, scanStellarRegistry } from '@/indexer/stellar-registry';
 import { requireEnv } from '@/lib/require-env';
 
@@ -44,10 +46,13 @@ const from = numArg('from') ?? 0;
 const to = numArg('to');
 const concurrency = numArg('concurrency') ?? 2;
 const fetchRemote = !flag('no-remote');
+const network = flag('testnet') ? 'testnet' : 'pubnet';
+const chain = network === 'testnet' ? 'stellar-testnet' : 'stellar';
 
 if (!dryRun) requireEnv(['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']);
 
 console.log(`[stellar-registry] mode:        ${dryRun ? 'DRY RUN (no writes)' : 'WRITE'}`);
+console.log(`[stellar-registry] network:     ${network} (chain '${chain}')`);
 console.log(`[stellar-registry] from:        ${from}`);
 console.log(`[stellar-registry] to:          ${to ?? 'total_agents() - 1'}`);
 console.log(`[stellar-registry] concurrency: ${concurrency}`);
@@ -55,12 +60,12 @@ console.log(`[stellar-registry] remote uris: ${fetchRemote ? 'fetched' : 'skippe
 console.log('');
 
 const startedAt = Date.now();
-const reader = makeStellarRegistryReader(getStellarRpc());
+const reader = makeStellarRegistryReader(getStellarRpc(network), identityTarget(network));
 
 let done = 0;
 let written = 0;
 const execution = await runIndexerCli({
-  chain: 'stellar', path: 'registry', dryRun,
+  chain, path: 'registry', dryRun,
   run: async (signal) => {
     const scanned = await scanStellarRegistry({
       signal,
@@ -80,7 +85,7 @@ const execution = await runIndexerCli({
     if (!dryRun) {
       signal?.throwIfAborted();
       const { upsertErc8004Agents } = await import('@/db/client');
-      written = await upsertErc8004Agents('stellar', scanned.agents);
+      written = await upsertErc8004Agents(chain, scanned.agents);
     }
     return scanned;
   },

@@ -7,11 +7,13 @@
 -- reachable over REST immediately — a stale cache returns PGRST202 and 500'd
 -- /api/stats on 2026-06-18 (see project_stats_500_schema_cache).
 
--- Transaction aggregate stats
+-- Transaction aggregate stats. Public totals: excludes the retired Arc testnet
+-- archive and the API-only stellar-testnet network. Written as two `<>` (not
+-- NOT IN) so it provably implies the `chain <> 'arc'` partial index predicate.
 CREATE OR REPLACE FUNCTION get_transaction_stats()
 RETURNS TABLE(total_count bigint, total_volume numeric) AS $$
   SELECT COUNT(*)::bigint, COALESCE(SUM(amount), 0)
-FROM transactions WHERE chain <> 'arc';
+FROM transactions WHERE chain <> 'arc' AND chain <> 'stellar-testnet';
 $$ LANGUAGE sql STABLE;
 
 -- Durable lease for the off-band public activity snapshot. The request path
@@ -108,7 +110,7 @@ RETURNS TABLE(
     COALESCE(SUM(amount), 0) AS total_volume,
     MAX(timestamp) AS last_active
   FROM transactions
-  WHERE chain <> 'arc'
+  WHERE chain <> 'arc' AND chain <> 'stellar-testnet'
   GROUP BY facilitator
   ORDER BY tx_count DESC;
 $$ LANGUAGE sql STABLE;

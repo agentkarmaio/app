@@ -64,3 +64,25 @@ describe('mainnet agent ID API', () => {
     expect(receipts).not.toHaveBeenCalled();
   });
 });
+
+describe('stellar-testnet agent ID API (API-only)', () => {
+  const G = 'GC2NIKT6TWLMBZE4TU5ZMMDVV22URFIMJIZ4JYUC3QABBBWNGGZMAFGM';
+  test('agent 0 resolves from the testnet view, marked testnet, with no public profile link', async () => {
+    projected.mockResolvedValue({ chain: 'stellar-testnet', address: G, display_name: 'Enact agent',
+      score: 42, provider_score: 42, consumer_score: null, confidence_badge: 'declared', trust_tier: 'Poor' } as unknown as Wallet);
+    const response = await get('0', 'stellar-testnet');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ chain: 'stellar-testnet', network: 'testnet', agentId: 0, address: G,
+      displayName: 'Enact agent', score: 42, providerScore: 42, consumerScore: null, trustTier: 'Poor',
+      confidenceBadge: 'declared', profileUrl: null });
+    expect(projected).toHaveBeenCalledWith('stellar-testnet', 0);
+    expect(registry).not.toHaveBeenCalled();
+  });
+  test('mainnet stellar responses carry no network field (shape unchanged)', async () => {
+    projected.mockResolvedValue({ chain: 'stellar', address: G, display_name: null, score: 10, provider_score: 10,
+      consumer_score: null, confidence_badge: 'declared', trust_tier: 'Poor' } as unknown as Wallet);
+    const body = await (await get('3', 'stellar')).json();
+    expect(body).not.toHaveProperty('network');
+    expect(body.profileUrl).toBe(`/agent/${G}`);
+  });
+});

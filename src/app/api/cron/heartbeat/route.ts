@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectApiOnlyChain } from '@/lib/api-only-chain';
 import { drainHeartbeatsOnce } from '@/successions/heartbeat-worker';
 import { isChain } from '@/db/schema';
 
@@ -58,6 +59,9 @@ export async function POST(request: NextRequest) {
   if (chain === 'arc') {
     return NextResponse.json({ error: 'Arc testnet is retired. Historical profiles remain read-only.' }, { status: 410 });
   }
+
+  const apiOnly = rejectApiOnlyChain(chain);
+  if (apiOnly) return apiOnly;
 
   try {
     const result = await drainHeartbeatsOnce(limit, chain);

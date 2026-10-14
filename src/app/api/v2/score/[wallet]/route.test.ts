@@ -39,6 +39,13 @@ describe('pickWalletRow', () => {
     expect(pickWalletRow([row('arc')], EVM, null)).toBeNull();
     expect(pickWalletRow([row('arc'), row('arc-mainnet')], EVM, null)?.chain).toBe('arc-mainnet');
   });
+  test('unpinned Stellar lookup never resolves to the API-only testnet row', () => {
+    const G = 'GC2NIKT6TWLMBZE4TU5ZMMDVV22URFIMJIZ4JYUC3QABBBWNGGZMAFGM';
+    const rows = [{ chain: 'stellar-testnet', address: G, tx_count: 50 }, { chain: 'stellar', address: G, tx_count: 0 }] as never[];
+    expect(pickWalletRow(rows, G, null)?.chain).toBe('stellar');
+    expect(pickWalletRow([{ chain: 'stellar-testnet', address: G }] as never[], G, null)).toBeNull();
+    expect(pickWalletRow(rows, G, 'stellar-testnet')?.chain).toBe('stellar-testnet');
+  });
   test('unpinned, format-detectable address prefers the detected chain', () => {
     const rows = [{ chain: 'celo', address: SOL }, { chain: 'solana', address: SOL }] as never[];
     expect(pickWalletRow(rows, SOL, null)?.chain).toBe('solana');

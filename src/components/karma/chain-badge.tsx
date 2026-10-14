@@ -116,6 +116,13 @@ const MARKS: Record<Chain, ChainMark> = {
     tint: { bg: 'rgb(125_166_255/0.10)', border: 'rgb(125_166_255/0.22)', fg: '#a8bfff' },
     Mark: ArcMark,
   },
+  // API-only; present for type completeness, never rendered on public pages.
+  'stellar-testnet': {
+    label: 'Stellar',
+    testnet: true,
+    tint: { bg: 'rgb(207_233_255/0.08)', border: 'rgb(207_233_255/0.18)', fg: '#cfe9ff' },
+    Mark: StellarMark,
+  },
 };
 
 /**

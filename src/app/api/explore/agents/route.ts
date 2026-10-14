@@ -7,6 +7,7 @@ import type { TrustTier, LivenessStatus, ConfidenceBadge, AutonomyLabel, Chain }
 import { LIVENESS_STATUSES } from '@/db/schema';
 import { isChain } from '@/db/schema';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
+import { networkTag } from '@/lib/api-only-chain';
 
 export async function OPTIONS() {
   return corsPreflight();
@@ -72,6 +73,9 @@ export async function GET(request: NextRequest) {
   const { wallets, total } = await getAgents(limit, offset, filters, sort);
 
   return NextResponse.json({
+    // API-only networks (chain=stellar-testnet) self-describe; mainnet pages
+    // keep their exact shape. Testnet is reachable ONLY via an explicit chain=.
+    ...networkTag(filters.chain),
     total,
     count: wallets.length,
     offset,

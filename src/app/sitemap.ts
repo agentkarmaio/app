@@ -2,6 +2,7 @@ import type { MetadataRoute } from 'next';
 import { getLeaderboard, listOrganizations } from '@/db/client';
 import { PAYSH_OPERATORS } from '@/config/paysh-operators';
 import { agentHref } from '@/lib/agent-href';
+import { isPublicChain } from '@/db/schema';
 
 const SITE = 'https://agentkarma.io';
 
@@ -57,7 +58,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   // sitemap as success would pin the staleness for the full revalidate
   // window. Throwing means Next.js retries on the next request.
   const { wallets } = await getLeaderboard(MAX_AGENTS_IN_SITEMAP, 0);
-  const agentEntries: MetadataRoute.Sitemap = wallets.map((w) => ({
+  // getLeaderboard already excludes non-public chains in SQL; this guard keeps a
+  // testnet G-address from ever being published as a /agent/G… (mainnet) URL.
+  const agentEntries: MetadataRoute.Sitemap = wallets.filter((w) => isPublicChain(w.chain)).map((w) => ({
     url: `${SITE}${w.chain === 'arc-mainnet' ? agentHref({ chain: w.chain, address: w.address, agentId: w.arc_agent_id }) : `/agent/${w.address}`}`,
     lastModified: w.last_seen ? new Date(w.last_seen) : (w.updated_at ? new Date(w.updated_at) : now),
     changeFrequency: 'daily',

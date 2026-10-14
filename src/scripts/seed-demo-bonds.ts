@@ -45,7 +45,7 @@ interface ChainActors {
   underwriters: string[];
 }
 
-const ACTORS: Record<Exclude<Chain, 'arc-mainnet'>, ChainActors> = {
+const ACTORS: Record<Exclude<Chain, 'arc-mainnet' | 'stellar-testnet'>, ChainActors> = {
   solana: {
     agentThin:   'DemoBondThinAgentSo1ana1111111111111111111',
     agentThick:  'DemoBondThickAgentSo1ana2222222222222222222',
@@ -101,6 +101,7 @@ const DAY = 24 * 60 * 60 * 1000;
  */
 function buildEventsForChain(chain: Chain): BondLifecycleEvent[] {
   if (chain === 'arc-mainnet') throw new Error('Demo bonds are not enabled for Arc');
+  if (chain === 'stellar-testnet') throw new Error('Demo bonds are not enabled for API-only chains');
   const a = ACTORS[chain];
   const now = Date.now();
   const ts = (daysAgo: number) => new Date(now - daysAgo * DAY).toISOString();
@@ -198,7 +199,7 @@ async function main() {
     process.exit(1);
   }
 
-  let chains: Chain[] = CHAINS.filter(chain => chain !== 'arc-mainnet');
+  let chains: Chain[] = CHAINS.filter(chain => chain !== 'arc-mainnet' && chain !== 'stellar-testnet');
   if (named.chain) {
     if (!isChain(named.chain)) {
       console.error(`Invalid --chain: ${named.chain}. One of: ${CHAINS.join(', ')}`);
