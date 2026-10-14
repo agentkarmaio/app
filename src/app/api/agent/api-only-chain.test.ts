@@ -57,3 +57,28 @@ test('an unpinned manifest refresh ignores a same-address testnet row', async ()
   }));
   expect(response.status).toBe(404);
 });
+
+test('public activity feed (/api/explore) reads through the public-chain filter', async () => {
+  const { GET: explore } = await import('../explore/route');
+  const predicates: unknown[][] = [];
+  __setSupabaseForTest({ from() {
+    const b: Record<string, unknown> = {};
+    for (const verb of ['select', 'order', 'limit']) b[verb] = () => b;
+    for (const verb of ['eq', 'neq']) b[verb] = (...a: unknown[]) => { predicates.push([verb, ...a]); return b; };
+    b.then = (resolve: (v: unknown) => unknown) => Promise.resolve(resolve({ data: [], error: null }));
+    return b;
+  } });
+  const res = await explore(new NextRequest('https://agentkarma.io/api/explore'));
+  expect(res.status).toBe(200);
+  expect(predicates).toContainEqual(['neq', 'chain', 'stellar-testnet']);
+  expect(predicates).toContainEqual(['neq', 'chain', 'arc']);
+});
+
+test('legacy /api/score/[wallet]?chain=stellar-testnet points to v2 instead of 500ing', async () => {
+  const { GET: legacy } = await import('../score/[wallet]/route');
+  __setSupabaseForTest({ from() { throw new Error('Unexpected DB access'); } });
+  const res = await legacy(new NextRequest(`https://agentkarma.io/api/score/${G}?chain=stellar-testnet`),
+    { params: Promise.resolve({ wallet: G }) } as never);
+  expect(res.status).toBe(400);
+  expect((await res.json()).error).toContain('/api/v2/score/');
+});
