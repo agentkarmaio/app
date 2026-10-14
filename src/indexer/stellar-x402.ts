@@ -365,6 +365,11 @@ export async function runStellarIndexer(
   opts: { network?: StellarNetwork; limit?: number } = {},
 ): Promise<IndexRunResult> {
   const network = opts.network ?? 'pubnet';
+  // This path stamps every row/signal/cursor chain='stellar'. Testnet data has
+  // its own API-only key and indexer (stellar-transfers.ts, network 'testnet').
+  if (network !== 'pubnet') {
+    throw new Error("runStellarIndexer is pubnet-only; index testnet via the 'stellar-testnet' transfers job");
+  }
   const sac = getStellarUsdcSac(network);
   return stellarReceiptIndexer({
     sac,
@@ -518,7 +523,7 @@ export async function backfillFromHorizon(opts: {
       seenTxHashes.add(transfer.txHash);
 
       rows.push({
-        chain: 'stellar',
+        chain: network === 'testnet' ? 'stellar-testnet' : 'stellar',
         wallet_address: transfer.from,
         // Payee (`to`) = the scored payer's counterparty, distinct from the
         // facilitator router (mirrors toTransactionRow).

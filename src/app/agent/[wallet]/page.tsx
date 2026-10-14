@@ -69,7 +69,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import type { Chain, TrustTier, ConfidenceBadge as ConfidenceBadgeValue, AutonomyLabel, Wallet } from '@/db/schema';
-import { isChain } from '@/db/schema';
+import { isSiteChain } from '@/db/schema';
 
 /**
  * Build a minimal Wallet row for an ERC-8004 registry agent that has no entry in
@@ -347,7 +347,7 @@ export async function generateMetadata(
 
   // Resolve the SAME fields the OG image uses — handles ERC-8004 registry agents
   // (not in `wallets`) so the unfurl shows real score/tier/chain, not 0/Unrated.
-  const f = await cachedAgentCardFields(wallet, agentId, isChain(chainHint) ? chainHint : undefined);
+  const f = await cachedAgentCardFields(wallet, agentId, isSiteChain(chainHint) ? chainHint : undefined);
   const badgeLabel = f.badge === 'receipt-backed'
     ? 'Receipt-backed'
     : f.badge === 'behavior-inferred'
@@ -368,7 +368,7 @@ export async function generateMetadata(
       + `${f.txCount.toLocaleString()} on-chain transactions indexed. `
       + `Live reputation snapshot for autonomous agent on ${chainLabel} via AgentKarma.`;
 
-  const canonical = f.profileUrl ?? `/agent/${wallet}${isChain(chainHint) ? `?chain=${chainHint}${chainHint === 'arc' && agentId != null ? `&agentId=${agentId}` : ''}` : ''}`;
+  const canonical = f.profileUrl ?? `/agent/${wallet}${isSiteChain(chainHint) ? `?chain=${chainHint}${chainHint === 'arc' && agentId != null ? `&agentId=${agentId}` : ''}` : ''}`;
   return {
     title,
     description,

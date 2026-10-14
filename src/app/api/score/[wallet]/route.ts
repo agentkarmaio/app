@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { resolveChainParam, isRecognizedAddress, canonicalAddress } from '@/lib/chain-detect';
-import { DEFAULT_CHAIN } from '@/db/schema';
+import { DEFAULT_CHAIN, isApiOnlyChain } from '@/db/schema';
 import { getWallet, getTransactions, getLatestSignalValues, enqueueWalletScan } from '@/db/client';
 import { calculateScore } from '@/scoring/index';
 import { computeCadence } from '@/scoring/cadence';
@@ -26,6 +26,14 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 });
   }
   const chainParam = new URL(request.url).searchParams.get('chain');
+  // Legacy route (widget back-compat) reads only Solana + the Arc archive. An
+  // API-only network has no scan path here; point to the chain-aware v2 route.
+  if (isApiOnlyChain(chainParam)) {
+    return NextResponse.json(
+      { error: `chain=${chainParam} is served by /api/v2/score/{wallet}?chain=${chainParam}` },
+      { status: 400, headers: corsHeaders() },
+    );
+  }
   // Pinned: the chain must be valid for this address. Unpinned: accept any
   // recognized address — Celo and Arc share the EVM 0x format, so an unpinned
   // 0x address is chain-ambiguous (detectChain → null) yet still valid; the

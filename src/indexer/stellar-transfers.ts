@@ -1,5 +1,5 @@
 /**
- * Stellar plain USDC SAC transfer indexer (mainnet / pubnet only).
+ * Stellar plain USDC SAC transfer indexer (pubnet → 'stellar', testnet → 'stellar-testnet').
  *
  * Sibling to stellar-x402.ts, and the reason it exists: that indexer only
  * persists a receipt when the settlement tx source is a known OZ Channels
@@ -23,25 +23,27 @@
  *
  *
  * Env:
- *   STELLAR_HORIZON_URL — Horizon endpoint (optional; defaults to mainnet).
+ *   STELLAR_HORIZON_URL — pubnet Horizon endpoint (optional; defaults to mainnet).
+ *   STELLAR_TESTNET_HORIZON_URL — testnet Horizon (optional).
  */
 
 import type { Chain, Transaction } from '@/db/schema';
 import type { IndexRunResult } from '@/chain-adapters/types';
 import {
-  getStellarUsdcSac,
   isStellarAccount,
   isStellarContract,
   STELLAR_SEED_EXCLUSIONS,
   STELLAR_SEED_EXTRA,
-  USDC_ISSUER,
+  type StellarNetwork,
 } from '@/config/stellar-x402';
+import { stellarNetwork } from '@/integrations/stellar-config';
 import {
   insertTransactions as dbInsertTransactions,
   insertSignalEvents as dbInsertSignalEvents,
   makeEnsureWallets as dbMakeEnsureWallets,
   getCursor as dbGetCursor,
   upsertCursor as dbUpsertCursor,
+  markWalletsDirty as dbMarkWalletsDirty,
   supabase,
   type InsertSignalEventInput,
 } from '@/db/client';
@@ -55,7 +57,8 @@ import {
 import { buildUsdcTransferSignal } from '@/scoring/signals';
 import { isHorizonNotFound, resolveHorizonUrl } from './stellar-activity';
 
-const STELLAR_CHAIN = 'stellar' as Chain;
+/** Mainnet chain key — the default for every pure helper below. */
+const STELLAR_CHAIN: Chain = 'stellar';
 
 /** Horizon page size. Its documented maximum. */
 export const PAGE_LIMIT = 200;
@@ -107,9 +110,10 @@ export {
 export function toTransactionRow(
   transfer: StellarUsdcTransfer,
   sac: string,
+  chain: Chain = STELLAR_CHAIN,
 ): Omit<Transaction, 'id'> {
   return {
-    chain: STELLAR_CHAIN,
+    chain,
     wallet_address: transfer.from,
     facilitator: sac,
     counterparty: transfer.to,
@@ -227,6 +231,8 @@ export function walkTargets(seed: ReadonlySet<string>): string[] {
 
 export interface StellarTransfersDeps {
   signal?: AbortSignal;
+  /** Chain key every row and signal is written under. Defaults to 'stellar'. */
+  chain?: Chain;
   /** Everything AK cares about — matched against both sides of a transfer. */
   seed: ReadonlySet<string>;
   /** Accounts whose Horizon feed is walked. Usually walkTargets(seed). */
@@ -242,6 +248,12 @@ export interface StellarTransfersDeps {
   insertTransactions: (rows: Omit<Transaction, 'id'>[]) => Promise<number>;
   insertSignalEvents: (inputs: InsertSignalEventInput[]) => Promise<number>;
   ensureWallets: (addresses: string[]) => Promise<void>;
+  /**
+   * Enqueue the wallets a committed batch touched for rescoring. Wired for
+   * stellar-testnet only (scores are computed by the normal dirty-queue
+   * drain); pubnet leaves it unset, so mainnet behaviour is unchanged.
+   */
+  markDirty?: (addresses: string[]) => Promise<void>;
   getCursor: (key: string) => Promise<{ last_signature: string; last_slot: number | null } | null>;
   upsertCursor: (key: string, lastSignature: string, lastSlot?: number) => Promise<void>;
   /** Fair scheduling checkpoint, separate from each account's history cursor. */
@@ -371,17 +383,17 @@ async function walkAddress(
         if (seenTxHashes.has(transfer.txHash)) continue;
         seenTxHashes.add(transfer.txHash);
 
-        rows.push(toTransactionRow(transfer, deps.sac));
+        rows.push(toTransactionRow(transfer, deps.sac, deps.chain ?? STELLAR_CHAIN));
         wallets.add(transfer.from);
         wallets.add(transfer.to);
         signals.push(
           buildUsdcTransferSignal({
-            walletAddress: transfer.to, face: 'provider', chain: STELLAR_CHAIN,
+            walletAddress: transfer.to, face: 'provider', chain: deps.chain ?? STELLAR_CHAIN,
             txHash: transfer.txHash, amount: transfer.amount,
             counterparty: transfer.from, observedAt: transfer.createdAt,
           }),
           buildUsdcTransferSignal({
-            walletAddress: transfer.from, face: 'consumer', chain: STELLAR_CHAIN,
+            walletAddress: transfer.from, face: 'consumer', chain: deps.chain ?? STELLAR_CHAIN,
             txHash: transfer.txHash, amount: transfer.amount,
             counterparty: transfer.to, observedAt: transfer.createdAt,
           }),
@@ -410,6 +422,8 @@ async function walkAddress(
       inserted = await deps.insertTransactions(rows);
       deps.signal?.throwIfAborted();
       await deps.insertSignalEvents(signals);
+      deps.signal?.throwIfAborted();
+      if (deps.markDirty) await deps.markDirty([...wallets]);
       deps.signal?.throwIfAborted();
     }
   } catch (err) {
@@ -516,13 +530,19 @@ export async function stellarTransfersIndexer(
 
 // ─── Production wiring ────────────────────────────────────────────────────────
 
-/** Read the seed set's two DB sources. Mainnet chain key only. */
-export async function loadStellarSeedSet(signal?: AbortSignal): Promise<Set<string>> {
+/**
+ * Read the seed set's two DB sources for ONE chain key. Mainnet partner extras
+ * (STELLAR_SEED_EXTRA) are pubnet accounts and only seed the 'stellar' chain.
+ */
+export async function loadStellarSeedSet(
+  signal?: AbortSignal,
+  chain: Chain = STELLAR_CHAIN,
+): Promise<Set<string>> {
   signal?.throwIfAborted();
   const { data: registryRows, error: registryErr } = await supabase
     .from('erc8004_agents')
     .select('owner,agent_wallet')
-    .eq('chain', STELLAR_CHAIN);
+    .eq('chain', chain);
   signal?.throwIfAborted();
   if (registryErr) throw registryErr;
 
@@ -531,25 +551,26 @@ export async function loadStellarSeedSet(signal?: AbortSignal): Promise<Set<stri
   const { data: walletRows, error: walletErr } = await supabase
     .from('wallets')
     .select('address,claimed,stellar_agent_id')
-    .eq('chain', STELLAR_CHAIN);
+    .eq('chain', chain);
   signal?.throwIfAborted();
   if (walletErr) throw walletErr;
 
   return buildStellarSeedSet({
     registryRows: (registryRows ?? []) as Array<{ owner: string | null; agent_wallet: string | null }>,
     walletRows: (walletRows ?? []) as SeedWalletRow[],
+    ...(chain === STELLAR_CHAIN ? {} : { extra: [] }),
   });
 }
 
 /** Real Horizon page read. `order=asc` so the cursor only moves forward. */
 async function horizonFetchPayments(
+  base: string,
   address: string,
   cursor: string | null,
   limit: number,
   signal?: AbortSignal,
 ): Promise<{ records: HorizonPaymentRecord[] }> {
   signal?.throwIfAborted();
-  const base = resolveHorizonUrl();
   const url = new URL(`${base}/accounts/${address}/payments`);
   url.searchParams.set('limit', String(limit));
   url.searchParams.set('order', 'asc');
@@ -574,6 +595,8 @@ async function horizonFetchPayments(
 
 export interface RunStellarTransfersOptions {
   signal?: AbortSignal;
+  /** Defaults to pubnet. Testnet writes under chain 'stellar-testnet'. */
+  network?: StellarNetwork;
   maxPagesPerAddress?: number;
   concurrency?: number;
   /** Swap in counting no-ops for a read-only dry run. */
@@ -581,39 +604,47 @@ export interface RunStellarTransfersOptions {
 }
 
 /**
- * Production run. PUBNET ONLY — deliberately no network parameter.
- *
- * Testnet rows written under `chain: 'stellar'` would pollute mainnet
- * reputation, and a separate testnet chain key is an unapproved decision.
+ * Production run for one network. Each network writes under its OWN chain key
+ * (pubnet → 'stellar', testnet → 'stellar-testnet'), with its own seed set,
+ * Horizon, issuer pin and cursors, so testnet can never touch mainnet
+ * reputation. The testnet key was approved by Kerem on 2026-10-14.
  */
 export async function runStellarTransfersIndexer(
   opts: RunStellarTransfersOptions = {},
 ): Promise<StellarTransfersRunResult> {
   opts.signal?.throwIfAborted();
-  const sac = getStellarUsdcSac('pubnet');
-  const seed = await loadStellarSeedSet(opts.signal);
+  const network = opts.network ?? 'pubnet';
+  const net = stellarNetwork(network);
+  const chain: Chain = net.chain;
+  // Pubnet keeps resolveHorizonUrl (identical env semantics, one code path).
+  const horizon = network === 'pubnet' ? resolveHorizonUrl() : net.horizonUrl;
+  const seed = await loadStellarSeedSet(opts.signal, chain);
 
   return stellarTransfersIndexer({
     signal: opts.signal,
+    chain,
     seed,
     walkTargets: walkTargets(seed),
-    asset: { code: 'USDC', issuer: USDC_ISSUER.pubnet },
-    sac,
+    asset: { code: 'USDC', issuer: net.usdc.issuer },
+    sac: net.usdc.sac,
     maxPagesPerAddress: opts.maxPagesPerAddress,
     concurrency: opts.concurrency,
     timeBudgetMs: STELLAR_RUN_TIME_BUDGET_MS,
-    fetchPayments: (address, cursor, limit) => horizonFetchPayments(address, cursor, limit, opts.signal),
+    fetchPayments: (address, cursor, limit) => horizonFetchPayments(horizon, address, cursor, limit, opts.signal),
     insertTransactions: dbInsertTransactions,
     insertSignalEvents: dbInsertSignalEvents,
     // Insert-if-absent: never zeroes an existing wallet's live score.
-    ensureWallets: dbMakeEnsureWallets(STELLAR_CHAIN),
+    ensureWallets: dbMakeEnsureWallets(chain),
+    ...(network === 'testnet'
+      ? { markDirty: (addresses: string[]) => dbMarkWalletsDirty(addresses.map((address) => ({ chain, address }))) }
+      : {}),
     getCursor: async (key) => {
-      const c = await dbGetCursor(key, STELLAR_CHAIN);
+      const c = await dbGetCursor(key, chain);
       return c ? { last_signature: c.last_signature, last_slot: c.last_slot } : null;
     },
-    upsertCursor: async (key, last, slot) => { await dbUpsertCursor(key, last, slot, STELLAR_CHAIN); },
-    readTargetCheckpoint: async () => (await dbGetCursor(STELLAR_TARGET_ROTATION_CURSOR_KEY, STELLAR_CHAIN))?.last_signature ?? null,
-    writeTargetCheckpoint: (address) => dbUpsertCursor(STELLAR_TARGET_ROTATION_CURSOR_KEY, address, undefined, STELLAR_CHAIN),
+    upsertCursor: async (key, last, slot) => { await dbUpsertCursor(key, last, slot, chain); },
+    readTargetCheckpoint: async () => (await dbGetCursor(STELLAR_TARGET_ROTATION_CURSOR_KEY, chain))?.last_signature ?? null,
+    writeTargetCheckpoint: (address) => dbUpsertCursor(STELLAR_TARGET_ROTATION_CURSOR_KEY, address, undefined, chain),
     ...opts.overrides,
   });
 }

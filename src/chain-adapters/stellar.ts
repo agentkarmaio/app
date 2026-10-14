@@ -83,3 +83,25 @@ export function makeStellarAdapter(): ChainAdapter {
     explorerAddressUrl: (address) => explorerAddressUrl('stellar', address),
   };
 }
+
+/**
+ * stellar-testnet adapter — API-only chain (Kerem, 2026-10-14). Address
+ * handling and explorer links only: testnet data arrives through the indexing
+ * jobs (registry mirror + USDC transfers), and AK never reads or publishes 8004
+ * attestations on testnet. Kept OUT of getAllAdapters() — testnet G-addresses
+ * are format-identical to mainnet, so it must only ever resolve when pinned.
+ */
+export function makeStellarTestnetAdapter(): ChainAdapter {
+  const apiOnly = async (): Promise<never> => { throw new Error('api_only_chain'); };
+  return {
+    chain: 'stellar-testnet',
+    validateAddress: (address) => STELLAR_ADDRESS_RE.test(address),
+    normalizeAddress: (address) => address,
+    indexReceipts: apiOnly,
+    readAttestation: apiOnly,
+    readAttestations: apiOnly,
+    publishAttestation: apiOnly,
+    explorerTxUrl: (txId) => explorerTxUrl('stellar-testnet', txId),
+    explorerAddressUrl: (address) => explorerAddressUrl('stellar-testnet', address),
+  };
+}

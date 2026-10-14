@@ -35,6 +35,8 @@ import {
   readStellarAgentUri,
   readStellarAgentWallet,
   stellarAgentExists,
+  PUBNET_IDENTITY,
+  type StellarIdentityTarget,
 } from '@/integrations/erc8004-stellar';
 
 // ─── Rate-limit handling ────────────────────────────────────────────────────
@@ -71,16 +73,23 @@ export interface StellarRegistryReader {
   read(agentId: number): Promise<StellarAgentIdentity>;
 }
 
-/** Live reader backed by Soroban `simulateTransaction` view calls. */
-export function makeStellarRegistryReader(server: rpc.Server): StellarRegistryReader {
+/**
+ * Live reader backed by Soroban `simulateTransaction` view calls. `target`
+ * defaults to the mainnet registry; pass `identityTarget('testnet')` (with a
+ * testnet `server`) for the stellar-testnet mirror.
+ */
+export function makeStellarRegistryReader(
+  server: rpc.Server,
+  target: StellarIdentityTarget = PUBNET_IDENTITY,
+): StellarRegistryReader {
   return {
-    totalAgents: () => getStellarTotalAgents(server),
-    exists: (agentId) => stellarAgentExists(server, agentId),
+    totalAgents: () => getStellarTotalAgents(server, target),
+    exists: (agentId) => stellarAgentExists(server, agentId, target),
     async read(agentId) {
       const [owner, agentWallet, agentURI] = await Promise.all([
-        readStellarAgentOwner(server, agentId),
-        readStellarAgentWallet(server, agentId),
-        readStellarAgentUri(server, agentId),
+        readStellarAgentOwner(server, agentId, target),
+        readStellarAgentWallet(server, agentId, target),
+        readStellarAgentUri(server, agentId, target),
       ]);
       if (!owner) throw new Error(`agent ${agentId}: find_owner returned null`);
       return { agentId, owner, agentWallet, agentURI };

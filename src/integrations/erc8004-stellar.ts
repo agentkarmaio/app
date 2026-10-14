@@ -35,7 +35,9 @@ import {
   STELLAR_REPUTATION_REGISTRY,
   STELLAR_NETWORK_PASSPHRASE,
   resolveStellarRpcUrl,
+  stellarNetwork,
 } from './stellar-config';
+import type { StellarNetwork } from '@/config/stellar-x402';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -71,17 +73,37 @@ export function decodeSummary(raw: RawSummaryResult): FeedbackSummary {
 
 // ─── RPC client ─────────────────────────────────────────────────────────────
 
-let _rpc: rpc.Server | null = null;
+const _rpc: Partial<Record<StellarNetwork, rpc.Server>> = {};
 
-/** Build a fresh Soroban RPC server pointed at the resolved mainnet URL. */
-export function makeStellarRpc(): rpc.Server {
-  return new rpc.Server(resolveStellarRpcUrl());
+/** Build a fresh Soroban RPC server for a network (default: mainnet). */
+export function makeStellarRpc(network: StellarNetwork = 'pubnet'): rpc.Server {
+  return new rpc.Server(network === 'pubnet' ? resolveStellarRpcUrl() : stellarNetwork(network).rpcUrl);
 }
 
-/** Process-cached RPC server (mirrors erc8004-celo.ts's getClient singleton). */
-export function getStellarRpc(): rpc.Server {
-  if (!_rpc) _rpc = makeStellarRpc();
-  return _rpc;
+/** Process-cached RPC server per network (mirrors erc8004-celo.ts's getClient). */
+export function getStellarRpc(network: StellarNetwork = 'pubnet'): rpc.Server {
+  return (_rpc[network] ??= makeStellarRpc(network));
+}
+
+/**
+ * Which IdentityRegistry a read targets. Defaults to the pinned mainnet
+ * registry, so every existing caller is unchanged; the testnet mirror passes
+ * `identityTarget('testnet')`.
+ */
+export interface StellarIdentityTarget {
+  identityRegistry: string;
+  passphrase: string;
+}
+
+export const PUBNET_IDENTITY: StellarIdentityTarget = {
+  identityRegistry: STELLAR_IDENTITY_REGISTRY,
+  passphrase: STELLAR_NETWORK_PASSPHRASE,
+};
+
+export function identityTarget(network: StellarNetwork): StellarIdentityTarget {
+  if (network === 'pubnet') return PUBNET_IDENTITY;
+  const n = stellarNetwork(network);
+  return { identityRegistry: n.identityRegistry, passphrase: n.passphrase };
 }
 
 // Placeholder source account for read-only simulations (sequence is ignored —
@@ -97,6 +119,8 @@ export interface SimulateViewArgs {
   method: string;
   args: xdr.ScVal[];
   sourceAccount?: string;
+  /** Defaults to the mainnet passphrase. */
+  networkPassphrase?: string;
 }
 
 /**
@@ -110,7 +134,7 @@ export async function simulateView(server: rpc.Server, a: SimulateViewArgs): Pro
   const contract = new Contract(a.contractId);
   const tx = new TransactionBuilder(source, {
     fee: BASE_FEE,
-    networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+    networkPassphrase: a.networkPassphrase ?? STELLAR_NETWORK_PASSPHRASE,
   })
     .addOperation(contract.call(a.method, ...a.args))
     .setTimeout(30)
@@ -186,9 +210,11 @@ export async function readStellarSummary(
 export async function readStellarAgentWallet(
   server: rpc.Server,
   agentId: number,
+  target: StellarIdentityTarget = PUBNET_IDENTITY,
 ): Promise<string | null> {
   const wallet = (await simulateView(server, {
-    contractId: STELLAR_IDENTITY_REGISTRY,
+    contractId: target.identityRegistry,
+    networkPassphrase: target.passphrase,
     method: 'get_agent_wallet',
     args: [nativeToScVal(agentId, { type: 'u32' })],
   })) as string | null | undefined;
@@ -202,9 +228,13 @@ export async function readStellarAgentWallet(
  *
  * Verified 2026-06-11 against the live trionlabs/stellar-8004 mainnet contract.
  */
-export async function getStellarTotalAgents(server: rpc.Server): Promise<number> {
+export async function getStellarTotalAgents(
+  server: rpc.Server,
+  target: StellarIdentityTarget = PUBNET_IDENTITY,
+): Promise<number> {
   const total = (await simulateView(server, {
-    contractId: STELLAR_IDENTITY_REGISTRY,
+    contractId: target.identityRegistry,
+    networkPassphrase: target.passphrase,
     method: 'total_agents',
     args: [],
   })) as bigint | number;
@@ -215,9 +245,14 @@ export async function getStellarTotalAgents(server: rpc.Server): Promise<number>
  * Check whether an agentId is registered. Cheap pre-check before agent_uri,
  * which reverts (HostError Contract#2) on a non-existent agent.
  */
-export async function stellarAgentExists(server: rpc.Server, agentId: number): Promise<boolean> {
+export async function stellarAgentExists(
+  server: rpc.Server,
+  agentId: number,
+  target: StellarIdentityTarget = PUBNET_IDENTITY,
+): Promise<boolean> {
   const exists = (await simulateView(server, {
-    contractId: STELLAR_IDENTITY_REGISTRY,
+    contractId: target.identityRegistry,
+    networkPassphrase: target.passphrase,
     method: 'agent_exists',
     args: [nativeToScVal(agentId, { type: 'u32' })],
   })) as boolean;
@@ -233,9 +268,11 @@ export async function stellarAgentExists(server: rpc.Server, agentId: number): P
 export async function readStellarAgentOwner(
   server: rpc.Server,
   agentId: number,
+  target: StellarIdentityTarget = PUBNET_IDENTITY,
 ): Promise<string | null> {
   const owner = (await simulateView(server, {
-    contractId: STELLAR_IDENTITY_REGISTRY,
+    contractId: target.identityRegistry,
+    networkPassphrase: target.passphrase,
     method: 'find_owner',
     args: [nativeToScVal(agentId, { type: 'u32' })],
   })) as string | null | undefined;
@@ -243,20 +280,35 @@ export async function readStellarAgentOwner(
 }
 
 /**
- * Fetch the agentURI string for an agentId. Throws on a non-existent agent
- * (Soroban contract revert) — callers should pre-check with `stellarAgentExists`
- * to distinguish "missing" from a real RPC failure.
+ * IdentityRegistry `IdentityError::UriNotSet` (contracts/identity-registry/src/
+ * errors.rs). `agent_uri` returns it for an agent registered via plain
+ * `register` (no URI) — a real, existing agent, not a failed read.
+ */
+const URI_NOT_SET = /Error\(Contract, #2\)(?!\d)/;
+
+/**
+ * Fetch the agentURI string for an agentId. An existing agent with no URI
+ * (UriNotSet) returns '' — it decodes as an `empty` registration instead of
+ * failing the scan (verified 2026-10-14: 18 of 92 testnet agents). Every other
+ * revert, including AgentNotFound on a non-existent id, still throws; callers
+ * pre-check with `stellarAgentExists` to tell "missing" from a real failure.
  */
 export async function readStellarAgentUri(
   server: rpc.Server,
   agentId: number,
+  target: StellarIdentityTarget = PUBNET_IDENTITY,
 ): Promise<string> {
-  const uri = (await simulateView(server, {
-    contractId: STELLAR_IDENTITY_REGISTRY,
-    method: 'agent_uri',
-    args: [nativeToScVal(agentId, { type: 'u32' })],
-  })) as string;
-  return uri;
+  try {
+    return (await simulateView(server, {
+      contractId: target.identityRegistry,
+      networkPassphrase: target.passphrase,
+      method: 'agent_uri',
+      args: [nativeToScVal(agentId, { type: 'u32' })],
+    })) as string;
+  } catch (err) {
+    if (err instanceof Error && URI_NOT_SET.test(err.message)) return '';
+    throw err;
+  }
 }
 
 // ─── Full agent read (mirrors erc8004-celo.ts readAgent) ────────────────────

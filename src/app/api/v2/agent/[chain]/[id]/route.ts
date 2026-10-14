@@ -16,6 +16,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getWalletByAgentId } from '@/db/client';
 import { CHAINS, type Chain } from '@/db/schema';
 import { agentHref } from '@/lib/agent-href';
+import { networkTag } from '@/lib/api-only-chain';
+import { isApiOnlyChain } from '@/db/schema';
 import { resolveKarma } from '@/lib/karma-resolver';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
@@ -48,9 +50,11 @@ export async function GET(
 
   const agentId = Number(id);
   const isMainnet = chain === 'arc-mainnet';
-  if (!Number.isInteger(agentId) || agentId < (isMainnet ? 0 : 1) || agentId > MAX_INT32 || (isMainnet && !/^\d+$/.test(id))) {
+  // Registry-view chains resolve agentId 0 (stellar-8004 ids start at 0).
+  const allowsZero = isMainnet || isApiOnlyChain(chain);
+  if (!Number.isInteger(agentId) || agentId < (allowsZero ? 0 : 1) || agentId > MAX_INT32 || (allowsZero && !/^\d+$/.test(id))) {
     return NextResponse.json(
-      { error: `agentId must be a ${isMainnet ? 'nonnegative' : 'positive'} integer within int32 range` },
+      { error: `agentId must be a ${allowsZero ? 'nonnegative' : 'positive'} integer within int32 range` },
       { status: 400, headers },
     );
   }
@@ -68,6 +72,7 @@ export async function GET(
   return NextResponse.json(
     {
       chain,
+      ...networkTag(chain),
       agentId,
       address: snapshot?.address ?? wallet.address,
       displayName: snapshot ? snapshot.identity.displayName ?? null : wallet.display_name ?? null,
@@ -77,7 +82,9 @@ export async function GET(
         : wallet.consumer_score == null ? null : Number(wallet.consumer_score),
       trustTier: snapshot?.provider.trustTier ?? wallet.trust_tier,
       confidenceBadge: snapshot?.provider.confidenceBadge ?? wallet.confidence_badge,
-      profileUrl: agentHref({ chain, address: snapshot?.address ?? wallet.address, agentId }),
+      // API-only agents have no agentkarma.io profile (a /agent/G… link would
+      // open the MAINNET profile for the same address).
+      profileUrl: isApiOnlyChain(chain) ? null : agentHref({ chain, address: snapshot?.address ?? wallet.address, agentId }),
     },
     {
       headers: {

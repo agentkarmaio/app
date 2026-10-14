@@ -15,7 +15,7 @@
  */
 
 import { drainHeartbeatsOnce } from './../successions/heartbeat-worker';
-import { isChain, type Chain } from '../db/schema';
+import { isSiteChain, type Chain } from '../db/schema';
 import { requireEnv } from '../lib/require-env';
 
 // DB writes are mandatory. Fail at line 1 with a clear message if the floor's
@@ -34,7 +34,7 @@ function chainArg(): Chain | undefined {
   const i = process.argv.indexOf('--chain');
   if (i === -1) return undefined;
   const v = process.argv[i + 1];
-  if (!isChain(v)) throw new Error(`--chain must be one of solana|celo|arc|stellar, got: ${v}`);
+  if (!isSiteChain(v)) throw new Error(`--chain must be one of solana|celo|arc|stellar, got: ${v}`);
   return v;
 }
 

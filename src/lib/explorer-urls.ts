@@ -46,6 +46,10 @@ const EXPLORERS: Record<Chain, ExplorerPaths> = {
     tx: 'https://explorer.arc.io/tx/',
     address: 'https://explorer.arc.io/address/',
   },
+  'stellar-testnet': {
+    tx: 'https://stellar.expert/explorer/testnet/tx/',
+    address: 'https://stellar.expert/explorer/testnet/account/',
+  },
 };
 
 /**

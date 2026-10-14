@@ -8,10 +8,14 @@ RETURNS bigint AS $$
 DECLARE
   deleted_count bigint;
 BEGIN
+  -- Latest snapshot per (chain, wallet): a G-address can hold rows on both
+  -- stellar and stellar-testnet (and an EVM address on several chains). Keyed on
+  -- the address alone, only ONE chain's latest snapshot survived and the
+  -- other chain's could be deleted.
   WITH latest_per_wallet AS (
-    SELECT DISTINCT ON (wallet_address) id
+    SELECT DISTINCT ON (chain, wallet_address) id
     FROM scores
-    ORDER BY wallet_address, calculated_at DESC
+    ORDER BY chain, wallet_address, calculated_at DESC
   ),
   deletable AS (
     SELECT s.id FROM scores s

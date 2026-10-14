@@ -2,11 +2,11 @@
  * ChainAdapter registry — single lookup point. getAdapter(chain) for dispatch,
  * getAllAdapters() for fan-out (cron, leaderboard). Adapters are singletons.
  */
-import type { Chain } from '@/db/schema';
+import { isPublicChain, type Chain } from '@/db/schema';
 import type { ChainAdapter } from './types';
 import { makeSolanaAdapter } from './solana';
 import { makeCeloAdapter } from './celo';
-import { makeStellarAdapter } from './stellar';
+import { makeStellarAdapter, makeStellarTestnetAdapter } from './stellar';
 import { makeArcAdapter } from './arc';
 import { makeArcMainnetAdapter } from './arc-mainnet';
 
@@ -16,6 +16,7 @@ const _adapters: Map<Chain, ChainAdapter> = new Map([
   ['stellar', makeStellarAdapter()],
   ['arc',     makeArcAdapter()],
   ['arc-mainnet', makeArcMainnetAdapter()],
+  ['stellar-testnet', makeStellarTestnetAdapter()],
 ]);
 
 export function getAdapter(chain: Chain): ChainAdapter {
@@ -24,6 +25,12 @@ export function getAdapter(chain: Chain): ChainAdapter {
   return adapter;
 }
 
+/**
+ * Fan-out set (cron, format detection). Excludes NON_PUBLIC_CHAINS: retired
+ * Arc testnet, and API-only stellar-testnet, whose G-addresses would otherwise
+ * make every Stellar address ambiguous in detectChain. Both still resolve
+ * through getAdapter when explicitly pinned.
+ */
 export function getAllAdapters(): ChainAdapter[] {
-  return [..._adapters.values()].filter((adapter) => adapter.chain !== 'arc');
+  return [..._adapters.values()].filter((adapter) => isPublicChain(adapter.chain));
 }

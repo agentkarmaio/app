@@ -8,7 +8,7 @@ import { WalletAddress } from '@/components/karma/wallet-address';
 import { SuretyChip } from '@/components/karma/surety-chip';
 import { StatusPill } from '@/components/karma/status-pill';
 import { CHAIN_META, chainOptions } from '@/lib/chain-meta';
-import { isChain, type Chain, type SuretyLabel, type Wallet } from '@/db/schema';
+import { isSiteChain, type Chain, type SuretyLabel, type Wallet } from '@/db/schema';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,7 +35,7 @@ export default async function SuretiesPage({
   const { chain: chainParam } = await searchParams;
   if (chainParam === 'arc') redirect('/arc');
   const chainFilter: Chain | undefined =
-    chainParam && isChain(chainParam) ? chainParam : undefined;
+    chainParam && isSiteChain(chainParam) ? chainParam : undefined;
 
   let page: { wallets: Wallet[]; total: number } = { wallets: [], total: 0 };
   let dbError = false;

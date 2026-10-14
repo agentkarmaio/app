@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
-import { isChain, type Chain } from '@/db/schema';
+import { isSiteChain, type Chain } from '@/db/schema';
 import { activeChainFromPath, agentChainFromPath, isAgentPath } from '@/lib/chain-meta';
 
 /**
@@ -46,7 +46,7 @@ export function ChainSelectionProvider({ children }: { children: React.ReactNode
     }
     let seed = agentChainFromPath(pathname);
     const q = new URLSearchParams(window.location.search).get('chain');
-    if (isChain(q)) seed = q;
+    if (isSiteChain(q)) seed = q;
     setPicked(seed);
   }, [pathname]);
 

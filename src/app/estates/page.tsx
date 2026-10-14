@@ -15,7 +15,7 @@ import { SuccessionChip } from '@/components/karma/succession-chip';
 import { HeartbeatIndicator } from '@/components/karma/heartbeat-indicator';
 import { CHAIN_META, chainOptions } from '@/lib/chain-meta';
 import { formatInterval } from '@/lib/succession-format';
-import { isChain, type Chain, type Succession, type SuccessionStatus } from '@/db/schema';
+import { isSiteChain, type Chain, type Succession, type SuccessionStatus } from '@/db/schema';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,7 +48,7 @@ export default async function EstatesPage({
   const { chain: chainParam } = await searchParams;
   if (chainParam === 'arc') redirect('/arc');
   const chainFilter: Chain | undefined =
-    chainParam && isChain(chainParam) ? chainParam : undefined;
+    chainParam && isSiteChain(chainParam) ? chainParam : undefined;
 
   let page: { successions: Succession[]; total: number } = { successions: [], total: 0 };
   let dbError = false;

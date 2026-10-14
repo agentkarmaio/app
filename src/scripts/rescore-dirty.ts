@@ -37,6 +37,7 @@ import {
   DEFAULT_TX_WINDOW,
 } from '@/db/client';
 import { calculateScore } from '@/scoring';
+import { isApiOnlyChain } from '@/db/schema';
 import { buildCadenceSignal, buildAutonomySignal } from '@/scoring/signals';
 import { computeCadence } from '@/scoring/cadence';
 import { computeAutonomy } from '@/scoring/autonomy';
@@ -161,7 +162,8 @@ export async function drainOnce(
   const { scores: attestations, unavailable: attestationsUnavailable } =
     await readAttestationsDetailed(
       claimed
-        .filter((w) => w.chain !== 'arc-mainnet' && w.chain !== 'arc')
+        // API-only testnet carries no 8004 attestations to read.
+        .filter((w) => w.chain !== 'arc-mainnet' && w.chain !== 'arc' && !isApiOnlyChain(w.chain))
         .map((w) => w.address),
     );
 

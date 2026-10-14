@@ -1,4 +1,4 @@
-import { CHAINS, type Chain } from '@/db/schema';
+import { CHAINS, isApiOnlyChain, isPublicChain, type Chain } from '@/db/schema';
 
 export const DEFAULT_CHAIN: Chain = 'solana';
 
@@ -33,12 +33,16 @@ export const CHAIN_META: Record<Chain, ChainMeta> = {
   // token). Its navy disc is part of the mark; never dim or recolor it.
   arc: { label: 'Arc testnet', logo: '/logos/arc-network.svg', href: '/arc' },
   'arc-mainnet': { label: 'Arc', logo: '/logos/arc-network.svg', href: '/arc/mainnet' },
+  // API-only (served to partner explorers, never on agentkarma.io). It has no
+  // page of its own; activeChainFromPath skips it so /stellar stays mainnet.
+  'stellar-testnet': { label: 'Stellar testnet', logo: '/logos/stellar.svg', href: '/stellar' },
 };
 
-/** Active networks only, with the UI default first and the remaining networks
- *  in schema order. Archived testnet metadata remains available by key. */
+/** Public networks only, with the UI default first and the remaining networks
+ *  in schema order. Archived (arc) and API-only (stellar-testnet) metadata
+ *  remains available by key. */
 export function chainOptions(): Chain[] {
-  return [UI_DEFAULT_CHAIN, ...CHAINS.filter(chain => chain !== 'arc' && chain !== UI_DEFAULT_CHAIN)];
+  return [UI_DEFAULT_CHAIN, ...CHAINS.filter(chain => isPublicChain(chain) && chain !== UI_DEFAULT_CHAIN)];
 }
 
 /** EVM chains share the same injected-wallet (EIP-1193) connection path. */
@@ -100,6 +104,7 @@ export function activeChainFromPath(pathname: string): Chain {
   let best: Chain = UI_DEFAULT_CHAIN;
   let bestLen = -1;
   for (const c of CHAINS) {
+    if (isApiOnlyChain(c)) continue;
     const href = CHAIN_META[c].href;
     if ((pathname === href || pathname.startsWith(href + '/')) && href.length > bestLen) {
       best = c;

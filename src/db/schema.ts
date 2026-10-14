@@ -21,12 +21,49 @@ import {
 // the durable correctness guarantee — never auto-detect an EVM chain from the
 // address (see lib/chain-detect.ts).
 
-export const CHAINS = ['solana', 'celo', 'stellar', 'arc', 'arc-mainnet'] as const;
+export const CHAINS = ['solana', 'celo', 'stellar', 'arc', 'arc-mainnet', 'stellar-testnet'] as const;
 export type Chain = (typeof CHAINS)[number];
 export const DEFAULT_CHAIN: Chain = 'solana';
 
 export function isChain(value: unknown): value is Chain {
   return typeof value === 'string' && (CHAINS as readonly string[]).includes(value);
+}
+
+/**
+ * Chains whose rows must never reach a PUBLIC surface: rankings, search,
+ * activity feeds, estates/sureties, sitemap, totals, chain switchers, MCP.
+ *
+ *   - 'arc'             Arc testnet, retired 2026-09 — a read-only archive.
+ *   - 'stellar-testnet' API-only (Kerem, 2026-10-14). Indexed and scored like
+ *                       any chain so partner explorers (agentenact.io) can read
+ *                       it through the API, but never shown on agentkarma.io.
+ *
+ * Distinct from RETIRED_CHAINS: hiding a chain is not the same as fencing its
+ * writes. stellar-testnet stays on the rescore queue; arc does not.
+ */
+export const NON_PUBLIC_CHAINS = ['arc', 'stellar-testnet'] as const satisfies readonly Chain[];
+export type PublicChain = Exclude<Chain, (typeof NON_PUBLIC_CHAINS)[number]>;
+
+/** A chain the public site may show. Use this, not isChain, on any UI input. */
+export function isPublicChain(value: unknown): value is PublicChain {
+  return isChain(value) && !(NON_PUBLIC_CHAINS as readonly string[]).includes(value);
+}
+
+/** Chains served ONLY through the API, never through the site. */
+export const API_ONLY_CHAINS = ['stellar-testnet'] as const satisfies readonly Chain[];
+export type ApiOnlyChain = (typeof API_ONLY_CHAINS)[number];
+
+export function isApiOnlyChain(value: unknown): value is ApiOnlyChain {
+  return typeof value === 'string' && (API_ONLY_CHAINS as readonly string[]).includes(value);
+}
+
+/**
+ * A chain the SITE may render or accept from a URL/form: every chain except
+ * API-only ones. Unlike isPublicChain it keeps the read-only Arc archive, whose
+ * historical profiles and /arc page still render. Use on page/UI inputs.
+ */
+export function isSiteChain(value: unknown): value is Exclude<Chain, ApiOnlyChain> {
+  return isChain(value) && !isApiOnlyChain(value);
 }
 
 // --- Drizzle Table Definitions (for drizzle-kit push) -------------------------
@@ -1056,7 +1093,7 @@ export const indexingStateTable = pgTable('indexing_state', {
   generation: integer('generation').notNull().default(0),
 }, (table) => [
   primaryKey({ columns: [table.chain, table.path], name: 'indexing_state_pkey' }),
-  check('indexing_state_chain_check', sql`${table.chain} IN ('solana', 'arc', 'celo', 'stellar', 'arc-mainnet')`),
+  check('indexing_state_chain_check', sql`${table.chain} IN ('solana', 'arc', 'celo', 'stellar', 'arc-mainnet', 'stellar-testnet')`),
   check('indexing_state_path_check', sql`${table.path} IN ('payments', 'escrow', 'transfers', 'registry')`),
   check('indexing_state_status_check', sql`${table.status} IS NULL OR ${table.status} IN ('caught_up', 'catching_up', 'dormant', 'failed')`),
   check('indexing_state_counts_check', sql`${table.checked_count} >= 0 AND ${table.pending_count} >= 0 AND ${table.inserted_count} >= 0 AND ${table.unresolved_count} >= 0 AND ${table.gaps_count} >= 0 AND ${table.generation} >= 0`),

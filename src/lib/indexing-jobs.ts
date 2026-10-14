@@ -1,4 +1,4 @@
-import type { Chain } from '@/db/schema';
+import { isApiOnlyChain, type Chain } from '@/db/schema';
 import {
   supabase,
   upsertErc8004Agents,
@@ -163,10 +163,12 @@ export function createIndexingJob(
         }
         return outcome;
       }
-      if (chain === 'stellar' && path === 'transfers') {
+      if ((chain === 'stellar' || chain === 'stellar-testnet') && path === 'transfers') {
         const { runStellarTransfersIndexer } =
           await import('@/indexer/stellar-transfers');
-        const r = await runStellarTransfersIndexer({ signal });
+        const r = await runStellarTransfersIndexer({
+          signal, network: chain === 'stellar-testnet' ? 'testnet' : 'pubnet',
+        });
         return coverageOutcome(r.coverage, r.inserted);
       }
       if (chain === 'celo' && path === 'payments') {
@@ -209,18 +211,19 @@ export function createIndexingJob(
           reason: registryScanReason(r.agentsScanned, r.errors, 0),
         }, r.agentsPersisted);
       }
-      if (chain === 'stellar' && path === 'registry') {
-        const { getStellarRpc } =
+      if ((chain === 'stellar' || chain === 'stellar-testnet') && path === 'registry') {
+        const { getStellarRpc, identityTarget } =
           await import('@/integrations/erc8004-stellar');
         const { makeStellarRegistryReader, scanStellarRegistry } =
           await import('@/indexer/stellar-registry');
+        const network = chain === 'stellar-testnet' ? 'testnet' : 'pubnet';
         const r = await scanStellarRegistry({
-          reader: makeStellarRegistryReader(getStellarRpc()),
+          reader: makeStellarRegistryReader(getStellarRpc(network), identityTarget(network)),
           concurrency: 2,
           fetchRemote: true,
           signal,
         });
-        const count = await upsertErc8004Agents('stellar', r.agents);
+        const count = await upsertErc8004Agents(chain, r.agents);
         return coverageOutcome({
           complete: r.errors.length === 0,
           checked: r.attempted,
@@ -393,6 +396,8 @@ export function startIndexingWorkers() {
   for (const def of INDEXING_PATHS) {
     // Retain definitions for archived health; never schedule retired testnet.
     if (def.chain === 'arc') continue;
+    // API-only networks run from GitHub Actions, never inside the web app.
+    if (isApiOnlyChain(def.chain)) continue;
     if (
       def.chain === 'solana' &&
       def.path === 'payments' &&
