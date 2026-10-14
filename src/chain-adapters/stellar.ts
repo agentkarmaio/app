@@ -85,7 +85,7 @@ export function makeStellarAdapter(): ChainAdapter {
 }
 
 /**
- * stellar-testnet adapter — API-only chain (Kerem, 2026-10-14). Address
+ * stellar-testnet adapter — API-only chain. Address
  * handling and explorer links only: testnet data arrives through the indexing
  * jobs (registry mirror + USDC transfers), and AK never reads or publishes 8004
  * attestations on testnet. Kept OUT of getAllAdapters() — testnet G-addresses

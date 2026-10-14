@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 /**
- * stellar-testnet is API-only (Kerem, 2026-10-14). Its rows live in the shared
+ * stellar-testnet is API-only. Its rows live in the shared
  * tables under their own chain key and are scored by the normal rescore queue,
  * but no public surface — rankings, search, activity, estates, sureties,
  * totals — may ever include them. These tests pin both directions.

@@ -1,9 +1,9 @@
 name: Stellar testnet refresh
 
-# Keeps AgentKarma's API-only stellar-testnet index current (Kerem, 2026-10-14):
+# Keeps AgentKarma's API-only stellar-testnet index current:
 # the stellar-8004 TESTNET IdentityRegistry mirror and the testnet USDC
 # transfers of those agents, both written under chain 'stellar-testnet'.
-# Partner explorers (agentenact.io/explore) read it through
+# It is read through
 # /api/explore/agents?chain=stellar-testnet and
 # /api/v2/agent/stellar-testnet/{id}[/payments]; it never appears on
 # agentkarma.io's own pages, rankings or totals.
@@ -69,5 +69,5 @@ jobs:
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           text: |
             🛟 <b>AgentKarma stellar-testnet-refresh FAILED</b>
-            The API-only testnet mirror/transfers job crashed — agentenact.io/explore data may stall.
+            The API-only testnet mirror/transfers job crashed — stellar-testnet API data may stall.
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

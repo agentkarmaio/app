@@ -74,9 +74,8 @@ export function resolveStellarRpcUrl(
 // pointed at mainnet must not silently serve testnet reads (or vice versa).
 
 /**
- * trionlabs/stellar-8004 testnet IdentityRegistry — the registry AgentEnact's
- * agents live on (agentenact/src/networks.ts NETWORKS['stellar:testnet']).
- * Verified 2026-10-14: total_agents() = 92, matching api.agentenact.io stats.
+ * trionlabs/stellar-8004 testnet IdentityRegistry. Verified 2026-10-14
+ * against its total_agents().
  */
 export const STELLAR_TESTNET_IDENTITY_REGISTRY =
   'CDE3K4COIAGWNNJQQLL26SYI3KBJF5FUDHXG5FA6GYDJCG7T5V7FIWZH' as const;
