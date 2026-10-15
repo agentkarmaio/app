@@ -21,7 +21,8 @@ function fake(rows: unknown[]) {
 }
 
 const row = (i: number) => ({ id: `00000000-0000-0000-0000-00000000000${i}`, tx_signature: `op${i}:0`, tx_hash: `hash${i}`,
-  wallet_address: PAYER, amount: '0.001000000000000000', timestamp: `2026-10-1${i}T00:00:00+00:00`, success: true });
+  wallet_address: PAYER, amount: '0.001000000000000000', timestamp: `2026-10-1${i}T00:00:00+00:00`, success: true,
+  counted: true, excluded_reason: null });
 
 describe('formatUsdc7', () => {
   test('renders numeric text as a fixed 7-decimal USDC string', () => {
@@ -46,44 +47,64 @@ describe('payments cursor', () => {
 });
 
 describe('getReceivedPayments', () => {
-  test('reads inbound rows for one chain + payee, newest first, with a stable tiebreak', async () => {
+  test('reads inbound rows for one chain + agent, newest first, with a stable tiebreak', async () => {
     const calls = fake([row(3), row(2)]);
-    const page = await db.getReceivedPayments('stellar-testnet', G, { limit: 5 });
-    expect(calls.table).toBe('transactions');
+    const page = await db.getReceivedPayments('stellar-testnet', 7, { limit: 5 });
+    // The classified view, not the raw table: it carries counted / excluded_reason.
+    expect(calls.table).toBe('stellar_testnet_received_payments');
     expect(calls.ops).toContainEqual(['eq', 'chain', 'stellar-testnet']);
-    expect(calls.ops).toContainEqual(['eq', 'counterparty', G]);
+    expect(calls.ops).toContainEqual(['eq', 'agent_id', 7]);
     expect(calls.ops).toContainEqual(['order', 'timestamp', { ascending: false }]);
     expect(calls.ops).toContainEqual(['order', 'id', { ascending: false }]);
     expect(calls.ops).toContainEqual(['limit', 6]);
     expect(calls.ops.find((o) => o[0] === 'select')?.[1]).toContain('tx_hash');
+    expect(calls.ops.find((o) => o[0] === 'select')?.[1]).toContain('excluded_reason');
     expect(page.payments).toEqual([
-      { id: 'op3:0', txHash: 'hash3', from: PAYER, amount: '0.0010000', timestamp: row(3).timestamp, success: true },
-      { id: 'op2:0', txHash: 'hash2', from: PAYER, amount: '0.0010000', timestamp: row(2).timestamp, success: true },
+      { id: 'op3:0', txHash: 'hash3', from: PAYER, amount: '0.0010000', timestamp: row(3).timestamp, success: true, counted: true, excludedReason: null },
+      { id: 'op2:0', txHash: 'hash2', from: PAYER, amount: '0.0010000', timestamp: row(2).timestamp, success: true, counted: true, excludedReason: null },
     ]);
     expect(page.nextCursor).toBeNull();
   });
 
   test('a full page returns a cursor that continues strictly after the last row', async () => {
     fake([row(3), row(2), row(1)]);
-    const page = await db.getReceivedPayments('stellar-testnet', G, { limit: 2 });
+    const page = await db.getReceivedPayments('stellar-testnet', 7, { limit: 2 });
     expect(page.payments.map(p => p.txHash)).toEqual(['hash3', 'hash2']);
     expect(decodePaymentsCursor(page.nextCursor!)).toEqual({ timestamp: row(2).timestamp, id: row(2).id });
 
     const calls = fake([row(1)]);
-    await db.getReceivedPayments('stellar-testnet', G, { limit: 2, cursor: decodePaymentsCursor(page.nextCursor!)! });
+    await db.getReceivedPayments('stellar-testnet', 7, { limit: 2, cursor: decodePaymentsCursor(page.nextCursor!)! });
     const ts = row(2).timestamp;
     expect(calls.ops).toContainEqual(['or', `timestamp.lt."${ts}",and(timestamp.eq."${ts}",id.lt.${row(2).id})`]);
+  });
+});
+
+describe('excluded payers are flagged, not hidden', () => {
+  test('a row excluded by the view keeps its place in the page with counted:false and its reason', async () => {
+    fake([
+      { ...row(2), counted: false, excluded_reason: 'owner' },
+      { ...row(1), counted: false, excluded_reason: 'listed' },
+      { ...row(0), success: false, counted: false, excluded_reason: null },
+    ]);
+    const page = await db.getReceivedPayments('stellar-testnet', 7, { limit: 5 });
+    expect(page.payments.map((p) => [p.id, p.counted, p.excludedReason])).toEqual([
+      ['op2:0', false, 'owner'], ['op1:0', false, 'listed'], ['op0:0', false, null],
+    ]);
+  });
+  test('an unknown reason from the database is refused rather than passed through', async () => {
+    fake([{ ...row(1), counted: false, excluded_reason: 'whatever' }]);
+    await expect(db.getReceivedPayments('stellar-testnet', 7, { limit: 5 })).rejects.toThrow();
   });
 });
 
 describe('multi-leg transactions', () => {
   const leg = (idx: number, amount: string) => ({ id: `00000000-0000-0000-0000-00000000010${idx}`,
     tx_signature: `9000:${idx}`, tx_hash: 'samehash', wallet_address: PAYER, amount,
-    timestamp: '2026-10-14T00:00:00+00:00', success: true });
+    timestamp: '2026-10-14T00:00:00+00:00', success: true, counted: true, excluded_reason: null });
 
   test('each leg of one transaction is its own payment with a unique id', async () => {
     fake([leg(1, '0.800000000000000000'), leg(0, '0.200000000000000000')]);
-    const page = await db.getReceivedPayments('stellar-testnet', G, { limit: 5 });
+    const page = await db.getReceivedPayments('stellar-testnet', 7, { limit: 5 });
     expect(page.payments.map((p) => [p.id, p.txHash, p.amount])).toEqual([
       ['9000:1', 'samehash', '0.8000000'],
       ['9000:0', 'samehash', '0.2000000'],
@@ -92,7 +113,7 @@ describe('multi-leg transactions', () => {
 
   test('paging between legs that share a timestamp neither skips nor repeats a leg', async () => {
     fake([leg(1, '0.8'), leg(0, '0.2')]);
-    const page = await db.getReceivedPayments('stellar-testnet', G, { limit: 1 });
+    const page = await db.getReceivedPayments('stellar-testnet', 7, { limit: 1 });
     expect(page.payments.map((p) => p.id)).toEqual(['9000:1']);
     // The cursor is (timestamp, row uuid): unique per leg, so the next page
     // starts strictly after leg 1 and still sees leg 0.
@@ -101,7 +122,7 @@ describe('multi-leg transactions', () => {
 
   test('a legacy row without tx_hash falls back to tx_signature', async () => {
     fake([{ ...row(1), tx_hash: null, tx_signature: 'legacyhash' }]);
-    const page = await db.getReceivedPayments('stellar-testnet', G, { limit: 5 });
+    const page = await db.getReceivedPayments('stellar-testnet', 7, { limit: 5 });
     expect(page.payments[0]).toMatchObject({ id: 'legacyhash', txHash: 'legacyhash' });
   });
 });

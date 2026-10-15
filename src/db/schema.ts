@@ -580,6 +580,21 @@ export const walletTxStatsTable = pgTable('wallet_tx_stats', {
   primaryKey({ columns: [table.chain, table.address], name: 'wallet_tx_stats_pkey' }),
 ]).enableRLS();
 
+// --- Payers whose payments are not revenue (stellar-testnet) ------------------
+//
+// Operator-maintained list of accounts (faucets, funding or test wallets) whose
+// USDC payments to an agent must not count toward that agent's received totals.
+// Consulted by the stellar_testnet_agents / stellar_testnet_received_payments
+// views, together with two structural rules: the agent's registry owner (when
+// distinct from its address) and the agent paying itself. Ships EMPTY; rows
+// are inserted by the operator. RLS on with no policy: not readable through the
+// public API, only through the views (which run as their owner).
+export const stellarTestnetExcludedPayersTable = pgTable('stellar_testnet_excluded_payers', {
+  address:  text('address').primaryKey(),
+  note:     text('note'),
+  added_at: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+}).enableRLS();
+
 // --- ERC-8004 Registry Mirror (per-agent, keyed by agent_id not address) -----
 //
 // Registry-faithful mirror of every ERC-8004 IdentityRegistry NFT and
@@ -785,7 +800,8 @@ export interface Wallet {
   /**
    * Inbound USDC payment totals, present only on rows read from the
    * stellar_testnet_agents view (API-only chain). `payments_usdc_received` is
-   * numeric text (never a float).
+   * numeric text (never a float). Owner top-ups, self-payments and payments
+   * from listed payers are not counted (see stellar_testnet_excluded_payers).
    */
   payments_received?: number | string | null;
   payments_usdc_received?: string | null;
