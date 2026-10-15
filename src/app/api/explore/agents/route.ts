@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  getAgents,
+  formatUsdc7, getAgents,
   type AgentsExploreFilters, type AgentsExploreSort, type AgentSortField,
 } from '@/db/client';
-import type { TrustTier, LivenessStatus, ConfidenceBadge, AutonomyLabel, Chain } from '@/db/schema';
+import type { Wallet, TrustTier, LivenessStatus, ConfidenceBadge, AutonomyLabel, Chain } from '@/db/schema';
 import { LIVENESS_STATUSES } from '@/db/schema';
-import { isChain } from '@/db/schema';
+import { isApiOnlyChain, isChain } from '@/db/schema';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 import { networkTag } from '@/lib/api-only-chain';
 
@@ -35,6 +35,21 @@ function num(v: string | null, min = 0, max = 1): number | undefined {
   const n = Number(v);
   if (!Number.isFinite(n)) return undefined;
   return Math.max(min, Math.min(max, n));
+}
+
+/**
+ * Inbound USDC payment totals for an API-only registry agent, aggregated in the
+ * stellar_testnet_agents view from the same rows (and the same success rule)
+ * that GET /api/v2/agent/[chain]/[id]/payments serves, so the numbers equal the
+ * sum of that route's successful payments. `usdcReceived` is formatted exactly
+ * like the payments route's `amount`: a decimal string with 7 decimals.
+ */
+function paymentTotals(w: Wallet) {
+  return {
+    received: Number(w.payments_received ?? 0),
+    usdcReceived: formatUsdc7(String(w.payments_usdc_received ?? '0')),
+    lastReceivedAt: w.payments_last_received_at ? new Date(w.payments_last_received_at).toISOString() : null,
+  };
 }
 
 export async function GET(request: NextRequest) {
@@ -106,6 +121,7 @@ export async function GET(request: NextRequest) {
         age:         w.metric_age          != null ? Number(w.metric_age)          : null,
         cadence:     w.metric_cadence      != null ? Number(w.metric_cadence)      : null,
       },
+      ...(isApiOnlyChain(w.chain) ? { payments: paymentTotals(w) } : {}),
     })),
   }, {
     headers: {

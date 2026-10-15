@@ -782,6 +782,14 @@ export interface Wallet {
   score: number;
   trust_tier: TrustTier;
   updated_at: string;
+  /**
+   * Inbound USDC payment totals, present only on rows read from the
+   * stellar_testnet_agents view (API-only chain). `payments_usdc_received` is
+   * numeric text (never a float).
+   */
+  payments_received?: number | string | null;
+  payments_usdc_received?: string | null;
+  payments_last_received_at?: string | null;
   entity_name?: string | null;
   entity_category?: string | null;
   funded_by?: string | null;

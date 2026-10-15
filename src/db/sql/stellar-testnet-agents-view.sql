@@ -8,7 +8,14 @@
 -- public total. Only getAgents/getWalletByAgentId read this view, and only for
 -- an explicit chain=stellar-testnet.
 --
--- Same column projection as explore_agents, so the API serializer is shared.
+-- Same column projection as explore_agents, so the API serializer is shared,
+-- plus three trailing payment-total columns (payments_received,
+-- payments_usdc_received, payments_last_received_at) aggregated in SQL from the
+-- same rows GET /api/v2/agent/stellar-testnet/{id}/payments pages through:
+-- transactions with this chain and counterparty = the agent's address, counted
+-- when success. One row per transfer leg, so the count equals the number of
+-- payment rows. The sum is cast to text: PostgREST would otherwise return a
+-- JSON number and lose decimals.
 -- One row per registry agentId (erc8004_agents, PK (chain, agent_id)); the
 -- agent's address is its bound wallet, else the owner (Soroban NULL = unset).
 --
@@ -51,10 +58,20 @@ CREATE OR REPLACE VIEW stellar_testnet_agents AS
     CASE WHEN o.observed THEN w.score::numeric ELSE r.metadata_score::numeric END AS score,
     r.registration->>'image'             AS image_url,
     CASE WHEN o.observed THEN w.rank_score::numeric ELSE r.metadata_score::numeric * 0.7 END AS rank_score,
-    r.owner                              AS registry_owner
+    r.owner                              AS registry_owner,
+    COALESCE(p.received, 0)              AS payments_received,
+    COALESCE(p.usdc, 0)::text            AS payments_usdc_received,
+    p.last_at                            AS payments_last_received_at
   FROM erc8004_agents r
   LEFT JOIN wallets w ON w.chain = r.chain
     AND w.address = COALESCE(r.agent_wallet, r.owner)
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::bigint AS received, SUM(t.amount) AS usdc, MAX(t.timestamp) AS last_at
+    FROM transactions t
+    WHERE t.chain = r.chain
+      AND t.counterparty = COALESCE(r.agent_wallet, r.owner)
+      AND t.success
+  ) p ON true
   CROSS JOIN LATERAL (
     SELECT COALESCE(w.confidence_badge IN ('receipt-backed', 'behavior-inferred'), false) AS observed
   ) o
