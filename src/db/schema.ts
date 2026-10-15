@@ -259,6 +259,10 @@ export const transactionsTable = pgTable('transactions', {
   timestamp:      timestamp('timestamp', { withTimezone: true }).notNull(),
   success:        boolean('success').notNull().default(true),
   tx_signature:   text('tx_signature').notNull(),
+  // On-chain transaction hash for chains whose `tx_signature` is a per-leg key
+  // ("<operationId>:<transferIndex>", stellar-testnet) so one transaction can
+  // carry several rows. NULL elsewhere, where tx_signature already is the hash.
+  tx_hash:        text('tx_hash'),
   // Payee / resource-server address (the actual counterparty), distinct from the
   // facilitator that routed the payment. Nullable: legacy rows + chains where the
   // payee is not yet extracted fall back to `facilitator` in scoring. Populated
@@ -1035,6 +1039,8 @@ export interface Transaction {
   success: boolean;
   tx_signature: string;
   counterparty?: string | null;
+  /** On-chain transaction hash, set only where `tx_signature` is a per-leg key (stellar-testnet). */
+  tx_hash?: string | null;
 }
 
 export interface Score {

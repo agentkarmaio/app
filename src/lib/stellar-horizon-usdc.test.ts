@@ -38,7 +38,7 @@ describe('extractUsdcTransfers — the three USDC-carrying shapes', () => {
       PIN,
     );
     expect(out).toEqual([
-      { from: A, to: B, amount: 1.5, txHash: 'tx1', pagingToken: '1', createdAt: base.created_at, successful: true },
+      { from: A, to: B, amount: 1.5, txHash: 'tx1', pagingToken: '1', createdAt: base.created_at, successful: true, opId: '1', legIndex: 0 },
     ]);
   });
 
@@ -89,6 +89,7 @@ describe('extractUsdcTransfers — the three USDC-carrying shapes', () => {
       PIN,
     );
     expect(out.map((t) => t.amount)).toEqual([1, 2]);
+    expect(out.map((t) => [t.opId, t.legIndex])).toEqual([['1', 0], ['1', 1]]);
   });
 });
 

@@ -9,8 +9,12 @@
  * Response:
  *   { chain, network: 'testnet', agentId, address,
  *     asset: { code: 'USDC', issuer, sac, decimals: 7 },
- *     payments: [{ txHash, from, amount, timestamp, success }],
+ *     payments: [{ id, txHash, from, amount, timestamp, success }],
  *     nextCursor: string | null }
+ *
+ * One row per transfer leg: a transaction with several USDC payments to the
+ * agent yields several rows sharing `txHash`. `id` is the stable unique row key
+ * "<operationId>:<transferIndex>" (use it, not `txHash`, to de-duplicate).
  *
  * `address` is the agent's bound wallet (agent_wallet, else owner) — the payee
  * matched against `transactions.counterparty`. `amount` is a decimal STRING in

@@ -11,7 +11,7 @@ let payments: ReturnType<typeof spyOn<typeof db, 'getReceivedPayments'>>;
 beforeEach(() => {
   agent = spyOn(db, 'getWalletByAgentId').mockResolvedValue({ chain: 'stellar-testnet', address: G } as Wallet);
   payments = spyOn(db, 'getReceivedPayments').mockResolvedValue({
-    payments: [{ txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true }],
+    payments: [{ id: '900:0', txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true }],
     nextCursor: 'abc',
   });
 });
@@ -29,7 +29,7 @@ describe('GET /api/v2/agent/[chain]/[id]/payments', () => {
       chain: 'stellar-testnet', network: 'testnet', agentId: 0, address: G,
       asset: { code: 'USDC', issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
         sac: 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA', decimals: 7 },
-      payments: [{ txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true }],
+      payments: [{ id: '900:0', txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true }],
       nextCursor: 'abc',
     });
     expect(agent).toHaveBeenCalledWith('stellar-testnet', 0);

@@ -1166,6 +1166,7 @@ export async function insertTransactionsReturningWallets(
     timestamp: typeof tx.timestamp === 'string' ? tx.timestamp : new Date(tx.timestamp).toISOString(),
     success: tx.success,
     tx_signature: tx.tx_signature,
+    ...(tx.tx_hash != null ? { tx_hash: tx.tx_hash } : {}),
   }));
 
   return withTransientDbRetry(async () => {
@@ -1219,6 +1220,9 @@ export async function getTransactions(
 
 /** One inbound USDC payment, as served by /api/v2/agent/[chain]/[id]/payments. */
 export interface ReceivedPayment {
+  /** Stable unique row id, "<operationId>:<transferIndex>" (one tx may carry several payments). */
+  id: string;
+  /** On-chain transaction hash; shared by every payment leg of that transaction. */
   txHash: string;
   /** Payer account (`transactions.wallet_address`). */
   from: string;
@@ -1274,7 +1278,7 @@ export async function getReceivedPayments(
 ): Promise<{ payments: ReceivedPayment[]; nextCursor: string | null }> {
   let q = supabase
     .from('transactions')
-    .select('id, tx_signature, wallet_address, amount::text, timestamp, success')
+    .select('id, tx_signature, tx_hash, wallet_address, amount::text, timestamp, success')
     .eq('chain', chain)
     .eq('counterparty', payee);
   if (opts.cursor) {
@@ -1287,13 +1291,13 @@ export async function getReceivedPayments(
     .limit(opts.limit + 1);
   if (error) throw error;
 
-  const rows = (data ?? []) as unknown as Array<{ id: string; tx_signature: string; wallet_address: string;
+  const rows = (data ?? []) as unknown as Array<{ id: string; tx_signature: string; tx_hash: string | null; wallet_address: string;
     amount: string; timestamp: string; success: boolean }>;
   const page = rows.slice(0, opts.limit);
   const last = page.at(-1);
   return {
     payments: page.map((r) => ({
-      txHash: r.tx_signature, from: r.wallet_address, amount: formatUsdc7(String(r.amount)),
+      id: r.tx_signature, txHash: r.tx_hash ?? r.tx_signature, from: r.wallet_address, amount: formatUsdc7(String(r.amount)),
       timestamp: r.timestamp, success: r.success,
     })),
     nextCursor: rows.length > opts.limit && last ? encodePaymentsCursor({ timestamp: last.timestamp, id: last.id }) : null,

@@ -27,7 +27,7 @@
  *   STELLAR_TESTNET_HORIZON_URL — testnet Horizon (optional).
  */
 
-import type { Chain, Transaction } from '@/db/schema';
+import { isApiOnlyChain, type Chain, type Transaction } from '@/db/schema';
 import type { IndexRunResult } from '@/chain-adapters/types';
 import {
   isStellarAccount,
@@ -112,6 +112,11 @@ export function toTransactionRow(
   sac: string,
   chain: Chain = STELLAR_CHAIN,
 ): Omit<Transaction, 'id'> {
+  // API-only chains (stellar-testnet) store one row per transfer leg, keyed on
+  // (operation id, transfer index); the transaction hash moves to `tx_hash`.
+  // Pubnet history is already indexed as tx_signature = hash, so it is left
+  // exactly as it was.
+  const perLeg = isApiOnlyChain(chain);
   return {
     chain,
     wallet_address: transfer.from,
@@ -120,8 +125,14 @@ export function toTransactionRow(
     amount: transfer.amount,
     timestamp: transfer.createdAt,
     success: transfer.successful,
-    tx_signature: transfer.txHash,
+    tx_signature: perLeg ? transferLegKey(transfer) : transfer.txHash,
+    ...(perLeg ? { tx_hash: transfer.txHash } : {}),
   };
+}
+
+/** Stable per-leg key: "<operationId>:<transferIndex>". */
+export function transferLegKey(transfer: Pick<StellarUsdcTransfer, 'opId' | 'legIndex'>): string {
+  return `${transfer.opId}:${transfer.legIndex}`;
 }
 
 // ─── Seed set ─────────────────────────────────────────────────────────────────
@@ -316,7 +327,8 @@ async function walkAddress(
   address: string,
   deadline: number,
   now: () => number,
-  seenTxHashes: Set<string>,
+  seenRows: Set<string>,
+  seenSignalTxs: Set<string>,
 ): Promise<AddressOutcome> {
   deps.signal?.throwIfAborted();
   if (now() >= deadline) {
@@ -380,12 +392,19 @@ async function walkAddress(
         // Seed scope. Not redundant with the per-account feed: a Soroban invoke
         // can carry legs between two third parties.
         if (!deps.seed.has(transfer.from) && !deps.seed.has(transfer.to)) continue;
-        if (seenTxHashes.has(transfer.txHash)) continue;
-        seenTxHashes.add(transfer.txHash);
+        const chain = deps.chain ?? STELLAR_CHAIN;
+        // One row per tx hash on pubnet, one per leg on API-only chains.
+        const rowKey = isApiOnlyChain(chain) ? transferLegKey(transfer) : transfer.txHash;
+        if (seenRows.has(rowKey)) continue;
+        seenRows.add(rowKey);
 
-        rows.push(toTransactionRow(transfer, deps.sac, deps.chain ?? STELLAR_CHAIN));
+        rows.push(toTransactionRow(transfer, deps.sac, chain));
         wallets.add(transfer.from);
         wallets.add(transfer.to);
+        // Settlement signals are per transaction (their dedupe key is the tx
+        // hash), so a multi-leg tx still yields a single pair.
+        if (seenSignalTxs.has(transfer.txHash)) continue;
+        seenSignalTxs.add(transfer.txHash);
         signals.push(
           buildUsdcTransferSignal({
             walletAddress: transfer.to, face: 'provider', chain: deps.chain ?? STELLAR_CHAIN,
@@ -471,9 +490,9 @@ export async function stellarTransfersIndexer(
   }
 
   /**
-   * Run-level, deliberately not per-address. `tx_signature` is UNIQUE, so at
-   * most one row per transaction can ever land — and a transfer A→B appears in
-   * BOTH A's and B's Horizon feed. Deduplicating per address would emit two
+   * Run-level, deliberately not per-address. `tx_signature` is UNIQUE per
+   * chain (the tx hash on pubnet, "<opId>:<index>" per leg on API-only chains)
+   * — and a transfer A→B appears in BOTH A's and B's Horizon feed. Deduplicating per address would emit two
    * identical rows, the DB would silently swallow one, and `fetched` would
    * overstate what was persisted.
    *
@@ -482,12 +501,13 @@ export async function stellarTransfersIndexer(
    * the claiming address's write fails its cursor does not advance, so the next
    * run re-reads that record.
    */
-  const seenTxHashes = new Set<string>();
+  const seenRows = new Set<string>();
+  const seenSignalTxs = new Set<string>();
 
   const outcomes = await withConcurrency(
     targets,
     concurrency,
-    (address) => walkAddress(deps, address, deadline, now, seenTxHashes),
+    (address) => walkAddress(deps, address, deadline, now, seenRows, seenSignalTxs),
   );
 
   deps.signal?.throwIfAborted();

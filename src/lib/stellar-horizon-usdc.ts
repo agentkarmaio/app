@@ -64,6 +64,10 @@ export interface StellarUsdcTransfer {
   pagingToken: string;
   createdAt: string;
   successful: boolean;
+  /** Horizon operation id of the carrying record. */
+  opId: string;
+  /** Position of this transfer among the record's decoded transfers (0-based). */
+  legIndex: number;
 }
 
 /** The asset to match, pinned as code + issuer. Never a bare code. */
@@ -112,8 +116,9 @@ function assetMatches(pin: AssetPin, code: unknown, issuer: unknown): boolean {
  * record at all.
  *
  * A record may legitimately yield SEVERAL transfers: one Soroban invocation can
- * carry multiple legs. Callers persisting to `transactions` must reduce them,
- * because `tx_signature` is globally UNIQUE.
+ * carry multiple legs. Pubnet callers persisting to `transactions` must
+ * reduce them, because `tx_signature` is UNIQUE per chain; API-only chains key
+ * each leg on (`opId`, `legIndex`) instead.
  *
  * Stellar StrKey is case-SENSITIVE. Addresses pass through byte-for-byte; the
  * lowercasing EVM indexers apply would corrupt them.
@@ -128,6 +133,7 @@ export function extractUsdcTransfers(record: unknown, pin: AssetPin): StellarUsd
     // Absent reads as successful (Horizon always sends it); only an explicit
     // false is a failure, so the field can never reach the DB as undefined.
     successful: record.transaction_successful !== false,
+    opId: str(record.id),
   };
   const out: StellarUsdcTransfer[] = [];
 
@@ -147,7 +153,7 @@ export function extractUsdcTransfers(record: unknown, pin: AssetPin): StellarUsd
    */
   const push = (from: string, to: string, amount: number): void => {
     if (!from || !to || from === to || amount === 0) return;
-    out.push({ from, to, amount, ...base });
+    out.push({ from, to, amount, ...base, legIndex: out.length });
   };
 
   // Soroban: the record itself has no from/to.

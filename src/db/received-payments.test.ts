@@ -20,7 +20,7 @@ function fake(rows: unknown[]) {
   return calls;
 }
 
-const row = (i: number) => ({ id: `00000000-0000-0000-0000-00000000000${i}`, tx_signature: `hash${i}`,
+const row = (i: number) => ({ id: `00000000-0000-0000-0000-00000000000${i}`, tx_signature: `op${i}:0`, tx_hash: `hash${i}`,
   wallet_address: PAYER, amount: '0.001000000000000000', timestamp: `2026-10-1${i}T00:00:00+00:00`, success: true });
 
 describe('formatUsdc7', () => {
@@ -55,9 +55,10 @@ describe('getReceivedPayments', () => {
     expect(calls.ops).toContainEqual(['order', 'timestamp', { ascending: false }]);
     expect(calls.ops).toContainEqual(['order', 'id', { ascending: false }]);
     expect(calls.ops).toContainEqual(['limit', 6]);
+    expect(calls.ops.find((o) => o[0] === 'select')?.[1]).toContain('tx_hash');
     expect(page.payments).toEqual([
-      { txHash: 'hash3', from: PAYER, amount: '0.0010000', timestamp: row(3).timestamp, success: true },
-      { txHash: 'hash2', from: PAYER, amount: '0.0010000', timestamp: row(2).timestamp, success: true },
+      { id: 'op3:0', txHash: 'hash3', from: PAYER, amount: '0.0010000', timestamp: row(3).timestamp, success: true },
+      { id: 'op2:0', txHash: 'hash2', from: PAYER, amount: '0.0010000', timestamp: row(2).timestamp, success: true },
     ]);
     expect(page.nextCursor).toBeNull();
   });
@@ -72,5 +73,35 @@ describe('getReceivedPayments', () => {
     await db.getReceivedPayments('stellar-testnet', G, { limit: 2, cursor: decodePaymentsCursor(page.nextCursor!)! });
     const ts = row(2).timestamp;
     expect(calls.ops).toContainEqual(['or', `timestamp.lt."${ts}",and(timestamp.eq."${ts}",id.lt.${row(2).id})`]);
+  });
+});
+
+describe('multi-leg transactions', () => {
+  const leg = (idx: number, amount: string) => ({ id: `00000000-0000-0000-0000-00000000010${idx}`,
+    tx_signature: `9000:${idx}`, tx_hash: 'samehash', wallet_address: PAYER, amount,
+    timestamp: '2026-10-14T00:00:00+00:00', success: true });
+
+  test('each leg of one transaction is its own payment with a unique id', async () => {
+    fake([leg(1, '0.800000000000000000'), leg(0, '0.200000000000000000')]);
+    const page = await db.getReceivedPayments('stellar-testnet', G, { limit: 5 });
+    expect(page.payments.map((p) => [p.id, p.txHash, p.amount])).toEqual([
+      ['9000:1', 'samehash', '0.8000000'],
+      ['9000:0', 'samehash', '0.2000000'],
+    ]);
+  });
+
+  test('paging between legs that share a timestamp neither skips nor repeats a leg', async () => {
+    fake([leg(1, '0.8'), leg(0, '0.2')]);
+    const page = await db.getReceivedPayments('stellar-testnet', G, { limit: 1 });
+    expect(page.payments.map((p) => p.id)).toEqual(['9000:1']);
+    // The cursor is (timestamp, row uuid): unique per leg, so the next page
+    // starts strictly after leg 1 and still sees leg 0.
+    expect(decodePaymentsCursor(page.nextCursor!)).toEqual({ timestamp: leg(1, '0').timestamp, id: leg(1, '0').id });
+  });
+
+  test('a legacy row without tx_hash falls back to tx_signature', async () => {
+    fake([{ ...row(1), tx_hash: null, tx_signature: 'legacyhash' }]);
+    const page = await db.getReceivedPayments('stellar-testnet', G, { limit: 5 });
+    expect(page.payments[0]).toMatchObject({ id: 'legacyhash', txHash: 'legacyhash' });
   });
 });

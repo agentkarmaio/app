@@ -770,3 +770,82 @@ describe('rescore enqueueing (testnet opt-in)', () => {
     expect(state.inserted.length).toBeGreaterThan(0);
   });
 });
+
+// ─── One row per transfer leg (API-only chains) ───────────────────────────────
+//
+// Measured on stellar-testnet: a transaction with several USDC payments to one
+// agent stored only the first, because every row was keyed on the transaction
+// hash. API-only chains key each row on (operation id, transfer index) instead;
+// pubnet keeps its one-row-per-hash behaviour (its history is already indexed
+// under tx_signature = hash).
+
+describe('per-leg rows on stellar-testnet', () => {
+  const TESTNET_OP = '9000000000000001';
+  const multiLeg = (): HorizonPaymentRecord => ({
+    ...SOROBAN_INVOKE,
+    id: TESTNET_OP,
+    paging_token: TESTNET_OP,
+    transaction_hash: 'aa'.repeat(32),
+    asset_balance_changes: [
+      { ...SOROBAN_INVOKE.asset_balance_changes![0], from: STRANGER_1, to: AGENT_A, amount: '0.2000000' },
+      { ...SOROBAN_INVOKE.asset_balance_changes![0], from: STRANGER_1, to: AGENT_A, amount: '0.8000000' },
+    ],
+  });
+
+  test('toTransactionRow keys testnet rows on opId:index and keeps the hash in tx_hash', () => {
+    const [first, second] = extractUsdcTransfers(multiLeg(), USDC);
+    expect(first).toMatchObject({ opId: TESTNET_OP, legIndex: 0 });
+    expect(second).toMatchObject({ opId: TESTNET_OP, legIndex: 1 });
+    const row = toTransactionRow(second, SAC, 'stellar-testnet');
+    expect(row.tx_signature).toBe(`${TESTNET_OP}:1`);
+    expect(row.tx_hash).toBe('aa'.repeat(32));
+  });
+
+  test('pubnet rows are unchanged: tx_signature = hash, no tx_hash', () => {
+    const [t] = extractUsdcTransfers(CLASSIC_PAYMENT, USDC);
+    const row = toTransactionRow(t, SAC);
+    expect(row.tx_signature).toBe(CLASSIC_PAYMENT.transaction_hash);
+    expect(row).not.toHaveProperty('tx_hash');
+  });
+
+  test('every matching leg of a transaction is persisted, with distinct keys', async () => {
+    const { deps, state } = makeDeps({ [AGENT_A]: [multiLeg()] }, { chain: 'stellar-testnet' });
+    const res = await stellarTransfersIndexer(deps);
+    expect(res.fetched).toBe(2);
+    expect(state.inserted.map((r) => [r.tx_signature, r.amount, r.tx_hash])).toEqual([
+      [`${TESTNET_OP}:0`, 0.2, 'aa'.repeat(32)],
+      [`${TESTNET_OP}:1`, 0.8, 'aa'.repeat(32)],
+    ]);
+  });
+
+  test('the same leg seen from both feeds is still written once', async () => {
+    const rec = multiLeg();
+    rec.asset_balance_changes = [{ ...rec.asset_balance_changes![0], from: AGENT_B, to: AGENT_A }];
+    const { deps, state } = makeDeps({ [AGENT_A]: [rec], [AGENT_B]: [rec] }, { chain: 'stellar-testnet' });
+    await stellarTransfersIndexer(deps);
+    expect(state.inserted.length).toBe(1);
+  });
+
+  test('a leg keeps its index when an earlier leg is out of seed scope', async () => {
+    const rec = multiLeg();
+    rec.asset_balance_changes = [
+      { ...rec.asset_balance_changes![0], from: STRANGER_1, to: STRANGER_2 },
+      { ...rec.asset_balance_changes![1], from: STRANGER_1, to: AGENT_A },
+    ];
+    const { deps, state } = makeDeps({ [AGENT_A]: [rec] }, { chain: 'stellar-testnet' });
+    await stellarTransfersIndexer(deps);
+    expect(state.inserted.map((r) => r.tx_signature)).toEqual([`${TESTNET_OP}:1`]);
+  });
+
+  test('settlement signals stay one pair per transaction, not per leg', async () => {
+    const { deps, state } = makeDeps({ [AGENT_A]: [multiLeg()] }, { chain: 'stellar-testnet' });
+    await stellarTransfersIndexer(deps);
+    expect(state.signals.length).toBe(2);
+  });
+
+  test('pubnet still persists one row per transaction hash', async () => {
+    const { deps, state } = makeDeps({ [AGENT_A]: [multiLeg()] });
+    await stellarTransfersIndexer(deps);
+    expect(state.inserted.length).toBe(1);
+  });
+});
