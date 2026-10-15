@@ -1,19 +1,27 @@
 /**
  * GET /api/v2/agent/[chain]/[id]/payments?limit=50&cursor=…
  *
- * Paged USDC payments RECEIVED by one registry agent, for API readers of
- * AgentKarma's API-only stellar-testnet index. Served ONLY for API-only chains; mainnet payment
- * ledgers are not exposed through this route.
+ * Paged USDC payments RECEIVED by one registry agent, from AgentKarma's
+ * API-only stellar-testnet index. Served ONLY for API-only chains; mainnet
+ * payment ledgers are not exposed through this route.
  *
  * Response:
  *   { chain, network: 'testnet', agentId, address,
  *     asset: { code: 'USDC', issuer, sac, decimals: 7 },
- *     payments: [{ id, txHash, from, amount, timestamp, success }],
+ *     payments: [{ id, txHash, from, amount, timestamp, success,
+ *                  counted, excludedReason }],
  *     nextCursor: string | null }
  *
  * One row per transfer leg: a transaction with several USDC payments to the
  * agent yields several rows sharing `txHash`. `id` is the stable unique row key
  * "<operationId>:<transferIndex>" (use it, not `txHash`, to de-duplicate).
+ *
+ * Owner top-ups and self-payments are not revenue. Such rows (and payments from
+ * accounts on the operator's excluded-payer list) are NOT hidden: they carry
+ * `counted: false` and `excludedReason: 'owner' | 'self' | 'listed'`, so the sum
+ * of `amount` over `counted` rows reproduces the agent's received total in
+ * GET /api/explore/agents. A failed payment has `counted: false` and
+ * `excludedReason: null`. Pages stay stable because nothing is filtered out.
  *
  * `address` is the agent's bound wallet (agent_wallet, else owner) — the payee
  * matched against `transactions.counterparty`. `amount` is a decimal STRING in
@@ -66,7 +74,7 @@ export async function GET(
     return NextResponse.json({ error: `no agent with id ${agentId} on ${chain}` }, { status: 404, headers });
   }
 
-  const page = await getReceivedPayments(chain, agent.address, { limit, cursor });
+  const page = await getReceivedPayments(chain, agentId, { limit, cursor });
   const { usdc } = stellarNetwork('testnet');
   return NextResponse.json(
     {

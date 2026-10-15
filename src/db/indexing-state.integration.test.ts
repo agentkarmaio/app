@@ -58,7 +58,7 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  query('TRUNCATE public.wallet_tx_stats, public.indexing_state, public.indexer_cursors, public.erc8004_agents, public.wallets, public.organizations, public.celo_x402_payees CASCADE;');
+  query('TRUNCATE public.stellar_testnet_excluded_payers, public.wallet_tx_stats, public.indexing_state, public.indexer_cursors, public.erc8004_agents, public.wallets, public.organizations, public.celo_x402_payees CASCADE;');
 });
 
 describe('persistent lease and success state', () => {
@@ -675,6 +675,76 @@ describe('stellar-testnet (API-only) at the database', () => {
       { chain: 'stellar-testnet', address: 'G-owner', display_name: 'Declared', stellar_agent_id: 1, provider_score: 100,
         consumer_score: null, score: 100, trust_tier: 'Excellent', confidence_badge: 'declared', rank_score: 70, tx_count: 0, registry_owner: 'G-owner' },
     ]);
+  });
+
+  describe('owner top-ups and self-payments are not revenue', () => {
+    const view = () => query(readFileSync(resolve('src/db/sql/stellar-testnet-agents-view.sql'), 'utf8'));
+    const ts = (n: number) => `'2026-10-1${n}T00:00:00+00:00'`;
+    function seed() {
+      query(`TRUNCATE public.stellar_testnet_excluded_payers; DELETE FROM public.transactions WHERE chain IN ('stellar','stellar-testnet');`);
+      query(`INSERT INTO wallets(chain,address) VALUES ('stellar-testnet','G-customer'),('stellar-testnet','G-owner10'),
+        ('stellar-testnet','G-agent10'),('stellar-testnet','G-listed'),('stellar-testnet','G-owner11'),('stellar','G-owner10');
+      INSERT INTO erc8004_agents(chain,agent_id,owner,agent_wallet,metadata_score,registration) VALUES
+        ('stellar-testnet',10,'G-owner10','G-agent10',30,'{"name":"Bound"}'),
+        ('stellar-testnet',11,'G-owner11',NULL,30,'{"name":"Unbound"}'),
+        ('stellar',10,'G-owner10','G-agent10',30,'{"name":"Mainnet"}');
+      INSERT INTO transactions(chain,wallet_address,facilitator,counterparty,timestamp,tx_signature,tx_hash,amount,success) VALUES
+        ('stellar-testnet','G-customer','sac','G-agent10',${ts(1)},'a:0','h-a',1,true),
+        ('stellar-testnet','G-owner10','sac','G-agent10',${ts(2)},'b:0','h-b',5,true),
+        ('stellar-testnet','G-agent10','sac','G-agent10',${ts(3)},'c:0','h-c',2,true),
+        ('stellar-testnet','G-listed','sac','G-agent10',${ts(4)},'d:0','h-d',3,true),
+        ('stellar-testnet','G-customer','sac','G-agent10',${ts(5)},'e:0','h-e',0.5,false),
+        ('stellar-testnet','G-customer','sac','G-owner11',${ts(1)},'f:0','h-f',4,true),
+        ('stellar-testnet','G-owner10','sac','G-owner11',${ts(2)},'g:0','h-g',6,true),
+        ('stellar-testnet','G-owner11','sac','G-owner11',${ts(3)},'h:0','h-h',7,true),
+        ('stellar','G-owner10','sac','G-agent10',${ts(2)},'m:0',NULL,50,true);`);
+    }
+    const totals = () => JSON.parse(query(`SELECT json_object_agg(stellar_agent_id, json_build_array(payments_received,
+      payments_usdc_received::numeric, payments_last_received_at IS NOT NULL)) FROM stellar_testnet_agents;`));
+    const flags = (agent: number) => JSON.parse(query(`SELECT json_object_agg(tx_signature, json_build_array(counted, excluded_reason))
+      FROM stellar_testnet_received_payments WHERE chain='stellar-testnet' AND agent_id=${agent};`));
+
+    test('totals skip the owner (when it is not the address), the agent itself and listed payers', () => {
+      query(readFileSync(resolve('src/db/sql/explore-agents-view.sql'), 'utf8'));
+      view(); seed();
+      // Agent 10: customer 1 counts; owner 5, self 2 excluded; G-listed 3 counts until it is listed; failed 0.5 never counts.
+      // Agent 11 (address = owner): third parties count (4, and 6 from ANOTHER agent's owner); its own address paying itself is self.
+      expect(totals()).toEqual({ '10': [2, 4, true], '11': [2, 10, true] });
+      query("INSERT INTO stellar_testnet_excluded_payers(address, note) VALUES ('G-listed', 'test');");
+      expect(totals()['10']).toEqual([1, 1, true]);
+    });
+
+    test('the payments view flags every row with a reason so a reader can reproduce the total', () => {
+      view(); seed();
+      query("INSERT INTO stellar_testnet_excluded_payers(address) VALUES ('G-listed');");
+      expect(flags(10)).toEqual({
+        'a:0': [true, null], 'b:0': [false, 'owner'], 'c:0': [false, 'self'], 'd:0': [false, 'listed'], 'e:0': [false, null],
+      });
+      expect(flags(11)).toEqual({ 'f:0': [true, null], 'g:0': [true, null], 'h:0': [false, 'self'] });
+      // Reproducible: the counted rows sum to the agent totals.
+      expect(query("SELECT count(*) || ':' || sum(amount)::numeric FROM stellar_testnet_received_payments WHERE agent_id=10 AND counted;")).toBe('1:1.000000000000000000');
+      // Mainnet rows never enter the view, whoever paid.
+      expect(query("SELECT count(*) FROM stellar_testnet_received_payments WHERE chain <> 'stellar-testnet';")).toBe('0');
+      expect(query("SELECT count(*) FROM transactions WHERE chain='stellar';")).toBe('1');
+    });
+
+    test('an agent whose address equals its owner keeps third-party payments; a payer that is only the owner of another agent counts', () => {
+      view(); seed();
+      expect(flags(11)['g:0']).toEqual([true, null]);
+    });
+
+    test('migration 0028 creates an EMPTY list table, re-runnably, with no seeded address', () => {
+      const migration = readFileSync(resolve('drizzle/0028_stellar_testnet_excluded_payers.sql'), 'utf8');
+      expect(migration).not.toMatch(/INSERT\s/i);
+      expect(migration).not.toMatch(/\bG[A-Z2-7]{55}\b/);
+      query('DROP TABLE public.stellar_testnet_excluded_payers CASCADE;');
+      query(migration); query(migration);
+      expect(query('SELECT count(*) FROM public.stellar_testnet_excluded_payers;')).toBe('0');
+      expect(query(`SELECT string_agg(column_name || ':' || data_type, ',' ORDER BY ordinal_position) FROM information_schema.columns
+        WHERE table_name='stellar_testnet_excluded_payers';`)).toBe('address:text,note:text,added_at:timestamp with time zone');
+      expect(query("SELECT count(*) FROM pg_constraint WHERE conrelid='public.stellar_testnet_excluded_payers'::regclass AND contype='p';")).toBe('1');
+      expect(query("SELECT relrowsecurity FROM pg_class WHERE oid='public.stellar_testnet_excluded_payers'::regclass;")).toBe('t');
+    });
   });
 
   test('snapshot cleanup keeps the latest snapshot per (chain, wallet), not per address', () => {

@@ -39,9 +39,10 @@ function num(v: string | null, min = 0, max = 1): number | undefined {
 
 /**
  * Inbound USDC payment totals for an API-only registry agent, aggregated in the
- * stellar_testnet_agents view from the same rows (and the same success rule)
+ * stellar_testnet_agents view from the same rows (and the same counting rule)
  * that GET /api/v2/agent/[chain]/[id]/payments serves, so the numbers equal the
- * sum of that route's successful payments. `usdcReceived` is formatted exactly
+ * sum of that route's `counted` payments (successful, and not an owner top-up,
+ * a self-payment or a payment from a listed payer). `usdcReceived` is formatted exactly
  * like the payments route's `amount`: a decimal string with 7 decimals.
  */
 function paymentTotals(w: Wallet) {

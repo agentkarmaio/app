@@ -11,7 +11,8 @@ let payments: ReturnType<typeof spyOn<typeof db, 'getReceivedPayments'>>;
 beforeEach(() => {
   agent = spyOn(db, 'getWalletByAgentId').mockResolvedValue({ chain: 'stellar-testnet', address: G } as Wallet);
   payments = spyOn(db, 'getReceivedPayments').mockResolvedValue({
-    payments: [{ id: '900:0', txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true }],
+    payments: [{ id: '900:0', txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true, counted: true, excludedReason: null },
+    { id: '901:0', txHash: 'h2', from: 'GOWNER', amount: '5.0000000', timestamp: '2026-10-13T00:00:00+00:00', success: true, counted: false, excludedReason: 'owner' }],
     nextCursor: 'abc',
   });
 });
@@ -29,17 +30,20 @@ describe('GET /api/v2/agent/[chain]/[id]/payments', () => {
       chain: 'stellar-testnet', network: 'testnet', agentId: 0, address: G,
       asset: { code: 'USDC', issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
         sac: 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA', decimals: 7 },
-      payments: [{ id: '900:0', txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true }],
+      payments: [
+        { id: '900:0', txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true, counted: true, excludedReason: null },
+        { id: '901:0', txHash: 'h2', from: 'GOWNER', amount: '5.0000000', timestamp: '2026-10-13T00:00:00+00:00', success: true, counted: false, excludedReason: 'owner' },
+      ],
       nextCursor: 'abc',
     });
     expect(agent).toHaveBeenCalledWith('stellar-testnet', 0);
-    expect(payments).toHaveBeenCalledWith('stellar-testnet', G, { limit: 50, cursor: null });
+    expect(payments).toHaveBeenCalledWith('stellar-testnet', 0, { limit: 50, cursor: null });
   });
 
   test('limit is clamped and a valid cursor is decoded', async () => {
     const cursor = db.encodePaymentsCursor({ timestamp: '2026-10-14T00:00:00+00:00', id: '00000000-0000-0000-0000-000000000001' });
     await get('stellar-testnet', '5', `?limit=999&cursor=${cursor}`);
-    expect(payments).toHaveBeenCalledWith('stellar-testnet', G, { limit: 200,
+    expect(payments).toHaveBeenCalledWith('stellar-testnet', 5, { limit: 200,
       cursor: { timestamp: '2026-10-14T00:00:00+00:00', id: '00000000-0000-0000-0000-000000000001' } });
   });
 

@@ -1216,7 +1216,7 @@ export async function getTransactions(
   return (data ?? []) as Transaction[];
 }
 
-// --- Received payments (API-only partner read) -------------------------------
+// --- Received payments (API-only chains) -------------------------------
 
 /** One inbound USDC payment, as served by /api/v2/agent/[chain]/[id]/payments. */
 export interface ReceivedPayment {
@@ -1230,7 +1230,19 @@ export interface ReceivedPayment {
   amount: string;
   timestamp: string;
   success: boolean;
+  /** True when the payment is in the agent's received totals: successful and not excluded. */
+  counted: boolean;
+  /**
+   * Why a payment is not counted as revenue: 'self' (the agent paid itself),
+   * 'owner' (top-up from the registry owner, who is a different account from the
+   * agent's address) or 'listed' (payer is in stellar_testnet_excluded_payers).
+   * null for counted payments and for failed ones.
+   */
+  excludedReason: ExcludedPaymentReason | null;
 }
+
+export type ExcludedPaymentReason = 'self' | 'owner' | 'listed';
+const EXCLUDED_REASONS: readonly string[] = ['self', 'owner', 'listed'];
 
 export interface PaymentsCursor { timestamp: string; id: string }
 
@@ -1267,20 +1279,22 @@ export function formatUsdc7(text: string): string {
 }
 
 /**
- * Inbound payments to `payee` on one chain, newest first. Keyset-paginated on
+ * Inbound payments to one API-only registry agent, newest first, each flagged
+ * with whether it is counted in the agent's totals (see the
+ * stellar_testnet_received_payments view). Excluded rows are returned, not
+ * hidden, so a reader can reproduce the total. Keyset-paginated on
  * (timestamp, id) — stable under concurrent inserts, unlike offset paging.
- * Served by idx_transactions_counterparty.
  */
 export async function getReceivedPayments(
   chain: Chain,
-  payee: string,
+  agentId: number,
   opts: { limit: number; cursor?: PaymentsCursor | null },
 ): Promise<{ payments: ReceivedPayment[]; nextCursor: string | null }> {
   let q = supabase
-    .from('transactions')
-    .select('id, tx_signature, tx_hash, wallet_address, amount::text, timestamp, success')
+    .from('stellar_testnet_received_payments')
+    .select('id, tx_signature, tx_hash, wallet_address, amount::text, timestamp, success, counted, excluded_reason')
     .eq('chain', chain)
-    .eq('counterparty', payee);
+    .eq('agent_id', agentId);
   if (opts.cursor) {
     const ts = opts.cursor.timestamp;
     q = q.or(`timestamp.lt."${ts}",and(timestamp.eq."${ts}",id.lt.${opts.cursor.id})`);
@@ -1292,14 +1306,21 @@ export async function getReceivedPayments(
   if (error) throw error;
 
   const rows = (data ?? []) as unknown as Array<{ id: string; tx_signature: string; tx_hash: string | null; wallet_address: string;
-    amount: string; timestamp: string; success: boolean }>;
+    amount: string; timestamp: string; success: boolean; counted: boolean; excluded_reason: string | null }>;
   const page = rows.slice(0, opts.limit);
   const last = page.at(-1);
   return {
-    payments: page.map((r) => ({
-      id: r.tx_signature, txHash: r.tx_hash ?? r.tx_signature, from: r.wallet_address, amount: formatUsdc7(String(r.amount)),
-      timestamp: r.timestamp, success: r.success,
-    })),
+    payments: page.map((r) => {
+      const reason = r.excluded_reason ?? null;
+      if (reason !== null && !EXCLUDED_REASONS.includes(reason)) {
+        throw new Error(`unknown excluded_reason '${reason}'`);
+      }
+      return {
+        id: r.tx_signature, txHash: r.tx_hash ?? r.tx_signature, from: r.wallet_address, amount: formatUsdc7(String(r.amount)),
+        timestamp: r.timestamp, success: r.success, counted: r.counted,
+        excludedReason: reason as ExcludedPaymentReason | null,
+      };
+    }),
     nextCursor: rows.length > opts.limit && last ? encodePaymentsCursor({ timestamp: last.timestamp, id: last.id }) : null,
   };
 }
