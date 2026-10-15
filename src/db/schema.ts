@@ -34,9 +34,9 @@ export function isChain(value: unknown): value is Chain {
  * activity feeds, estates/sureties, sitemap, totals, chain switchers, MCP.
  *
  *   - 'arc'             Arc testnet, retired 2026-09 — a read-only archive.
- *   - 'stellar-testnet' API-only (Kerem, 2026-10-14). Indexed and scored like
- *                       any chain so partner explorers (agentenact.io) can read
- *                       it through the API, but never shown on agentkarma.io.
+ *   - 'stellar-testnet' API-only. Indexed and scored like any chain and
+ *                       readable through the API, but never shown on
+ *                       agentkarma.io.
  *
  * Distinct from RETIRED_CHAINS: hiding a chain is not the same as fencing its
  * writes. stellar-testnet stays on the rescore queue; arc does not.

@@ -1,9 +1,8 @@
 /**
  * GET /api/v2/agent/[chain]/[id]/payments?limit=50&cursor=…
  *
- * Paged USDC payments RECEIVED by one registry agent — built for partner
- * explorers (agentenact.io/explore) reading AgentKarma's API-only
- * stellar-testnet index. Served ONLY for API-only chains; mainnet payment
+ * Paged USDC payments RECEIVED by one registry agent, for API readers of
+ * AgentKarma's API-only stellar-testnet index. Served ONLY for API-only chains; mainnet payment
  * ledgers are not exposed through this route.
  *
  * Response:
