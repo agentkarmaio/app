@@ -28,27 +28,49 @@ concurrency:
 jobs:
   heartbeat-drain:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/bun-setup
 
       - name: Run heartbeat drain
+        id: drain
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           # Pass the input via env (never interpolate ${{ }} into the shell).
           CHAIN: ${{ inputs.chain }}
+        # The drain is idempotent (derives liveness from on-chain state), so a
+        # transient DB/RPC timeout is retried before the run is called failed.
         run: |
-          if [ -n "$CHAIN" ]; then
-            bun run heartbeat:drain --chain "$CHAIN"
-          else
-            bun run heartbeat:drain
-          fi
+          args=()
+          [ -n "$CHAIN" ] && args=(--chain "$CHAIN")
+          for attempt in 1 2 3; do
+            bun run heartbeat:drain "${args[@]}" && exit 0
+            [ "$attempt" -lt 3 ] && { echo "::warning::heartbeat:drain attempt ${attempt}/3 failed, retrying in 60s"; sleep 60; }
+          done
+          exit 1
 
       # A broken floor must page, not rot silently (2026-06-23 outage lesson).
+      # Page only on the 2nd consecutive failed run: a one-off blip (a Cloudflare
+      # 522 on the DB endpoint, 2026-10-19) self-heals by the next run and is
+      # not worth a phone alert. Real outages still page one run later.
+      - name: Alert gate
+        id: gate
+        if: always()
+        uses: ./.github/actions/alert-gate
+        with:
+          github-token: ${{ github.token }}
+          workflow: heartbeat-drain.yml
+          failed: ${{ steps.drain.outcome != 'success' }}
+          min-consecutive: '2'
+          reminder-every: '6'
+
       - name: Page on failure
-        if: failure()
+        if: always() && steps.gate.outputs.page == 'true'
         uses: ./.github/actions/telegram-alert
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}

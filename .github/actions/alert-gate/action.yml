@@ -13,6 +13,11 @@ description: >
   cannot be forgotten (at a 6h cadence, 4 means once a day). Emit `recovered`
   when this run succeeded and the previous one did not.
 
+  `min-consecutive` raises the bar for jobs whose single failures are usually
+  transient (a Cloudflare 522 on the DB endpoint, a lost lease): page only once
+  that many runs in a row have failed, and say `recovered` only if a page was
+  actually sent. The default of 1 keeps the original page-on-transition behaviour.
+
   Stateless by design — the run history IS the state, so there is no counter to
   go stale, nothing to reset, and no divergence between what the badge says and
   what the phone got.
@@ -33,6 +38,13 @@ inputs:
       cadence is one reminder a day. 0 disables reminders entirely.
     required: false
     default: '4'
+
+  min-consecutive:
+    description: >
+      Consecutive failures (including this run) required before the first page.
+      1 pages on the first failure; 2 absorbs a one-off blip.
+    required: false
+    default: '1'
 
 outputs:
   page:
@@ -58,6 +70,7 @@ runs:
         RUN_ID: ${{ github.run_id }}
         FAILED: ${{ inputs.failed }}
         REMINDER_EVERY: ${{ inputs.reminder-every }}
+        MIN_CONSECUTIVE: ${{ inputs.min-consecutive }}
       run: |
         set -uo pipefail
 
@@ -67,36 +80,36 @@ runs:
           --jq "[.workflow_runs[] | select(.id != ${RUN_ID}) | .conclusion] | .[:10] | join(\" \")" \
           2>/dev/null) || history=""
 
-        previous=$(printf '%s\n' "$history" | awk '{print $1}')
+        # Consecutive failures immediately before this run.
+        prior=0
+        for conclusion in $history; do
+          [ "$conclusion" = "failure" ] || break
+          prior=$((prior + 1))
+        done
 
         # A history we could not read must not silence a page: unknown → page.
         if [ -z "$history" ]; then
           echo "::notice::alert-gate: no run history available, treating as a transition"
-          previous="unknown"
+          prior=$((MIN_CONSECUTIVE - 1))
         fi
 
         streak=0
-        if [ "$FAILED" = "true" ]; then
-          streak=1
-          for conclusion in $history; do
-            [ "$conclusion" = "failure" ] || break
-            streak=$((streak + 1))
-          done
-        fi
+        [ "$FAILED" = "true" ] && streak=$((prior + 1))
 
         page=false
         recovered=false
         if [ "$FAILED" = "true" ]; then
-          if [ "$previous" != "failure" ]; then
-            page=true                      # green → red, or first-ever run
-          elif [ "${REMINDER_EVERY}" -gt 0 ] && [ $((streak % REMINDER_EVERY)) -eq 0 ]; then
+          if [ "$streak" -eq "$MIN_CONSECUTIVE" ]; then
+            page=true                      # crossed the threshold: the incident is real
+          elif [ "$streak" -gt "$MIN_CONSECUTIVE" ] && [ "${REMINDER_EVERY}" -gt 0 ] \
+               && [ $((streak % REMINDER_EVERY)) -eq 0 ]; then
             page=true                      # standing incident, periodic reminder
           fi
-        elif [ "$previous" = "failure" ]; then
-          recovered=true                   # red → green
+        elif [ "$prior" -ge "$MIN_CONSECUTIVE" ]; then
+          recovered=true                   # red → green, and a page had gone out
         fi
 
-        echo "alert-gate: failed=${FAILED} previous=${previous} streak=${streak} page=${page} recovered=${recovered}"
+        echo "alert-gate: failed=${FAILED} prior=${prior} streak=${streak} page=${page} recovered=${recovered}"
         {
           echo "page=${page}"
           echo "recovered=${recovered}"

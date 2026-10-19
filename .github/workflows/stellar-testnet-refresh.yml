@@ -37,6 +37,9 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +48,7 @@ jobs:
       # Registry first, so a newly registered agent is in the transfers seed set
       # of the same run.
       - name: Mirror the stellar-8004 testnet registry
+        id: mirror
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -55,14 +59,29 @@ jobs:
       # for the agents already mirrored, but it must still page.
       - name: Index testnet USDC transfers
         if: ${{ !cancelled() }}
+        id: transfers
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           STELLAR_TESTNET_HORIZON_URL: ${{ secrets.STELLAR_TESTNET_HORIZON_URL }}
         run: bun run src/scripts/indexing-run.ts stellar-testnet transfers
 
+      # Page only on the 2nd consecutive failed run: a one-off blip (a Cloudflare
+      # 522 on the DB endpoint, 2026-10-19) self-heals by the next run and is
+      # not worth a phone alert. Real outages still page one run later.
+      - name: Alert gate
+        id: gate
+        if: always()
+        uses: ./.github/actions/alert-gate
+        with:
+          github-token: ${{ github.token }}
+          workflow: stellar-testnet-refresh.yml
+          failed: ${{ steps.mirror.outcome != 'success' || steps.transfers.outcome != 'success' }}
+          min-consecutive: '2'
+          reminder-every: '6'
+
       - name: Page on failure
-        if: failure()
+        if: always() && steps.gate.outputs.page == 'true'
         uses: ./.github/actions/telegram-alert
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}

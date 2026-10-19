@@ -46,12 +46,16 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/bun-setup
 
       - name: Mirror the Stellar ERC-8004 registry
+        id: mirror
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -62,6 +66,7 @@ jobs:
       # not roll back a successful registry refresh, but it must still page.
       - name: Refresh Autonomy Confidence + cadence from Horizon
         if: ${{ !cancelled() }}
+        id: behavior
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -105,8 +110,22 @@ jobs:
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       # A stalled refresh must page, not rot silently (2026-06-23 lesson).
+      # Page only on the 2nd consecutive failed run: a one-off blip (a Cloudflare
+      # 522 on the DB endpoint, 2026-10-19) self-heals by the next run and is
+      # not worth a phone alert. Real outages still page one run later.
+      - name: Alert gate
+        id: gate
+        if: always()
+        uses: ./.github/actions/alert-gate
+        with:
+          github-token: ${{ github.token }}
+          workflow: stellar-refresh.yml
+          failed: ${{ steps.mirror.outcome != 'success' || steps.behavior.outcome != 'success' || steps.facilitator_watch.outcome != 'success' }}
+          min-consecutive: '2'
+          reminder-every: '6'
+
       - name: Page on failure
-        if: failure()
+        if: always() && steps.gate.outputs.page == 'true'
         uses: ./.github/actions/telegram-alert
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
