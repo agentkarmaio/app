@@ -24,7 +24,7 @@ description: >
 
 inputs:
   github-token:
-    description: Token with `actions: read` on this repository.
+    description: 'Token with `actions: read` on this repository.'
     required: true
   workflow:
     description: Workflow file name, e.g. keep-fresh.yml.
