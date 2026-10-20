@@ -44,6 +44,7 @@ jobs:
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          suppress-if-db-down: 'true'
           text: |
             AgentKarma indexing recovery failed: ${{ matrix.chain }}/${{ matrix.path }}
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

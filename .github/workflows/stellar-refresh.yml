@@ -130,6 +130,7 @@ jobs:
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          suppress-if-db-down: 'true'
           text: |
             🛟 <b>AgentKarma stellar-refresh FAILED</b>
             The Stellar registry mirror / behavioral refresh crashed — /explore?chain=stellar may stall.

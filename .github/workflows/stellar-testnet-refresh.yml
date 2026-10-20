@@ -86,6 +86,7 @@ jobs:
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          suppress-if-db-down: 'true'
           text: |
             🛟 <b>AgentKarma stellar-testnet-refresh FAILED</b>
             The API-only testnet mirror/transfers job crashed — stellar-testnet API data may stall.

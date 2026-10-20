@@ -75,6 +75,7 @@ jobs:
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          suppress-if-db-down: 'true'
           text: |
             🛟 <b>AgentKarma heartbeat-drain FLOOR FAILED</b>
             The out-of-process Dead Man's Switch liveness floor crashed.

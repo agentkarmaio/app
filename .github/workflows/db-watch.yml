@@ -1,0 +1,74 @@
+name: DB watch
+
+# The single alarm for "the public DB endpoint is down". Every out-of-process
+# job (heartbeat-drain, stellar-refresh, keep-fresh, indexing-recovery, ...)
+# reaches the database through agentkarma-db.srvl.app, so one outage used to
+# fan out into a dozen near-identical Telegram pages (2026-10-19/20). Those jobs
+# now suppress their failure page while this probe says the endpoint is down,
+# and this workflow pages once instead (2 consecutive failed probes, then a
+# reminder every 8th run, then a recovery note).
+#
+# Deliberately needs no secrets for the probe itself: the REST root answers 401
+# when healthy, so reachability is all it measures.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: db-watch
+  cancel-in-progress: false
+
+jobs:
+  db-watch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe the public DB endpoint
+        id: probe
+        uses: ./.github/actions/db-probe
+
+      - name: Alert gate
+        id: gate
+        if: always()
+        uses: ./.github/actions/alert-gate
+        with:
+          github-token: ${{ github.token }}
+          workflow: db-watch.yml
+          failed: ${{ steps.probe.outputs.reachable != 'true' }}
+          min-consecutive: '2'
+          reminder-every: '8'
+
+      - name: Page on outage
+        if: always() && steps.gate.outputs.page == 'true'
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            🛟 <b>AgentKarma DB endpoint UNREACHABLE</b>
+            agentkarma-db.srvl.app has not answered for ${{ steps.gate.outputs.streak }} consecutive probes (15 min apart).
+            Every GitHub-side job writes through it, so their individual failure pages are suppressed until it is back.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Note recovery
+        if: always() && steps.gate.outputs.recovered == 'true'
+        uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: |
+            ✅ <b>AgentKarma DB endpoint reachable again</b>
+            Failure pages from the other jobs are live again.
+
+      # Fail the run so the history (which alert-gate reads) records the outage.
+      - name: Fail when unreachable
+        if: steps.probe.outputs.reachable != 'true'
+        run: |
+          echo "::error::agentkarma-db.srvl.app unreachable"
+          exit 1

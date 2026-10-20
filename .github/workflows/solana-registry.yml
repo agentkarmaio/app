@@ -81,6 +81,7 @@ jobs:
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          suppress-if-db-down: 'true'
           text: |
             🛟 <b>AgentKarma solana-registry FAILED</b>
             The Solana ERC-8004 mirror crashed — erc8004_agents will drift for Solana.

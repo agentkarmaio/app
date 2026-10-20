@@ -161,6 +161,7 @@ jobs:
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          suppress-if-db-down: 'true'
           text: |
             🛟 <b>AgentKarma keep-fresh FLOOR DEGRADED</b>
             The floor could not do its job this run.
@@ -208,6 +209,7 @@ jobs:
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          suppress-if-db-down: 'true'
           text: |
             🛟 <b>AgentKarma registry-scan FAILED</b>
             The Celo ERC-8004 registry-mirror refresh crashed — /celo data may stall.

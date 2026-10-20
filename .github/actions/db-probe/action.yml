@@ -1,0 +1,50 @@
+name: DB probe
+description: >
+  Is the public DB endpoint (the Cloudflare-fronted PostgREST host every
+  out-of-process job writes through) answering at all?
+
+  Any HTTP response below 500 counts as reachable, because the bare REST root
+  answers 401 when it is healthy and auth-gated. A timeout, a connection error
+  or a 5xx (Cloudflare 522/504) is unreachable. Retries so one dropped packet
+  does not read as an outage.
+
+inputs:
+  url:
+    description: Endpoint to probe.
+    required: false
+    default: 'https://agentkarma-db.srvl.app/rest/v1/'
+  attempts:
+    description: Probe attempts before declaring the endpoint unreachable.
+    required: false
+    default: '3'
+  timeout:
+    description: Per-attempt timeout in seconds.
+    required: false
+    default: '10'
+
+outputs:
+  reachable:
+    description: '"true" when any attempt got an HTTP response below 500.'
+    value: ${{ steps.probe.outputs.reachable }}
+
+runs:
+  using: composite
+  steps:
+    - id: probe
+      shell: bash
+      env:
+        URL: ${{ inputs.url }}
+        ATTEMPTS: ${{ inputs.attempts }}
+        TIMEOUT: ${{ inputs.timeout }}
+      run: |
+        reachable=false
+        for attempt in $(seq 1 "$ATTEMPTS"); do
+          code=$(curl -s -o /dev/null -m "$TIMEOUT" -w '%{http_code}' "$URL" || true)
+          echo "db-probe: attempt ${attempt}/${ATTEMPTS} -> ${code:-000}"
+          if [ "${code:-000}" -ge 100 ] && [ "${code:-000}" -lt 500 ]; then
+            reachable=true
+            break
+          fi
+          [ "$attempt" -lt "$ATTEMPTS" ] && sleep 5
+        done
+        echo "reachable=${reachable}" >> "$GITHUB_OUTPUT"
