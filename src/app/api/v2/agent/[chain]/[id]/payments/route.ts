@@ -1,15 +1,16 @@
 /**
- * GET /api/v2/agent/[chain]/[id]/payments?limit=50&cursor=…
+ * GET /api/v2/agent/[chain]/[id]/payments?limit=50&cursor=…&direction=received|sent|all
  *
- * Paged USDC payments RECEIVED by one registry agent, from AgentKarma's
- * API-only stellar-testnet index. Served ONLY for API-only chains; mainnet
+ * Paged USDC payments of one registry agent, from AgentKarma's API-only
+ * stellar-testnet index. `direction` defaults to `received` (paid to the
+ * agent); `sent` lists legs paid by the agent's own address; `all` both. Served ONLY for API-only chains; mainnet
  * payment ledgers are not exposed through this route.
  *
  * Response:
  *   { chain, network: 'testnet', agentId, address,
  *     asset: { code: 'USDC', issuer, sac, decimals: 7 },
- *     payments: [{ id, txHash, from, amount, timestamp, success,
- *                  counted, excludedReason }],
+ *     payments: [{ direction, id, txHash, from, to, amount, timestamp,
+ *                  success, counted, excludedReason }],
  *     nextCursor: string | null }
  *
  * One row per transfer leg: a transaction with several USDC payments to the
@@ -23,6 +24,10 @@
  * GET /api/explore/agents. A failed payment has `counted: false` and
  * `excludedReason: null`. Pages stay stable because nothing is filtered out.
  *
+ * A `sent` row is `counted` when successful; the exclusion reasons describe who
+ * paid the agent, so they never apply to a payment the agent made. Per-agent
+ * totals of both directions are on GET /api/explore/agents (`payments`).
+ *
  * `address` is the agent's bound wallet (agent_wallet, else owner) — the payee
  * matched against `transactions.counterparty`. `amount` is a decimal STRING in
  * whole USDC with exactly 7 decimals (Stellar USDC precision: 1 USDC = 10^7
@@ -30,7 +35,7 @@
  * Newest first; pass `nextCursor` back as `cursor` until it is null.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { decodePaymentsCursor, getReceivedPayments, getWalletByAgentId } from '@/db/client';
+import { decodePaymentsCursor, getAgentPayments, getWalletByAgentId, type PaymentDirectionFilter } from '@/db/client';
 import { isApiOnlyChain } from '@/db/schema';
 import { stellarNetwork } from '@/integrations/stellar-config';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
@@ -38,6 +43,7 @@ import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 const MAX_INT32 = 2147483647;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
+const DIRECTIONS: readonly PaymentDirectionFilter[] = ['received', 'sent', 'all'];
 
 export async function OPTIONS() {
   return corsPreflight();
@@ -63,6 +69,10 @@ export async function GET(
   const sp = new URL(request.url).searchParams;
   const rawLimit = Number(sp.get('limit') ?? DEFAULT_LIMIT);
   const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.trunc(rawLimit), 1), MAX_LIMIT) : DEFAULT_LIMIT;
+  const direction = (sp.get('direction') ?? 'received') as PaymentDirectionFilter;
+  if (!DIRECTIONS.includes(direction)) {
+    return NextResponse.json({ error: `direction must be one of ${DIRECTIONS.join(', ')}` }, { status: 400, headers });
+  }
   const rawCursor = sp.get('cursor');
   const cursor = rawCursor ? decodePaymentsCursor(rawCursor) : null;
   if (rawCursor && !cursor) {
@@ -74,7 +84,7 @@ export async function GET(
     return NextResponse.json({ error: `no agent with id ${agentId} on ${chain}` }, { status: 404, headers });
   }
 
-  const page = await getReceivedPayments(chain, agentId, { limit, cursor });
+  const page = await getAgentPayments(chain, agentId, { limit, cursor, direction });
   const { usdc } = stellarNetwork('testnet');
   return NextResponse.json(
     {

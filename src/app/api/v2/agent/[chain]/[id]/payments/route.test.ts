@@ -7,12 +7,12 @@ import { GET } from './route';
 
 const G = 'GC2NIKT6TWLMBZE4TU5ZMMDVV22URFIMJIZ4JYUC3QABBBWNGGZMAFGM';
 let agent: ReturnType<typeof spyOn<typeof db, 'getWalletByAgentId'>>;
-let payments: ReturnType<typeof spyOn<typeof db, 'getReceivedPayments'>>;
+let payments: ReturnType<typeof spyOn<typeof db, 'getAgentPayments'>>;
 beforeEach(() => {
   agent = spyOn(db, 'getWalletByAgentId').mockResolvedValue({ chain: 'stellar-testnet', address: G } as Wallet);
-  payments = spyOn(db, 'getReceivedPayments').mockResolvedValue({
-    payments: [{ id: '900:0', txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true, counted: true, excludedReason: null },
-    { id: '901:0', txHash: 'h2', from: 'GOWNER', amount: '5.0000000', timestamp: '2026-10-13T00:00:00+00:00', success: true, counted: false, excludedReason: 'owner' }],
+  payments = spyOn(db, 'getAgentPayments').mockResolvedValue({
+    payments: [{ direction: 'received', to: G, id: '900:0', txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true, counted: true, excludedReason: null },
+    { direction: 'received', to: G, id: '901:0', txHash: 'h2', from: 'GOWNER', amount: '5.0000000', timestamp: '2026-10-13T00:00:00+00:00', success: true, counted: false, excludedReason: 'owner' }],
     nextCursor: 'abc',
   });
 });
@@ -31,20 +31,31 @@ describe('GET /api/v2/agent/[chain]/[id]/payments', () => {
       asset: { code: 'USDC', issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
         sac: 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA', decimals: 7 },
       payments: [
-        { id: '900:0', txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true, counted: true, excludedReason: null },
-        { id: '901:0', txHash: 'h2', from: 'GOWNER', amount: '5.0000000', timestamp: '2026-10-13T00:00:00+00:00', success: true, counted: false, excludedReason: 'owner' },
+        { direction: 'received', to: G, id: '900:0', txHash: 'h1', from: 'GPAYER', amount: '0.0010000', timestamp: '2026-10-14T00:00:00+00:00', success: true, counted: true, excludedReason: null },
+        { direction: 'received', to: G, id: '901:0', txHash: 'h2', from: 'GOWNER', amount: '5.0000000', timestamp: '2026-10-13T00:00:00+00:00', success: true, counted: false, excludedReason: 'owner' },
       ],
       nextCursor: 'abc',
     });
     expect(agent).toHaveBeenCalledWith('stellar-testnet', 0);
-    expect(payments).toHaveBeenCalledWith('stellar-testnet', 0, { limit: 50, cursor: null });
+    expect(payments).toHaveBeenCalledWith('stellar-testnet', 0, { limit: 50, cursor: null, direction: 'received' });
   });
 
   test('limit is clamped and a valid cursor is decoded', async () => {
     const cursor = db.encodePaymentsCursor({ timestamp: '2026-10-14T00:00:00+00:00', id: '00000000-0000-0000-0000-000000000001' });
     await get('stellar-testnet', '5', `?limit=999&cursor=${cursor}`);
-    expect(payments).toHaveBeenCalledWith('stellar-testnet', 5, { limit: 200,
+    expect(payments).toHaveBeenCalledWith('stellar-testnet', 5, { limit: 200, direction: 'received',
       cursor: { timestamp: '2026-10-14T00:00:00+00:00', id: '00000000-0000-0000-0000-000000000001' } });
+  });
+
+  test('direction=sent|all is passed through; anything else is a 400', async () => {
+    for (const direction of ['sent', 'all']) {
+      payments.mockClear();
+      expect((await get('stellar-testnet', '5', `?direction=${direction}`)).status).toBe(200);
+      expect(payments).toHaveBeenCalledWith('stellar-testnet', 5, { limit: 50, cursor: null, direction });
+    }
+    payments.mockClear();
+    expect((await get('stellar-testnet', '5', '?direction=outbound')).status).toBe(400);
+    expect(payments).not.toHaveBeenCalled();
   });
 
   test('a malformed cursor is a 400, never an unfiltered page', async () => {

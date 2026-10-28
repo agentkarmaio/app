@@ -38,7 +38,7 @@ function num(v: string | null, min = 0, max = 1): number | undefined {
 }
 
 /**
- * Inbound USDC payment totals for an API-only registry agent, aggregated in the
+ * Inbound and outbound USDC payment totals for an API-only registry agent, aggregated in the
  * stellar_testnet_agents view from the same rows (and the same counting rule)
  * that GET /api/v2/agent/[chain]/[id]/payments serves, so the numbers equal the
  * sum of that route's `counted` payments (successful, and not an owner top-up,
@@ -50,6 +50,10 @@ function paymentTotals(w: Wallet) {
     received: Number(w.payments_received ?? 0),
     usdcReceived: formatUsdc7(String(w.payments_usdc_received ?? '0')),
     lastReceivedAt: w.payments_last_received_at ? new Date(w.payments_last_received_at).toISOString() : null,
+    // Outbound: legs the agent's own address paid, successful ones only.
+    sent: Number(w.payments_sent ?? 0),
+    usdcSent: formatUsdc7(String(w.payments_usdc_sent ?? '0')),
+    lastSentAt: w.payments_last_sent_at ? new Date(w.payments_last_sent_at).toISOString() : null,
   };
 }
 

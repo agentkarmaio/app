@@ -1218,8 +1218,20 @@ export async function getTransactions(
 
 // --- Received payments (API-only chains) -------------------------------
 
-/** One inbound USDC payment, as served by /api/v2/agent/[chain]/[id]/payments. */
-export interface ReceivedPayment {
+export type PaymentDirection = 'received' | 'sent';
+/** `?direction=` values accepted by the payments route; `all` = both directions. */
+export type PaymentDirectionFilter = PaymentDirection | 'all';
+
+/**
+ * One USDC payment leg of a registry agent, as served by
+ * /api/v2/agent/[chain]/[id]/payments: inbound (`from` is the payer) or, for
+ * `direction: 'sent'`, paid by the agent's own address (`to` is the payee).
+ */
+export interface AgentPayment {
+  /** 'received' = paid to the agent's address; 'sent' = paid by it. */
+  direction: PaymentDirection;
+  /** Payee account (`transactions.counterparty`). */
+  to: string;
   /** Stable unique row id, "<operationId>:<transferIndex>" (one tx may carry several payments). */
   id: string;
   /** On-chain transaction hash; shared by every payment leg of that transaction. */
@@ -1279,22 +1291,26 @@ export function formatUsdc7(text: string): string {
 }
 
 /**
- * Inbound payments to one API-only registry agent, newest first, each flagged
- * with whether it is counted in the agent's totals (see the
- * stellar_testnet_received_payments view). Excluded rows are returned, not
- * hidden, so a reader can reproduce the total. Keyset-paginated on
- * (timestamp, id) — stable under concurrent inserts, unlike offset paging.
+ * Payments of one API-only registry agent, newest first, each flagged with
+ * whether it is counted in the agent's totals (see the
+ * stellar_testnet_payments view). Excluded rows are returned, not hidden, so a
+ * reader can reproduce the total. `direction` defaults to 'received' (the
+ * original behaviour). Keyset-paginated on (timestamp, id) — stable under
+ * concurrent inserts, unlike offset paging; a transaction row is listed at most
+ * once per agent, so the id is unique within any direction filter.
  */
-export async function getReceivedPayments(
+export async function getAgentPayments(
   chain: Chain,
   agentId: number,
-  opts: { limit: number; cursor?: PaymentsCursor | null },
-): Promise<{ payments: ReceivedPayment[]; nextCursor: string | null }> {
+  opts: { limit: number; cursor?: PaymentsCursor | null; direction?: PaymentDirectionFilter },
+): Promise<{ payments: AgentPayment[]; nextCursor: string | null }> {
+  const direction = opts.direction ?? 'received';
   let q = supabase
-    .from('stellar_testnet_received_payments')
-    .select('id, tx_signature, tx_hash, wallet_address, amount::text, timestamp, success, counted, excluded_reason')
+    .from('stellar_testnet_payments')
+    .select('direction, id, tx_signature, tx_hash, wallet_address, counterparty, amount::text, timestamp, success, counted, excluded_reason')
     .eq('chain', chain)
     .eq('agent_id', agentId);
+  if (direction !== 'all') q = q.eq('direction', direction);
   if (opts.cursor) {
     const ts = opts.cursor.timestamp;
     q = q.or(`timestamp.lt."${ts}",and(timestamp.eq."${ts}",id.lt.${opts.cursor.id})`);
@@ -1305,7 +1321,8 @@ export async function getReceivedPayments(
     .limit(opts.limit + 1);
   if (error) throw error;
 
-  const rows = (data ?? []) as unknown as Array<{ id: string; tx_signature: string; tx_hash: string | null; wallet_address: string;
+  const rows = (data ?? []) as unknown as Array<{ direction: PaymentDirection; id: string; tx_signature: string; tx_hash: string | null;
+    wallet_address: string; counterparty: string;
     amount: string; timestamp: string; success: boolean; counted: boolean; excluded_reason: string | null }>;
   const page = rows.slice(0, opts.limit);
   const last = page.at(-1);
@@ -1316,6 +1333,7 @@ export async function getReceivedPayments(
         throw new Error(`unknown excluded_reason '${reason}'`);
       }
       return {
+        direction: r.direction, to: r.counterparty,
         id: r.tx_signature, txHash: r.tx_hash ?? r.tx_signature, from: r.wallet_address, amount: formatUsdc7(String(r.amount)),
         timestamp: r.timestamp, success: r.success, counted: r.counted,
         excludedReason: reason as ExcludedPaymentReason | null,

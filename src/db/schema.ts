@@ -806,6 +806,10 @@ export interface Wallet {
   payments_received?: number | string | null;
   payments_usdc_received?: string | null;
   payments_last_received_at?: string | null;
+  /** Outbound twins of the three fields above (paid by the agent's own address). */
+  payments_sent?: number | string | null;
+  payments_usdc_sent?: string | null;
+  payments_last_sent_at?: string | null;
   entity_name?: string | null;
   entity_category?: string | null;
   funded_by?: string | null;
