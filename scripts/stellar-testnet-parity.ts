@@ -3,20 +3,25 @@
  * indexer's CSV export. Read-only (public GETs only).
  *
  * Run:
- *   bun run scripts/stellar-testnet-parity.ts --csv path/to/export.csv [--base https://agentkarma.io]
+ *   bun run scripts/stellar-testnet-parity.ts --csv path/to/export.csv [--base https://agentkarma.io] [--received-only]
  *
- * CSV columns: op_id, idx, tx_hash, agent_id, payer, amount_usdc, at, counted
- * (optional: direction, excluded_reason). Exit 0 only with zero mismatches on
- * every leg and on each agent's received, sent and counted totals.
+ * `--received-only` checks the received side against a deployment that predates
+ * `direction` (prod before this ships): no sent legs on either side.
+ *
+ * CSV: the partner's payments export (received legs; `payer_agent_id` marks the
+ * sender's SENT leg). With `counted` / `excluded_reason` columns those are
+ * compared too; without them only amounts and directions are. Exit 0 only with
+ * zero mismatches on every leg and on each agent's totals.
  *
  * Pages explore with `limit=100&offset=…` (the route's cap), then each agent's
  * `/payments?direction=all` by cursor. Honors 429 `retry-after`.
  */
 import { readFileSync } from 'node:fs';
-import { compareLegs, parseCsv, partnerLeg, usdcToUnits, type ParityLeg } from '@/lib/stellar-testnet-parity';
+import { compareLegs, parseCsv, partnerLegs, usdcToUnits, type ParityLeg } from '@/lib/stellar-testnet-parity';
 
 const arg = (name: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : undefined; };
 const csvPath = arg('csv');
+const receivedOnly = process.argv.includes('--received-only');
 const base = (arg('base') ?? 'https://agentkarma.io').replace(/\/$/, '');
 if (!csvPath) { console.error('usage: --csv <export.csv> [--base <url>]'); process.exit(2); }
 
@@ -34,8 +39,7 @@ async function getJson<T>(path: string): Promise<T> {
 
 interface ExploreRow { agentId: number | null }
 interface PaymentsPage {
-  address: string;
-  payments: Array<{ id: string; direction: 'received' | 'sent'; amount: string; counted: boolean; excludedReason: string | null }>;
+  payments: Array<{ id: string; direction?: 'received' | 'sent'; amount: string; counted: boolean; excludedReason: string | null }>;
   nextCursor: string | null;
 }
 
@@ -46,22 +50,21 @@ for (let offset = 0; ; offset += 100) {
   if (page.wallets.length < 100) break;
 }
 
-const addresses = new Map<number, string>();
 const ak: ParityLeg[] = [];
 for (const agentId of agentIds) {
   let cursor: string | null = null;
   do {
-    const qs = new URLSearchParams({ limit: '200', direction: 'all', ...(cursor ? { cursor } : {}) });
+    const qs = new URLSearchParams({ limit: '200', ...(receivedOnly ? {} : { direction: 'all' }), ...(cursor ? { cursor } : {}) });
     const page: PaymentsPage = await getJson(`/api/v2/agent/stellar-testnet/${agentId}/payments?${qs}`);
-    addresses.set(agentId, page.address);
     for (const p of page.payments) {
-      ak.push({ id: p.id, agentId, direction: p.direction, units: usdcToUnits(p.amount), counted: p.counted, reason: p.excludedReason });
+      ak.push({ id: p.id, agentId, direction: p.direction ?? 'received', units: usdcToUnits(p.amount), counted: p.counted, reason: p.excludedReason });
     }
     cursor = page.nextCursor;
   } while (cursor);
 }
 
-const partner = parseCsv(readFileSync(csvPath, 'utf8')).map((r) => partnerLeg(r, (id) => addresses.get(id)));
+const USDC_ASSET = 'USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
+const partner = parseCsv(readFileSync(csvPath, 'utf8')).flatMap((r) => partnerLegs(r, USDC_ASSET)).filter((l) => !receivedOnly || l.direction === 'received');
 const { mismatches, totals } = compareLegs(ak, partner);
 
 const usdc = (u: bigint) => `${u / 10_000_000n}.${(u % 10_000_000n).toString().padStart(7, '0')}`;

@@ -25,9 +25,8 @@
 -- address (self-payment), or (3) an address listed in
 -- stellar_testnet_excluded_payers. Excluded rows stay visible in the payments
 -- view with the reason, so a reader can reproduce every total.
--- SENT payments (legs the agent's own address paid out) count when successful;
--- the exclusion rules above describe who PAID the agent, so they do not apply
--- to a payment the agent made.
+-- SENT payments (legs the agent's own address paid to another agent) carry the
+-- payee's classification: they count exactly when the payee counts them.
 -- One row per registry agentId (erc8004_agents, PK (chain, agent_id)); the
 -- agent's address is its bound wallet, else the owner (Soroban NULL = unset).
 --
@@ -70,30 +69,32 @@ CREATE OR REPLACE VIEW stellar_testnet_received_payments AS
 
 GRANT SELECT ON stellar_testnet_received_payments TO anon, authenticated, service_role;
 
--- Per-agent outbound USDC legs: transfers paid BY the agent's address. Same
--- columns as the received view; counted = successful (no exclusion applies, see
--- above), so excluded_reason is always NULL. A self-leg (payer = payee) is
--- already dropped by the decoder; the guard keeps it from being listed in both
--- directions should one ever be stored.
+-- Per-agent outbound USDC legs: a leg is "sent" by agent X when its payer is X's
+-- address AND the payee is another registry agent. Exactly the received view
+-- seen from the payer: counted / excluded_reason are the PAYEE's judgement
+-- (failed leg, payee's owner top-up, payee's listed payer), so an agent's sent
+-- total equals the sum of its counted legs in the payees' received views and
+-- both sides always agree. Payments to accounts that are not registry agents
+-- are not listed. Self legs (reason 'self') are received-only: the same leg is
+-- never both sent and received for one agent.
 CREATE OR REPLACE VIEW stellar_testnet_sent_payments AS
   SELECT
-    t.chain,
-    r.agent_id::bigint                   AS agent_id,
-    t.id,
-    t.tx_signature,
-    t.tx_hash,
-    t.wallet_address,
-    t.amount,
-    t.timestamp,
-    t.success,
-    t.success                            AS counted,
-    NULL::text                           AS excluded_reason,
-    t.counterparty
-  FROM erc8004_agents r
-  JOIN transactions t ON t.chain = r.chain
-    AND t.wallet_address = COALESCE(r.agent_wallet, r.owner)
-  WHERE r.chain = 'stellar-testnet'
-    AND t.counterparty IS DISTINCT FROM t.wallet_address;
+    p.chain,
+    x.agent_id::bigint                   AS agent_id,
+    p.id,
+    p.tx_signature,
+    p.tx_hash,
+    p.wallet_address,
+    p.amount,
+    p.timestamp,
+    p.success,
+    p.counted,
+    p.excluded_reason,
+    p.counterparty
+  FROM stellar_testnet_received_payments p
+  JOIN erc8004_agents x ON x.chain = p.chain
+    AND COALESCE(x.agent_wallet, x.owner) = p.wallet_address
+  WHERE p.excluded_reason IS DISTINCT FROM 'self';
 
 GRANT SELECT ON stellar_testnet_sent_payments TO anon, authenticated, service_role;
 

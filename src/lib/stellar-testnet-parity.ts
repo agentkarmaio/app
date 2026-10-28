@@ -1,9 +1,12 @@
 /**
  * Pure comparison core of scripts/stellar-testnet-parity.ts: AgentKarma's
  * stellar-testnet payment legs vs. an external indexer's CSV export
- * (`op_id, idx, tx_hash, agent_id, payer, amount_usdc, at, counted`, plus the
- * optional `direction` and `excluded_reason`). Amounts are compared as integer
- * base units (USDC has 7 decimals), never as floats.
+ * (`op_id, idx, tx_hash, agent_id, payer, payer_agent_id, amount_usdc, asset, at`,
+ * plus the optional `counted` and `excluded_reason`). The export lists RECEIVED
+ * legs only; a leg with a `payer_agent_id` is also that agent's SENT leg, so one
+ * row yields up to two legs. Amounts are compared as integer base units (USDC
+ * has 7 decimals), never as floats. When the export has no `counted` column the
+ * counted flag and reasons are not compared.
  */
 
 export interface ParityLeg {
@@ -13,7 +16,8 @@ export interface ParityLeg {
   direction: 'received' | 'sent';
   /** USDC base units (1 USDC = 10^7). */
   units: bigint;
-  counted: boolean;
+  /** Undefined when the source does not say (skips that comparison and the counted total). */
+  counted?: boolean;
   /** Undefined when the source does not carry a reason (skips that comparison). */
   reason?: string | null;
 }
@@ -55,21 +59,25 @@ export function parseCsv(text: string): Array<Record<string, string>> {
 const TRUE = new Set(['true', 't', '1', 'yes']);
 
 /**
- * CSV record → leg. `agentAddress` resolves direction when the export has no
- * `direction` column: a leg paid BY the agent's address is sent, anything else
- * is received.
+ * CSV record → its received leg, plus a sent leg for `payer_agent_id` when set.
+ * Non-USDC assets are not indexed by AgentKarma and yield no legs.
  */
-export function partnerLeg(rec: Record<string, string>, agentAddress: (agentId: number) => string | undefined): ParityLeg {
+export function partnerLegs(rec: Record<string, string>, usdcAsset?: string): ParityLeg[] {
+  if (usdcAsset && rec.asset && rec.asset !== usdcAsset) return [];
   const agentId = Number(rec.agent_id);
   if (!Number.isInteger(agentId)) throw new Error(`bad agent_id in row ${rec.op_id}:${rec.idx}`);
-  const direction = rec.direction === 'sent' || rec.direction === 'received'
-    ? rec.direction
-    : rec.payer === agentAddress(agentId) ? 'sent' : 'received';
+  const units = rec.amount_usdc ? usdcToUnits(rec.amount_usdc) : BigInt(rec.amount_units);
+  const counted = 'counted' in rec ? TRUE.has(rec.counted.toLowerCase()) : undefined;
   const reason = 'excluded_reason' in rec ? (rec.excluded_reason || null) : undefined;
-  return {
-    id: `${rec.op_id}:${rec.idx}`, agentId, direction, units: usdcToUnits(rec.amount_usdc),
-    counted: TRUE.has(rec.counted.toLowerCase()), ...(reason !== undefined ? { reason } : {}),
-  };
+  const base = { id: `${rec.op_id}:${rec.idx}`, units, ...(counted !== undefined ? { counted } : {}), ...(reason !== undefined ? { reason } : {}) };
+  const legs: ParityLeg[] = [{ ...base, agentId, direction: 'received' }];
+  if (rec.payer_agent_id !== undefined && rec.payer_agent_id !== '') {
+    const payerAgent = Number(rec.payer_agent_id);
+    if (!Number.isInteger(payerAgent)) throw new Error(`bad payer_agent_id in row ${base.id}`);
+    // A self leg is received-only (AgentKarma never lists it as sent).
+    if (payerAgent !== agentId) legs.push({ ...base, agentId: payerAgent, direction: 'sent' });
+  }
+  return legs;
 }
 
 export interface ParityTotals { received: bigint; sent: bigint; counted: bigint; legs: number }
@@ -91,20 +99,22 @@ function totalsOf(legs: ParityLeg[]): ParityTotals {
 
 export function compareLegs(ak: ParityLeg[], partner: ParityLeg[]): ParityReport {
   const mismatches: string[] = [];
-  const akById = new Map(ak.map((l) => [l.id, l]));
-  const partnerById = new Map(partner.map((l) => [l.id, l]));
+  // The same leg is one agent's received and another's sent, so the key carries the direction.
+  const key = (l: ParityLeg) => `${l.id} ${l.direction}`;
+  const akById = new Map(ak.map((l) => [key(l), l]));
+  const partnerById = new Map(partner.map((l) => [key(l), l]));
   for (const [id, p] of partnerById) {
     const a = akById.get(id);
-    if (!a) { mismatches.push(`${id}: missing in AgentKarma (agent ${p.agentId})`); continue; }
+    if (!a) { mismatches.push(`${p.id}: missing in AgentKarma (${p.direction}, agent ${p.agentId})`); continue; }
     const diffs: string[] = [];
     if (a.agentId !== p.agentId) diffs.push(`agent ${a.agentId} vs ${p.agentId}`);
     if (a.direction !== p.direction) diffs.push(`direction ${a.direction} vs ${p.direction}`);
     if (a.units !== p.units) diffs.push(`amount ${a.units} vs ${p.units} units`);
-    if (a.counted !== p.counted) diffs.push(`counted ${a.counted} vs ${p.counted}`);
+    if (p.counted !== undefined && a.counted !== p.counted) diffs.push(`counted ${a.counted} vs ${p.counted}`);
     if (p.reason !== undefined && (a.reason ?? null) !== p.reason) diffs.push(`reason ${a.reason ?? null} vs ${p.reason}`);
-    if (diffs.length) mismatches.push(`${id}: ${diffs.join('; ')}`);
+    if (diffs.length) mismatches.push(`${p.id}: ${diffs.join('; ')}`);
   }
-  for (const [id, a] of akById) if (!partnerById.has(id)) mismatches.push(`${id}: missing in partner export (agent ${a.agentId})`);
+  for (const [id, a] of akById) if (!partnerById.has(id)) mismatches.push(`${a.id}: missing in partner export (${a.direction}, agent ${a.agentId})`);
 
   const agents = new Set([...ak, ...partner].map((l) => l.agentId));
   const totals = new Map<number, [ParityTotals, ParityTotals]>();
@@ -113,7 +123,8 @@ export function compareLegs(ak: ParityLeg[], partner: ParityLeg[]): ParityReport
       totalsOf(ak.filter((l) => l.agentId === agent)), totalsOf(partner.filter((l) => l.agentId === agent)),
     ];
     totals.set(agent, pair);
-    for (const key of ['received', 'sent', 'counted'] as const) {
+    const keys = partner.some((l) => l.counted !== undefined) ? (['received', 'sent', 'counted'] as const) : (['received', 'sent'] as const);
+    for (const key of keys) {
       if (pair[0][key] !== pair[1][key]) mismatches.push(`agent ${agent}: ${key} total ${pair[0][key]} vs ${pair[1][key]} units`);
     }
   }

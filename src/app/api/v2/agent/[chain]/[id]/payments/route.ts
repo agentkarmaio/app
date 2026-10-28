@@ -24,9 +24,10 @@
  * GET /api/explore/agents. A failed payment has `counted: false` and
  * `excludedReason: null`. Pages stay stable because nothing is filtered out.
  *
- * A `sent` row is `counted` when successful; the exclusion reasons describe who
- * paid the agent, so they never apply to a payment the agent made. Per-agent
- * totals of both directions are on GET /api/explore/agents (`payments`).
+ * A `sent` row is a leg the agent's address paid to another registry agent: the
+ * same leg the payee lists as `received`, with the payee's `counted` and
+ * `excludedReason`. Payments to accounts that are not registry agents are not
+ * listed. Per-agent totals of both directions are on GET /api/explore/agents.
  *
  * `address` is the agent's bound wallet (agent_wallet, else owner) — the payee
  * matched against `transactions.counterparty`. `amount` is a decimal STRING in
