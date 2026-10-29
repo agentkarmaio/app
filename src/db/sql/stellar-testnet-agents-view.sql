@@ -9,12 +9,14 @@
 -- an explicit chain=stellar-testnet.
 --
 -- Same column projection as explore_agents, so the API serializer is shared,
--- plus three trailing payment-total columns (payments_received,
--- payments_usdc_received, payments_last_received_at) aggregated in SQL from
--- stellar_testnet_received_payments (defined first in this file): the rows
+-- plus six trailing payment-total columns (payments_received,
+-- payments_usdc_received, payments_last_received_at and their sent twins
+-- payments_sent, payments_usdc_sent, payments_last_sent_at) aggregated in SQL
+-- from stellar_testnet_received_payments / stellar_testnet_sent_payments
+-- (defined first in this file): the rows
 -- GET /api/v2/agent/stellar-testnet/{id}/payments pages through, restricted to
 -- `counted` ones. One row per transfer leg, so the count equals the number of
--- counted payment rows. The sum is cast to text: PostgREST would otherwise
+-- counted payment rows. The sums are cast to text: PostgREST would otherwise
 -- return a JSON number and lose decimals.
 --
 -- What counts as revenue: a successful USDC payment to the agent's address that
@@ -23,6 +25,8 @@
 -- address (self-payment), or (3) an address listed in
 -- stellar_testnet_excluded_payers. Excluded rows stay visible in the payments
 -- view with the reason, so a reader can reproduce every total.
+-- SENT payments (legs the agent's own address paid to another agent) carry the
+-- payee's classification: they count exactly when the payee counts them.
 -- One row per registry agentId (erc8004_agents, PK (chain, agent_id)); the
 -- agent's address is its bound wallet, else the owner (Soroban NULL = unset).
 --
@@ -49,7 +53,8 @@ CREATE OR REPLACE VIEW stellar_testnet_received_payments AS
     t.timestamp,
     t.success,
     x.reason IS NULL AND t.success       AS counted,
-    x.reason                             AS excluded_reason
+    x.reason                             AS excluded_reason,
+    t.counterparty
   FROM erc8004_agents r
   JOIN transactions t ON t.chain = r.chain
     AND t.counterparty = COALESCE(r.agent_wallet, r.owner)
@@ -63,6 +68,48 @@ CREATE OR REPLACE VIEW stellar_testnet_received_payments AS
   WHERE r.chain = 'stellar-testnet';
 
 GRANT SELECT ON stellar_testnet_received_payments TO anon, authenticated, service_role;
+
+-- Per-agent outbound USDC legs: a leg is "sent" by agent X when its payer is X's
+-- address AND the payee is another registry agent. Exactly the received view
+-- seen from the payer: counted / excluded_reason are the PAYEE's judgement
+-- (failed leg, payee's owner top-up, payee's listed payer), so an agent's sent
+-- total equals the sum of its counted legs in the payees' received views and
+-- both sides always agree. Payments to accounts that are not registry agents
+-- are not listed. Self legs (reason 'self') are received-only: the same leg is
+-- never both sent and received for one agent.
+CREATE OR REPLACE VIEW stellar_testnet_sent_payments AS
+  SELECT
+    p.chain,
+    x.agent_id::bigint                   AS agent_id,
+    p.id,
+    p.tx_signature,
+    p.tx_hash,
+    p.wallet_address,
+    p.amount,
+    p.timestamp,
+    p.success,
+    p.counted,
+    p.excluded_reason,
+    p.counterparty
+  FROM stellar_testnet_received_payments p
+  JOIN erc8004_agents x ON x.chain = p.chain
+    AND COALESCE(x.agent_wallet, x.owner) = p.wallet_address
+  WHERE p.excluded_reason IS DISTINCT FROM 'self';
+
+GRANT SELECT ON stellar_testnet_sent_payments TO anon, authenticated, service_role;
+
+-- Both directions in one keyset-pageable relation, for
+-- GET /api/v2/agent/stellar-testnet/{id}/payments?direction=all.
+CREATE OR REPLACE VIEW stellar_testnet_payments AS
+  SELECT 'received'::text AS direction, p.chain, p.agent_id, p.id, p.tx_signature, p.tx_hash,
+         p.wallet_address, p.counterparty, p.amount, p.timestamp, p.success, p.counted, p.excluded_reason
+  FROM stellar_testnet_received_payments p
+  UNION ALL
+  SELECT 'sent'::text, p.chain, p.agent_id, p.id, p.tx_signature, p.tx_hash,
+         p.wallet_address, p.counterparty, p.amount, p.timestamp, p.success, p.counted, p.excluded_reason
+  FROM stellar_testnet_sent_payments p;
+
+GRANT SELECT ON stellar_testnet_payments TO anon, authenticated, service_role;
 
 CREATE OR REPLACE VIEW stellar_testnet_agents AS
   SELECT
@@ -100,7 +147,10 @@ CREATE OR REPLACE VIEW stellar_testnet_agents AS
     r.owner                              AS registry_owner,
     COALESCE(p.received, 0)              AS payments_received,
     COALESCE(p.usdc, 0)::text            AS payments_usdc_received,
-    p.last_at                            AS payments_last_received_at
+    p.last_at                            AS payments_last_received_at,
+    COALESCE(s.sent, 0)                  AS payments_sent,
+    COALESCE(s.usdc, 0)::text            AS payments_usdc_sent,
+    s.last_at                            AS payments_last_sent_at
   FROM erc8004_agents r
   LEFT JOIN wallets w ON w.chain = r.chain
     AND w.address = COALESCE(r.agent_wallet, r.owner)
@@ -110,6 +160,12 @@ CREATE OR REPLACE VIEW stellar_testnet_agents AS
     WHERE t.agent_id = r.agent_id
       AND t.counted
   ) p ON true
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::bigint AS sent, SUM(t.amount) AS usdc, MAX(t.timestamp) AS last_at
+    FROM stellar_testnet_sent_payments t
+    WHERE t.agent_id = r.agent_id
+      AND t.counted
+  ) s ON true
   CROSS JOIN LATERAL (
     SELECT COALESCE(w.confidence_badge IN ('receipt-backed', 'behavior-inferred'), false) AS observed
   ) o

@@ -25,7 +25,17 @@ describe('GET /api/explore/agents payment totals', () => {
       payments_received: 2, payments_usdc_received: '1.000000000000000000',
       payments_last_received_at: '2026-10-14T10:00:00+00:00' } as unknown as Wallet] });
     const [row] = await rows(await get('?chain=stellar-testnet'));
-    expect(row.payments).toEqual({ received: 2, usdcReceived: '1.0000000', lastReceivedAt: '2026-10-14T10:00:00.000Z' });
+    expect(row.payments).toEqual({ received: 2, usdcReceived: '1.0000000', lastReceivedAt: '2026-10-14T10:00:00.000Z',
+      sent: 0, usdcSent: '0.0000000', lastSentAt: null });
+  });
+
+  test('sent totals are reported next to received ones', async () => {
+    agents.mockResolvedValue({ total: 1, wallets: [{ ...base, chain: 'stellar-testnet',
+      payments_received: 1, payments_usdc_received: '1', payments_last_received_at: '2026-10-14T10:00:00+00:00',
+      payments_sent: '3', payments_usdc_sent: '7.5000000000', payments_last_sent_at: '2026-10-15T10:00:00+00:00' } as unknown as Wallet] });
+    const [row] = await rows(await get('?chain=stellar-testnet'));
+    expect(row.payments).toEqual({ received: 1, usdcReceived: '1.0000000', lastReceivedAt: '2026-10-14T10:00:00.000Z',
+      sent: 3, usdcSent: '7.5000000', lastSentAt: '2026-10-15T10:00:00.000Z' });
   });
 
   test('bigint counts arrive as strings from PostgREST and are returned as integers', async () => {
@@ -33,14 +43,16 @@ describe('GET /api/explore/agents payment totals', () => {
       payments_received: '5', payments_usdc_received: '0.0500000000',
       payments_last_received_at: null } as unknown as Wallet] });
     const [row] = await rows(await get('?chain=stellar-testnet'));
-    expect(row.payments).toEqual({ received: 5, usdcReceived: '0.0500000', lastReceivedAt: null });
+    expect(row.payments).toEqual({ received: 5, usdcReceived: '0.0500000', lastReceivedAt: null,
+      sent: 0, usdcSent: '0.0000000', lastSentAt: null });
   });
 
   test('an agent with no payments reports zero, not missing', async () => {
     agents.mockResolvedValue({ total: 1, wallets: [{ ...base, chain: 'stellar-testnet',
       payments_received: 0, payments_usdc_received: '0', payments_last_received_at: null } as unknown as Wallet] });
     const [row] = await rows(await get('?chain=stellar-testnet'));
-    expect(row.payments).toEqual({ received: 0, usdcReceived: '0.0000000', lastReceivedAt: null });
+    expect(row.payments).toEqual({ received: 0, usdcReceived: '0.0000000', lastReceivedAt: null,
+      sent: 0, usdcSent: '0.0000000', lastSentAt: null });
   });
 
   test('other chains keep their exact shape (no payments key)', async () => {

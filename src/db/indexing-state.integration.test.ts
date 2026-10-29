@@ -728,6 +728,37 @@ describe('stellar-testnet (API-only) at the database', () => {
       expect(query("SELECT count(*) FROM transactions WHERE chain='stellar';")).toBe('1');
     });
 
+    test('sent legs mirror the payee side: counted exactly when the payee counts them', () => {
+      view(); seed();
+      // Agent 12's address is agent 10's owner, so G-owner10 -> G-agent10 ('b:0') is agent 12's SENT leg.
+      query(`INSERT INTO erc8004_agents(chain,agent_id,owner,agent_wallet,metadata_score,registration) VALUES
+        ('stellar-testnet',12,'G-owner10',NULL,30,'{"name":"Owner"}');
+        INSERT INTO wallets(chain,address) VALUES ('stellar','G-agent10'),('stellar','G-customer');
+        INSERT INTO transactions(chain,wallet_address,facilitator,counterparty,timestamp,tx_signature,tx_hash,amount,success) VALUES
+        ('stellar-testnet','G-agent10','sac','G-owner11',${ts(6)},'s1:0','h-s1',2.5,true),
+        ('stellar-testnet','G-agent10','sac','G-owner11',${ts(7)},'s2:0','h-s2',9,false),
+        ('stellar-testnet','G-agent10','sac','G-customer',${ts(8)},'s3:0','h-s3',4,true),
+        ('stellar','G-agent10','sac','G-customer',${ts(9)},'sm:0',NULL,99,true);`);
+      query("INSERT INTO stellar_testnet_excluded_payers(address) VALUES ('G-listed');");
+      const sent = (agent: number) => JSON.parse(query(`SELECT coalesce(json_object_agg(tx_signature, json_build_array(counted, excluded_reason)), '{}')
+        FROM stellar_testnet_sent_payments WHERE chain='stellar-testnet' AND agent_id=${agent};`));
+      // Agent 10 paid agent 11: the success counts, the failed leg does not; the payment to a non-agent is not listed.
+      expect(sent(10)).toEqual({ 's1:0': [true, null], 's2:0': [false, null] });
+      // Agent 12 (agent 10's owner) paid agent 10: the payee excludes it as an owner top-up, so it is not counted as sent
+      // either. Its payment to agent 11 ('g:0') is a normal counted leg.
+      expect(sent(12)).toEqual({ 'b:0': [false, 'owner'], 'g:0': [true, null] });
+      expect(sent(11)).toEqual({});
+      const t = JSON.parse(query(`SELECT json_object_agg(stellar_agent_id, json_build_array(payments_received, payments_usdc_received::numeric,
+        payments_sent, payments_usdc_sent::numeric, payments_last_sent_at IS NOT NULL)) FROM stellar_testnet_agents;`));
+      expect(t['10']).toEqual([1, 1, 1, 2.5, true]);
+      expect(t['12']).toEqual([0, 0, 1, 6, true]);
+      // Agent 11 received agent 10's counted 2.5 on top of its earlier 4 + 6 (the sent leg is the payee's received leg).
+      expect(t['11']).toEqual([3, 12.5, 0, 0, false]);
+      // Unified view: a leg is listed once per agent and direction; the same leg is received by the payee and sent by the payer.
+      expect(query("SELECT string_agg(direction || ':' || tx_signature, ',' ORDER BY direction, tx_signature) FROM stellar_testnet_payments WHERE agent_id=10;")).toBe('received:a:0,received:b:0,received:c:0,received:d:0,received:e:0,sent:s1:0,sent:s2:0');
+      expect(query("SELECT count(*) FROM stellar_testnet_payments WHERE chain <> 'stellar-testnet';")).toBe('0');
+    });
+
     test('an agent whose address equals its owner keeps third-party payments; a payer that is only the owner of another agent counts', () => {
       view(); seed();
       expect(flags(11)['g:0']).toEqual([true, null]);
