@@ -1,7 +1,8 @@
 /**
  * CLI entrypoint: bun run src/indexer/celo-run.ts [--dry-run] [--window N] [--max-windows N]
  *
- * Scans Celo USDC/USDT/USDm Transfer events for seeded x402 facilitators/payees,
+ * Scans Celo x402 settlements: Transfer events for seeded facilitators/payees,
+ * plus relayer-submitted EIP-3009 settlements (quarantined, see celo-x402-relayer.ts),
  * persists Tier-1 receipts to Supabase, and advances the block cursor.
  *
  * --dry-run prints the would-be `transactions` rows WITHOUT any DB write or
@@ -19,7 +20,7 @@ import { coverageOutcome } from '@/lib/indexing-jobs';
 
 import { requireEnv } from '../lib/require-env';
 import { runCeloX402Indexer } from './celo-x402';
-import { celoX402FacilitatorSetWithDiscovered } from '../config/celo-x402';
+import { celoX402FacilitatorSetWithDiscovered, celoX402RelayerSet } from '../config/celo-x402';
 
 function numArg(flag: string): number | undefined {
   const i = process.argv.indexOf(flag);
@@ -42,6 +43,7 @@ if (facilitators.size === 0) {
   console.log('[celo-indexer] none seeded — no-op. Seed via CELO_X402_FACILITATORS env, config, or scripts/celo-x402-discover-payees.ts.');
 }
 console.log(`[celo-indexer] watching: ${[...facilitators].join(', ')}`);
+console.log(`[celo-indexer] relayers (quarantined → celo_x402_settlements): ${[...celoX402RelayerSet()].join(', ')}`);
 
 const start = Date.now();
 
@@ -69,6 +71,13 @@ runIndexerCli({
         );
       }
       if (result.rows.length > 20) console.log(`  …and ${result.rows.length - 20} more`);
+    }
+    if (dryRun && result.settlements) {
+      console.log(`[celo-indexer] DRY-RUN relayer settlements (${result.settlements.length}):`);
+      for (const s of result.settlements.slice(0, 20)) {
+        console.log(`  ${s.blockTime}  ${String(s.value).padStart(10)} ${s.symbol}  ${s.payer.slice(0, 10)}… → ${s.payee.slice(0, 10)}…`);
+      }
+      if (result.settlements.length > 20) console.log(`  …and ${result.settlements.length - 20} more`);
     }
     for (const [k, v] of result.cursors) console.log(`[celo-indexer] cursor ${k} → ${v}`);
     process.exit(exitCode);

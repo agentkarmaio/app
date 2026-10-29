@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runCeloX402Indexer } from '@/indexer/celo-x402';
 import { createIndexingJob, runManagedIndexingTask, coverageOutcome } from '@/lib/indexing-jobs';
-import { celoX402FacilitatorSetWithDiscovered } from '@/config/celo-x402';
+import { celoX402FacilitatorSetWithDiscovered, celoX402RelayerSet } from '@/config/celo-x402';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
   // Honest dormant signal in the scheduler log: nothing to match until seeded.
   // Uses the merged set (curated + env + verified self-seeded payees) so a run
   // driven purely by discovered payees is not falsely reported as dormant.
-  if ((await celoX402FacilitatorSetWithDiscovered()).size === 0) {
+  if ((await celoX402FacilitatorSetWithDiscovered()).size === 0 && celoX402RelayerSet().size === 0) {
     return NextResponse.json(
       {
         fetched: 0,

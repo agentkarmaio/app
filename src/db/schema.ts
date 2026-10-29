@@ -721,6 +721,38 @@ export const celoX402PayeesTable = pgTable('celo_x402_payees', {
   index('idx_celo_x402_payees_source_agent').on(table.source_agent_id),
 ]);
 
+/**
+ * Celo x402 settlements submitted by a facilitator RELAYER (tx.from), indexed by
+ * `src/indexer/celo-x402-relayer.ts`. QUARANTINE: nothing in scoring, stats or
+ * graph reads this table, unlike `transactions`. On 2026-10-29 ~95% of Celo's
+ * native-facilitator flow was a closed 5-wallet ring; rows move to
+ * `transactions` only once a cycle/self-dealing detector can filter them.
+ */
+export const celoX402SettlementsTable = pgTable('celo_x402_settlements', {
+  chain:        text('chain').notNull().default('celo').$type<Chain>(),
+  tx_hash:      text('tx_hash').notNull(),
+  /** logIndex of the Transfer leg (a tx may batch several settlements). */
+  log_index:    integer('log_index').notNull(),
+  block_number: bigint('block_number', { mode: 'number' }).notNull(),
+  block_time:   timestamp('block_time', { withTimezone: true }).notNull(),
+  relayer:      text('relayer').notNull(),
+  /** Lowercased settlement token contract. */
+  token:        text('token').notNull(),
+  symbol:       text('symbol').notNull(),
+  payer:        text('payer').notNull(),
+  payee:        text('payee').notNull(),
+  /** Raw uint256 token value. */
+  amount_raw:   numeric('amount_raw', { precision: 78, scale: 0 }).notNull(),
+  /** Human units (amount_raw / 10^decimals). */
+  amount:       numeric('amount').notNull(),
+  indexed_at:   timestamp('indexed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.chain, table.tx_hash, table.log_index], name: 'celo_x402_settlements_pkey' }),
+  index('idx_celo_x402_settlements_payer').on(table.payer),
+  index('idx_celo_x402_settlements_payee').on(table.payee),
+  index('idx_celo_x402_settlements_block_time').on(table.block_time),
+]);
+
 // --- TypeScript Types (for runtime Supabase queries) -------------------------
 
 export type TrustTier = 'Unrated' | 'Poor' | 'Fair' | 'Good' | 'Very Good' | 'Excellent';

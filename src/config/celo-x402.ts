@@ -12,7 +12,7 @@
  */
 
 export interface CeloX402Token {
-  symbol: 'USDC' | 'USDT' | 'USDm';
+  symbol: 'USDC' | 'USDT' | 'USDm' | 'USAT';
   address: `0x${string}`;
   decimals: number;
 }
@@ -21,6 +21,9 @@ export const CELO_X402_TOKENS: CeloX402Token[] = [
   { symbol: 'USDC', address: '0xcebA9300f2b948710d2653dD7B07f33A8B32118C', decimals: 6 },
   { symbol: 'USDT', address: '0x48065fBBE25f71C9282ddf5e1cD6D6A887483D5e', decimals: 6 },
   { symbol: 'USDm', address: '0x765DE816845861e75A25fCa122bb6898B8B1282a', decimals: 18 },
+  // Tether America USD — EIP-3009 asset on Celo's native facilitator
+  // (api.x402.celo.org/supported, 2026-10-29).
+  { symbol: 'USAT', address: '0xD2ab3C9A02DBBAB236BfEC45D1d755DF4267F771', decimals: 6 },
 ];
 
 export interface CeloX402Facilitator {
@@ -55,6 +58,31 @@ export interface CeloX402Facilitator {
  * Empty by default. Add an entry, redeploy, indexer picks it up on next run.
  */
 export const CELO_X402_FACILITATORS: CeloX402Facilitator[] = [];
+
+/**
+ * Facilitator RELAYER wallets: the EOA that submits `transferWithAuthorization`
+ * and pays gas. Unlike `CELO_X402_FACILITATORS` (matched on Transfer from/to), a
+ * relayer never appears in the Transfer itself — money moves payer → payee
+ * directly — so these are matched on `tx.from` by `celo-x402-relayer.ts`.
+ *
+ * Relayer-mode settlements land in `celo_x402_settlements`, NOT `transactions`,
+ * so they do not reach karma yet: on 2026-10-29 ~95% of this relayer's live flow
+ * was a closed 5-wallet payment ring. Promote to `transactions` once a
+ * cycle/self-dealing detector can filter it.
+ */
+export const CELO_X402_RELAYERS: CeloX402Facilitator[] = [
+  {
+    address: '0x0d74d5cefd2e7f24e623330ebe3d8d4cb45ffb48',
+    name: 'Celo x402 facilitator',
+    url: 'https://docs.celo.org/build-on-celo/build-with-ai/x402',
+    discoveredAt: '2026-10-29',
+  },
+];
+
+/** Lowercased relayer set for `tx.from` matching. */
+export function celoX402RelayerSet(): Set<string> {
+  return new Set(CELO_X402_RELAYERS.map((r) => r.address.toLowerCase()));
+}
 
 /** Address lookup by lowercased hex. */
 export function getCeloFacilitator(addr: string): CeloX402Facilitator | undefined {

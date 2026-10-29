@@ -23,6 +23,7 @@ import { NON_PUBLIC_CHAINS, isApiOnlyChain } from './schema';
 // Type-only: erased at runtime, so this does NOT pull viem/the scanner into the
 // db-client bundle that API routes + the Docker build load.
 import type { ScannedAgent, ScannedFeedback } from '@/indexer/erc8004-registry';
+import type { CeloX402Settlement } from '@/indexer/celo-x402-relayer';
 // Pure predicate (no React/browser deps) — names the chains whose agent
 // population is the erc8004_agents mirror rather than the wallets table.
 import { isRegistryMirrorChain } from '@/lib/chain-meta';
@@ -3924,6 +3925,39 @@ export async function getDiscoveredCeloX402Payees(
     set.add(row.address.toLowerCase());
   }
   return set;
+}
+
+/**
+ * Insert relayer-mode Celo x402 settlements into the quarantine table
+ * (`celo_x402_settlements`), ON CONFLICT DO NOTHING on (chain, tx_hash,
+ * log_index) so a re-scanned window is idempotent. Returns rows submitted.
+ */
+export async function insertCeloX402Settlements(
+  settlements: CeloX402Settlement[],
+  chain: Chain = 'celo',
+): Promise<number> {
+  if (settlements.length === 0) return 0;
+  const rows = settlements.map((s) => ({
+    chain,
+    tx_hash: s.txHash.toLowerCase(),
+    log_index: s.logIndex,
+    block_number: Number(s.blockNumber),
+    block_time: s.blockTime,
+    relayer: s.relayer,
+    token: s.token,
+    symbol: s.symbol,
+    payer: s.payer,
+    payee: s.payee,
+    amount_raw: s.rawValue.toString(),
+    amount: s.value,
+  }));
+  await withTransientDbRetry(async () => {
+    const { error } = await supabase
+      .from('celo_x402_settlements')
+      .upsert(rows, { onConflict: 'chain,tx_hash,log_index', ignoreDuplicates: true });
+    if (error) throw error;
+  });
+  return rows.length;
 }
 
 /** Saved registry feedback, including revoked records, for read-only archives. */

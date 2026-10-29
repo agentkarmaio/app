@@ -16,6 +16,7 @@ import {
   toSignalPair,
   celoTxSignature,
   celoX402Indexer,
+  mergeCoverage,
   CELO_CURSOR_KEY,
   CELO_DEFAULT_WINDOW,
   type CeloX402Transfer,
@@ -371,5 +372,26 @@ describe('Celo scan cancellation', () => {
     });
     await expect(celoX402Indexer(deps)).rejects.toThrow('scan_cancelled');
     expect(timestamps).toBe(1); expect(state.inserted).toEqual([]); expect(state.cursors).toEqual([]);
+  });
+});
+
+describe('mergeCoverage — payee + relayer passes', () => {
+  const done = { complete: true, head: '10', checkpoint: '10', checked: 5, pending: 0, unresolved: 0 };
+  const dormant = { complete: false, checked: 0, pending: 0, unresolved: 0, reason: 'empty_seed' };
+
+  test('a dormant side is ignored', () => {
+    expect(mergeCoverage(dormant, done)).toEqual(done);
+    expect(mergeCoverage(done, dormant)).toEqual(done);
+  });
+
+  test('incomplete side makes the run incomplete and supplies the reason', () => {
+    const behind = { complete: false, head: '20', checkpoint: '15', checked: 3, pending: 5, unresolved: 0, reason: 'time_budget' };
+    expect(mergeCoverage(done, behind)).toMatchObject({ complete: false, reason: 'time_budget', checked: 8, pending: 5 });
+  });
+
+  test('both complete → complete, no reason', () => {
+    const merged = mergeCoverage(done, done);
+    expect(merged.complete).toBe(true);
+    expect(merged.reason).toBeUndefined();
   });
 });

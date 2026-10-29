@@ -55,6 +55,7 @@ import {
 } from '@/db/client';
 import { INGEST_RETRY, withRateLimitRetry } from '@/lib/rpc-retry';
 import { buildPayshRoutedSignal } from '@/scoring/signals';
+import { runCeloX402RelayerIndexer, type CeloX402Settlement } from './celo-x402-relayer';
 
 const CELO_CHAIN: Chain = 'celo';
 
@@ -402,14 +403,64 @@ async function rpcGetLogs(
 }
 
 /**
- * Production indexer run. Reads the curated + env-seeded facilitator set and
- * scans Celo mainnet. No-op (no RPC) until at least one facilitator is seeded.
+ * Production indexer run: payee mode (Tier-1 `transactions` rows) then relayer
+ * mode (quarantined `celo_x402_settlements` rows), sharing one time budget so
+ * the pair fits the managed job's lease.
  *
- * `opts.dryRun` returns the would-be `transactions` rows WITHOUT writing to the
- * DB or advancing the cursor — the local verification path before a real write.
+ * `opts.dryRun` returns the would-be rows (`rows` for payee mode, `settlements`
+ * for relayer mode) WITHOUT writing to the DB or advancing either cursor.
  */
 export async function runCeloX402Indexer(
-  opts: { windowSize?: number; maxWindows?: number; timeBudgetMs?: number; dryRun?: boolean; signal?: AbortSignal } = {},
+  opts: CeloRunOpts = {},
+): Promise<CeloX402RunResult & { rows?: Omit<Transaction, 'id'>[]; settlements?: CeloX402Settlement[] }> {
+  // Both Celo x402 sources in one run, so every trigger (managed job, cron
+  // route, CLI, chain adapter) covers them without per-caller wiring.
+  const budgetMs = opts.timeBudgetMs ?? 120_000;
+  const startedAt = Date.now();
+  const payee = await runCeloX402PayeeIndexer({ ...opts, timeBudgetMs: budgetMs });
+  const relayer = await runCeloX402RelayerIndexer({
+    ...opts,
+    timeBudgetMs: Math.max(1, budgetMs - (Date.now() - startedAt)),
+  });
+  return {
+    fetched: payee.fetched + relayer.fetched,
+    inserted: payee.inserted + relayer.inserted,
+    cursors: new Map([...payee.cursors, ...relayer.cursors]),
+    coverage: mergeCoverage(payee.coverage, relayer.coverage),
+    ...(payee.rows ? { rows: payee.rows } : {}),
+    ...(relayer.rows ? { settlements: relayer.rows } : {}),
+  };
+}
+
+type CeloRunOpts = { windowSize?: number; maxWindows?: number; timeBudgetMs?: number; dryRun?: boolean; signal?: AbortSignal };
+
+/**
+ * Pure: one coverage for the payee + relayer passes. A dormant (`empty_seed`)
+ * side is ignored; otherwise the run is complete only when both are, and the
+ * first incomplete side's reason explains why.
+ */
+export function mergeCoverage(
+  a: CeloX402RunResult['coverage'],
+  b: CeloX402RunResult['coverage'],
+): CeloX402RunResult['coverage'] {
+  if (a.reason === 'empty_seed') return b;
+  if (b.reason === 'empty_seed') return a;
+  const complete = a.complete && b.complete;
+  const reason = !a.complete ? a.reason : !b.complete ? b.reason : undefined;
+  return {
+    complete,
+    head: b.head ?? a.head,
+    checkpoint: a.checkpoint,
+    checked: a.checked + b.checked,
+    pending: Math.max(a.pending, b.pending),
+    unresolved: a.unresolved + b.unresolved,
+    ...(reason ? { reason } : {}),
+  };
+}
+
+/** Payee mode: Transfer from/to ∈ curated + env + discovered payee set. */
+async function runCeloX402PayeeIndexer(
+  opts: CeloRunOpts = {},
 ): Promise<CeloX402RunResult & { rows?: Omit<Transaction, 'id'>[] }> {
   // Curated/env set UNIONED with self-seeded discovered payees (verified rows in
   // celo_x402_payees). Empty-set no-op preserved when all sources are empty.
