@@ -12,7 +12,7 @@
  *   - `short-cycle`    v reaches u in ≤ MAX_CYCLE_LENGTH − 1 hops, i.e. the edge
  *                      lies on a directed cycle of length ≤ MAX_CYCLE_LENGTH.
  *   - `oversized-cluster` the edge is internal to a component the short-cycle
- *                      search could not finish within MAX_SEARCH_STEPS_PER_CLUSTER; stands
+ *                      search could not finish within its step budget; stands
  *                      in for `short-cycle` so the detector fails closed.
  *   - `closed-cluster` the edge is internal to a strongly connected component
  *                      whose members' income or spending mostly stays inside
@@ -49,15 +49,16 @@ export interface PaymentEdge {
 }
 
 /**
- * Edge examinations the short-cycle search may spend on one cluster. The
- * per-wallet BFS is O(V·(V+E)) in a dense cluster, and sub-cent payments make a
- * dense cluster cheap to build, so the work is capped: a cluster the budget
- * cannot finish is flagged `oversized-cluster` instead (fail closed). The
- * budget is per cluster so one dense cluster cannot exhaust it for honest ones;
- * a cluster's real cost is at most its V·E, so the total stays bounded by the
- * input. Today's flow costs ~25 steps.
+ * Edge examinations the short-cycle search may spend on one cluster, and in
+ * total. The per-wallet BFS is O(V·(V+E)) in a dense cluster, and sub-cent
+ * payments make a dense cluster cheap to build, so the work is capped: a
+ * cluster its budget cannot finish is flagged `oversized-cluster` instead
+ * (fail closed). Clusters are searched smallest first, so a dense cluster can
+ * neither starve honest small ones of the shared budget nor exceed its own.
+ * Today's flow costs ~25 steps.
  */
 export const MAX_SEARCH_STEPS_PER_CLUSTER = 5_000_000;
+export const MAX_SEARCH_STEPS_TOTAL = 20_000_000;
 
 export type CycleReason = 'self-payment' | 'short-cycle' | 'oversized-cluster' | 'closed-cluster';
 
@@ -299,12 +300,19 @@ export function detectPaymentCycles(input: ReadonlyArray<PaymentEdge>, chain: Ch
   }
 
   // u→v lies on a cycle ≤ MAX_CYCLE_LENGTH iff v reaches u in ≤ MAX − 1 hops.
-  // One bounded BFS per wallet, shared by all its inbound edges, on a budget
-  // per cluster; a cluster the budget cannot finish is oversized as a whole.
+  // One bounded BFS per wallet, shared by all its inbound edges. Smallest
+  // clusters first, each on min(its own cap, what is left of the total); a
+  // cluster its budget cannot finish is oversized as a whole.
+  const internalEdges = (nodes: number[]) => nodes.reduce((sum, v) => sum + preds[v].length, 0);
+  const searchOrder = [...membersOf]
+    .map(([c, nodes]) => ({ c, nodes, size: internalEdges(nodes) }))
+    .sort((a, b) => a.size - b.size || a.nodes[0] - b.nodes[0]);
   const shortCycleEdges = new Set<string>();
   const oversized = new Set<number>();
-  for (const [c, nodes] of membersOf) {
-    const budget = { steps: MAX_SEARCH_STEPS_PER_CLUSTER };
+  let remaining = MAX_SEARCH_STEPS_TOTAL;
+  for (const { c, nodes } of searchOrder) {
+    const cap = Math.min(MAX_SEARCH_STEPS_PER_CLUSTER, remaining);
+    const budget = { steps: cap };
     for (const v of nodes) {
       const reach = reachableWithin(g, comp, v, MAX_CYCLE_LENGTH - 1, budget);
       if (!reach) {
@@ -313,6 +321,7 @@ export function detectPaymentCycles(input: ReadonlyArray<PaymentEdge>, chain: Ch
       }
       for (const u of preds[v]) if (reach.has(u)) shortCycleEdges.add(`${u}>${v}`);
     }
+    remaining -= cap - Math.max(budget.steps, 0);
   }
 
   const flagged = new Map<string, CycleReason[]>();

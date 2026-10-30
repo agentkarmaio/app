@@ -14,6 +14,7 @@ import {
   CLOSED_CLUSTER_THRESHOLD,
   MAX_CYCLE_LENGTH,
   MAX_SEARCH_STEPS_PER_CLUSTER,
+  MAX_SEARCH_STEPS_TOTAL,
   type PaymentEdge,
 } from './payment-cycles';
 import { CELO_RELAYER_EDGES_2026_10_30, CELO_RING } from './payment-cycles.fixture';
@@ -33,6 +34,7 @@ describe('constants', () => {
     expect(MAX_CYCLE_LENGTH).toBe(6);
     expect(CLOSED_CLUSTER_THRESHOLD).toBe(0.7);
     expect(MAX_SEARCH_STEPS_PER_CLUSTER).toBe(5_000_000);
+    expect(MAX_SEARCH_STEPS_TOTAL).toBe(20_000_000);
   });
 });
 
@@ -257,6 +259,16 @@ describe('scale', () => {
     const r = detectPaymentCycles(complete('k', 200), 'celo');
     expect(reasons(r, 'k0', 'k1')).toEqual(['oversized-cluster', 'closed-cluster']);
     expect(reasons(r, 'k199', 'k0')).toEqual(['oversized-cluster', 'closed-cluster']);
+  });
+
+  test('the total budget caps work across many dense clusters; small ones are searched first', () => {
+    // Each K_150 costs ~3.4M steps (under its own cap); the 6th would exceed the 20M total.
+    const dense = Array.from({ length: 7 }, (_, i) => complete(`d${i}x`, 150)).flat();
+    const r = detectPaymentCycles([...dense, e('a', 'b'), e('b', 'a')], 'celo');
+    expect(reasons(r, 'a', 'b')).toEqual(['short-cycle', 'closed-cluster']);
+    const verdicts = Array.from({ length: 7 }, (_, i) => reasons(r, `d${i}x0`, `d${i}x1`)[0]);
+    expect(verdicts.filter((v) => v === 'short-cycle')).toHaveLength(5);
+    expect(verdicts.filter((v) => v === 'oversized-cluster')).toHaveLength(2);
   });
 
   test('a dense cluster cannot spend the budget of honest clusters around it', () => {
