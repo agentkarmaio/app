@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 import { describe, expect, test } from 'bun:test';
-import { Address, Networks, nativeToScVal, type rpc, type Transaction, type xdr } from '@stellar/stellar-sdk';
+import { Address, Networks, nativeToScVal, type rpc, type Transaction, xdr } from '@stellar/stellar-sdk';
 import { makeStellarRegistryReader } from './stellar-registry';
 import { identityTarget } from '@/integrations/erc8004-stellar';
 import { STELLAR_IDENTITY_REGISTRY, STELLAR_TESTNET_IDENTITY_REGISTRY } from '@/integrations/stellar-config';
@@ -20,7 +20,7 @@ function recordingServer() {
 /** The contract a recorded simulate call invoked. */
 function contractOf(tx: Transaction): string {
   const fn = (tx.operations[0] as unknown as { func: xdr.HostFunction }).func;
-  return Address.fromScAddress(fn.invokeContract().contractAddress()).toString();
+  return Address.fromScAddress(xdr.expectUnionVariant(fn, 'hostFunctionTypeInvokeContract').invokeContract.contractAddress).toString();
 }
 
 describe('makeStellarRegistryReader network targeting', () => {

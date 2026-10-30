@@ -9,7 +9,7 @@
  * are the gate between "anyone can claim any wallet" and "only the keyholder can".
  */
 import { describe, expect, test } from 'bun:test';
-import { Keypair, StrKey } from '@stellar/stellar-sdk';
+import { Account, Keypair, MuxedAccount, StrKey } from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha2.js';
 import {
   buildStellarClaimChallenge,
@@ -24,6 +24,10 @@ import {
 const kp = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 7));
 const G = kp.publicKey();
 const C = StrKey.encodeContract(Buffer.alloc(32, 9));
+// Muxed forms (CAP-27 M…, CAP-84 W…): routing aliases over a base G/C whose
+// balance they share, so they are never a claimable identity.
+const M = new MuxedAccount(new Account(G, '0'), '7').accountId();
+const W = StrKey.encodeMuxedContract(new Uint8Array([...StrKey.decodeContract(C), 0, 0, 0, 0, 0, 0, 0, 42]));
 
 /**
  * Sign the way real Freighter (`@stellar/freighter-api` signMessage) does:
@@ -66,6 +70,12 @@ describe('address guards', () => {
   test('isStellarContractAddress only matches C…', () => {
     expect(isStellarContractAddress(C)).toBe(true);
     expect(isStellarContractAddress(G)).toBe(false);
+  });
+  test('muxed M… / W… addresses match neither guard', () => {
+    for (const muxed of [M, W]) {
+      expect(isStellarAddress(muxed)).toBe(false);
+      expect(isStellarContractAddress(muxed)).toBe(false);
+    }
   });
 });
 
@@ -150,6 +160,12 @@ describe('verifyStellarClaimSignature (the security gate)', () => {
 
   test('C… contract address → false (smart wallets excluded in v1)', () => {
     expect(verifyStellarClaimSignature(C, message, sigHex)).toBe(false);
+  });
+
+  test('muxed M… / W… address → false, even when the base key signed', () => {
+    const mMessage = buildStellarClaimChallenge(M, 1700000000000);
+    expect(verifyStellarClaimSignature(M, mMessage, freighterSignHex(kp, mMessage))).toBe(false);
+    expect(verifyStellarClaimSignature(W, message, sigHex)).toBe(false);
   });
 
   test('wrong-length / malformed StrKey address → false, never throws', () => {

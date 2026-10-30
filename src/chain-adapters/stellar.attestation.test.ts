@@ -26,9 +26,9 @@ const VALIDATOR_KP = Keypair.random();
 function simSuccess(retval: xdr.ScVal) {
   return {
     result: { retval },
-    transactionData: new SorobanDataBuilder().build().toXDR('base64'),
+    transactionData: new SorobanDataBuilder().build().toXdr('base64'),
     minResourceFee: '100',
-    results: [{ auth: [], xdr: xdr.ScVal.scvVoid().toXDR('base64') }],
+    results: [{ auth: [], xdr: xdr.ScVal.scvVoid().toXdr('base64') }],
     latestLedger: 1,
     events: [],
   };

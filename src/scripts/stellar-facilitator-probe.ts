@@ -89,7 +89,7 @@ async function modeB(network: StellarNetwork, limit: number, ledgerLookback: num
 
   const { sequence: latest } = await server.getLatestLedger();
   const startLedger = Math.max(1, latest - ledgerLookback);
-  const transferTopic = xdr.ScVal.scvSymbol('transfer').toXDR('base64');
+  const transferTopic = xdr.ScVal.scvSymbol('transfer').toXdr('base64');
 
   let page: Awaited<ReturnType<typeof server.getEvents>>;
   try {
@@ -156,7 +156,7 @@ async function modeC(network: StellarNetwork, limit: number, ledgerLookback: num
   const server = new rpc.Server(SOROBAN_RPC[network]);
   const { sequence: latest } = await server.getLatestLedger();
   const startLedger = Math.max(1, latest - ledgerLookback);
-  const transferTopic = xdr.ScVal.scvSymbol('transfer').toXDR('base64');
+  const transferTopic = xdr.ScVal.scvSymbol('transfer').toXdr('base64');
 
   let page: Awaited<ReturnType<typeof server.getEvents>>;
   try {

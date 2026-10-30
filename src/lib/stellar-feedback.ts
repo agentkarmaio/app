@@ -95,13 +95,13 @@ export function decodeStellarFeedbackRecord(client: string, index: bigint, raw: 
 /** Decode only this registry's successful contract events, never diagnostic/foreign events. */
 export function parseStellarFeedbackEvent(event: xdr.ContractEvent, txHash?: string): (StellarFeedbackRecord & { agentId: number }) | null {
   try {
-    const contract = event.contractId();
-    if (event.type().name !== 'contract' || !contract || StrKey.encodeContract(contract as unknown as Buffer) !== STELLAR_REPUTATION_REGISTRY) return null;
-    const body = event.body().v0();
-    const topics = body.topics().map(scValToNative);
+    const contract = event.contractId;
+    if (event.type.name !== 'contract' || !contract || StrKey.encodeContract(contract.toBytes()) !== STELLAR_REPUTATION_REGISTRY) return null;
+    const body = event.body.v0;
+    const topics = body.topics.map((topic) => scValToNative(topic));
     if (topics.length !== 4 || topics[0] !== 'new_feedback' || !validAgentId(topics[1])
       || typeof topics[2] !== 'string' || typeof topics[3] !== 'string') return null;
-    const data = scValToNative(body.data()) as Record<string, unknown>;
+    const data = scValToNative(body.data) as Record<string, unknown>;
     if (!data || typeof data.feedback_index !== 'bigint') return null;
     const record = decodeStellarFeedbackRecord(topics[2], data.feedback_index, {
       ...data, tag1: topics[3], is_revoked: false,
@@ -162,21 +162,21 @@ export async function submitStellarFeedback(input: StellarFeedbackInput, deps: S
   }
   checkExpiry();
   deps.signal?.throwIfAborted();
-  const result = await sign(prepared.toXDR(), { networkPassphrase: Networks.PUBLIC, address: input.address });
+  const result = await sign(prepared.toXdr(), { networkPassphrase: Networks.PUBLIC, address: input.address });
   if (result.error) throw new Error(result.error.message);
   if (result.signerAddress !== input.address) throw new Error('The signing wallet changed. Reconnect and try again');
-  const signed = TransactionBuilder.fromXDR(result.signedTxXdr, Networks.PUBLIC);
-  if (!(signed instanceof Transaction) || signed.source !== input.address || !signed.hash().equals(prepared.hash())) {
+  const signed = TransactionBuilder.fromXdr(result.signedTxXdr, Networks.PUBLIC);
+  if (!(signed instanceof Transaction) || signed.source !== input.address || xdr.encodeBytes(signed.hash(), 'hex') !== xdr.encodeBytes(prepared.hash(), 'hex')) {
     throw new Error('Wallet returned a modified feedback transaction');
   }
   const publicKey = Keypair.fromPublicKey(input.address);
   if (!signed.signatures.some((signature) => {
-    try { return publicKey.verify(signed.hash(), signature.signature()); } catch { return false; }
+    try { return publicKey.verify(signed.hash(), signature.signature.toBytes()); } catch { return false; }
   })) throw new Error('Feedback transaction is not signed by the connected wallet');
   await checkNetwork();
   checkExpiry();
   deps.signal?.throwIfAborted();
-  const txHash = signed.hash().toString('hex');
+  const txHash = xdr.encodeBytes(signed.hash(), 'hex');
   // A transport error may happen after acceptance. Never re-submit or report failure from that alone.
   let sent: Awaited<ReturnType<typeof server.sendTransaction>> | undefined;
   try { sent = await server.sendTransaction(signed); } catch { /* confirm the known hash */ }

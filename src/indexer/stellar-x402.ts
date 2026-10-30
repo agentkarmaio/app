@@ -118,12 +118,12 @@ export function parseTransferEvent(raw: RawSorobanEvent): StellarTransferEvent |
  * topic `to` is always the base address, so the mux id is not needed here.
  */
 function transferAmount(value: xdr.ScVal): bigint {
-  if (value.switch() !== xdr.ScValType.scvMap()) {
+  if (value.type !== 'scvMap') {
     return BigInt(scValToNative(value) as bigint | number | string);
   }
-  const entry = (value.map() ?? []).find((e) => scValToNative(e.key()) === 'amount');
+  const entry = (value.map ?? []).find((e) => scValToNative(e.key) === 'amount');
   if (!entry) throw new Error('SAC transfer data map has no amount field');
-  return BigInt(scValToNative(entry.val()) as bigint);
+  return BigInt(scValToNative(entry.val) as bigint);
 }
 
 // ─── Protocol classification ──────────────────────────────────────────────────
@@ -313,7 +313,7 @@ async function rpcGetEvents(
   opts: { sac: string; limit: number },
 ): Promise<GetEventsPage> {
   const server = getRpcServer();
-  const transferTopic = xdr.ScVal.scvSymbol('transfer').toXDR('base64');
+  const transferTopic = xdr.ScVal.scvSymbol('transfer').toXdr('base64');
   const resp = await server.getEvents({
     startLedger,
     filters: [{ type: 'contract', contractIds: [opts.sac], topics: [[transferTopic, '*', '*']] }],
@@ -328,9 +328,10 @@ async function rpcGetEvents(
     topic: e.topic,
     value: e.value,
     txHash: e.txHash,
-    // RPC EventResponse carries no source_account; resolved in rpcResolveSources.
+    // RPC EventResponse carries no source_account or (on newer servers) success
+    // flag; both are resolved authoritatively in rpcResolveSources.
     txSourceAccount: '',
-    txSuccessful: e.inSuccessfulContractCall,
+    txSuccessful: e.inSuccessfulContractCall ?? false,
   }));
   return { events, latestLedger: resp.latestLedger };
 }
@@ -359,8 +360,8 @@ async function rpcResolveSources(events: RawSorobanEvent[]): Promise<void> {
         tx.status === rpc.Api.GetTransactionStatus.SUCCESS ||
         tx.status === rpc.Api.GetTransactionStatus.FAILED
       ) {
-        const envelopeXdr = tx.envelopeXdr.toXDR('base64');
-        const built = TransactionBuilder.fromXDR(envelopeXdr, passphrase);
+        const envelopeXdr = tx.envelopeXdr.toXdr('base64');
+        const built = TransactionBuilder.fromXdr(envelopeXdr, passphrase);
         source = built instanceof FeeBumpTransaction ? built.feeSource : built.source;
       }
       for (const e of group) { e.txSourceAccount = source; e.txSuccessful = success; }

@@ -13,10 +13,10 @@ const input = { agentId: 7, stars: 4, address, comment: 'Useful response â€” teÅ
 function event(overrides: { client?: string; agentId?: number; value?: bigint; decimals?: number; tag1?: string; hash?: Uint8Array; contract?: string; uri?: string } = {}) {
   const bytes = buildFeedbackCommentBytes({ value: 80, stars: 4, comment: input.comment });
   return new xdr.ContractEvent({
-    ext: new xdr.ExtensionPoint(0),
-    contractId: StrKey.decodeContract(overrides.contract ?? STELLAR_REPUTATION_REGISTRY) as unknown as ReturnType<xdr.ContractEvent['contractId']>,
-    type: xdr.ContractEventType.contract(),
-    body: new xdr.ContractEventBody(0, new xdr.ContractEventV0({
+    ext: xdr.ExtensionPoint.v0(),
+    contractId: new xdr.ContractId(StrKey.decodeContract(overrides.contract ?? STELLAR_REPUTATION_REGISTRY)),
+    type: xdr.ContractEventType.contract,
+    body: xdr.ContractEventBody.v0(new xdr.ContractEventV0({
       topics: [nativeToScVal('new_feedback', { type: 'symbol' }), nativeToScVal(overrides.agentId ?? 7, { type: 'u32' }), new Address(overrides.client ?? address).toScVal(), nativeToScVal(overrides.tag1 ?? 'agentkarma_review', { type: 'string' })],
       data: nativeToScVal({ feedback_index: 3n, value: overrides.value ?? 80n, value_decimals: overrides.decimals ?? 0, tag2: 'v0.1', endpoint: '', feedback_uri: overrides.uri ?? encodeFeedbackCommentDataUri(bytes), feedback_hash: Buffer.from(overrides.hash ?? sha256(bytes)) }, { type: { feedback_index: ['symbol', 'u64'], value: ['symbol', 'i128'], value_decimals: ['symbol', 'u32'], tag2: ['symbol', 'string'], endpoint: ['symbol', 'string'], feedback_uri: ['symbol', 'string'], feedback_hash: ['symbol', 'bytes'] } }),
     })),
@@ -28,8 +28,8 @@ function harness() {
   let hash = '';
   const server = {
     getAccount: async () => new Account(address, '42'),
-    simulateTransaction: async () => ({ transactionData: new SorobanDataBuilder().build().toXDR('base64'), minResourceFee: '100', results: [{ auth: [], xdr: xdr.ScVal.scvVoid().toXDR('base64') }], latestLedger: 1, events: [] }),
-    sendTransaction: async (tx: Transaction) => { calls.sends++; hash = tx.hash().toString('hex'); return { status: 'PENDING', hash }; },
+    simulateTransaction: async () => ({ transactionData: new SorobanDataBuilder().build().toXdr('base64'), minResourceFee: '100', results: [{ auth: [], xdr: xdr.ScVal.scvVoid().toXdr('base64') }], latestLedger: 1, events: [] }),
+    sendTransaction: async (tx: Transaction) => { calls.sends++; hash = xdr.encodeBytes(tx.hash(), 'hex'); return { status: 'PENDING', hash }; },
     getTransaction: async () => { calls.polls++; return { status: 'SUCCESS', txHash: hash, events: { contractEventsXdr: [[event()]], transactionEventsXdr: [] } }; },
   };
   const deps = {
@@ -38,9 +38,9 @@ function harness() {
     signTransaction: async (envelope: string, opts: { networkPassphrase: string; address: string }) => {
       calls.signs++;
       expect(opts).toEqual({ networkPassphrase: STELLAR_NETWORK_PASSPHRASE, address });
-      const tx = TransactionBuilder.fromXDR(envelope, opts.networkPassphrase) as Transaction;
+      const tx = TransactionBuilder.fromXdr(envelope, opts.networkPassphrase) as Transaction;
       tx.sign(signer);
-      return { signedTxXdr: tx.toXDR(), signerAddress: address };
+      return { signedTxXdr: tx.toXdr(), signerAddress: address };
     },
     sleep: async () => {}, maxPolls: 2,
   };
@@ -102,9 +102,9 @@ describe('Stellar feedback transaction contract', () => {
   test('claimed signer address cannot substitute for a valid signature', async () => {
     const h = harness();
     h.deps.signTransaction = async (envelope) => {
-      const tx = TransactionBuilder.fromXDR(envelope, STELLAR_NETWORK_PASSPHRASE) as Transaction;
+      const tx = TransactionBuilder.fromXdr(envelope, STELLAR_NETWORK_PASSPHRASE) as Transaction;
       tx.sign(other);
-      return { signedTxXdr: tx.toXDR(), signerAddress: address };
+      return { signedTxXdr: tx.toXdr(), signerAddress: address };
     };
     await expect(submitStellarFeedback(input, h.deps)).rejects.toThrow();
     expect(h.calls.sends).toBe(0);
@@ -120,10 +120,10 @@ describe('Stellar feedback transaction contract', () => {
   test('a body changed by the wallet never sends despite a real caller signature', async () => {
     const h = harness();
     h.deps.signTransaction = async (envelope) => {
-      const original = TransactionBuilder.fromXDR(envelope, STELLAR_NETWORK_PASSPHRASE) as Transaction;
+      const original = TransactionBuilder.fromXdr(envelope, STELLAR_NETWORK_PASSPHRASE) as Transaction;
       const tx = TransactionBuilder.cloneFrom(original, { fee: '123456' }).build();
       tx.sign(signer);
-      return { signedTxXdr: tx.toXDR(), signerAddress: address };
+      return { signedTxXdr: tx.toXdr(), signerAddress: address };
     };
     await expect(submitStellarFeedback(input, h.deps)).rejects.toThrow();
     expect(h.calls.sends).toBe(0);
@@ -193,7 +193,7 @@ describe('Stellar feedback submission uncertainty and consent', () => {
 
   test('a successful simulation with restore preamble must stop before fees or signing', async () => {
     const h = harness(); const simulate = h.server.simulateTransaction; let feeRequested = false;
-    Object.assign(h.server, { simulateTransaction: async () => ({ ...await simulate(), restorePreamble: { minResourceFee: '500', transactionData: new SorobanDataBuilder().build().toXDR('base64') } }) });
+    Object.assign(h.server, { simulateTransaction: async () => ({ ...await simulate(), restorePreamble: { minResourceFee: '500', transactionData: new SorobanDataBuilder().build().toXdr('base64') } }) });
     await expect(submitStellarFeedback(input, { ...h.deps, confirmFee: async () => { feeRequested = true; return true; } })).rejects.toThrow(/restor/i);
     expect(feeRequested).toBe(false); expect(h.calls.signs).toBe(0); expect(h.calls.sends).toBe(0);
   });
@@ -247,7 +247,7 @@ describe('Stellar feedback submission uncertainty and consent', () => {
 
   test('restore-required simulation never signs the unready invocation', async () => {
     const h = harness();
-    Object.assign(h.server, { simulateTransaction: async () => ({ latestLedger: 1, restorePreamble: { minResourceFee: '500', transactionData: new SorobanDataBuilder().build().toXDR('base64') } }) });
+    Object.assign(h.server, { simulateTransaction: async () => ({ latestLedger: 1, restorePreamble: { minResourceFee: '500', transactionData: new SorobanDataBuilder().build().toXdr('base64') } }) });
     await expect(submitStellarFeedback(input, h.deps)).rejects.toThrow();
     expect(h.calls.signs).toBe(0); expect(h.calls.sends).toBe(0);
   });

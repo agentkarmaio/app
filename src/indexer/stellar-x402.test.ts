@@ -114,6 +114,12 @@ describe('parseTransferEvent', () => {
     }
   });
 
+  test('decodes a W… muxed-contract address topic (SDK 16.x threw here)', () => {
+    const W = StrKey.encodeMuxedContract(new Uint8Array([...StrKey.decodeContract(CHANNEL_C), 0, 0, 0, 0, 0, 0, 0, 42]));
+    const raw = makeTransferEvent({ from: CONSUMER, to: W, amount: 1n });
+    expect(parseTransferEvent(raw)!.to).toBe(W);
+  });
+
   test('throws on a data map without an amount instead of guessing', () => {
     const raw = makeTransferEvent({ from: CONSUMER, to: PROVIDER, amount: 1n, toMuxedId: 7n });
     raw.value = xdr.ScVal.scvMap([
