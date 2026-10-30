@@ -20,6 +20,7 @@ import { coverageOutcome } from '@/lib/indexing-jobs';
 
 import { requireEnv } from '../lib/require-env';
 import { runCeloX402Indexer } from './celo-x402';
+import type { CeloX402PromotionResult } from './celo-x402-promotion';
 import { celoX402FacilitatorSetWithDiscovered, celoX402RelayerSet } from '../config/celo-x402';
 
 function numArg(flag: string): number | undefined {
@@ -46,6 +47,38 @@ console.log(`[celo-indexer] watching: ${[...facilitators].join(', ')}`);
 console.log(`[celo-indexer] relayers (quarantined → celo_x402_settlements): ${[...celoX402RelayerSet()].join(', ')}`);
 
 const start = Date.now();
+
+function printPromotion(p: CeloX402PromotionResult | { error: string }, dry: boolean): void {
+  const tag = dry ? 'DRY-RUN promotion' : 'promotion';
+  if ('error' in p) {
+    console.error(`[celo-indexer] ${tag} FAILED: ${p.error}`);
+    return;
+  }
+  if (!p.slice) {
+    console.log(`[celo-indexer] ${tag}: nothing due`);
+    return;
+  }
+  console.log(
+    `[celo-indexer] ${tag} slice (${p.slice.from ?? 'start'}, ${p.slice.to}]: decided ${p.decided}` +
+    ` | promote ${p.promoted.length} (inserted ${p.inserted}) | quarantine ${p.quarantined.length}`,
+  );
+  for (const c of p.clusters) {
+    console.log(
+      `  cluster ${c.members.length} wallets  closure ${c.closure.toFixed(3)}  ${c.count} payments  $${c.value.toFixed(2)}` +
+      `  loop ${c.sampleCycle.map((a) => a.slice(0, 10)).join(' → ')} → ${c.sampleCycle[0].slice(0, 10)}`,
+    );
+  }
+  for (const l of p.lateFlagged) {
+    console.warn(`  LATE FLAG ${l.payer} → ${l.payee}: ${l.promoted} promoted rows now ${l.reasons.join('+')}`);
+  }
+  if (!dry) return;
+  for (const t of p.promoted.slice(0, 20)) {
+    console.log(`  promote  ${t.timestamp}  ${String(t.amount).padStart(10)}  ${t.wallet_address.slice(0, 10)}… → ${t.counterparty?.slice(0, 10)}…`);
+  }
+  for (const q of p.quarantined.slice(0, 20)) {
+    console.log(`  hold     ${q.row.block_time}  ${String(q.row.amount).padStart(10)}  ${q.row.payer.slice(0, 10)}… → ${q.row.payee.slice(0, 10)}…  ${q.reasons.join('+')}`);
+  }
+}
 
 runIndexerCli({
   chain: 'celo', path: 'payments', dryRun: dryRun,
@@ -79,6 +112,7 @@ runIndexerCli({
       }
       if (result.settlements.length > 20) console.log(`  …and ${result.settlements.length - 20} more`);
     }
+    printPromotion(result.promotion, dryRun);
     for (const [k, v] of result.cursors) console.log(`[celo-indexer] cursor ${k} → ${v}`);
     process.exit(exitCode);
   })

@@ -3978,6 +3978,68 @@ export async function insertCeloX402Settlements(
   return rows.length;
 }
 
+/** Newest `block_time` in the settlement quarantine, or null when it is empty. */
+export async function getCeloX402MaxBlockTime(chain: Chain = 'celo'): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('celo_x402_settlements')
+    .select('block_time')
+    .eq('chain', chain)
+    .order('block_time', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  return (data as { block_time: string }[] | null)?.[0]?.block_time ?? null;
+}
+
+/**
+ * Quarantined settlements with `fromExclusive < block_time ≤ toInclusive`
+ * (`fromExclusive` null = from the start), oldest first. Paged past PostgREST's
+ * response cap; the upper bound is fixed, so offsets cannot shift under new
+ * inserts. Feeds the promotion step's cycle graph.
+ */
+export async function getCeloX402Settlements(
+  fromExclusive: string | null,
+  toInclusive: string,
+  chain: Chain = 'celo',
+): Promise<import('@/indexer/celo-x402-promotion').QuarantinedSettlement[]> {
+  const pageSize = 1000;
+  const rows: import('@/indexer/celo-x402-promotion').QuarantinedSettlement[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const page = await withTransientDbRetry(async () => {
+      let query = supabase
+        .from('celo_x402_settlements')
+        .select('tx_hash, log_index, block_time, relayer, payer, payee, amount')
+        .eq('chain', chain)
+        .lte('block_time', toInclusive);
+      if (fromExclusive != null) query = query.gt('block_time', fromExclusive);
+      const { data, error } = await query
+        .order('block_time', { ascending: true })
+        .order('tx_hash', { ascending: true })
+        .order('log_index', { ascending: true })
+        .range(offset, offset + pageSize - 1);
+      if (error) throw error;
+      return (data ?? []) as import('@/indexer/celo-x402-promotion').QuarantinedSettlement[];
+    });
+    rows.push(...page);
+    if (page.length < pageSize) return rows;
+  }
+}
+
+/** `transactions` rows on one payer → payee edge: promoted settlements a later cycle now flags. */
+export async function countCeloX402PromotedOnEdge(
+  payer: string,
+  payee: string,
+  chain: Chain = 'celo',
+): Promise<number> {
+  const { count, error } = await supabase
+    .from('transactions')
+    .select('id', { count: 'exact', head: true })
+    .eq('chain', chain)
+    .eq('wallet_address', payer.toLowerCase())
+    .eq('counterparty', payee.toLowerCase());
+  if (error) throw error;
+  return count ?? 0;
+}
+
 /** Saved registry feedback, including revoked records, for read-only archives. */
 export async function getErc8004Feedback(
   chain: Chain,

@@ -56,6 +56,7 @@ import {
 import { INGEST_RETRY, withRateLimitRetry } from '@/lib/rpc-retry';
 import { buildPayshRoutedSignal } from '@/scoring/signals';
 import { runCeloX402RelayerIndexer, type CeloX402Settlement } from './celo-x402-relayer';
+import { runCeloX402Promotion, type CeloX402PromotionResult } from './celo-x402-promotion';
 
 const CELO_CHAIN: Chain = 'celo';
 
@@ -125,6 +126,12 @@ export function toRecord(
 
 // ─── Row + signal mapping ───────────────────────────────────────────────────
 
+/**
+ * The fields the row + signal mappers read. Payee-mode transfers carry more;
+ * promoted relayer settlements (`celo-x402-promotion.ts`) carry exactly these.
+ */
+export type CeloX402Payment = Pick<CeloX402Transfer, 'txHash' | 'logIndex' | 'from' | 'to' | 'value' | 'facilitator'>;
+
 /** Stable per-event id: a tx MAY carry several matching Transfers (batch). */
 export function celoTxSignature(t: Pick<CeloX402Transfer, 'txHash' | 'logIndex'>): string {
   return `${t.txHash}:${t.logIndex}`;
@@ -136,7 +143,7 @@ export function celoTxSignature(t: Pick<CeloX402Transfer, 'txHash' | 'logIndex'>
  * facilitator/payee is recorded as `facilitator` (mirrors Stellar's
  * from=payer / facilitator=router mapping).
  */
-export function toTransactionRow(t: CeloX402Transfer, observedAt: string): Omit<Transaction, 'id'> {
+export function toTransactionRow(t: CeloX402Payment, observedAt: string): Omit<Transaction, 'id'> {
   return {
     chain: CELO_CHAIN,
     wallet_address: t.from,
@@ -157,7 +164,7 @@ export function toTransactionRow(t: CeloX402Transfer, observedAt: string): Omit<
  * set to 'celo' explicitly so the (chain, agent_wallet) FK + dedup index key to
  * the Celo wallet rows (the base builder leaves chain unset → DB default).
  */
-export function toSignalPair(t: CeloX402Transfer, observedAt: string): InsertSignalEventInput[] {
+export function toSignalPair(t: CeloX402Payment, observedAt: string): InsertSignalEventInput[] {
   const consumer = t.from; // payer
   const provider = t.to;   // payee
   const txRef = celoTxSignature(t);
@@ -403,16 +410,23 @@ async function rpcGetLogs(
 }
 
 /**
- * Production indexer run: payee mode (Tier-1 `transactions` rows) then relayer
+ * Production indexer run: payee mode (Tier-1 `transactions` rows), then relayer
  * mode (quarantined `celo_x402_settlements` rows), sharing one time budget so
- * the pair fits the managed job's lease.
+ * the pair fits the managed job's lease, then promotion of the quarantined rows
+ * the payment-cycle detector leaves clean (`celo-x402-promotion.ts`).
  *
  * `opts.dryRun` returns the would-be rows (`rows` for payee mode, `settlements`
- * for relayer mode) WITHOUT writing to the DB or advancing either cursor.
+ * for relayer mode, `promotion` for the promotion decision) WITHOUT writing to
+ * the DB or advancing any cursor.
  */
 export async function runCeloX402Indexer(
   opts: CeloRunOpts = {},
-): Promise<CeloX402RunResult & { rows?: Omit<Transaction, 'id'>[]; settlements?: CeloX402Settlement[] }> {
+): Promise<CeloX402RunResult & {
+  rows?: Omit<Transaction, 'id'>[];
+  settlements?: CeloX402Settlement[];
+  /** `{ error }` when promotion threw; the ingest legs' results still stand. */
+  promotion: CeloX402PromotionResult | { error: string };
+}> {
   // Both Celo x402 sources in one run, so every trigger (managed job, cron
   // route, CLI, chain adapter) covers them without per-caller wiring.
   const budgetMs = opts.timeBudgetMs ?? 120_000;
@@ -422,11 +436,23 @@ export async function runCeloX402Indexer(
     ...opts,
     timeBudgetMs: Math.max(1, budgetMs - (Date.now() - startedAt)),
   });
+  // A promotion failure must not discard the legs above, which have already
+  // moved their cursors. It surfaces as incomplete coverage instead, so the run
+  // reports partial rather than caught_up.
+  const promotion = await runCeloX402Promotion({ dryRun: opts.dryRun, signal: opts.signal })
+    .catch((err: unknown) => {
+      if (opts.signal?.aborted) throw err;
+      console.error('[celo-x402] promotion failed:', err);
+      return { error: err instanceof Error ? err.message : String(err) };
+    });
+  const coverage = mergeCoverage(payee.coverage, relayer.coverage);
   return {
     fetched: payee.fetched + relayer.fetched,
-    inserted: payee.inserted + relayer.inserted,
+    // Relayer rows land in quarantine; promoted rows are the ones reaching `transactions`.
+    inserted: payee.inserted + relayer.inserted + ('error' in promotion ? 0 : promotion.inserted),
+    promotion,
     cursors: new Map([...payee.cursors, ...relayer.cursors]),
-    coverage: mergeCoverage(payee.coverage, relayer.coverage),
+    coverage: 'error' in promotion ? { ...coverage, complete: false, reason: 'promotion_failed' } : coverage,
     ...(payee.rows ? { rows: payee.rows } : {}),
     ...(relayer.rows ? { settlements: relayer.rows } : {}),
   };
