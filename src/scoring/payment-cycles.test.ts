@@ -13,7 +13,7 @@ import {
   edgeKey,
   CLOSED_CLUSTER_THRESHOLD,
   MAX_CYCLE_LENGTH,
-  MAX_SEARCHED_CLUSTER_EDGES,
+  MAX_SEARCH_STEPS,
   type PaymentEdge,
 } from './payment-cycles';
 import { CELO_RELAYER_EDGES_2026_10_30, CELO_RING } from './payment-cycles.fixture';
@@ -32,7 +32,7 @@ describe('constants', () => {
   test('match the approved spec', () => {
     expect(MAX_CYCLE_LENGTH).toBe(6);
     expect(CLOSED_CLUSTER_THRESHOLD).toBe(0.7);
-    expect(MAX_SEARCHED_CLUSTER_EDGES).toBe(50_000);
+    expect(MAX_SEARCH_STEPS).toBe(5_000_000);
   });
 });
 
@@ -109,23 +109,37 @@ describe('short-cycle rule', () => {
 });
 
 describe('closed-cluster (low-diversity) rule', () => {
-  test('7-cycle leaking 40% of outbound value is clean', () => {
-    const edges = [...cycle('l', 7, 6), ...Array.from({ length: 7 }, (_, i) => e(`l${i}`, 'out', 4))];
-    const r = detectPaymentCycles(edges, 'celo');
-    expect(r.flagged.size).toBe(0);
-    expect(r.clusters[0].closure).toBeCloseTo(0.6, 10);
+  /** 7-cycle of value 6 per edge, with `leak` paid out and `inflow` paid in per member. */
+  const leaky = (leak: number, inflow: number, count = 1) => [
+    ...cycle('l', 7, 6),
+    ...Array.from({ length: 7 }, (_, i) => e(`l${i}`, `out${i}`, leak, count)),
+    ...Array.from({ length: 7 }, (_, i) => e(`in${i}`, `l${i}`, inflow, count)),
+  ];
+
+  test('leaking 40% of spending but earning only from each other is flagged', () => {
+    const r = detectPaymentCycles(leaky(4, 0), 'celo');
+    expect(r.clusters[0].closure).toBe(1);
+    expect(reasons(r, 'l0', 'l1')).toEqual(['closed-cluster']);
+    expect(reasons(r, 'l0', 'out0')).toEqual([]);
   });
 
-  test('7-cycle receiving 40% of inbound value from outside is clean (min of both sides)', () => {
-    const edges = [...cycle('l', 7, 6), ...Array.from({ length: 7 }, (_, i) => e('in', `l${i}`, 4))];
-    const r = detectPaymentCycles(edges, 'celo');
-    expect(r.flagged.size).toBe(0);
+  test('one-way inflow from outside cannot dilute a ring that spends only on itself', () => {
+    const r = detectPaymentCycles(leaky(0, 40), 'celo');
+    expect(r.clusters[0].closure).toBe(1);
+    expect(reasons(r, 'l0', 'l1')).toEqual(['closed-cluster']);
+    expect(reasons(r, 'in0', 'l0')).toEqual([]);
+  });
+
+  test('a loop with 40% outside flow on both sides is an open economy: clean', () => {
+    const r = detectPaymentCycles(leaky(4, 4, 2), 'celo');
+    // by value 42 / 70 = 0.6; by count 7 / 21 on each side
     expect(r.clusters[0].closure).toBeCloseTo(0.6, 10);
+    expect(r.flagged.size).toBe(0);
   });
 
   test('closure exactly at the threshold is flagged', () => {
-    // by value: internal 42 / outbound 60; by count: 7 / 10 → both 0.7
-    const r = detectPaymentCycles([...cycle('l', 7, 6), e('l0', 'out', 18, 3)], 'celo');
+    // by value: internal 42 / 60 on both sides; by count: 7 / 28
+    const r = detectPaymentCycles([...cycle('l', 7, 6), e('l0', 'out', 18, 21), e('in', 'l0', 18, 21)], 'celo');
     expect(r.clusters[0].closure).toBe(0.7);
     expect(reasons(r, 'l0', 'l1')).toEqual(['closed-cluster']);
     expect(reasons(r, 'l0', 'out')).toEqual([]);
@@ -138,8 +152,8 @@ describe('closed-cluster (low-diversity) rule', () => {
   });
 
   test('closed by count even when value leaks out', () => {
-    // One large outbound payment carries most of the value; nearly every payment stays inside.
-    const r = detectPaymentCycles([...cycle('l', 7, 1, 10), e('l0', 'out', 100)], 'celo');
+    // One large payment out and one in carry most of the value; nearly every payment stays inside.
+    const r = detectPaymentCycles([...cycle('l', 7, 1, 10), e('l0', 'out', 100), e('in', 'l3', 100)], 'celo');
     expect(r.clusters[0].closure).toBeCloseTo(70 / 71, 10);
     expect(reasons(r, 'l3', 'l4')).toEqual(['closed-cluster']);
   });
@@ -177,10 +191,13 @@ describe('self-payment', () => {
   });
 
   test('inside a cluster it keeps only its own reason, and its value counts as internal', () => {
-    const r = detectPaymentCycles([e('a', 'a', 10), e('a', 'b', 1), e('b', 'a', 1), e('b', 'x', 2)], 'celo');
+    const r = detectPaymentCycles(
+      [e('a', 'a', 10), e('a', 'b', 1), e('b', 'a', 1), e('b', 'x', 2), e('y', 'a', 2)],
+      'celo',
+    );
     expect(reasons(r, 'a', 'a')).toEqual(['self-payment']);
     expect(reasons(r, 'a', 'b')).toEqual(['short-cycle', 'closed-cluster']);
-    // internal 12, outbound 14, inbound 12 → min 12/14
+    // by value: internal 12 / 14 on both sides; by count: 3 / 4
     expect(r.clusters[0].closure).toBeCloseTo(12 / 14, 10);
     expect(r.clusters[0].count).toBe(3);
   });
@@ -226,17 +243,27 @@ describe('scale', () => {
     expect(r.clusters[0].sampleCycle).toHaveLength(20_000);
   });
 
-  test('a cluster above the search cap fails closed without a search', () => {
-    // A 2-cycle hidden inside: it would be short-cycle if searched.
-    const r = detectPaymentCycles([...cycle('w', MAX_SEARCHED_CLUSTER_EDGES), e('w1', 'w0')], 'celo');
-    expect(reasons(r, 'w1', 'w0')).toEqual(['oversized-cluster', 'closed-cluster']);
-    expect(reasons(r, 'w5', 'w6')).toEqual(['oversized-cluster', 'closed-cluster']);
+  /** Complete directed graph on n wallets: every BFS sees ~n² edges, so ~n³ steps in all. */
+  const complete = (prefix: string, n: number) =>
+    Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => j))
+      .flatMap((row, i) => row.filter((j) => j !== i).map((j) => e(`${prefix}${i}`, `${prefix}${j}`)));
+
+  test('a cluster within the search budget is searched', () => {
+    const r = detectPaymentCycles(complete('k', 100), 'celo');
+    expect(reasons(r, 'k0', 'k1')).toEqual(['short-cycle', 'closed-cluster']);
   });
 
-  test('a cluster exactly at the cap is still searched', () => {
-    const r = detectPaymentCycles([...cycle('w', MAX_SEARCHED_CLUSTER_EDGES - 1), e('w1', 'w0')], 'celo');
-    expect(reasons(r, 'w1', 'w0')).toEqual(['short-cycle', 'closed-cluster']);
-    expect(reasons(r, 'w5', 'w6')).toEqual(['closed-cluster']);
+  test('a cluster the budget cannot finish fails closed', () => {
+    const r = detectPaymentCycles(complete('k', 200), 'celo');
+    expect(reasons(r, 'k0', 'k1')).toEqual(['oversized-cluster', 'closed-cluster']);
+    expect(reasons(r, 'k199', 'k0')).toEqual(['oversized-cluster', 'closed-cluster']);
+  });
+
+  test('once the budget is spent, later clusters fail closed too, earlier ones keep their result', () => {
+    // The pair is indexed first and searched in full; the dense cluster exhausts the budget.
+    const r = detectPaymentCycles([e('a', 'b'), e('b', 'a'), ...complete('k', 200), e('x', 'y'), e('y', 'x')], 'celo');
+    expect(reasons(r, 'a', 'b')).toEqual(['short-cycle', 'closed-cluster']);
+    expect(reasons(r, 'x', 'y')).toEqual(['oversized-cluster', 'closed-cluster']);
   });
 
   test('clusters are ordered by value, largest first', () => {
