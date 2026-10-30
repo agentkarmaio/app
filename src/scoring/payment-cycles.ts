@@ -12,7 +12,7 @@
  *   - `short-cycle`    v reaches u in ≤ MAX_CYCLE_LENGTH − 1 hops, i.e. the edge
  *                      lies on a directed cycle of length ≤ MAX_CYCLE_LENGTH.
  *   - `oversized-cluster` the edge is internal to a component the short-cycle
- *                      search could not finish within MAX_SEARCH_STEPS; stands
+ *                      search could not finish within MAX_SEARCH_STEPS_PER_CLUSTER; stands
  *                      in for `short-cycle` so the detector fails closed.
  *   - `closed-cluster` the edge is internal to a strongly connected component
  *                      whose members' income or spending mostly stays inside
@@ -49,13 +49,15 @@ export interface PaymentEdge {
 }
 
 /**
- * Edge examinations the short-cycle search may spend per call, across all
- * clusters. The per-wallet BFS is O(V·(V+E)) in a dense cluster, and sub-cent
- * payments make a dense cluster cheap to build, so the work itself is capped:
- * every cluster the budget cannot finish is flagged `oversized-cluster`
- * instead (fail closed). Today's flow costs ~25 steps.
+ * Edge examinations the short-cycle search may spend on one cluster. The
+ * per-wallet BFS is O(V·(V+E)) in a dense cluster, and sub-cent payments make a
+ * dense cluster cheap to build, so the work is capped: a cluster the budget
+ * cannot finish is flagged `oversized-cluster` instead (fail closed). The
+ * budget is per cluster so one dense cluster cannot exhaust it for honest ones;
+ * a cluster's real cost is at most its V·E, so the total stays bounded by the
+ * input. Today's flow costs ~25 steps.
  */
-export const MAX_SEARCH_STEPS = 5_000_000;
+export const MAX_SEARCH_STEPS_PER_CLUSTER = 5_000_000;
 
 export type CycleReason = 'self-payment' | 'short-cycle' | 'oversized-cluster' | 'closed-cluster';
 
@@ -288,20 +290,29 @@ export function detectPaymentCycles(input: ReadonlyArray<PaymentEdge>, chain: Ch
     closure.set(c, Math.max(by('value'), by('count')));
   }
 
+  const membersOf = new Map<number, number[]>();
+  for (let v = 0; v < comp.length; v++) {
+    if (!inCluster(v)) continue;
+    const list = membersOf.get(comp[v]) ?? [];
+    list.push(v);
+    membersOf.set(comp[v], list);
+  }
+
   // u→v lies on a cycle ≤ MAX_CYCLE_LENGTH iff v reaches u in ≤ MAX − 1 hops.
-  // One bounded BFS per wallet, shared by all its inbound edges; a cluster with
-  // any wallet the budget could not finish is oversized as a whole.
+  // One bounded BFS per wallet, shared by all its inbound edges, on a budget
+  // per cluster; a cluster the budget cannot finish is oversized as a whole.
   const shortCycleEdges = new Set<string>();
   const oversized = new Set<number>();
-  const budget = { steps: MAX_SEARCH_STEPS };
-  for (let v = 0; v < g.names.length; v++) {
-    if (preds[v].length === 0 || oversized.has(comp[v])) continue;
-    const reach = reachableWithin(g, comp, v, MAX_CYCLE_LENGTH - 1, budget);
-    if (!reach) {
-      oversized.add(comp[v]);
-      continue;
+  for (const [c, nodes] of membersOf) {
+    const budget = { steps: MAX_SEARCH_STEPS_PER_CLUSTER };
+    for (const v of nodes) {
+      const reach = reachableWithin(g, comp, v, MAX_CYCLE_LENGTH - 1, budget);
+      if (!reach) {
+        oversized.add(c);
+        break;
+      }
+      for (const u of preds[v]) if (reach.has(u)) shortCycleEdges.add(`${u}>${v}`);
     }
-    for (const u of preds[v]) if (reach.has(u)) shortCycleEdges.add(`${u}>${v}`);
   }
 
   const flagged = new Map<string, CycleReason[]>();
@@ -318,14 +329,6 @@ export function detectPaymentCycles(input: ReadonlyArray<PaymentEdge>, chain: Ch
     else if (shortCycleEdges.has(`${edge.from}>${edge.to}`)) reasons.push('short-cycle');
     if (closure.get(c)! >= CLOSED_CLUSTER_THRESHOLD) reasons.push('closed-cluster');
     if (reasons.length > 0) flagged.set(key, reasons);
-  }
-
-  const membersOf = new Map<number, number[]>();
-  for (let v = 0; v < comp.length; v++) {
-    if (!inCluster(v)) continue;
-    const list = membersOf.get(comp[v]) ?? [];
-    list.push(v);
-    membersOf.set(comp[v], list);
   }
 
   const clusters: PaymentCluster[] = [...membersOf].map(([c, nodes]) => {

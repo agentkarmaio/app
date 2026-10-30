@@ -13,7 +13,7 @@ import {
   edgeKey,
   CLOSED_CLUSTER_THRESHOLD,
   MAX_CYCLE_LENGTH,
-  MAX_SEARCH_STEPS,
+  MAX_SEARCH_STEPS_PER_CLUSTER,
   type PaymentEdge,
 } from './payment-cycles';
 import { CELO_RELAYER_EDGES_2026_10_30, CELO_RING } from './payment-cycles.fixture';
@@ -32,7 +32,7 @@ describe('constants', () => {
   test('match the approved spec', () => {
     expect(MAX_CYCLE_LENGTH).toBe(6);
     expect(CLOSED_CLUSTER_THRESHOLD).toBe(0.7);
-    expect(MAX_SEARCH_STEPS).toBe(5_000_000);
+    expect(MAX_SEARCH_STEPS_PER_CLUSTER).toBe(5_000_000);
   });
 });
 
@@ -259,11 +259,11 @@ describe('scale', () => {
     expect(reasons(r, 'k199', 'k0')).toEqual(['oversized-cluster', 'closed-cluster']);
   });
 
-  test('once the budget is spent, later clusters fail closed too, earlier ones keep their result', () => {
-    // The pair is indexed first and searched in full; the dense cluster exhausts the budget.
+  test('a dense cluster cannot spend the budget of honest clusters around it', () => {
     const r = detectPaymentCycles([e('a', 'b'), e('b', 'a'), ...complete('k', 200), e('x', 'y'), e('y', 'x')], 'celo');
+    expect(reasons(r, 'k0', 'k1')).toEqual(['oversized-cluster', 'closed-cluster']);
     expect(reasons(r, 'a', 'b')).toEqual(['short-cycle', 'closed-cluster']);
-    expect(reasons(r, 'x', 'y')).toEqual(['oversized-cluster', 'closed-cluster']);
+    expect(reasons(r, 'x', 'y')).toEqual(['short-cycle', 'closed-cluster']);
   });
 
   test('clusters are ordered by value, largest first', () => {
