@@ -271,6 +271,14 @@ describe('scale', () => {
     expect(verdicts.filter((v) => v === 'oversized-cluster')).toHaveLength(2);
   });
 
+  test('outside fan-out does not count against a cluster\'s search budget', () => {
+    // A 2-cycle whose members also pay 20,000 outside wallets each.
+    const fan = ['a', 'b'].flatMap((m) => Array.from({ length: 20_000 }, (_, i) => e(m, `${m}out${i}`, 1)));
+    const r = detectPaymentCycles([e('a', 'b'), e('b', 'a'), ...fan], 'celo');
+    // Searched, not oversized; closed on the inbound side (they earn only from each other).
+    expect(reasons(r, 'a', 'b')).toEqual(['short-cycle', 'closed-cluster']);
+  });
+
   test('a dense cluster cannot spend the budget of honest clusters around it', () => {
     const r = detectPaymentCycles([e('a', 'b'), e('b', 'a'), ...complete('k', 200), e('x', 'y'), e('y', 'x')], 'celo');
     expect(reasons(r, 'k0', 'k1')).toEqual(['oversized-cluster', 'closed-cluster']);

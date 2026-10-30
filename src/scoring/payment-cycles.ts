@@ -21,6 +21,11 @@
  *                      longer than the short-cycle bound, and one-way inflow
  *                      from outside cannot dilute it below the bar.
  *
+ * Known limit: a loop longer than MAX_CYCLE_LENGTH whose members both earn
+ * and spend ≥ 30% (by value and by count) with outside wallets reads as an
+ * open economy and is not flagged. Defeating the rule that way means paying
+ * real outside flow on both sides; catching it needs funding provenance.
+ *
  * Both cluster rules require value to come BACK (an SCC). A one-way pair whose
  * payer pays only that payee is concentrated but not self-dealing; without the
  * SCC gate every customer with a single supplier would be quarantined.
@@ -223,20 +228,20 @@ function shortestLoop(g: Graph, comp: number[], start: number): number[] {
 }
 
 /**
- * Every node `from` reaches in 1..maxHops hops inside its own component, or
- * null once `budget.steps` (one per edge examined) runs out.
+ * Every node `from` reaches in 1..maxHops hops over `inner` (edges inside its
+ * own component), or null once `budget.steps` (one per edge examined) runs out.
  */
 function reachableWithin(
-  g: Graph, comp: number[], from: number, maxHops: number, budget: { steps: number },
+  inner: number[][], from: number, maxHops: number, budget: { steps: number },
 ): Set<number> | null {
   const seen = new Set<number>();
   let frontier = [from];
   for (let hop = 1; hop <= maxHops && frontier.length > 0; hop++) {
     const next: number[] = [];
     for (const x of frontier) {
-      for (const y of g.out[x]) {
+      for (const y of inner[x]) {
         if (--budget.steps < 0) return null;
-        if (comp[y] !== comp[from] || seen.has(y)) continue;
+        if (seen.has(y)) continue;
         seen.add(y);
         next.push(y);
       }
@@ -270,15 +275,21 @@ export function detectPaymentCycles(input: ReadonlyArray<PaymentEdge>, chain: Ch
     if (!t) tally.set(c, (t = { internal: emptyFlow(), out: emptyFlow(), in: emptyFlow() }));
     return t;
   };
-  // Internal non-self edges, by payee: preds[v] = every u with u→v inside v's cluster.
+  // Internal non-self edges, both ways: preds[v] = every u with u→v inside v's
+  // cluster, inner[u] = every such v. The search walks `inner` only, so outside
+  // fan-out costs it nothing and its cost matches the cluster's edge count.
   const preds = g.names.map((): number[] => []);
+  const inner = g.names.map((): number[] => []);
   for (const edge of g.edges) {
     if (inCluster(edge.from)) addFlow(tallyOf(comp[edge.from]).out, edge);
     if (inCluster(edge.to)) addFlow(tallyOf(comp[edge.to]).in, edge);
     if (inCluster(edge.from) && comp[edge.from] === comp[edge.to]) {
       const t = tallyOf(comp[edge.from]);
       addFlow(t.internal, edge);
-      if (edge.from !== edge.to) preds[edge.to].push(edge.from);
+      if (edge.from !== edge.to) {
+        preds[edge.to].push(edge.from);
+        inner[edge.from].push(edge.to);
+      }
     }
   }
 
@@ -314,7 +325,7 @@ export function detectPaymentCycles(input: ReadonlyArray<PaymentEdge>, chain: Ch
     const cap = Math.min(MAX_SEARCH_STEPS_PER_CLUSTER, remaining);
     const budget = { steps: cap };
     for (const v of nodes) {
-      const reach = reachableWithin(g, comp, v, MAX_CYCLE_LENGTH - 1, budget);
+      const reach = reachableWithin(inner, v, MAX_CYCLE_LENGTH - 1, budget);
       if (!reach) {
         oversized.add(c);
         break;
