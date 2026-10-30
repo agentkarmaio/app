@@ -26,8 +26,9 @@
  * Default network: testnet. Add --pubnet for mainnet.
  */
 import { appendFileSync } from 'fs';
-import { rpc, xdr } from '@stellar/stellar-sdk';
+import { rpc } from '@stellar/stellar-sdk';
 import { USDC_SAC, type StellarNetwork } from '../config/stellar-x402';
+import { SAC_TRANSFER_TOPIC_FILTER } from '../indexer/stellar-x402';
 import { optionalEnv } from '../lib/require-env';
 
 const HORIZON: Record<StellarNetwork, string> = {
@@ -89,13 +90,12 @@ async function modeB(network: StellarNetwork, limit: number, ledgerLookback: num
 
   const { sequence: latest } = await server.getLatestLedger();
   const startLedger = Math.max(1, latest - ledgerLookback);
-  const transferTopic = xdr.ScVal.scvSymbol('transfer').toXdr('base64');
 
   let page: Awaited<ReturnType<typeof server.getEvents>>;
   try {
     page = await server.getEvents({
       startLedger,
-      filters: [{ type: 'contract', contractIds: [sac], topics: [[transferTopic, '*', '*']] }],
+      filters: [{ type: 'contract', contractIds: [sac], topics: [[...SAC_TRANSFER_TOPIC_FILTER]] }],
       limit,
     });
   } catch (err) {
@@ -156,13 +156,12 @@ async function modeC(network: StellarNetwork, limit: number, ledgerLookback: num
   const server = new rpc.Server(SOROBAN_RPC[network]);
   const { sequence: latest } = await server.getLatestLedger();
   const startLedger = Math.max(1, latest - ledgerLookback);
-  const transferTopic = xdr.ScVal.scvSymbol('transfer').toXdr('base64');
 
   let page: Awaited<ReturnType<typeof server.getEvents>>;
   try {
     page = await server.getEvents({
       startLedger,
-      filters: [{ type: 'contract', contractIds: [sac], topics: [[transferTopic, '*', '*']] }],
+      filters: [{ type: 'contract', contractIds: [sac], topics: [[...SAC_TRANSFER_TOPIC_FILTER]] }],
       limit,
     });
   } catch (err) {

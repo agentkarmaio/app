@@ -13,6 +13,7 @@ import { describe, expect, test } from 'bun:test';
 import { Address, Keypair, nativeToScVal, StrKey, xdr } from '@stellar/stellar-sdk';
 import {
   parseTransferEvent,
+  SAC_TRANSFER_TOPIC_FILTER,
   classifyProtocol,
   attributeTransfer,
   toTransactionRow,
@@ -126,6 +127,15 @@ describe('parseTransferEvent', () => {
       new xdr.ScMapEntry({ key: nativeToScVal('to_muxed_id', { type: 'symbol' }), val: nativeToScVal(7n, { type: 'u64' }) }),
     ]);
     expect(() => parseTransferEvent(raw)).toThrow(/amount/);
+  });
+});
+
+describe('SAC_TRANSFER_TOPIC_FILTER', () => {
+  // CAP-67 events are [transfer, from, to, "USDC:G…"]; RPC topic filters are
+  // exact-length, so the 3-segment form this replaced matched zero events.
+  test('matches the 4-topic transfer event, not just a 3-topic prefix', () => {
+    expect(xdr.ScVal.fromXdr(SAC_TRANSFER_TOPIC_FILTER[0], 'base64').value).toBe('transfer');
+    expect(SAC_TRANSFER_TOPIC_FILTER.slice(1)).toEqual(['*', '*', '**']);
   });
 });
 

@@ -307,16 +307,25 @@ function contractIdToString(contractId: rpc.Api.EventResponse['contractId']): st
   return typeof contractId === 'string' ? contractId : contractId.address().toString();
 }
 
+/**
+ * getEvents topic filter for SAC transfers. Since CAP-67 (protocol 23) the event
+ * carries a 4th topic, the SEP-11 asset string (`USDC:G…`), and RPC segment
+ * matching is exact-length, so a 3-segment `[transfer, *, *]` matches nothing.
+ * The trailing `**` keeps the filter correct if more topics are ever appended.
+ */
+export const SAC_TRANSFER_TOPIC_FILTER: readonly string[] = [
+  xdr.ScVal.scvSymbol('transfer').toXdr('base64'), '*', '*', '**',
+];
+
 /** Real Soroban RPC getEvents → RawSorobanEvent[]. Filters SAC `transfer` topic. */
 async function rpcGetEvents(
   startLedger: number,
   opts: { sac: string; limit: number },
 ): Promise<GetEventsPage> {
   const server = getRpcServer();
-  const transferTopic = xdr.ScVal.scvSymbol('transfer').toXdr('base64');
   const resp = await server.getEvents({
     startLedger,
-    filters: [{ type: 'contract', contractIds: [opts.sac], topics: [[transferTopic, '*', '*']] }],
+    filters: [{ type: 'contract', contractIds: [opts.sac], topics: [[...SAC_TRANSFER_TOPIC_FILTER]] }],
     limit: opts.limit,
   });
   const events: RawSorobanEvent[] = resp.events.map((e) => ({
