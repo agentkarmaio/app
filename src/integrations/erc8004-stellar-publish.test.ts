@@ -205,7 +205,7 @@ function makeFakeRpc(opts: { simError?: string; sendHash?: string } = {}) {
   return {
     getAccount: async () => new Account(CALLER, '12345'),
     simulateTransaction: async () =>
-      opts.simError ? { error: opts.simError } : simSuccess(nativeToScVal(null, { type: 'void' })),
+      opts.simError ? { error: opts.simError } : simSuccess(nativeToScVal(null)),
     sendTransaction: async () => ({ status: 'PENDING', hash: opts.sendHash ?? 'TXHASH123' }),
     getTransaction: async () => ({ status: 'SUCCESS' }),
   } as unknown as import('@stellar/stellar-sdk').rpc.Server;

@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { Address, Keypair, nativeToScVal, StrKey } from '@stellar/stellar-sdk';
+import { Address, Keypair, nativeToScVal, StrKey, xdr } from '@stellar/stellar-sdk';
 import {
   parseTransferEvent,
   classifyProtocol,
@@ -46,13 +46,21 @@ function makeTransferEvent(opts: {
   txSourceAccount?: string;
   txSuccessful?: boolean;
   contractId?: string;
+  /** CAP-67/84 muxed destination: data becomes `{ amount, to_muxed_id }`. */
+  toMuxedId?: bigint;
 }): RawSorobanEvent {
   const topic = [
     nativeToScVal('transfer', { type: 'symbol' }),
     new Address(opts.from).toScVal(),
     new Address(opts.to).toScVal(),
   ];
-  const value = nativeToScVal(opts.amount, { type: 'i128' });
+  const amount = nativeToScVal(opts.amount, { type: 'i128' });
+  const value = opts.toMuxedId === undefined
+    ? amount
+    : xdr.ScVal.scvMap([
+        new xdr.ScMapEntry({ key: nativeToScVal('amount', { type: 'symbol' }), val: amount }),
+        new xdr.ScMapEntry({ key: nativeToScVal('to_muxed_id', { type: 'symbol' }), val: nativeToScVal(opts.toMuxedId, { type: 'u64' }) }),
+      ]);
   return {
     id: '00000' + Math.random().toString(36).slice(2),
     type: 'contract',
@@ -92,6 +100,26 @@ describe('parseTransferEvent', () => {
     const raw = makeTransferEvent({ from: CONSUMER, to: PROVIDER, amount: BigInt(10_000) }); // 0.001 USDC
     const ev = parseTransferEvent(raw);
     expect(ev!.amount).toBeCloseTo(0.001, 9);
+  });
+
+  // CAP-67 (M… accounts) and CAP-84 / Protocol 30 (W… contracts): the topic keeps
+  // the base address and the data turns into a map carrying the mux id.
+  test('decodes the amount from a muxed-destination data map', () => {
+    for (const to of [PROVIDER, CHANNEL_C]) {
+      const raw = makeTransferEvent({ from: CONSUMER, to, amount: BigInt(25_000_000), toMuxedId: 42n });
+      const ev = parseTransferEvent(raw);
+      expect(ev!.to).toBe(to);
+      expect(ev!.rawAmount).toBe(BigInt(25_000_000));
+      expect(ev!.amount).toBe(2.5);
+    }
+  });
+
+  test('throws on a data map without an amount instead of guessing', () => {
+    const raw = makeTransferEvent({ from: CONSUMER, to: PROVIDER, amount: 1n, toMuxedId: 7n });
+    raw.value = xdr.ScVal.scvMap([
+      new xdr.ScMapEntry({ key: nativeToScVal('to_muxed_id', { type: 'symbol' }), val: nativeToScVal(7n, { type: 'u64' }) }),
+    ]);
+    expect(() => parseTransferEvent(raw)).toThrow(/amount/);
   });
 });
 

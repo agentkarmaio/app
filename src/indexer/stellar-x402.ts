@@ -94,7 +94,7 @@ export function parseTransferEvent(raw: RawSorobanEvent): StellarTransferEvent |
 
   const from = scValToNative(raw.topic[1]) as string;
   const to = scValToNative(raw.topic[2]) as string;
-  const rawAmount = BigInt(scValToNative(raw.value) as bigint | number | string);
+  const rawAmount = transferAmount(raw.value);
   const amount = Number(rawAmount) / USDC_SCALE;
 
   return {
@@ -110,6 +110,20 @@ export function parseTransferEvent(raw: RawSorobanEvent): StellarTransferEvent |
     amount,
     protocol: 'unknown',
   };
+}
+
+/**
+ * SAC transfer data is a bare i128, or `{ amount, to_muxed_id }` when the
+ * destination is muxed (M… accounts per CAP-67, W… contracts per CAP-84). The
+ * topic `to` is always the base address, so the mux id is not needed here.
+ */
+function transferAmount(value: xdr.ScVal): bigint {
+  if (value.switch() !== xdr.ScValType.scvMap()) {
+    return BigInt(scValToNative(value) as bigint | number | string);
+  }
+  const entry = (value.map() ?? []).find((e) => scValToNative(e.key()) === 'amount');
+  if (!entry) throw new Error('SAC transfer data map has no amount field');
+  return BigInt(scValToNative(entry.val()) as bigint);
 }
 
 // ─── Protocol classification ──────────────────────────────────────────────────
