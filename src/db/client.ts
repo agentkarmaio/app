@@ -1344,6 +1344,70 @@ export async function getAgentPayments(
   };
 }
 
+/** One raw USDC transfer leg of the API-only payment feed (no revenue classification). */
+export interface PaymentFeedLeg {
+  /** "<operationId>:<legIndex>", the row's stable unique key. */
+  id: string;
+  txHash: string;
+  from: string;
+  to: string;
+  /** USDC, exactly 7 decimals. */
+  amount: string;
+  timestamp: string;
+  success: boolean;
+}
+
+/**
+ * Rows younger than this are held back. `ingested_at` is the inserting
+ * transaction's start time, so a row can commit after a later-stamped one a
+ * reader already passed; the margin outlasts any single insert statement.
+ */
+export const PAYMENT_FEED_SETTLE_MS = 120_000;
+
+/**
+ * Every stored transfer leg of an API-only chain, in ingest order
+ * (`ingested_at`, then `id`), keyset-paged. Unlike getAgentPayments this is
+ * not per agent and carries no counted/excluded judgement: it is the raw index,
+ * for consumers that apply their own rules. `cursor` is the position after the
+ * last row returned, or the caller's cursor when the page is empty.
+ */
+export async function getPaymentFeed(
+  chain: Chain,
+  opts: { limit: number; cursor?: PaymentsCursor | null; now?: Date },
+): Promise<{ payments: PaymentFeedLeg[]; cursor: string | null; done: boolean }> {
+  const settled = new Date((opts.now ?? new Date()).getTime() - PAYMENT_FEED_SETTLE_MS).toISOString();
+  let q = supabase
+    .from('transactions')
+    .select('id, tx_signature, tx_hash, wallet_address, counterparty, amount::text, timestamp, success, ingested_at')
+    .eq('chain', chain)
+    .not('ingested_at', 'is', null)
+    .lt('ingested_at', settled);
+  if (opts.cursor) {
+    const ts = opts.cursor.timestamp;
+    q = q.or(`ingested_at.gt."${ts}",and(ingested_at.eq."${ts}",id.gt.${opts.cursor.id})`);
+  }
+  const { data, error } = await q
+    .order('ingested_at', { ascending: true })
+    .order('id', { ascending: true })
+    .limit(opts.limit + 1);
+  if (error) throw error;
+
+  const rows = (data ?? []) as unknown as Array<{ id: string; tx_signature: string; tx_hash: string | null; wallet_address: string;
+    counterparty: string | null; amount: string; timestamp: string; success: boolean; ingested_at: string }>;
+  const page = rows.slice(0, opts.limit);
+  const last = page.at(-1);
+  const given = opts.cursor ? encodePaymentsCursor(opts.cursor) : null;
+  return {
+    payments: page.flatMap((r) => r.counterparty ? [{
+      id: r.tx_signature, txHash: r.tx_hash ?? r.tx_signature, from: r.wallet_address, to: r.counterparty,
+      amount: formatUsdc7(String(r.amount)), timestamp: r.timestamp, success: r.success,
+    }] : []),
+    // A page whose rows were all filtered still moves the cursor past them.
+    cursor: last ? encodePaymentsCursor({ timestamp: last.ingested_at, id: last.id }) : given,
+    done: rows.length <= opts.limit,
+  };
+}
+
 export async function getTransactionCount(walletAddress: string, chain: Chain = DEFAULT_CHAIN): Promise<number> {
   const { count, error } = await supabase
     .from('transactions')

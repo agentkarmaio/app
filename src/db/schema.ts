@@ -268,6 +268,10 @@ export const transactionsTable = pgTable('transactions', {
   // payee is not yet extracted fall back to `facilitator` in scoring. Populated
   // per-chain by the indexer (see docs/counterparty-signal-followup.md).
   counterparty:   text('counterparty'),
+  // When AgentKarma stored the row (DB default; drizzle/0030). Only moves
+  // forward, unlike chain time, so it orders the API-only payment feed. NULL on
+  // rows written before 0030 outside stellar-testnet.
+  ingested_at:    timestamp('ingested_at', { withTimezone: true }).defaultNow(),
 }, (table) => [
   foreignKey({
     columns: [table.chain, table.wallet_address],
@@ -278,6 +282,8 @@ export const transactionsTable = pgTable('transactions', {
   index('idx_transactions_chain_wallet_address').on(table.chain, table.wallet_address),
   index('idx_transactions_facilitator').on(table.facilitator),
   index('idx_transactions_counterparty').on(table.counterparty),
+  index('idx_transactions_api_only_ingest').on(table.chain, table.ingested_at, table.id)
+    .where(sql`chain = 'stellar-testnet' AND ingested_at IS NOT NULL`),
   index('idx_transactions_timestamp').on(table.timestamp),
   // Serves the per-wallet history read that scoring depends on:
   // `WHERE wallet_address = ? ORDER BY timestamp DESC LIMIT n`

@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test';
-import { coverageOutcome, registryScanReason, createIndexingJob, runManagedIndexingTask, type ManagedTaskStore } from './indexing-jobs';
+import { apiOnlyInAppIntervalMs, coverageOutcome, registryScanReason, createIndexingJob, runManagedIndexingTask, type ManagedTaskStore } from './indexing-jobs';
 import * as registry from '@/indexer/erc8004-registry';
 import * as db from '@/db/client';
 import * as mainnetTransfers from '@/indexer/arc-mainnet-transfers';
@@ -304,4 +304,13 @@ test('an empty population is not a read failure', () => {
 
 test.each(['escrow', 'transfers', 'registry'] as const)('retired Arc testnet refuses the %s job before any dependencies run', path => {
   expect(() => createIndexingJob('arc', path)).toThrow('arc_testnet_retired');
+});
+
+test('API-only paths stay on the cron unless STELLAR_TESTNET_IN_APP=1 opts the web worker in', () => {
+  expect(apiOnlyInAppIntervalMs('transfers', {})).toBeUndefined();
+  expect(apiOnlyInAppIntervalMs('registry', { STELLAR_TESTNET_IN_APP: 'true' })).toBeUndefined();
+  const on = { STELLAR_TESTNET_IN_APP: '1' };
+  expect(apiOnlyInAppIntervalMs('transfers', on)).toBe(120_000);
+  expect(apiOnlyInAppIntervalMs('registry', on)).toBe(900_000);
+  expect(apiOnlyInAppIntervalMs('payments', on)).toBeUndefined();
 });

@@ -385,6 +385,20 @@ function installLeaseShutdownHandlers() {
     });
   }
 }
+/**
+ * In-app cadence for an API-only chain's path when STELLAR_TESTNET_IN_APP=1,
+ * else undefined (left to the GitHub Actions cron). Transfers every 2 min keep
+ * the payment feed close to live (one Horizon read per seeded agent per run);
+ * the registry every 15 min seeds new agents into it without the 4-reads-per-
+ * agent Soroban scan running more often than that.
+ */
+export function apiOnlyInAppIntervalMs(path: string, env: Record<string, string | undefined> = process.env): number | undefined {
+  if (env.STELLAR_TESTNET_IN_APP !== '1') return undefined;
+  if (path === 'transfers') return 120_000;
+  if (path === 'registry') return 900_000;
+  return undefined;
+}
+
 /** Reuse the same ownership contract from app workers, manual recovery and CI. */
 export function startIndexingWorkers() {
   if (
@@ -396,8 +410,12 @@ export function startIndexingWorkers() {
   for (const def of INDEXING_PATHS) {
     // Retain definitions for archived health; never schedule retired testnet.
     if (def.chain === 'arc') continue;
-    // API-only networks run from GitHub Actions, never inside the web app.
-    if (isApiOnlyChain(def.chain)) continue;
+    // API-only networks run from GitHub Actions, unless the operator opts in:
+    // their payment feed (GET /api/v2/payments/{chain}) is only as fresh as the
+    // last run, and the hourly cron is too slow for a consumer that shows a live
+    // feed. The same lease keeps the cron and the worker from overlapping.
+    const apiOnlyEvery = isApiOnlyChain(def.chain) ? apiOnlyInAppIntervalMs(def.path) : undefined;
+    if (isApiOnlyChain(def.chain) && apiOnlyEvery === undefined) continue;
     if (
       def.chain === 'solana' &&
       def.path === 'payments' &&
@@ -418,9 +436,10 @@ export function startIndexingWorkers() {
       }
     };
     const intervalMs =
-      def.chain === 'solana' && def.path === 'payments'
+      apiOnlyEvery ??
+      (def.chain === 'solana' && def.path === 'payments'
         ? Number(process.env.INDEXER_WORKER_INTERVAL_MS) || def.intervalMs
-        : def.intervalMs;
+        : def.intervalMs);
     const timer = setInterval(() => {
       void tick();
     }, intervalMs);

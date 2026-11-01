@@ -7,6 +7,10 @@ env:
     # In-cluster Supabase gateway (agentkarma-db binding alias). Server queries
     # skip the Cloudflare round trip: 30-65 ms vs 130-400 ms per query.
     SUPABASE_INTERNAL_URL: http://kong:8000
+    # stellar-testnet transfers every 2 min / registry every 15 min in the web
+    # worker (src/lib/indexing-jobs.ts), so GET /api/v2/payments/stellar-testnet
+    # stays close to live for AgentEnact. The hourly cron remains as a backstop.
+    STELLAR_TESTNET_IN_APP: "1"
 
 infra:
     - name: agentkarma-db
