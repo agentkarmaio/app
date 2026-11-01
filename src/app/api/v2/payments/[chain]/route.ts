@@ -3,7 +3,7 @@
  *
  * Every USDC transfer leg AgentKarma has indexed on an API-only chain
  * (stellar-testnet), in the order it was stored, for consumers that keep their
- * own copy and apply their own rules (AgentEnact's discovery indexer reads it
+ * own copy and apply their own rules (an external indexer can read it
  * instead of polling Horizon per wallet). Not per agent, and no revenue
  * judgement: for counted/excluded totals use
  * GET /api/v2/agent/{chain}/{id}/payments.
