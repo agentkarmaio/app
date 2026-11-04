@@ -30,7 +30,7 @@ import {
   type PublicClient,
 } from 'viem';
 import { decodeDataUriJson } from '@/lib/data-uri';
-import type { Erc8004RegistryConfig } from '@/config/erc8004-registries';
+import { isExcludedRegistrationUri, type Erc8004RegistryConfig } from '@/config/erc8004-registries';
 import { ARC_MAINNET_CHAIN_ID, parseArcMainnetRpcUrl } from '@/config/arc-mainnet';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
 import type { Erc8004RegistrationStatus } from '@/db/schema';
@@ -118,6 +118,14 @@ export interface RegistryScanResult {
    * does NOT count into `errors`, so it cannot hold the discovery cursor.
    */
   registrationUnreachable: number;
+  /** Members skipped because their tokenURI host is a bulk registrar. */
+  excludedRegistrations?: number;
+  /** Discovery cursor after this incremental run, when it moved. */
+  cursorTip?: number;
+  /** Ids between the cursor and the tip still unread after this run. */
+  pendingIds?: number;
+  /** The run stopped at its time budget; the next one resumes at the cursor. */
+  budgetExhausted?: boolean;
   /** Exhaustive failed members for explicit agentIds scans; absent for discovery. */
   failedMembers?: RegistryFailedMember[];
   /**
@@ -442,6 +450,11 @@ export interface RegistryScanOptions {
   onProgress?: (msg: string) => void;
   /** Inject a client (tests). Defaults to makeRegistryClient(config). */
   client?: RegistryClient;
+  /** Stop starting new identity batches once this much time has passed. */
+  timeBudgetMs?: number;
+  now?: () => number;
+  /** Called after each batch while the whole scan so far is error-free. */
+  onCleanBatch?: (lastId: number) => Promise<void>;
 }
 
 export async function runRegistryScan(
@@ -499,8 +512,14 @@ async function scanRegistry(
   const ids: number[] = explicitIds ?? [];
   if (!explicitIds) for (let i = from; i <= tip; i++) ids.push(i);
 
+  const now = opts.now ?? Date.now;
+  const startedAt = now();
   for (const batch of chunk(ids, identityBatch)) {
     opts.signal?.throwIfAborted();
+    if (opts.timeBudgetMs !== undefined && now() - startedAt >= opts.timeBudgetMs) {
+      result.budgetExhausted = true;
+      break;
+    }
     // ── Identity multicall: ownerOf + getAgentWallet + tokenURI per id ──
     const calls = batch.flatMap((id) => [
       { address: config.identityRegistry, abi: IDENTITY_ABI, functionName: 'ownerOf', args: [BigInt(id)] } as const,
@@ -537,6 +556,10 @@ async function scanRegistry(
       const owner = ownerR.result.toLowerCase();
       const agentWallet = walletR.result.toLowerCase();
       const tokenURI = uriR.result;
+      if (isExcludedRegistrationUri(tokenURI, config.excludedRegistrationHosts)) {
+        result.excludedRegistrations = (result.excludedRegistrations ?? 0) + 1;
+        continue;
+      }
 
       const dec = await decodeRegistration(tokenURI, { fetchRemote: false, signal: opts.signal });
       const agent: ScannedAgent = {
@@ -663,6 +686,7 @@ async function scanRegistry(
     }
 
     log(`progress: ${result.agentsScanned} agents, ${result.feedbackScanned} feedback (id ${batch[batch.length - 1]}/${tip})`);
+    if (result.errors === 0) await opts.onCleanBatch?.(batch[batch.length - 1]);
   }
 
   opts.signal?.throwIfAborted();
@@ -683,17 +707,20 @@ export interface IncrementalScanOptions extends RegistryScanOptions {
    *  already-mirrored agents is caught (default DEFAULT_RESCAN_WINDOW = 500). */
   rescanWindow?: number;
   /** Rotate a second bounded window over older members, including owner and
-   * agent-wallet changes. Persist only after the complete scan succeeds. */
+   * agent-wallet changes. Persist only once that window was read cleanly. */
   refreshCursor?: { load: () => Promise<number>; save: (nextId: number) => Promise<void> };
 }
 
 /**
  * Cursor-driven incremental scan, the cheap path for a schedule. Discovers the
  * current tip, reads the persisted last tip, scans only `incrementalScanRange`
- * (new ids + a bounded recent re-scan window), then advances the cursor to the
- * tip — but ONLY after a clean run (errors === 0). A run that hit RPC errors
- * leaves the cursor where it was so the missed ids are retried next run rather
- * than silently skipped. The full firstAgentId..tip sweep stays `runRegistryScan`.
+ * (new ids + a bounded recent re-scan window) and banks the cursor after every
+ * batch while the scan is still error-free. The first RPC error freezes it there
+ * so missed ids are retried next run rather than silently skipped, and a run
+ * stopped by its budget or deadline keeps what it read: a cursor that moved only
+ * after a complete sweep could never finish once the tip outran one run
+ * (2026-11: 5k → 287k in three days, every run restarting at 5067).
+ * The full firstAgentId..tip sweep stays `runRegistryScan`.
  */
 export async function runIncrementalRegistryScan(
   config: Erc8004RegistryConfig,
@@ -723,6 +750,7 @@ export async function runIncrementalRegistryScan(
   }
 
   let agentIds: number[] | undefined;
+  let refreshEnd: number | undefined;
   let refreshNext: number | undefined;
   if (opts.refreshCursor) {
     const first = config.firstAgentId ?? 1;
@@ -736,30 +764,53 @@ export async function runIncrementalRegistryScan(
     for (let id = from; id <= to; id++) ids.add(id);
     for (let id = start; id <= end; id++) ids.add(id);
     agentIds = [...ids].sort((a, b) => a - b);
+    refreshEnd = end;
     refreshNext = end >= currentTip ? first : end + 1;
   }
 
+  // Ids scan in ascending order and `from` never skips past lastTip + 1, so a
+  // clean prefix ending at N proves every id up to N was read.
+  let banked = lastTip;
+  let cleanThrough = -1;
+  let savedThisRun = false;
   const result = await scanRegistry(config, persistAgents, persistFeedback, client, {
     ...opts,
     client,
     fromId: from,
     toId: to,
     ...(agentIds ? { agentIds } : {}),
+    onCleanBatch: async (lastId) => {
+      cleanThrough = lastId;
+      if (lastId <= banked) return;
+      opts.signal?.throwIfAborted();
+      await setCursorTip(config.chain, lastId);
+      banked = lastId;
+      savedThisRun = true;
+    },
   });
 
-  // Advance the cursor only on a clean run so error-skipped ids are retried.
   // Registration unreachability does not count as an error — dead metadata
   // hosts are persisted per-member and re-attempted by the re-scan window
   // instead of freezing the whole chain's registry cursor (2026-09-25).
   opts.signal?.throwIfAborted();
-  if (result.errors === 0) {
+  // A sweep that only re-read old ids still records that it reached the tip;
+  // cursor zero is otherwise indistinguishable from never scanned.
+  if (result.errors === 0 && !result.budgetExhausted && !savedThisRun) {
     await setCursorTip(config.chain, currentTip);
-    if (refreshNext !== undefined) await opts.refreshCursor!.save(refreshNext);
+    banked = currentTip;
     opts.signal?.throwIfAborted();
-    log(`incremental: cursor advanced to ${currentTip}`
+  }
+  if (refreshNext !== undefined && result.errors === 0 && cleanThrough >= refreshEnd!) {
+    await opts.refreshCursor!.save(refreshNext);
+    opts.signal?.throwIfAborted();
+  }
+  result.pendingIds = Math.max(0, currentTip - banked);
+  if (banked !== lastTip) result.cursorTip = banked;
+  if (result.errors === 0 && !result.budgetExhausted) {
+    log(`incremental: cursor advanced to ${banked}`
       + (result.registrationUnreachable > 0 ? ` (${result.registrationUnreachable} registration(s) unreachable)` : ''));
   } else {
-    log(`incremental: ${result.errors} error(s) — cursor held at ${lastTip} for retry`);
+    log(`incremental: cursor at ${banked}, ${result.pendingIds} id(s) pending, ${result.errors} error(s)`);
   }
   return result;
 }

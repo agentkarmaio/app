@@ -10,8 +10,9 @@ import { arcMainnet } from '@/config/arc-chain';
 import {
   ARC_MAINNET_CHAIN_ID, ARC_MAINNET_USDC_CONTRACT, ARC_MAINNET_TRANSFER_EMITTER,
   ARC_MAINNET_TRANSFER_DECIMALS, ARC_MAINNET_TRANSFER_EXCLUSIONS, ARC_MAINNET_SEED_EXTRA,
-  ARC_MAINNET_MAX_SEED_SIZE, parseArcMainnetRpcUrl, parseArcMainnetStartBlock, parseArcMainnetSeedAddresses,
+  ARC_MAINNET_MAX_SEED_SIZE, ARC_MAINNET_EXCLUDED_REGISTRATION_HOSTS, parseArcMainnetRpcUrl, parseArcMainnetStartBlock, parseArcMainnetSeedAddresses,
 } from '@/config/arc-mainnet';
+import { isExcludedRegistrationUri } from '@/config/erc8004-registries';
 import {
   supabase, insertTransactions, insertSignalEvents, makeEnsureWallets,
   getCursor, upsertCursor,
@@ -49,7 +50,7 @@ export function parseArcMainnetTransfer(log: MainnetTransferLog): ArcTransfer | 
 }
 
 export interface ArcMainnetSeedRows {
-  registryRows: ReadonlyArray<{ chain: string; owner?: string | null; agent_wallet?: string | null }>;
+  registryRows: ReadonlyArray<{ chain: string; owner?: string | null; agent_wallet?: string | null; token_uri?: string | null }>;
   walletRows: ReadonlyArray<{ chain: string; address?: string | null; claimed?: boolean | null; arc_agent_id?: number | null }>;
   extra?: readonly string[];
 }
@@ -64,6 +65,7 @@ export function buildArcMainnetSeedSet(rows: ArcMainnetSeedRows): Set<string> {
   };
   for (const row of rows.registryRows) {
     if (row.chain !== 'arc-mainnet') continue;
+    if (isExcludedRegistrationUri(row.token_uri ?? '', ARC_MAINNET_EXCLUDED_REGISTRATION_HOSTS)) continue;
     add(row.owner); add(row.agent_wallet);
   }
   for (const row of rows.walletRows) {
@@ -82,6 +84,10 @@ export async function loadArcMainnetSeedRows(signal?: AbortSignal): Promise<ArcM
       signal?.throwIfAborted();
       let query = supabase.from(table).select(columns).eq('chain', 'arc-mainnet');
       if (table === 'wallets') query = query.eq('claimed', true);
+      // Bulk rows already mirrored must not spend the source-row bound below.
+      else for (const host of ARC_MAINNET_EXCLUDED_REGISTRATION_HOSTS) {
+        query = query.or(`token_uri.is.null,token_uri.not.like."https://${host}/*"`);
+      }
       const { data, error } = await query.order(order, { ascending: true }).range(offset, offset + 999);
       signal?.throwIfAborted();
       if (error) throw error;
@@ -92,7 +98,7 @@ export async function loadArcMainnetSeedRows(signal?: AbortSignal): Promise<ArcM
     }
     throw new Error('arc_mainnet_seed_limit');
   }
-  const registryRows = await read<ArcMainnetSeedRows['registryRows'][number]>('erc8004_agents', 'chain,owner,agent_wallet', 'agent_id');
+  const registryRows = await read<ArcMainnetSeedRows['registryRows'][number]>('erc8004_agents', 'chain,owner,agent_wallet,token_uri', 'agent_id');
   const walletRows = await read<ArcMainnetSeedRows['walletRows'][number]>('wallets', 'chain,address,claimed', 'address');
   return { registryRows, walletRows, extra: parseArcMainnetSeedAddresses(process.env.ARC_MAINNET_SEED_ADDRESSES) };
 }

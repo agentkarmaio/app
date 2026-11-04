@@ -12,6 +12,7 @@
 import type { Chain as ViemChain } from 'viem';
 import { celo } from 'viem/chains';
 import { arcMainnet, arcTestnet } from '@/config/arc-chain';
+import { ARC_MAINNET_EXCLUDED_REGISTRATION_HOSTS } from '@/config/arc-mainnet';
 import type { Chain } from '@/db/schema';
 import { IDENTITY_REGISTRY_CELO, REPUTATION_REGISTRY_CELO } from '@/integrations/erc8004-celo';
 import { IDENTITY_REGISTRY_ARC, REPUTATION_REGISTRY_ARC } from '@/integrations/erc8004-arc';
@@ -27,6 +28,16 @@ export interface Erc8004RegistryConfig {
   rpcEnvVar: string;
   /** First minted token ID; older Celo/Arc testnet registries start at 1. */
   firstAgentId?: 0 | 1;
+  /** tokenURI hosts whose members are never mirrored (bulk registrars). */
+  excludedRegistrationHosts?: readonly string[];
+}
+
+/** True when the URI's host is, or is a subdomain of, an excluded host. */
+export function isExcludedRegistrationUri(uri: string, hosts: readonly string[] | undefined): boolean {
+  if (!hosts?.length || !/^https?:\/\//i.test(uri)) return false;
+  let hostname: string;
+  try { hostname = new URL(uri).hostname.toLowerCase(); } catch { return false; }
+  return hosts.some(host => hostname === host || hostname.endsWith(`.${host}`));
 }
 
 export const ERC8004_REGISTRIES: Record<'celo' | 'arc' | 'arc-mainnet', Erc8004RegistryConfig> = {
@@ -52,6 +63,7 @@ export const ERC8004_REGISTRIES: Record<'celo' | 'arc' | 'arc-mainnet', Erc8004R
     reputationRegistry: '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63',
     rpcEnvVar: 'ARC_MAINNET_RPC_URL',
     firstAgentId: 0,
+    excludedRegistrationHosts: ARC_MAINNET_EXCLUDED_REGISTRATION_HOSTS,
   },
 };
 

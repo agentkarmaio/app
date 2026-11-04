@@ -22,11 +22,14 @@ jobs:
           - { chain: celo, path: payments }
           - { chain: stellar, path: transfers }
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Above every job deadline (registry: 20m), so a run ends through finish and
+    # hands its lease back rather than being killed holding it.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/bun-setup
       - name: Run bounded indexing path
+        id: run
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -39,7 +42,7 @@ jobs:
           INDEXING_PATH: ${{ matrix.path }}
         run: bun run src/scripts/indexing-run.ts "$CHAIN" "$INDEXING_PATH"
       - name: Page on failure
-        if: failure()
+        if: failure() || cancelled()
         uses: ./.github/actions/telegram-alert
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -47,4 +50,5 @@ jobs:
           suppress-if-db-down: 'true'
           text: |
             AgentKarma indexing recovery failed: ${{ matrix.chain }}/${{ matrix.path }}
+            ${{ steps.run.outputs.page_reason || job.status }}
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

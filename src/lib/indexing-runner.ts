@@ -11,6 +11,8 @@ export interface ScanOutcome {
   insertedCount?: number;
   unresolvedCount?: number;
   gapCount?: number;
+  /** Stable cause behind a collapsed errorCode. Logs and pages only, not stored. */
+  errorDetail?: string;
 }
 export interface JobIdentity {
   chain: Chain;
@@ -96,6 +98,18 @@ export function indexingErrorCode(error: unknown): string {
   return 'scan_failed';
 }
 /**
+ * The cause a page should name. Only bare stable codes pass: provider errors can
+ * carry credential-bearing URLs, and `configuration_invalid` alone hid
+ * `arc_mainnet_seed_limit` for three days of pages (2026-11).
+ */
+export function indexingErrorDetail(error: unknown): string | undefined {
+  const causes = error instanceof AggregateError ? error.errors : [error];
+  const codes = causes
+    .map((cause) => (cause instanceof Error ? cause.message : ''))
+    .filter((message) => /^[a-z][a-z0-9_]*$/.test(message));
+  return codes.length ? codes.join(',') : undefined;
+}
+/**
  * Leases this process holds right now. A run that ends — however it ends —
  * removes its own entry, so whatever remains here at shutdown is exactly what
  * would otherwise be orphaned.
@@ -121,14 +135,14 @@ export async function releaseHeldIndexingLeases(): Promise<number> {
 export async function executeIndexingJob(
   job: IndexingJob,
   deps: LeaseDependencies,
-  opts: { renewMs?: number; timeoutMs?: number } = {},
+  opts: { renewMs?: number; timeoutMs?: number; leaseMs?: number } = {},
 ) {
   const identity = {
     chain: job.chain,
     path: job.path,
     owner: crypto.randomUUID(),
   };
-  const leaseMs = 90_000;
+  const leaseMs = opts.leaseMs ?? 90_000;
   if (
     !(await deps.acquire({ ...identity, leaseMs, intervalMs: job.intervalMs }))
   )
@@ -137,6 +151,7 @@ export async function executeIndexingJob(
   const controller = new AbortController();
   let lost = false;
   let renewing = false;
+  let leaseValidUntil = Date.now() + leaseMs;
   let stop: ReturnType<typeof setTimeout> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let outcome: ScanOutcome;
@@ -158,6 +173,7 @@ export async function executeIndexingJob(
         heartbeat = setInterval(() => {
           if (renewing || controller.signal.aborted) return;
           renewing = true;
+          const attemptedAt = Date.now();
           void deps
             .renew({ ...identity, leaseMs })
             .then(
@@ -165,9 +181,14 @@ export async function executeIndexingJob(
                 if (!ok) {
                   lost = true;
                   controller.abort();
+                  return;
                 }
+                leaseValidUntil = attemptedAt + leaseMs;
               },
+              // The store refused nothing: a network blip says nothing about
+              // ownership. Only a lease that could have expired by now is lost.
               () => {
+                if (Date.now() < leaseValidUntil) return;
                 lost = true;
                 controller.abort();
               },
@@ -186,7 +207,8 @@ export async function executeIndexingJob(
       },
     );
   } catch (error) {
-    outcome = { status: 'failed', errorCode: indexingErrorCode(error) };
+    const errorDetail = indexingErrorDetail(error);
+    outcome = { status: 'failed', errorCode: indexingErrorCode(error), ...(errorDetail ? { errorDetail } : {}) };
   } finally {
     clearTimeout(stop);
     clearInterval(heartbeat);

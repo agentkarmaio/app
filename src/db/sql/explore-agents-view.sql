@@ -113,7 +113,10 @@ CREATE OR REPLACE VIEW explore_agents AS
   FROM erc8004_agents r
   LEFT JOIN wallets w ON w.chain = r.chain
     AND w.address = COALESCE(NULLIF(r.agent_wallet, '0x0000000000000000000000000000000000000000'), r.owner)
-  WHERE r.chain = 'arc-mainnet';
+  WHERE r.chain = 'arc-mainnet'
+    -- Bulk registrars (ARC_MAINNET_EXCLUDED_REGISTRATION_HOSTS). Rows minted
+    -- before the exclusion stay stored but are not part of the population.
+    AND COALESCE(r.token_uri, '') NOT LIKE 'https://centralcity.ai/%';
 
 GRANT SELECT ON explore_agents TO anon, authenticated, service_role;
 

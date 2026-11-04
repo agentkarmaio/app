@@ -13,6 +13,14 @@ export const ARC_MAINNET_TRANSFER_EXCLUSIONS: ReadonlySet<string> = new Set([
 /** Only independently verified mainnet operators belong here. Empty by default. */
 export const ARC_MAINNET_SEED_EXTRA: readonly string[] = [];
 export const ARC_MAINNET_MAX_SEED_SIZE = 10_000;
+/**
+ * Registrars minting agents faster than any reputation signal could form.
+ * Central City mints ~1 agent per block (~170k/day) since 2026-11-01, one owner
+ * each. Their ids get an identity read and nothing else: no mirror row, no seed,
+ * no public count. `explore-agents-view.sql` repeats this list; a test holds the
+ * two in step.
+ */
+export const ARC_MAINNET_EXCLUDED_REGISTRATION_HOSTS: readonly string[] = ['centralcity.ai'];
 
 /** Explicit operator-approved mainnet membership; never read testnet settings. */
 export function parseArcMainnetSeedAddresses(raw: string | undefined): string[] {

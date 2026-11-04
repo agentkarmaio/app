@@ -1,4 +1,6 @@
 import { expect, spyOn, test } from 'bun:test';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { apiOnlyInAppIntervalMs, coverageOutcome, registryScanReason, createIndexingJob, runManagedIndexingTask, type ManagedTaskStore } from './indexing-jobs';
 import * as registry from '@/indexer/erc8004-registry';
 import * as db from '@/db/client';
@@ -313,4 +315,38 @@ test('API-only paths stay on the cron unless STELLAR_TESTNET_IN_APP=1 opts the w
   expect(apiOnlyInAppIntervalMs('transfers', on)).toBe(120_000);
   expect(apiOnlyInAppIntervalMs('registry', on)).toBe(900_000);
   expect(apiOnlyInAppIntervalMs('payments', on)).toBeUndefined();
+});
+test('a budget-stopped registry run publishes its banked cursor and the remaining backlog', async () => {
+  const scan = spyOn(registry, 'runIncrementalRegistryScan').mockResolvedValue({
+    chain: 'arc-mainnet', tip: 287_000, agentsScanned: 40, agentsPersisted: 40, feedbackScanned: 0, feedbackPersisted: 0,
+    errors: 0, registrationUnreachable: 0, excludedRegistrations: 960, cursorTip: 6_000, pendingIds: 281_000, budgetExhausted: true,
+  });
+  try {
+    const outcome = await createIndexingJob('arc-mainnet', 'registry').run(new AbortController().signal);
+    expect(outcome).toMatchObject({
+      status: 'catching_up', errorCode: 'budget', checkpoint: '6000', head: '287000', checkedCount: 1000, pendingCount: 281_000,
+    });
+  } finally { scan.mockRestore(); }
+});
+test('the arc-mainnet registry job carries a budget that ends well inside its deadline', async () => {
+  const scan = spyOn(registry, 'runIncrementalRegistryScan').mockResolvedValue({
+    chain: 'arc-mainnet', tip: 1, agentsScanned: 1, agentsPersisted: 1, feedbackScanned: 0, feedbackPersisted: 0, errors: 0, registrationUnreachable: 0,
+  });
+  try {
+    const job = createIndexingJob('arc-mainnet', 'registry');
+    await job.run(new AbortController().signal);
+    const budget = scan.mock.calls[0][5]?.timeBudgetMs ?? 0;
+    expect(budget).toBeGreaterThan(0);
+    expect(budget).toBeLessThan(job.timeoutMs ?? 0);
+  } finally { scan.mockRestore(); }
+});
+test('the recovery workflow outlives every job deadline, so runs end through finish rather than a kill', () => {
+  const yml = readFileSync(join(import.meta.dir, '../../.github/workflows/indexing-recovery.yml'), 'utf8');
+  const minutes = Number(/timeout-minutes:\s*(\d+)/.exec(yml)?.[1]);
+  const paths = [...yml.matchAll(/chain:\s*([\w-]+),\s*path:\s*(\w+)/g)];
+  expect(paths.length).toBeGreaterThan(0);
+  for (const [, chain, path] of paths) {
+    const deadline = createIndexingJob(chain as never, path as never).timeoutMs ?? 0;
+    expect(minutes * 60_000).toBeGreaterThan(deadline);
+  }
 });

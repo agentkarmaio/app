@@ -190,3 +190,65 @@ test('deadline fences work that ignores cancellation', async () => {
   expect(r.status).toBe('failed');
   expect(r.errorCode).toBe('scan_timeout');
 });
+test('a transient renewal error does not abandon a lease that is still valid', async () => {
+  let calls = 0;
+  const d = deps({
+    renew: async () => {
+      calls++;
+      if (calls <= 2) throw Error('fetch failed');
+      return true;
+    },
+  });
+  const r = await executeIndexingJob(
+    {
+      ...job,
+      run: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        return { status: 'caught_up' as const };
+      },
+    },
+    d.value,
+    { renewMs: 5, timeoutMs: 500, leaseMs: 200 },
+  );
+  expect(calls).toBeGreaterThan(2);
+  expect(r.status).toBe('caught_up');
+});
+test('renewal errors lasting a whole lease term lose the lease', async () => {
+  const d = deps({ renew: async () => { throw Error('fetch failed'); } });
+  const r = await executeIndexingJob(
+    {
+      ...job,
+      run: (signal) =>
+        new Promise((_resolve, reject) =>
+          signal.addEventListener('abort', () => reject(Error('aborted')), { once: true }),
+        ),
+    },
+    d.value,
+    { renewMs: 5, timeoutMs: 500, leaseMs: 30 },
+  );
+  expect(r.status).toBe('lease_lost');
+});
+test('a failed run reports the stable cause the error code collapses', async () => {
+  const d = deps();
+  const r = await executeIndexingJob(
+    { ...job, run: async () => { throw Error('arc_mainnet_seed_limit'); } },
+    d.value,
+  );
+  expect(r).toMatchObject({ status: 'failed', errorCode: 'configuration_invalid', errorDetail: 'arc_mainnet_seed_limit' });
+});
+test('failure detail never echoes free-form text that could carry a credentialed URL', async () => {
+  const d = deps();
+  const r = await executeIndexingJob(
+    { ...job, run: async () => { throw Error('request to https://rpc.test/?key=SECRET failed'); } },
+    d.value,
+  );
+  expect(JSON.stringify(r)).not.toContain('SECRET');
+});
+test('an aggregate failure names every stable cause', async () => {
+  const d = deps();
+  const r = await executeIndexingJob(
+    { ...job, run: async () => { throw new AggregateError([Error('arc_mainnet_seed_limit'), Error('arc_walk_batch_malformed')], 'configuration_invalid'); } },
+    d.value,
+  );
+  expect(r).toMatchObject({ errorDetail: 'arc_mainnet_seed_limit,arc_walk_batch_malformed' });
+});

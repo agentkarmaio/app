@@ -96,6 +96,9 @@ export function registryScanReason(
   return unresolved > 0 || pending > 0 ? 'registry_read_failure' : undefined;
 }
 
+/** Well inside the registry job deadline, so a catching-up run ends through `finish`. */
+const ARC_MAINNET_REGISTRY_BUDGET_MS = 600_000;
+
 export interface JobOptions {
   limit?: number;
   backfill?: boolean;
@@ -190,7 +193,7 @@ export function createIndexingJob(
           (c) => getRegistryCursorTip(c as Chain),
           (c, tip) => setRegistryCursorTip(c as Chain, tip),
           { rescanWindow: options.rescanWindow ?? 100, signal,
-            ...(chain === 'arc-mainnet' ? { refreshCursor: {
+            ...(chain === 'arc-mainnet' ? { timeBudgetMs: ARC_MAINNET_REGISTRY_BUDGET_MS, refreshCursor: {
               load: async () => {
                 const row = await getCursor('arc-mainnet-registry-refresh', chain);
                 if (!row) return 0;
@@ -201,14 +204,16 @@ export function createIndexingJob(
             } } : {}),
           },
         );
+        const checked = r.agentsScanned + (r.excludedRegistrations ?? 0);
+        const pending = r.pendingIds ?? 0;
         return coverageOutcome({
-          complete: r.errors === 0,
-          checked: r.agentsScanned,
-          pending: 0,
+          complete: r.errors === 0 && pending === 0,
+          checked,
+          pending,
           unresolved: r.errors,
-          checkpoint: r.errors ? undefined : String(r.tip),
+          checkpoint: r.cursorTip !== undefined ? String(r.cursorTip) : r.errors || pending ? undefined : String(r.tip),
           head: String(r.tip),
-          reason: registryScanReason(r.agentsScanned, r.errors, 0),
+          reason: registryScanReason(checked, r.errors, pending) ?? (pending ? 'budget' : undefined),
         }, r.agentsPersisted);
       }
       if ((chain === 'stellar' || chain === 'stellar-testnet') && path === 'registry') {
@@ -347,7 +352,9 @@ export async function runManagedIndexingTask(
   });
   if (execution.status === 'busy' || execution.status === 'lease_lost')
     return execution;
-  return normalized ? { ...normalized, stalled } : execution;
+  return normalized
+    ? { ...normalized, stalled, ...('errorDetail' in execution ? { errorDetail: execution.errorDetail } : {}) }
+    : execution;
 }
 /**
  * A container replaced mid-scan is the common way a lease is orphaned. On a

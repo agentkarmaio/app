@@ -60,17 +60,25 @@ describe('independent mainnet membership', () => {
     expect([...seed]).toEqual([TO]);
     expect([...buildArcMainnetSeedSet({ registryRows: [], walletRows: [{ chain: 'arc-mainnet', address: FROM, claimed: true }] })]).toEqual([FROM]);
   });
+  test('a bulk registrar cannot exhaust the seed cap or enter the seed set', () => {
+    const bulk = Array.from({ length: 10_001 }, (_, i) => ({
+      chain: 'arc-mainnet', owner: `0x${(i + 1).toString(16).padStart(40, '0')}`, token_uri: `https://centralcity.ai/a/${i}`,
+    }));
+    const seed = buildArcMainnetSeedSet({ registryRows: [...bulk, { chain: 'arc-mainnet', owner: TO, token_uri: 'ipfs://x' }], walletRows: [] });
+    expect([...seed]).toEqual([TO]);
+  });
   test('production seed reads are explicitly mainnet-only and claimed-wallet-only', async () => {
     const filters: string[] = [];
     const query = {
       select: () => query,
       eq: (key: string, value: unknown) => { filters.push(`${key}:${value}`); return query; },
+      or: (value: string) => { filters.push(`or:${value}`); return query; },
       order: () => query,
       range: async () => ({ data: [], error: null }),
     };
     __setSupabaseForTest({ from: (table: string) => { filters.push(table); return query; } });
     await loadArcMainnetSeedRows();
-    expect(filters).toEqual(['erc8004_agents', 'chain:arc-mainnet', 'wallets', 'chain:arc-mainnet', 'claimed:true']);
+    expect(filters).toEqual(['erc8004_agents', 'chain:arc-mainnet', 'or:token_uri.is.null,token_uri.not.like."https://centralcity.ai/*"', 'wallets', 'chain:arc-mainnet', 'claimed:true']);
   });
 });
 
