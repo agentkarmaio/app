@@ -30,6 +30,13 @@ export interface Erc8004RegistryConfig {
   firstAgentId?: 0 | 1;
   /** tokenURI hosts whose members are never mirrored (bulk registrars). */
   excludedRegistrationHosts?: readonly string[];
+  /**
+   * viem multicall `batchSize` for identity reads; 0 sends one eth_call. Set where
+   * the RPC meters JSON-RPC batch items: on Arc mainnet viem's default chunking
+   * got 36% of members `rate limit exceeded` at 6.2k ids/min, while one eth_call
+   * read 48k ids/min with no failures (measured 2026-11-04).
+   */
+  identityMulticallBatchBytes?: number;
 }
 
 /** True when the URI's host is, or is a subdomain of, an excluded host. */
@@ -64,6 +71,7 @@ export const ERC8004_REGISTRIES: Record<'celo' | 'arc' | 'arc-mainnet', Erc8004R
     rpcEnvVar: 'ARC_MAINNET_RPC_URL',
     firstAgentId: 0,
     excludedRegistrationHosts: ARC_MAINNET_EXCLUDED_REGISTRATION_HOSTS,
+    identityMulticallBatchBytes: 0,
   },
 };
 

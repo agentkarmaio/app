@@ -528,13 +528,17 @@ async function scanRegistry(
     ]);
     let reads: { status: 'success' | 'failure'; result?: unknown; error?: unknown }[];
     try {
-      reads = await client.multicall({ contracts: calls, allowFailure: true });
+      reads = await client.multicall({
+        contracts: calls, allowFailure: true,
+        ...(config.identityMulticallBatchBytes === undefined ? {} : { batchSize: config.identityMulticallBatchBytes }),
+      });
       opts.signal?.throwIfAborted();
     } catch (err) {
       opts.signal?.throwIfAborted();
       result.errors++;
       failed(batch, 'identity');
       log(`identity multicall failed for ${batch[0]}..${batch[batch.length - 1]}: ${errMsg(err)}`);
+      if (opts.onCleanBatch) break;
       continue;
     }
 
@@ -686,7 +690,12 @@ async function scanRegistry(
     }
 
     log(`progress: ${result.agentsScanned} agents, ${result.feedbackScanned} feedback (id ${batch[batch.length - 1]}/${tip})`);
-    if (result.errors === 0) await opts.onCleanBatch?.(batch[batch.length - 1]);
+    // The cursor cannot pass a dirty batch, so further reads could not be banked
+    // and would only spend RPC quota the retry needs.
+    if (opts.onCleanBatch) {
+      if (result.errors > 0) break;
+      await opts.onCleanBatch(batch[batch.length - 1]);
+    }
   }
 
   opts.signal?.throwIfAborted();

@@ -123,6 +123,33 @@ describe('a scan far behind its tip', () => {
     expect(result.pendingIds).toBe(15);
   });
 
+  test('after the first dirty batch the run stops spending quota on ids it cannot bank', async () => {
+    const fake = client(100, { failIds: new Set([15]) });
+    let identityCalls = 0;
+    const multicall = fake.multicall as unknown as (p: { contracts: { functionName: string }[] }) => Promise<unknown>;
+    const counted = async (p: { contracts: { functionName: string }[] }) => {
+      if (p.contracts[0]?.functionName === 'ownerOf') identityCalls++;
+      return multicall(p);
+    };
+    await runIncrementalRegistryScan(config, persist, persist, async () => 0, async () => {},
+      { client: { ...fake, multicall: counted as never }, rescanWindow: 1, fetchRemote: false, identityBatch: 10 });
+    expect(identityCalls).toBe(2);
+  });
+
+  test('a chain whose RPC meters JSON-RPC batch items reads each identity batch as one eth_call', async () => {
+    const fake = client(3);
+    const sizes: unknown[] = [];
+    const multicall = fake.multicall as unknown as (p: { contracts: { functionName: string }[]; batchSize?: number }) => Promise<unknown>;
+    const spied = async (p: { contracts: { functionName: string }[]; batchSize?: number }) => {
+      if (p.contracts[0]?.functionName === 'ownerOf') sizes.push(p.batchSize);
+      return multicall(p);
+    };
+    await runIncrementalRegistryScan({ ...config, identityMulticallBatchBytes: 0 }, persist, persist, async () => 0, async () => {},
+      { client: { ...fake, multicall: spied as never }, rescanWindow: 1, fetchRemote: false });
+    expect(sizes).toEqual([0]);
+    expect(ERC8004_REGISTRIES['arc-mainnet'].identityMulticallBatchBytes).toBe(0);
+  });
+
   test('a refresh window that finished is saved even when the budget stops the new-id sweep', async () => {
     let clock = 0;
     let refresh = 1;
