@@ -53,6 +53,7 @@ import {
   upsertCursor as dbUpsertCursor,
   type InsertSignalEventInput,
 } from '@/db/client';
+import { readIndexableHead } from '@/lib/rpc-head';
 import { INGEST_RETRY, withRateLimitRetry } from '@/lib/rpc-retry';
 import { buildPayshRoutedSignal } from '@/scoring/signals';
 import { runCeloX402RelayerIndexer, type CeloX402Settlement } from './celo-x402-relayer';
@@ -503,7 +504,7 @@ async function runCeloX402PayeeIndexer(
 
   // Dry-run: collect rows via the same window logic, no DB writes, no cursor.
   if (opts.dryRun) {
-    const head = await client.getBlockNumber();
+    const head = await readIndexableHead(client);
     opts.signal?.throwIfAborted();
     let start = envStart != null ? BigInt(envStart) : head - BigInt(CELO_DEFAULT_LOOKBACK_BLOCKS);
     if (start < BigInt(0)) start = BigInt(0);
@@ -552,8 +553,8 @@ async function runCeloX402PayeeIndexer(
     startBlockFallback:
       envStart != null
         ? BigInt(envStart)
-        : (await client.getBlockNumber()) - BigInt(CELO_DEFAULT_LOOKBACK_BLOCKS),
-    getHead: async () => withRateLimitRetry(() => { opts.signal?.throwIfAborted(); return client.getBlockNumber(); }, INGEST_RETRY),
+        : (await readIndexableHead(client)) - BigInt(CELO_DEFAULT_LOOKBACK_BLOCKS),
+    getHead: async () => withRateLimitRetry(() => { opts.signal?.throwIfAborted(); return readIndexableHead(client); }, INGEST_RETRY),
     getLogs: (fromBlock, toBlock) =>
       withRateLimitRetry(() => rpcGetLogs(client, facilitatorList, facilitatorSet, fromBlock, toBlock, opts.signal), INGEST_RETRY),
     blockTimestamp: async (blockNumber) => {

@@ -31,6 +31,7 @@
 import { createPublicClient, http, parseAbiItem } from 'viem';
 import { celo } from 'viem/chains';
 import type { Chain } from '@/db/schema';
+import { readIndexableHead } from '@/lib/rpc-head';
 import {
   CELO_X402_TOKENS,
   celoX402RelayerSet,
@@ -288,7 +289,7 @@ export async function runCeloX402RelayerIndexer(
   const tokenAddresses = CELO_X402_TOKENS.map((t) => t.address);
   const rows: CeloX402Settlement[] = [];
 
-  const head = await retry(() => client.getBlockNumber());
+  const head = await retry(() => readIndexableHead(client));
   return {
     ...(await celoX402RelayerIndexer({
       signal: opts.signal,

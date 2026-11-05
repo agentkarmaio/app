@@ -24,6 +24,7 @@
 import { createPublicClient, http, keccak256, parseAbiItem, type Log, type PublicClient } from 'viem';
 import type { Chain } from '@/db/schema';
 import { getRegistryConfig } from '@/config/erc8004-registries';
+import { readIndexableHead } from '@/lib/rpc-head';
 import {
   decodeFeedbackCommentDataUri,
   parseFeedbackComment,
@@ -245,7 +246,7 @@ export async function runFeedbackUriScan(
   const cursor = await dbGetCursor(feedbackUriCursorKey(registry), chain as Chain);
   let startBlock = envStartBlock(chain);
   if (cursor?.last_slot == null && startBlock === undefined) {
-    startBlock = await client.getBlockNumber(); // fresh → from now
+    startBlock = await readIndexableHead(client); // fresh → from now
   }
 
   return scanFeedbackUris({
@@ -253,7 +254,7 @@ export async function runFeedbackUriScan(
     windowSize: opts.windowSize,
     maxWindows: opts.maxWindows ?? DEFAULT_MAX_WINDOWS,
     startBlock,
-    getHead: () => client.getBlockNumber(),
+    getHead: () => readIndexableHead(client),
     getLogs: async (fromBlock, toBlock) => {
       const logs = await client.getLogs({ address: registry as `0x${string}`, event: NEW_FEEDBACK_EVENT, fromBlock, toBlock });
       const out: ScannedComment[] = [];

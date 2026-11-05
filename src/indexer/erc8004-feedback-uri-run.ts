@@ -32,6 +32,7 @@ import {
   type ScannedComment,
   type PersistResult,
 } from '@/indexer/erc8004-feedback-uri';
+import { readIndexableHead } from '@/lib/rpc-head';
 import { createPublicClient, http, type PublicClient } from 'viem';
 
 function arg(name: string): string | undefined {
@@ -111,7 +112,7 @@ const envFloor = process.env[`${chain.toUpperCase()}_8004_FEEDBACK_START_BLOCK`]
 if (envFloor) startBlock = BigInt(Number.parseInt(envFloor, 10));
 const existing = await getCursor(cursorKey);
 if (existing?.last_slot == null && startBlock === undefined) {
-  startBlock = await client.getBlockNumber();
+  startBlock = await readIndexableHead(client);
   console.log(`[feedback-uri] fresh scan — seeding from head block ${startBlock}`);
 }
 
@@ -120,7 +121,7 @@ const result = await scanFeedbackUris({
   windowSize,
   maxWindows,
   startBlock,
-  getHead: () => client.getBlockNumber(),
+  getHead: () => readIndexableHead(client),
   getLogs,
   persistComments,
   getCursor,
