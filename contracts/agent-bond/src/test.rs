@@ -10,7 +10,7 @@ use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events as _, Ledger, LedgerInfo, MockAuth, MockAuthInvoke},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, Event, IntoVal, Map, Symbol, Val, Vec,
+    Address, BytesN, Env, Event, IntoVal, Map, Symbol, TryFromVal, Val, Vec,
 };
 
 use crate::contract::{AgentBond, AgentBondClient, MAX_UNBONDING_SECS, MIN_GOVERNANCE_DELAY_SECS, MIN_UNBONDING_SECS};
@@ -598,4 +598,140 @@ fn short_period_deploy_for_e2e() {
     h.bond.request_unbond(&AGENT, &USDC);
     set_time(&h.env, T0 + MIN_UNBONDING_SECS);
     assert_eq!(h.bond.withdraw(&AGENT), USDC);
+}
+
+// ── review 2026-11-18 (docs/bond/REVIEW.md) ─────────────────────────────────
+
+/// Advance the ledger sequence (and time, 5 s per ledger) without touching anything.
+fn advance_ledgers(env: &Env, ledgers: u32) {
+    let li = env.ledger().get();
+    env.ledger().set(LedgerInfo {
+        sequence_number: li.sequence_number + ledgers,
+        timestamp: li.timestamp + ledgers as u64 * 5,
+        ..li
+    });
+}
+
+#[test]
+fn slash_then_withdraw_pays_only_the_remaining_unbonding() {
+    let h = setup();
+    h.bond.deposit(&AGENT, &(100 * USDC));
+    h.bond.request_unbond(&AGENT, &(40 * USDC));
+    h.bond.slash(&AGENT, &(15 * USDC), &enactment(&h.env, 1));
+    set_time(&h.env, T0 + PERIOD);
+    assert_eq!(h.bond.withdraw(&AGENT), 25 * USDC);
+    let s = h.bond.get_bond(&AGENT).unwrap();
+    assert_eq!((s.bonded, s.unbonding, s.slashed_total), (60 * USDC, 0, 15 * USDC));
+    assert_eq!(h.token.balance(&h.owner), 925 * USDC);
+    assert_eq!(h.token.balance(&h.treasury), 15 * USDC);
+}
+
+#[test]
+fn slash_fully_consuming_unbonding_leaves_nothing_to_withdraw() {
+    let h = setup();
+    h.bond.deposit(&AGENT, &(100 * USDC));
+    h.bond.request_unbond(&AGENT, &(40 * USDC));
+    h.bond.slash(&AGENT, &(40 * USDC), &enactment(&h.env, 1));
+    set_time(&h.env, T0 + PERIOD);
+    assert_eq!(h.bond.try_withdraw(&AGENT), Err(Ok(Error::NothingUnbonding)));
+}
+
+#[test]
+fn slash_above_bonded_but_within_bonded_plus_unbonding_is_allowed() {
+    let h = setup();
+    h.bond.deposit(&AGENT, &(100 * USDC));
+    h.bond.request_unbond(&AGENT, &(40 * USDC)); // bonded 60, unbonding 40
+    h.bond.slash(&AGENT, &(80 * USDC), &enactment(&h.env, 1));
+    let s = h.bond.get_bond(&AGENT).unwrap();
+    assert_eq!((s.bonded, s.unbonding, s.unlock_at), (20 * USDC, 0, 0));
+    assert_eq!(
+        h.bond.try_slash(&AGENT, &(20 * USDC + 1), &enactment(&h.env, 2)),
+        Err(Ok(Error::SlashExceedsBalance))
+    );
+}
+
+#[test]
+fn unbond_after_partial_slash_uses_the_reduced_bonded_amount() {
+    let h = setup();
+    h.bond.deposit(&AGENT, &(100 * USDC));
+    h.bond.slash(&AGENT, &(30 * USDC), &enactment(&h.env, 1));
+    assert_eq!(h.bond.try_request_unbond(&AGENT, &(71 * USDC)), Err(Ok(Error::InsufficientBonded)));
+    h.bond.request_unbond(&AGENT, &(70 * USDC));
+    let s = h.bond.get_bond(&AGENT).unwrap();
+    assert_eq!((s.bonded, s.unbonding), (0, 70 * USDC));
+    h.bond.slash(&AGENT, &(10 * USDC), &enactment(&h.env, 2)); // still slashable
+    assert_eq!(h.bond.get_bond(&AGENT).unwrap().unbonding, 60 * USDC);
+}
+
+#[test]
+fn negative_amounts_rejected_everywhere() {
+    let h = setup();
+    h.bond.deposit(&AGENT, &USDC);
+    assert_eq!(h.bond.try_deposit(&AGENT, &-1), Err(Ok(Error::AmountNotPositive)));
+    assert_eq!(h.bond.try_request_unbond(&AGENT, &-1), Err(Ok(Error::AmountNotPositive)));
+    assert_eq!(h.bond.try_slash(&AGENT, &-1, &enactment(&h.env, 1)), Err(Ok(Error::AmountNotPositive)));
+    assert_eq!(h.bond.try_slash(&AGENT, &i128::MIN, &enactment(&h.env, 2)), Err(Ok(Error::AmountNotPositive)));
+}
+
+#[test]
+fn deposit_near_i128_max_is_checked() {
+    let h = setup();
+    h.bond.deposit(&AGENT, &USDC);
+    assert_eq!(h.bond.try_deposit(&AGENT, &(i128::MAX - USDC + 1)), Err(Ok(Error::ArithmeticOverflow)));
+}
+
+#[test]
+fn every_state_change_keeps_instance_and_entries_alive() {
+    use crate::storage::{DataKey, INSTANCE_BUMP, INSTANCE_THRESHOLD, PERSISTENT_THRESHOLD};
+    use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
+    let h = setup();
+    let id = h.bond.address.clone();
+    let decay = |h: &H| advance_ledgers(&h.env, INSTANCE_BUMP - INSTANCE_THRESHOLD + 1);
+    let inst = |h: &H| h.env.as_contract(&id, || h.env.storage().instance().get_ttl());
+    let ttl = |h: &H, k: DataKey| h.env.as_contract(&id, || h.env.storage().persistent().get_ttl(&k));
+
+    decay(&h);
+    h.bond.deposit(&AGENT, &(100 * USDC));
+    assert!(inst(&h) >= INSTANCE_THRESHOLD, "deposit: instance");
+    assert!(ttl(&h, DataKey::Bond(AGENT)) >= PERSISTENT_THRESHOLD, "deposit: bond");
+
+    decay(&h);
+    h.bond.request_unbond(&AGENT, &(40 * USDC));
+    assert!(inst(&h) >= INSTANCE_THRESHOLD, "unbond: instance");
+    assert!(ttl(&h, DataKey::Bond(AGENT)) >= PERSISTENT_THRESHOLD, "unbond: bond");
+
+    decay(&h);
+    let ev = enactment(&h.env, 1);
+    let ev_id = h.bond.evidence_id(&ev);
+    h.bond.slash(&AGENT, &(5 * USDC), &ev);
+    assert!(inst(&h) >= INSTANCE_THRESHOLD, "slash: instance");
+    assert!(ttl(&h, DataKey::Bond(AGENT)) >= PERSISTENT_THRESHOLD, "slash: bond");
+    assert!(ttl(&h, DataKey::UsedEvidence(ev_id.clone())) >= PERSISTENT_THRESHOLD, "slash: evidence guard");
+
+    decay(&h);
+    h.bond.withdraw(&AGENT);
+    assert!(inst(&h) >= INSTANCE_THRESHOLD, "withdraw: instance");
+    assert!(ttl(&h, DataKey::Bond(AGENT)) >= PERSISTENT_THRESHOLD, "withdraw: bond");
+
+    decay(&h);
+    h.bond.propose_config(&ConfigChange::Treasury(Address::generate(&h.env)));
+    assert!(inst(&h) >= INSTANCE_THRESHOLD, "propose_config");
+
+    let s = h.bond.get_bond(&AGENT).unwrap();
+    assert_eq!((s.bonded, s.unbonding, s.slashed_total), (60 * USDC, 0, 5 * USDC));
+    assert_eq!(h.bond.get_config().slasher, h.slasher);
+    assert!(h.bond.is_evidence_used(&ev_id));
+}
+
+#[test]
+fn reads_alone_do_not_keep_the_instance_alive() {
+    use soroban_sdk::testutils::storage::Instance as _;
+    let h = setup();
+    h.bond.deposit(&AGENT, &USDC);
+    let id = h.bond.address.clone();
+    let before = h.env.as_contract(&id, || h.env.storage().instance().get_ttl());
+    advance_ledgers(&h.env, 10);
+    let _ = h.bond.get_config();
+    let after = h.env.as_contract(&id, || h.env.storage().instance().get_ttl());
+    assert_eq!(after, before - 10);
 }
