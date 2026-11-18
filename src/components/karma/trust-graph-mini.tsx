@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { Chain, TrustTier } from '@/db/schema';
 import { agentHref } from '@/lib/agent-href';
 import { ChainMark } from '@/components/karma/chain-badge';
 import { CHAIN_META } from '@/lib/chain-meta';
+import { useReducedMotion } from '@/lib/use-reduced-motion';
 
 interface Agent {
   // chain is included so addresses that collide across EVM chains (Celo/Arc)
@@ -58,9 +60,9 @@ function shortAddr(a: string) {
   return `${a.slice(0, 4)}\u2026${a.slice(-4)}`;
 }
 
-function diamondPath(x: number, y: number, r: number) {
-  return `M${x},${y - r} L${x + r},${y} L${x},${y + r} L${x - r},${y} Z`;
-}
+// Caption legend. Graph nodes are circles coloured by trust tier, so they never
+// read as the hero's confidence diamonds (green there means receipt-backed).
+const LEGEND_TIERS: TrustTier[] = ['Excellent', 'Very Good', 'Good', 'Fair'];
 
 function hashAddr(s: string) {
   let h = 0;
@@ -119,6 +121,7 @@ export function TrustGraphMini() {
   const pulseIdRef = useRef(0);
   const seededRef = useRef(false);
   const [hovered, setHovered] = useState<string | null>(null);
+  const reducedMotion = useReducedMotion();
 
   useEffect(() => {
     let cancelled = false;
@@ -180,7 +183,7 @@ export function TrustGraphMini() {
   }, []);
 
   useEffect(() => {
-    if (!data || data.agents.length === 0) return;
+    if (reducedMotion || !data || data.agents.length === 0) return;
     const keys = data.agents.slice(0, MAX_NODES).map((a) => agentKey(a));
     const interval = setInterval(() => {
       const pick = keys[Math.floor(Math.random() * keys.length)];
@@ -191,7 +194,7 @@ export function TrustGraphMini() {
       }, 1700);
     }, 2600);
     return () => clearInterval(interval);
-  }, [data]);
+  }, [data, reducedMotion]);
 
   const positioned = useMemo(
     () => (data?.agents ? layout(data.agents) : []),
@@ -217,8 +220,13 @@ export function TrustGraphMini() {
   }
 
   return (
-    <div className="relative w-full">
+    <figure className="relative w-full">
+      {/* Decorative for assistive tech: the same agents are reachable as links in
+          the leaderboard, and the caption links there. Mouse users can still
+          click a node through to its profile. */}
       <svg
+        aria-hidden
+        focusable="false"
         viewBox={`0 0 ${W} ${H}`}
         className="block h-full w-full"
         preserveAspectRatio="xMidYMid meet"
@@ -321,18 +329,22 @@ export function TrustGraphMini() {
           stroke="rgb(113 112 255 / 0.4)"
           strokeWidth={0.8}
         >
-          <animate
-            attributeName="r"
-            values="22;40;22"
-            dur="3.6s"
-            repeatCount="indefinite"
-          />
-          <animate
-            attributeName="opacity"
-            values="0.5;0;0.5"
-            dur="3.6s"
-            repeatCount="indefinite"
-          />
+          {!reducedMotion && (
+            <>
+              <animate
+                attributeName="r"
+                values="22;40;22"
+                dur="3.6s"
+                repeatCount="indefinite"
+              />
+              <animate
+                attributeName="opacity"
+                values="0.5;0;0.5"
+                dur="3.6s"
+                repeatCount="indefinite"
+              />
+            </>
+          )}
         </circle>
 
         {/* Slow rotating dashed ring around hub */}
@@ -346,19 +358,21 @@ export function TrustGraphMini() {
             strokeWidth={0.6}
             strokeDasharray="2 6"
           >
-            <animateTransform
-              attributeName="transform"
-              type="rotate"
-              from={`0 ${CX} ${CY}`}
-              to={`360 ${CX} ${CY}`}
-              dur="28s"
-              repeatCount="indefinite"
-            />
+            {!reducedMotion && (
+              <animateTransform
+                attributeName="transform"
+                type="rotate"
+                from={`0 ${CX} ${CY}`}
+                to={`360 ${CX} ${CY}`}
+                dur="28s"
+                repeatCount="indefinite"
+              />
+            )}
           </circle>
         </g>
 
         {/* Ambient / recent pulse dots traveling node → hub */}
-        {pulses.map((pulse) => {
+        {!reducedMotion && pulses.map((pulse) => {
           const pos = positionMap.get(`solana:${pulse.address}`);
           if (!pos) return null;
           const tier =
@@ -454,9 +468,9 @@ export function TrustGraphMini() {
           />
           <text
             x={CX}
-            y={CY + 3}
+            y={CY + 3.5}
             textAnchor="middle"
-            className="fill-[#d0d6e0] text-[8.5px] font-[600] uppercase tracking-[0.1em]"
+            className="fill-[#d0d6e0] text-[10px] font-[590] uppercase tracking-[0.08em]"
             style={{ fontFamily: 'var(--font-mono)' }}
           >
             x402
@@ -494,7 +508,7 @@ export function TrustGraphMini() {
                   strokeWidth={0.6}
                   opacity={0.45}
                 >
-                  {isPulsing && (
+                  {isPulsing && !reducedMotion && (
                     <>
                       <animate
                         attributeName="r"
@@ -521,32 +535,15 @@ export function TrustGraphMini() {
                 opacity={isHovered || isPulsing ? 1 : isTop ? 0.95 : 0.82}
                 style={{ transition: 'opacity 200ms' }}
               >
-                <path
-                  d={diamondPath(p.x, p.y, p.r * 1.2)}
+                <circle
+                  cx={p.x}
+                  cy={p.y}
+                  r={p.r}
                   fill={TIER_FILL[p.agent.trustTier]}
                   stroke="#08090a"
                   strokeWidth={0.8}
-                  strokeLinejoin="miter"
                 />
-                <path
-                  d={`M${p.x},${p.y - p.r * 1.2} L${p.x},${p.y} L${p.x - p.r * 1.2},${p.y} Z`}
-                  fill="#ffffff"
-                  opacity={0.18}
-                />
-                <path
-                  d={`M${p.x + p.r * 1.2},${p.y} L${p.x},${p.y + p.r * 1.2} L${p.x},${p.y} Z`}
-                  fill="#000000"
-                  opacity={0.22}
-                />
-                <line
-                  x1={p.x}
-                  y1={p.y - p.r * 1.2}
-                  x2={p.x}
-                  y2={p.y + p.r * 1.2}
-                  stroke="#000000"
-                  strokeWidth={0.35}
-                  opacity={0.3}
-                />
+                <circle cx={p.x - p.r * 0.3} cy={p.y - p.r * 0.3} r={p.r * 0.38} fill="#ffffff" opacity={0.18} />
               </g>
             </g>
           );
@@ -554,7 +551,7 @@ export function TrustGraphMini() {
       </svg>
 
       {hoveredAgent && (
-        <div className="pointer-events-none absolute left-2 top-2 rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(15_16_17/0.88)] px-2.5 py-1.5 text-[10.5px] backdrop-blur-sm shadow-[0_4px_12px_-4px_rgb(0_0_0/0.8)]">
+        <div aria-hidden className="pointer-events-none absolute left-2 top-2 rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(15_16_17/0.92)] px-2.5 py-1.5 text-[11px] backdrop-blur-sm shadow-[0_4px_12px_-4px_rgb(0_0_0/0.8)]">
           <div className="flex items-center gap-1.5">
             <ChainMark chain={hoveredAgent.chain} />
             <span className="text-[#8a8f98]">{CHAIN_META[hoveredAgent.chain].label}</span>
@@ -572,6 +569,23 @@ export function TrustGraphMini() {
         </div>
       )}
 
-    </div>
+      <figcaption className="mt-1 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[12px] text-[#8a8f98]">
+        <span>Top agents around the x402 hub, coloured by trust tier</span>
+        <span className="flex items-center gap-2.5">
+          {LEGEND_TIERS.map((tier) => (
+            <span key={tier} className="inline-flex items-center gap-1">
+              <span aria-hidden className="inline-block size-2 rounded-full" style={{ background: TIER_FILL[tier] }} />
+              {tier}
+            </span>
+          ))}
+        </span>
+        <Link
+          href="/explore"
+          className="rounded-sm text-[#d0d6e0] underline decoration-[rgb(255_255_255/0.2)] underline-offset-4 transition-colors hover:text-[#f7f8f8] hover:decoration-[rgb(113_112_255/0.6)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7170ff] motion-reduce:transition-none"
+        >
+          Browse all agents
+        </Link>
+      </figcaption>
+    </figure>
   );
 }

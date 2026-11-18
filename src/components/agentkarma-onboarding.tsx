@@ -45,16 +45,16 @@ export function AgentKarmaOnboarding() {
         type="button"
         onClick={copy}
         disabled={state === 'copying'}
-        title={state === 'copied' ? 'Copied — paste into your agent' : 'Copy setup instructions for your agent'}
-        className="group inline-flex min-h-11 max-w-full cursor-pointer items-center gap-3 rounded-full border border-border bg-foreground/[0.025] py-1.5 pl-4 pr-4 font-mono text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-wait motion-reduce:transition-none sm:pr-2"
+        title={state === 'copied' ? 'Copied, paste it into your agent' : 'Copy the MCP setup instruction for your agent'}
+        className="group inline-flex min-h-11 max-w-full cursor-pointer items-center gap-3 rounded-lg border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] py-1.5 pl-3.5 pr-3.5 text-[13px] font-[510] text-[#d0d6e0] transition-colors hover:border-[rgb(255_255_255/0.16)] hover:bg-[rgb(255_255_255/0.05)] hover:text-[#f7f8f8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7170ff] focus-visible:ring-offset-2 focus-visible:ring-offset-[#08090a] disabled:cursor-wait motion-reduce:transition-none sm:pr-1.5"
       >
         <span className="inline-flex min-w-0 items-center gap-2">
           {state === 'copied' ? <Check aria-hidden className="size-3.5 shrink-0 text-foreground" /> : <Copy aria-hidden className="size-3.5 shrink-0" />}
-          <span>onboard your agent to AgentKarma</span>
+          <span>{state === 'copied' ? 'Copied, paste into your agent' : 'Copy MCP setup for your agent'}</span>
         </span>
         <span aria-hidden className="hidden shrink-0 items-center gap-1 sm:inline-flex">
           {AGENT_MARKS.map((agent) => (
-            <span key={agent.name} title={agent.name} className="inline-flex size-6 items-center justify-center rounded-md border border-border bg-background/60">
+            <span key={agent.name} title={agent.name} className="inline-flex size-7 items-center justify-center rounded-md border border-[rgb(255_255_255/0.06)] bg-[rgb(255_255_255/0.02)] text-[#8a8f98]">
               <svg viewBox="0 0 24 24" fill="currentColor" className="size-3.5"><path d={agent.path} /></svg>
             </span>
           ))}

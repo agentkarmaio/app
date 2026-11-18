@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { createNoise3D } from 'simplex-noise';
+import { useReducedMotion } from '@/lib/use-reduced-motion';
 
 interface WavyBackgroundProps {
   colors?: string[];
@@ -12,8 +13,11 @@ interface WavyBackgroundProps {
   className?: string;
 }
 
+// Module-level so the default keeps one identity and never re-runs the effect.
+const DEFAULT_COLORS = ['#5e6ad2', '#7170ff', '#8a92ff', '#4c57b8', '#5e6ad2'];
+
 export function WavyBackground({
-  colors = ['#5e6ad2', '#7170ff', '#8a92ff', '#4c57b8', '#5e6ad2'],
+  colors = DEFAULT_COLORS,
   waveWidth = 50,
   blur = 10,
   speed = 'slow',
@@ -21,6 +25,7 @@ export function WavyBackground({
   className,
 }: WavyBackgroundProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const reducedMotion = useReducedMotion();
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -29,11 +34,13 @@ export function WavyBackground({
     if (!ctx) return;
 
     const noise = createNoise3D();
-    const getSpeed = () => (speed === 'fast' ? 0.002 : 0.001);
+    const step = speed === 'fast' ? 0.002 : 0.001;
     let nt = 0;
     let w = 0;
     let h = 0;
     let animationId = 0;
+    // Off-screen, the loop has nothing to show; stop it instead of burning frames.
+    let visible = true;
 
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
@@ -45,9 +52,10 @@ export function WavyBackground({
       ctx.filter = `blur(${blur}px)`;
     };
 
-    const drawWave = (n: number) => {
-      nt += getSpeed();
-      for (let i = 0; i < n; i++) {
+    const draw = () => {
+      ctx.clearRect(0, 0, w, h);
+      ctx.globalAlpha = opacity;
+      for (let i = 0; i < 5; i++) {
         ctx.beginPath();
         ctx.lineWidth = waveWidth;
         ctx.strokeStyle = colors[i % colors.length];
@@ -60,28 +68,46 @@ export function WavyBackground({
       }
     };
 
-    const render = () => {
-      ctx.clearRect(0, 0, w, h);
-      ctx.globalAlpha = opacity;
-      drawWave(5);
-      animationId = requestAnimationFrame(render);
+    const loop = () => {
+      nt += step;
+      draw();
+      animationId = requestAnimationFrame(loop);
+    };
+
+    const start = () => {
+      cancelAnimationFrame(animationId);
+      // Reduced motion gets one still frame, never a running loop.
+      if (reducedMotion || !visible) draw();
+      else loop();
     };
 
     resize();
-    render();
+    start();
 
-    const handleResize = () => resize();
+    const observer = new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting;
+      if (visible) start();
+      else cancelAnimationFrame(animationId);
+    });
+    observer.observe(canvas);
+
+    const handleResize = () => {
+      resize();
+      if (reducedMotion) draw();
+    };
     window.addEventListener('resize', handleResize);
 
     return () => {
       cancelAnimationFrame(animationId);
+      observer.disconnect();
       window.removeEventListener('resize', handleResize);
     };
-  }, [blur, colors, opacity, speed, waveWidth]);
+  }, [blur, colors, opacity, speed, waveWidth, reducedMotion]);
 
   return (
     <canvas
       ref={canvasRef}
+      aria-hidden
       className={className}
       style={{ display: 'block' }}
     />

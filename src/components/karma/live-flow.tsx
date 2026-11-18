@@ -9,6 +9,12 @@ import {
   parseActivityHealth, parseActivityStats, startActivityPoll, type ActivityStats, type CoveragePath, type StatusTone,
 } from './live-flow-state';
 
+// Narrow screens: "1.2M" instead of "1,234,567" so label, counts and chevron fit one line.
+const COMPACT = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+function compact(value: number): string {
+  return COMPACT.format(value);
+}
+
 const CHAIN_LABELS: Record<string, string> = { solana: 'Solana', 'arc-mainnet': 'Arc', celo: 'Celo', stellar: 'Stellar' };
 
 const TONE_DOT: Record<StatusTone, string> = {
@@ -127,6 +133,10 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
   const delayed = status === 'Updates delayed';
 
   const tone = activityTone(health, delayed);
+  // The visible pill swaps number formats by width; give assistive tech one exact reading.
+  const summaryLabel = stats
+    ? `Indexed activity: ${stats.totalTransactions.toLocaleString('en-US')} receipts, ${stats.totalAgents.toLocaleString('en-US')} agents. ${status}. Show network coverage`
+    : `Indexed activity: ${statsFailed ? 'counts unavailable' : 'loading counts'}. ${status}. Show network coverage`;
 
   return (
     <div aria-label="Indexed activity" className="relative inline-flex">
@@ -140,22 +150,31 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
           }
         }}
       >
-        <summary className="flex min-h-10 cursor-pointer list-none items-center gap-2.5 whitespace-nowrap rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 py-1.5 text-[11px] font-[510] text-muted-foreground backdrop-blur-sm transition-colors hover:border-white/[0.14] hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-open:border-white/[0.14] group-open:bg-white/[0.05] motion-reduce:transition-none [&::-webkit-details-marker]:hidden">
+        <summary aria-label={summaryLabel} className="flex min-h-10 cursor-pointer list-none items-center gap-2 whitespace-nowrap rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-[12px] font-[510] sm:gap-2.5 sm:px-3.5 text-muted-foreground backdrop-blur-sm transition-colors hover:border-white/[0.14] hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-open:border-white/[0.14] group-open:bg-white/[0.05] motion-reduce:transition-none [&::-webkit-details-marker]:hidden">
           <StatusDot tone={tone} pulse={tone === 'ok' || tone === 'busy'} />
-          <span className="hidden uppercase tracking-[0.12em] sm:inline xl:hidden">Indexed activity</span>
-          <span aria-hidden="true" className="hidden h-3 w-px bg-white/[0.1] sm:block xl:hidden" />
+          {/* Phones get a one-word label so the counts never clip; a delay takes its place. */}
+          <span aria-hidden="true" className={`sm:hidden ${delayed ? 'text-amber-300' : 'text-[#d0d6e0]'}`}>{delayed ? 'Delayed' : 'Indexed'}</span>
+          <span className="hidden text-[#d0d6e0] sm:inline">Indexed activity</span>
+          <span aria-hidden="true" className="h-3 w-px bg-white/[0.1]" />
           {stats ? (
             <span className="inline-flex items-center gap-1.5">
-              <span key={`tx-${pulseKey}`} className="font-mono tabular-nums text-foreground karma-live-flash motion-reduce:animate-none">{stats.totalTransactions.toLocaleString('en-US')}</span>
+              <span key={`tx-${pulseKey}`} className="font-mono tabular-nums text-foreground karma-live-flash motion-reduce:animate-none">
+                <span className="sm:hidden">{compact(stats.totalTransactions)}</span>
+                <span className="hidden sm:inline">{stats.totalTransactions.toLocaleString('en-US')}</span>
+              </span>
               <span>receipts</span>
               <span aria-hidden="true" className="text-white/20">·</span>
-              <span className="font-mono tabular-nums text-foreground">{stats.totalAgents.toLocaleString('en-US')}</span>
+              <span className="font-mono tabular-nums text-foreground">
+                <span className="sm:hidden">{compact(stats.totalAgents)}</span>
+                <span className="hidden sm:inline">{stats.totalAgents.toLocaleString('en-US')}</span>
+              </span>
               <span>agents</span>
             </span>
           ) : <span>{statsFailed ? 'Counts unavailable' : 'Loading counts…'}</span>}
-          <span aria-hidden="true" className="hidden h-3 w-px bg-white/[0.1] md:block" />
+          <span aria-hidden="true" className={`h-3 w-px bg-white/[0.1] ${delayed ? 'hidden sm:block' : 'hidden md:block'}`} />
           <span role="status" className="sr-only">{status}</span>
-          <span aria-hidden="true" className={`hidden md:inline ${delayed ? 'text-amber-300' : ''}`}>{status}</span>
+          {/* Narrow screens drop the routine status to fit one line; a delay stays visible (in the label slot on phones). */}
+          <span aria-hidden="true" className={delayed ? 'hidden text-amber-300 sm:inline' : 'hidden md:inline'}>{status}</span>
           <ChevronDown aria-hidden="true" className="size-3 transition-transform group-open:rotate-180 motion-reduce:transition-none" />
         </summary>
         <div className="absolute left-0 top-full z-40 mt-2 max-h-[70vh] w-[min(26rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-border bg-popover text-xs text-popover-foreground shadow-2xl shadow-black/40">

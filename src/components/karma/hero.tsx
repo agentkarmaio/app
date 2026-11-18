@@ -1,24 +1,45 @@
-import { WalletSearch } from '@/components/karma/wallet-search';
+import { WalletSearch, type SearchExample } from '@/components/karma/wallet-search';
 import { WavyBackground } from '@/components/karma/wavy-background';
 import { LiveTicker } from '@/components/karma/live-ticker';
 import { LiveFlow } from '@/components/karma/live-flow';
 import { TrustGraphMini } from '@/components/karma/trust-graph-mini';
-import { cachedStats } from '@/db/cached';
+import { cachedLeaderboardEntries, cachedStats } from '@/db/cached';
 import { AgentKarmaOnboarding } from '@/components/agentkarma-onboarding';
 import { ArrowUpRight } from 'lucide-react';
 
 // Agent Bond is a separate product operated by AgentKarma Labs (RFC §12.1),
-// testnet only, so the chip says both. Links to the public contract README.
+// testnet only, so the line says both. Links to the public contract README.
 const AGENT_BOND_URL = 'https://github.com/agentkarmaio/app/tree/main/contracts/agent-bond';
 
-// Protocols only. The chains used to live here too, which duplicated the "Built
-// on" row directly below and forced a wrapped second line plus an asterisk
-// footnote. Chains now sit with the chain marks, where they read without a legend.
+// Protocols only, as a sentence under the scoring chart rather than a first-
+// screen row. Chains sit with the chain marks in "Built on" below the hero.
 const PROTOCOLS = [
   { label: 'x402', role: 'payments' },
   { label: '8004', role: 'identity' },
-  { label: 'SAS', role: 'attestation' },
+  { label: 'SAS', role: 'attestations' },
 ];
+
+const MAX_EXAMPLES = 3;
+
+/**
+ * Up to three real, searchable example queries from the live leaderboard: agent
+ * names first, then top-scored wallet addresses to fill (address lookup is the
+ * other half of what the search does). Nothing here is invented.
+ */
+function exampleQueries(entries: { address: string; displayName?: string | null }[]): SearchExample[] {
+  const named: SearchExample[] = [];
+  const addresses: SearchExample[] = [];
+  for (const entry of entries) {
+    const name = entry.displayName?.trim();
+    // /api/search needs 3+ characters; very long names make poor chips.
+    if (name && name.length >= 3 && name.length <= 28 && !named.some((e) => e.query === name)) {
+      named.push({ label: name, query: name });
+    } else if (!addresses.some((e) => e.query === entry.address)) {
+      addresses.push({ label: `${entry.address.slice(0, 4)}…${entry.address.slice(-4)}`, query: entry.address });
+    }
+  }
+  return [...named, ...addresses].slice(0, MAX_EXAMPLES);
+}
 
 function LegendDiamond({ color }: { color: string }) {
   return (
@@ -48,7 +69,7 @@ function KarmaMechanicsChart() {
   ];
 
   return (
-    <div className="mt-3 max-w-[260px] sm:max-w-[380px]">
+    <div className="max-w-[300px] sm:max-w-[400px]">
       <svg
         aria-hidden
         viewBox="0 0 280 38"
@@ -118,18 +139,18 @@ function KarmaMechanicsChart() {
       </svg>
 
       <p
-        className="karma-mech-label mt-1.5 flex flex-wrap items-center gap-x-1.5 text-[10px] tracking-[-0.05px] text-[#8a8f98] sm:hidden"
+        className="karma-mech-label mt-1.5 flex flex-wrap items-center gap-x-1.5 text-[12px] text-[#8a8f98] sm:hidden"
         style={{ animationDelay: '1.6s' }}
       >
         <span className="text-[#a3d6bd]">Receipts lift</span>
-        <span aria-hidden className="text-[#3f4248]">·</span>
+        <span aria-hidden className="text-[#62666d]">·</span>
         <span className="text-[#b0b6f0]">Active climb</span>
-        <span aria-hidden className="text-[#3f4248]">·</span>
+        <span aria-hidden className="text-[#62666d]">·</span>
         <span className="italic">Silence decays</span>
       </p>
 
       <div
-        className="mt-2 hidden text-[11px] tracking-[-0.08px] sm:grid"
+        className="mt-2 hidden text-[12px] sm:grid"
         style={{ gridTemplateColumns: '30% 44% 26%' }}
       >
         <span
@@ -164,47 +185,25 @@ export async function Hero() {
         freshness: initialStats.freshness,
       }
     : undefined;
+  // Not awaited: the chips stream in after the hero paints. Real indexed names
+  // only; on any failure the search simply renders without examples.
+  const searchExamples = cachedLeaderboardEntries()
+    .then(exampleQueries)
+    .catch(() => []);
 
   return (
-    <section className="relative pb-12 pt-10 sm:pt-16 lg:pb-20 lg:pt-20">
+    <section className="relative pb-12 pt-8 sm:pt-12 lg:pb-16 lg:pt-14">
+      {/* One ambient layer (the wave) under one vignette. The cloud video, the
+          indigo screen tint and the grid were dropped: three more layers of
+          decoration for no information, and the video kept playing under
+          reduced motion. */}
       <div
         aria-hidden
         className="pointer-events-none absolute -top-32 h-[calc(100%+10rem)] overflow-hidden -z-10 sm:-top-40 sm:h-[calc(100%+12rem)] lg:-top-48 lg:h-[calc(100%+14rem)]"
         style={{ left: 'calc(50% - 50vw)', width: '100vw' }}
       >
-        <div
-          className="absolute inset-x-0 top-0 h-full overflow-hidden"
-          style={{
-            opacity: 0.16,
-            filter: 'saturate(0.35) contrast(1.05) hue-rotate(200deg) brightness(0.9)',
-            maskImage:
-              'linear-gradient(to bottom, black 0%, black 30%, rgba(0,0,0,0.6) 55%, rgba(0,0,0,0.25) 75%, transparent 95%)',
-            WebkitMaskImage:
-              'linear-gradient(to bottom, black 0%, black 30%, rgba(0,0,0,0.6) 55%, rgba(0,0,0,0.25) 75%, transparent 95%)',
-          }}
-        >
-          <video
-            autoPlay
-            muted
-            loop
-            playsInline
-            preload="auto"
-            className="size-full object-cover"
-          >
-            <source src="/backgrounds/win98-clouds.webm" type="video/webm" />
-            <source src="/backgrounds/win98-clouds.mp4" type="video/mp4" />
-          </video>
-        </div>
-        <div
-          className="absolute inset-0"
-          style={{
-            background:
-              'linear-gradient(180deg, rgba(94,106,210,0.08) 0%, rgba(94,106,210,0.03) 40%, transparent 70%)',
-            mixBlendMode: 'screen',
-          }}
-        />
         <WavyBackground
-          opacity={0.22}
+          opacity={0.2}
           blur={28}
           waveWidth={60}
           className="absolute inset-0 size-full"
@@ -213,111 +212,78 @@ export async function Hero() {
           className="absolute inset-0"
           style={{
             background:
-              'radial-gradient(ellipse 60% 70% at 50% 0%, transparent 0%, rgba(8,9,10,0.4) 55%, rgba(8,9,10,0.95) 85%)',
-          }}
-        />
-        <div
-          className="absolute inset-x-0 top-0 h-[420px] opacity-[0.14]"
-          style={{
-            backgroundImage:
-              'linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(to right, rgba(255,255,255,0.05) 1px, transparent 1px)',
-            backgroundSize: '48px 48px',
-            maskImage:
-              'radial-gradient(ellipse 50% 70% at 50% 0%, black 30%, transparent 80%)',
-            WebkitMaskImage:
-              'radial-gradient(ellipse 50% 70% at 50% 0%, black 30%, transparent 80%)',
+              'radial-gradient(ellipse 60% 70% at 50% 0%, transparent 0%, rgba(8,9,10,0.45) 55%, rgba(8,9,10,0.95) 85%)',
           }}
         />
       </div>
 
       <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,380px)] lg:items-center lg:gap-16 xl:grid-cols-[minmax(0,1fr)_minmax(0,420px)] xl:gap-20">
-        <div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <LiveFlow initial={liveFlowInitial} />
-          </div>
-
-          <a
-            href={AGENT_BOND_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="group mt-4 inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-2xl border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] py-1 pl-1 pr-3 text-[12px] leading-5 text-[#8a8f98] transition-colors hover:border-[rgb(113_112_255/0.35)] hover:text-[#d0d6e0]"
-          >
-            <span className="rounded-full bg-[rgb(113_112_255/0.16)] px-2 text-[10.5px] font-[590] uppercase tracking-[0.12em] text-[#8a92ff]">
-              New
-            </span>
-            <span>
-              <span className="font-[510] text-[#f7f8f8]">Agent Bond</span>: stake USDC behind your reputation.
-            </span>
-            <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-[#62666d]">
-              Testnet, by AgentKarma Labs
-              <ArrowUpRight aria-hidden className="size-3.5 shrink-0 transition-colors group-hover:text-[#8a92ff]" />
-            </span>
-          </a>
+        <div className="min-w-0">
+          <LiveFlow initial={liveFlowInitial} />
 
           <h1
             data-tour="hero"
-            className="mt-5 max-w-3xl text-[32px] font-[560] leading-[1.08] tracking-[-1px] text-[#f7f8f8] sm:text-[40px] sm:leading-[1.05] sm:tracking-[-1.3px] md:text-[48px]"
+            className="mt-6 max-w-3xl text-[34px] font-[510] leading-[1.06] tracking-[-0.9px] text-[#f7f8f8] [text-wrap:balance] sm:text-[44px] sm:tracking-[-1.1px] md:text-[48px] md:leading-[1.02] md:tracking-[-1.056px]"
           >
-            Trust,{' '}
-            <span className="bg-gradient-to-br from-[#8a92ff] via-[#7170ff] to-[#5e6ad2] bg-clip-text text-transparent">
-              quantified
-            </span>{' '}
-            for autonomous agents.
+            Trust, quantified for autonomous agents.
           </h1>
 
-          <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-[#8a8f98] tracking-[-0.176px]">
-            The reputation primitive for the agent economy. AgentKarma scores
-            every on-chain wallet across four signal tiers — receipts, behavior,
-            identity, and social — so builders, marketplaces, and enterprises can
-            route work to agents that actually deliver.
+          <p className="mt-4 max-w-[34rem] text-[16px] leading-[1.6] tracking-[-0.165px] text-[#8a8f98] sm:text-[17px]">
+            The reputation layer for autonomous on-chain agents. Every wallet is
+            scored from receipts, behavior, identity and social signals, so you
+            can route work to agents that deliver.
           </p>
 
-          <KarmaMechanicsChart />
-
-
-          <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-[#8a8f98]">
-            <span className="flex items-center gap-1.5">
-              <LegendDiamond color="#10b981" />
-              <span className="text-[#d0d6e0]">Receipt-backed</span>
-            </span>
-            <span aria-hidden className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]" />
-            <span className="flex items-center gap-1.5">
-              <LegendDiamond color="#eab308" />
-              <span className="text-[#d0d6e0]">Behavior-inferred</span>
-            </span>
-            <span aria-hidden className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]" />
-            <span className="flex items-center gap-1.5">
-              <LegendDiamond color="#6b7280" />
-              <span className="text-[#d0d6e0]">Declared</span>
-            </span>
+          <div className="mt-7">
+            <WalletSearch examples={searchExamples} />
           </div>
 
-          <div className="mt-5 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[10px]">
-            {PROTOCOLS.map((p, i) => (
-              <span key={p.label} className="flex items-center gap-2">
-                <span className="font-mono font-[500] text-[#8a8f98]">{p.label}</span>
-                <span className="uppercase tracking-[0.14em] text-[#4f5258]">
-                  {p.role}
-                </span>
-                {i < PROTOCOLS.length - 1 && (
-                  <span
-                    aria-hidden
-                    className="size-[2px] rounded-full bg-[rgb(255_255_255/0.12)]"
-                  />
-                )}
-              </span>
-            ))}
-          </div>
-
-
-          <div className="mt-7 space-y-3">
+          <div className="mt-6 flex flex-col items-start gap-3">
             <AgentKarmaOnboarding />
-            <div className="w-full max-w-md">
-              <WalletSearch />
-            </div>
-            <div className="pl-4">
-              <LiveTicker />
-            </div>
+            <a
+              href={AGENT_BOND_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group inline-flex max-w-full items-center gap-1.5 whitespace-nowrap rounded-sm text-[13px] text-[#8a8f98] transition-colors hover:text-[#d0d6e0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7170ff] focus-visible:ring-offset-2 focus-visible:ring-offset-[#08090a] motion-reduce:transition-none"
+            >
+              <span>
+                <span className="font-[510] text-[#d0d6e0]">Agent Bond</span>
+                <span className="sm:hidden">, on testnet by AgentKarma Labs</span>
+                <span className="hidden sm:inline">: stake USDC on your reputation. Testnet, by AgentKarma Labs</span>
+                <span className="sr-only"> (opens GitHub in a new tab)</span>
+              </span>
+              <ArrowUpRight aria-hidden className="size-3.5 shrink-0 transition-colors group-hover:text-[#8a92ff] motion-reduce:transition-none" />
+            </a>
+            <LiveTicker />
+          </div>
+
+          <div className="mt-10 border-t border-[rgb(255_255_255/0.06)] pt-6">
+            <KarmaMechanicsChart />
+
+            <ul aria-label="Score confidence badges" className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-[#d0d6e0]">
+              <li className="flex items-center gap-1.5">
+                <LegendDiamond color="#10b981" />
+                Receipt-backed
+              </li>
+              <li className="flex items-center gap-1.5">
+                <LegendDiamond color="#eab308" />
+                Behavior-inferred
+              </li>
+              <li className="flex items-center gap-1.5">
+                <LegendDiamond color="#6b7280" />
+                Declared
+              </li>
+            </ul>
+
+            <p className="mt-3 text-[12px] leading-[1.5] text-[#8a8f98]">
+              Signals from{' '}
+              {PROTOCOLS.map((p, i) => (
+                <span key={p.label}>
+                  <span className="font-mono text-[#d0d6e0]">{p.label}</span> {p.role}
+                  {i < PROTOCOLS.length - 2 ? ', ' : i === PROTOCOLS.length - 2 ? ' and ' : '.'}
+                </span>
+              ))}
+            </p>
           </div>
         </div>
 

@@ -63,26 +63,26 @@ export function LiveTicker() {
   return (
     <div
       key={tx.signature}
-      className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#62666d] animate-in fade-in duration-500"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-[#8a8f98] animate-in fade-in duration-500 motion-reduce:animate-none"
     >
-      <span className="relative flex size-1">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#7170ff] opacity-60" />
+      <span aria-hidden className="relative flex size-1">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#7170ff] opacity-60 motion-reduce:hidden" />
         <span className="relative inline-flex size-1 rounded-full bg-[#7170ff]" />
       </span>
-      <span className="uppercase tracking-[0.08em]">Last settled</span>
+      <span>Last settled</span>
       <Link
         href={`/agent/${tx.walletAddress}`}
-        className="font-mono text-[#d0d6e0] underline-offset-4 decoration-[rgb(255_255_255/0.12)] transition-colors hover:text-[#f7f8f8] hover:decoration-[rgb(113_112_255/0.5)] hover:underline"
+        className="rounded-sm font-mono text-[#d0d6e0] underline-offset-4 decoration-[rgb(255_255_255/0.12)] transition-colors hover:text-[#f7f8f8] hover:decoration-[rgb(113_112_255/0.5)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7170ff] motion-reduce:transition-none"
         suppressHydrationWarning
       >
         {shortAddr(tx.walletAddress)}
       </Link>
-      <span className="text-[rgb(255_255_255/0.12)]">·</span>
+      <span aria-hidden className="text-[rgb(255_255_255/0.2)]">·</span>
       <span className="tabular-nums text-[#d0d6e0]">
         {formatUsdcAmount(tx.amount)}
-        <span className="ml-0.5 text-[#62666d]">USDC</span>
+        <span className="ml-0.5 text-[#8a8f98]">USDC</span>
       </span>
-      <span className="text-[rgb(255_255_255/0.12)]">·</span>
+      <span aria-hidden className="text-[rgb(255_255_255/0.2)]">·</span>
       <span className="tabular-nums" suppressHydrationWarning>
         {tick >= 0 ? timeAgo(tx.timestamp) : ''}
       </span>
