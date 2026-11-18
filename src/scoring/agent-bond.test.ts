@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { calculateScore } from './index';
-import { applyAgentBond, seasonedBalance, slashFields } from './agent-bond';
+import { applyAgentBond, seasonedBalance, slashFields, slashFieldsWithFallback } from './agent-bond';
 
 const DAY = 86_400_000;
 function txs(wallet: string, n: number, cps: number, days: number, amt: number, fail = 0) {
@@ -111,5 +111,18 @@ describe('calculateScore with an agent bond (PLAN.md §6.4)', () => {
   test('consumer face is untouched', () => {
     const t = txs('B', 80, 5, 45, 2, 3);
     expect(run(t, 0.9, 6, 0, input(10_000)).consumerScore).toBe(run(t, 0.9, 6, 0, null).consumerScore);
+  });
+});
+
+describe('slashFieldsWithFallback (slash events lost to RPC retention)', () => {
+  test('uses the last slash event when there is one', () => {
+    expect(slashFieldsWithFallback({ amount: 250n * S, bonded: 250n * S, unbonding: 0n }, [])).toEqual(slashFields({ amount: 250n * S, bonded: 250n * S, unbonding: 0n }));
+  });
+  test('falls back to the contract slashed_total when no slash event survived', () => {
+    expect(slashFieldsWithFallback(undefined, [{ bonded: 250n * S, unbonding: 0n, slashedTotal: 250n * S }]))
+      .toEqual({ slashedEver: true, lastSlashStroops: 250n * S, stakeBeforeLastSlashStroops: 500n * S });
+  });
+  test('no slash anywhere means no penalty', () => {
+    expect(slashFieldsWithFallback(undefined, [{ bonded: S, unbonding: 0n, slashedTotal: 0n }]).slashedEver).toBe(false);
   });
 });

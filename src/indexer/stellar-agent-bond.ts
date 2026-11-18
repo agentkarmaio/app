@@ -231,6 +231,32 @@ export function projectBondState(
   return [...state.values()];
 }
 
+/** On-chain `get_bond` result (stroops, unix seconds). */
+export interface ContractBondState {
+  owner: string;
+  bonded: bigint;
+  unbonding: bigint;
+  unlock_at: bigint;
+  slashed_total: bigint;
+  first_deposit_at: bigint;
+}
+
+/** Pure: a `get_bond` result as an agent_bonds row (used by reconcile). */
+export function bondRowFromContract(contractId: string, agentId: number, b: ContractBondState, ledger: number): AgentBondRow {
+  return {
+    chain: AGENT_BOND_CHAIN,
+    contract_id: contractId,
+    agent_id: agentId,
+    owner_wallet: b.owner,
+    bonded: baseUnitsToUsdc(b.bonded),
+    unbonding: baseUnitsToUsdc(b.unbonding),
+    unlock_at: b.unlock_at > 0n ? new Date(Number(b.unlock_at) * 1000).toISOString() : null,
+    slashed_total: baseUnitsToUsdc(b.slashed_total),
+    first_deposit_at: new Date(Number(b.first_deposit_at) * 1000).toISOString(),
+    last_ledger: ledger,
+  };
+}
+
 export function bondKey(contractId: string, agentId: number): string {
   return `${contractId}:${agentId}`;
 }
@@ -249,7 +275,14 @@ export interface AgentBondIndexerDeps {
   deployLedger: number;
   getEvents: (req: { startLedger: number } | { cursor: string }, limit: number) => Promise<AgentBondEventsPage>;
   getOldestLedger: () => Promise<number>;
-  loadCursor: () => Promise<string | null>;
+  /** Stored RPC cursor and the ledger it was saved at. */
+  loadCursor: () => Promise<{ cursor: string; ledger: number } | null>;
+  /**
+   * Overwrite agent_bonds from on-chain `get_bond` for every known bond, after
+   * events were lost to RPC retention. Returns the owners it touched. Restores
+   * totals, not history.
+   */
+  reconcile: () => Promise<string[]>;
   saveCursor: (cursor: string, ledger: number) => Promise<void>;
   loadPrior: (keys: { contractId: string; agentId: number }[]) => Promise<Map<string, Prior>>;
   ensureWallets: (addresses: string[]) => Promise<void>;
@@ -285,12 +318,20 @@ export interface AgentBondIndexerResult {
 export async function runAgentBondIndexer(deps: AgentBondIndexerDeps): Promise<AgentBondIndexerResult> {
   const limit = deps.pageLimit ?? 200;
   const maxPages = deps.maxPages ?? 50;
-  let cursor = await deps.loadCursor();
+  const stored = await deps.loadCursor();
+  let cursor: string | null = stored?.cursor ?? null;
   let gaps = 0;
-  if (cursor === null) {
-    const oldest = await deps.getOldestLedger();
-    // Events between deploy and the RPC retention floor are unrecoverable here.
-    if (oldest > deps.deployLedger) gaps = 1;
+  const oldest = await deps.getOldestLedger();
+  // Events between our position and the RPC retention floor are gone: either
+  // the first run starts after the deploy ledger left retention, or the stored
+  // cursor fell out of it during an outage. Restore totals from chain state,
+  // then resume from the oldest ledger the RPC still has.
+  const behind = stored === null ? oldest > deps.deployLedger : stored.ledger < oldest;
+  if (behind) {
+    gaps = 1;
+    cursor = null;
+    const owners = await deps.reconcile();
+    if (owners.length > 0) await deps.markDirty(owners);
   }
 
   let inserted = 0;
@@ -303,7 +344,7 @@ export async function runAgentBondIndexer(deps: AgentBondIndexerDeps): Promise<A
   while (pages < maxPages) {
     deps.signal?.throwIfAborted();
     const page = await deps.getEvents(
-      cursor === null ? { startLedger: Math.max(deps.deployLedger, await deps.getOldestLedger()) } : { cursor },
+      cursor === null ? { startLedger: Math.max(deps.deployLedger, oldest) } : { cursor },
       limit,
     );
     pages++;
@@ -393,7 +434,22 @@ export async function runStellarAgentBondIndexer(opts: { signal?: AbortSignal } 
         })),
       };
     },
-    loadCursor: async () => (await db.getCursor(cursorKey, AGENT_BOND_CHAIN))?.last_signature ?? null,
+    loadCursor: async () => {
+      const c = await db.getCursor(cursorKey, AGENT_BOND_CHAIN);
+      return c ? { cursor: c.last_signature, ledger: c.last_slot ?? 0 } : null;
+    },
+    reconcile: async () => {
+      const ids = await db.getAgentBondIds(contractId);
+      const latest = (await server.getLatestLedger()).sequence;
+      const rows: AgentBondRow[] = [];
+      for (const agentId of ids) {
+        const state = await readContractBond(server, contractId, agentId);
+        if (state) rows.push(bondRowFromContract(contractId, agentId, state, latest));
+      }
+      await db.ensureWalletsExist(rows.map((r) => r.owner_wallet), AGENT_BOND_CHAIN);
+      await db.upsertAgentBonds(rows);
+      return rows.map((r) => r.owner_wallet);
+    },
     saveCursor: (cursor, ledger) => db.upsertCursor(cursorKey, cursor, ledger, AGENT_BOND_CHAIN),
     loadPrior: (keys) => db.getAgentBondPriors(contractId, keys.map((k) => k.agentId)),
     ensureWallets: db.makeEnsureWallets(AGENT_BOND_CHAIN),
@@ -402,4 +458,23 @@ export async function runStellarAgentBondIndexer(opts: { signal?: AbortSignal } 
     markDirty: (addresses) => db.markWalletsDirty(addresses.map((address) => ({ chain: AGENT_BOND_CHAIN, address }))),
     seasoningOwners: () => db.getAgentBondSeasoningOwners(contractId),
   });
+}
+
+/** Simulated `get_bond(agent_id)` view call. Null when the bond does not exist. */
+export async function readContractBond(
+  server: import('@stellar/stellar-sdk').rpc.Server,
+  contractId: string,
+  agentId: number,
+): Promise<ContractBondState | null> {
+  const { Account, Contract, TransactionBuilder, BASE_FEE, Keypair, Networks, nativeToScVal, rpc } = await import('@stellar/stellar-sdk');
+  // Read-only simulation: any source account works; nothing is signed or sent.
+  const source = new Account(Keypair.random().publicKey(), '0');
+  const tx = new TransactionBuilder(source, { fee: BASE_FEE, networkPassphrase: Networks.TESTNET })
+    .addOperation(new Contract(contractId).call('get_bond', nativeToScVal(agentId, { type: 'u32' })))
+    .setTimeout(30)
+    .build();
+  const sim = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(sim)) throw new Error(`agent-bond reconcile: get_bond(${agentId}) failed: ${sim.error}`);
+  const v = sim.result ? scValToNative(sim.result.retval) : null;
+  return (v ?? null) as ContractBondState | null;
 }

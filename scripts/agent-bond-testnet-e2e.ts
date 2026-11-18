@@ -160,6 +160,7 @@ async function main() {
       };
     },
     loadCursor: async () => null,
+    reconcile: async () => [],
     saveCursor: async () => {},
     loadPrior: async () => new Map(),
     ensureWallets: async () => {},

@@ -38,7 +38,7 @@ import { AK_RATER_ADDRESSES, AK_METADATA_TAG1, AK_REVIEW_TAG1, AK_VALIDATOR } fr
 import { scoreMetadataQuality, type MetadataQualityResult } from '@/scoring/celo-metadata';
 import {
   AGENT_BOND_SCORING_CHAIN, AGENT_BOND_SEASON_DAYS, AGENT_BOND_WINDOW_EVENT_CAP, DAY_MS,
-  seasonedBalance, slashFields, type AgentBondInput,
+  seasonedBalance, slashFieldsWithFallback, type AgentBondInput,
 } from '@/scoring/agent-bond';
 import type { AgentBondEventRow, AgentBondRow } from '@/indexer/stellar-agent-bond';
 import { usdcToUnits } from '@/lib/stellar-testnet-parity';
@@ -4183,6 +4183,14 @@ export async function getAgentBondPriors(
   return out;
 }
 
+/** Every agent_id with a stored bond on this contract (reconcile input). */
+export async function getAgentBondIds(contractId: string): Promise<number[]> {
+  const { data, error } = await supabase.from('agent_bonds').select('agent_id')
+    .eq('chain', 'stellar-testnet').eq('contract_id', contractId).limit(1000);
+  if (error) throw error;
+  return (data ?? []).map((r) => r.agent_id as number);
+}
+
 /** Distinct owners with a bond event in the last 31 days (seasoning still moving). */
 export async function getAgentBondSeasoningOwners(contractId: string, nowMs: number = Date.now()): Promise<string[]> {
   const since = new Date(nowMs - (AGENT_BOND_SEASON_DAYS + 1) * DAY_MS).toISOString();
@@ -4232,7 +4240,8 @@ export async function getAgentBondInput(
     bonded: usdcToUnits(r.bonded), unbonding: usdcToUnits(r.unbonding), amount: usdcToUnits(r.amount),
   });
 
-  const { data: bonds, error } = await supabase.from('agent_bonds').select('agent_id')
+  const { data: bonds, error } = await supabase.from('agent_bonds')
+    .select('agent_id, bonded:bonded::text, unbonding:unbonding::text, slashed_total:slashed_total::text')
     .eq('chain', chain).eq('contract_id', contractId).eq('owner_wallet', wallet);
   if (error) throw error;
   if (!bonds || bonds.length === 0) return null;
@@ -4260,5 +4269,12 @@ export async function getAgentBondInput(
     );
   }
 
-  return { chain, countedStroops, ...slashFields(lastSlash.data?.[0] ? stroops(lastSlash.data[0]) : undefined) };
+  return {
+    chain,
+    countedStroops,
+    ...slashFieldsWithFallback(
+      lastSlash.data?.[0] ? stroops(lastSlash.data[0]) : undefined,
+      bonds.map((b) => ({ bonded: usdcToUnits(b.bonded), unbonding: usdcToUnits(b.unbonding), slashedTotal: usdcToUnits(b.slashed_total) })),
+    ),
+  };
 }

@@ -104,3 +104,21 @@ export function applyAgentBond(
     effect: { strength: Math.round(strength * 1000) / 1000, lift: round2(lift), penalty: round2(penalty) },
   };
 }
+
+/**
+ * Slash fields when slash EVENTS may have been lost to RPC retention: prefer the
+ * last slash event; otherwise fall back to the contract's slashed_total (kept on
+ * agent_bonds, restored by reconcile), estimating the stake before as current
+ * stake + slashed_total. A lost event must never erase a penalty.
+ */
+export function slashFieldsWithFallback(
+  lastSlashEvent: AgentBondAmounts | undefined,
+  bonds: { bonded: bigint; unbonding: bigint; slashedTotal: bigint }[],
+): Pick<AgentBondInput, 'slashedEver' | 'lastSlashStroops' | 'stakeBeforeLastSlashStroops'> {
+  if (lastSlashEvent) return slashFields(lastSlashEvent);
+  const slashed = bonds.filter((b) => b.slashedTotal > 0n);
+  if (slashed.length === 0) return slashFields(undefined);
+  const total = slashed.reduce((a, b) => a + b.slashedTotal, 0n);
+  const stake = slashed.reduce((a, b) => a + b.bonded + b.unbonding, 0n);
+  return slashFields({ amount: total, bonded: stake, unbonding: 0n });
+}

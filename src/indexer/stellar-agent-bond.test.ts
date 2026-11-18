@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Address, Keypair, nativeToScVal, xdr } from '@stellar/stellar-sdk';
 
 import {
+  bondRowFromContract,
   baseUnitsToUsdc,
   decodeAgentBondEvent,
   projectBondState,
@@ -139,7 +140,7 @@ describe('projectBondState', () => {
 
 describe('runAgentBondIndexer', () => {
   function fakeDeps(pages: RawAgentBondEvent[][], over: Partial<AgentBondIndexerDeps> = {}) {
-    const calls: { req: unknown[]; saved: string[]; dirty: string[][]; rows: number; bonds: number } = { req: [], saved: [], dirty: [], rows: 0, bonds: 0 };
+    const calls: { req: unknown[]; saved: string[]; dirty: string[][]; rows: number; bonds: number; reconciled: number } = { req: [], saved: [], dirty: [], rows: 0, bonds: 0, reconciled: 0 };
     let i = 0;
     const deps: AgentBondIndexerDeps = {
       contractId: CONTRACT,
@@ -148,6 +149,7 @@ describe('runAgentBondIndexer', () => {
       getOldestLedger: async () => 50,
       getEvents: async (req) => { calls.req.push(req); const events = pages[i] ?? []; i++; return { events, cursor: `c${i}`, oldestLedger: 50, latestLedger: 500 }; },
       loadCursor: async () => null,
+      reconcile: async () => { calls.reconciled++; return [OWNER]; },
       saveCursor: async (c) => { calls.saved.push(c); },
       loadPrior: async () => new Map(),
       ensureWallets: async () => {},
@@ -171,7 +173,7 @@ describe('runAgentBondIndexer', () => {
   });
 
   test('resumes from a stored cursor', async () => {
-    const { deps, calls } = fakeDeps([[]], { loadCursor: async () => 'stored' });
+    const { deps, calls } = fakeDeps([[]], { loadCursor: async () => ({ cursor: 'stored', ledger: 80 }) });
     await runAgentBondIndexer(deps);
     expect(calls.req).toEqual([{ cursor: 'stored' }]);
   });
@@ -182,12 +184,33 @@ describe('runAgentBondIndexer', () => {
     expect(calls.saved).toEqual([]);
   });
 
-  test('reports a retention gap when the deploy ledger fell out of RPC retention', async () => {
-    const { deps } = fakeDeps([[]], { getOldestLedger: async () => 95 });
+  test('first run after the deploy ledger left retention: reconciles from contract state, reports the gap', async () => {
+    const { deps, calls } = fakeDeps([[]], { getOldestLedger: async () => 95 });
     const r = await runAgentBondIndexer(deps);
+    expect(calls.reconciled).toBe(1);
+    expect(calls.req).toEqual([{ startLedger: 95 }]);
+    expect(calls.dirty).toContainEqual([OWNER]);
     expect(r.coverage.gaps).toBe(1);
     expect(r.coverage.reason).toBe('retention_gap');
     expect(r.coverage.complete).toBe(false);
+  });
+
+  test('a stored cursor older than retention: reconciles and restarts at the oldest ledger', async () => {
+    const { deps, calls } = fakeDeps([[]], {
+      deployLedger: 10,
+      loadCursor: async () => ({ cursor: 'stale', ledger: 40 }),
+      getOldestLedger: async () => 50,
+    });
+    const r = await runAgentBondIndexer(deps);
+    expect(calls.reconciled).toBe(1);
+    expect(calls.req).toEqual([{ startLedger: 50 }]);
+    expect(r.coverage.reason).toBe('retention_gap');
+  });
+
+  test('a fresh cursor never reconciles', async () => {
+    const { deps, calls } = fakeDeps([[]], { loadCursor: async () => ({ cursor: 'fresh', ledger: 60 }) });
+    await runAgentBondIndexer(deps);
+    expect(calls.reconciled).toBe(0);
   });
 
   test('re-marks owners whose 30-day seasoning window is still moving', async () => {
@@ -201,5 +224,19 @@ describe('runAgentBondIndexer', () => {
     const { deps, calls } = fakeDeps([[foreign]]);
     await runAgentBondIndexer(deps);
     expect(calls.rows).toBe(0);
+  });
+});
+
+describe('bondRowFromContract', () => {
+  test('maps get_bond state to an agent_bonds row', () => {
+    const row = bondRowFromContract(CONTRACT, 7, {
+      owner: OWNER, bonded: 6n * U, unbonding: U, unlock_at: 1_800_000_000n, slashed_total: 3n * U, first_deposit_at: 1_700_000_000n,
+    }, 5_000);
+    expect(row).toEqual({
+      chain: 'stellar-testnet', contract_id: CONTRACT, agent_id: 7, owner_wallet: OWNER,
+      bonded: '6.0000000', unbonding: '1.0000000', unlock_at: new Date(1_800_000_000_000).toISOString(),
+      slashed_total: '3.0000000', first_deposit_at: new Date(1_700_000_000_000).toISOString(), last_ledger: 5_000,
+    });
+    expect(bondRowFromContract(CONTRACT, 7, { owner: OWNER, bonded: 0n, unbonding: 0n, unlock_at: 0n, slashed_total: 0n, first_deposit_at: 1n }, 1).unlock_at).toBeNull();
   });
 });
