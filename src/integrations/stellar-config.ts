@@ -80,6 +80,18 @@ export function resolveStellarRpcUrl(
 export const STELLAR_TESTNET_IDENTITY_REGISTRY =
   'CDE3K4COIAGWNNJQQLL26SYI3KBJF5FUDHXG5FA6GYDJCG7T5V7FIWZH' as const;
 
+/**
+ * Agent Bond (slashable self-stake), testnet only. A separate product
+ * ("operated by AgentKarma Labs"); see contracts/agent-bond/DEPLOYMENTS.md.
+ * `deployLedger` is where the bond indexer starts (Soroban RPC keeps ~7 days).
+ * `e2e` is the 60-second-unbonding instance used only by the live E2E script.
+ */
+export const STELLAR_TESTNET_AGENT_BOND = {
+  contractId: 'CDJCW763IQ2B2ZTZLMD4WNQPIXT45DVHBZBCDDXPL25VGDJF63EZOR2W',
+  deployLedger: 5801245,
+  e2e: { contractId: 'CCYAZCXPRXYPY4DQJHIRNEOP2EAODQSRPNOC7QSY2UNRMDPWIJSNSCO4', deployLedger: 5801247 },
+} as const;
+
 export interface StellarNetworkConfig {
   network: StellarNetwork;
   /** AK chain key every row from this network is written under. */

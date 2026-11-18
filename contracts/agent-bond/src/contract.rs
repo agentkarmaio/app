@@ -6,8 +6,9 @@
 //!   the slasher, and only to the treasury.
 //! - slasher: slashes on evidence. Evidence is an audit pointer, NOT verified
 //!   on-chain (Soroban cannot read NEAR or off-chain records).
-//! - admin: config only. Every change waits 2x the current unbonding period,
-//!   so an agent that notices within one period can still exit.
+//! - admin: config only. Every change waits max(2x the current unbonding
+//!   period, 14 days), so an agent that notices within one period can still
+//!   exit, and lowering the period first cannot shortcut a slasher swap.
 //!
 //! All USDC movement goes through `pull` / `push`: the seam a future
 //! `YieldAdapter` would replace (PLAN.md §4). No yield logic in v1.
@@ -24,6 +25,9 @@ use crate::types::{BondState, Config, ConfigChange, Evidence, PendingConfig};
 
 pub const MIN_UNBONDING_SECS: u64 = 60;
 pub const MAX_UNBONDING_SECS: u64 = 90 * 24 * 3600;
+/// Absolute floor on every config delay, so lowering the period first cannot
+/// shortcut a later slasher or treasury swap.
+pub const MIN_GOVERNANCE_DELAY_SECS: u64 = 14 * 24 * 3600;
 
 const TAG_ENACTMENT: &[u8] = b"agentkarma.bond.evidence.enactment/1";
 const TAG_ASSAY: &[u8] = b"agentkarma.bond.evidence.assay/1";
@@ -197,14 +201,18 @@ impl AgentBond {
     // ── admin: config only, delayed ─────────────────────────────────────────
 
     /// Propose a config change. Replaces any pending one (which restarts the
-    /// delay). Activates at `now + 2 * current unbonding_secs`.
+    /// delay). Activates at `now + max(2 * current unbonding_secs, 14 days)`.
     pub fn propose_config(env: Env, change: ConfigChange) -> Result<(), Error> {
         let cfg = storage::get_config(&env);
         cfg.admin.require_auth();
         if let ConfigChange::UnbondingSecs(secs) = change {
             check_period(secs)?;
         }
-        let delay = cfg.unbonding_secs.checked_mul(2).ok_or(Error::ArithmeticOverflow)?;
+        let delay = cfg
+            .unbonding_secs
+            .checked_mul(2)
+            .ok_or(Error::ArithmeticOverflow)?
+            .max(MIN_GOVERNANCE_DELAY_SECS);
         let activates_at = env.ledger().timestamp().checked_add(delay).ok_or(Error::ArithmeticOverflow)?;
         storage::set_pending_config(&env, &PendingConfig { change: change.clone(), activates_at });
         storage::bump_instance(&env);

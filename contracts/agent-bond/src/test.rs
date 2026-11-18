@@ -13,7 +13,7 @@ use soroban_sdk::{
     Address, BytesN, Env, Event, IntoVal, Map, Symbol, Val, Vec,
 };
 
-use crate::contract::{AgentBond, AgentBondClient, MAX_UNBONDING_SECS, MIN_UNBONDING_SECS};
+use crate::contract::{AgentBond, AgentBondClient, MAX_UNBONDING_SECS, MIN_GOVERNANCE_DELAY_SECS, MIN_UNBONDING_SECS};
 use crate::errors::Error;
 use crate::events::{BondDeposited, BondSlashed, BondUnbondRequested, BondWithdrawn, ConfigProposed};
 use crate::types::{ConfigChange, Evidence};
@@ -436,6 +436,30 @@ fn treasury_and_period_changes_are_delayed_and_bounded() {
     h.bond.propose_config(&ConfigChange::UnbondingSecs(MIN_UNBONDING_SECS));
     let now = T0 + 2 * PERIOD;
     assert_eq!(h.bond.get_pending_config().unwrap().activates_at, now + 2 * PERIOD);
+}
+
+#[test]
+fn lowering_the_period_cannot_shortcut_a_slasher_swap() {
+    // Attack: shrink the period first, then swap the slasher on a tiny delay.
+    let h = setup();
+    h.bond.propose_config(&ConfigChange::UnbondingSecs(MIN_UNBONDING_SECS));
+    set_time(&h.env, T0 + 2 * PERIOD);
+    h.bond.apply_config();
+    assert_eq!(h.bond.get_config().unbonding_secs, MIN_UNBONDING_SECS);
+
+    let now = T0 + 2 * PERIOD;
+    h.bond.propose_config(&ConfigChange::Slasher(Address::generate(&h.env)));
+    assert_eq!(
+        h.bond.get_pending_config().unwrap().activates_at,
+        now + MIN_GOVERNANCE_DELAY_SECS
+    );
+}
+
+#[test]
+fn short_period_instance_still_has_governance_floor() {
+    let h = setup_with_period(MIN_UNBONDING_SECS);
+    h.bond.propose_config(&ConfigChange::Treasury(Address::generate(&h.env)));
+    assert_eq!(h.bond.get_pending_config().unwrap().activates_at, T0 + MIN_GOVERNANCE_DELAY_SECS);
 }
 
 #[test]
