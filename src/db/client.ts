@@ -4205,16 +4205,25 @@ export async function getAgentBondInput(
   nowMs: number = Date.now(),
 ): Promise<AgentBondInput | null> {
   if (chain !== AGENT_BOND_SCORING_CHAIN) return null;
-  const { data, error } = await supabase
-    .from('agent_bond_events')
-    .select('agent_id, kind, ledger_closed_at, bonded, unbonding, amount')
-    .eq('chain', chain)
-    .eq('contract_id', contractId)
-    .eq('owner_wallet', wallet)
-    .order('ledger', { ascending: true })
-    .limit(5000);
-  if (error) throw error;
-  if (!data || data.length === 0) return null;
+  // Read EVERY event, paged. A row cap would let an owner spam tiny deposits
+  // until a slash fell out of the window and its penalty vanished.
+  const PAGE = 1000;
+  const data: { agent_id: number; kind: AgentBondEventRow['kind']; ledger_closed_at: string; bonded: string; unbonding: string; amount: string }[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data: page, error } = await supabase
+      .from('agent_bond_events')
+      .select('agent_id, kind, ledger_closed_at, bonded, unbonding, amount')
+      .eq('chain', chain)
+      .eq('contract_id', contractId)
+      .eq('owner_wallet', wallet)
+      .order('ledger', { ascending: true })
+      .order('event_id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    data.push(...(page ?? []));
+    if (!page || page.length < PAGE) break;
+  }
+  if (data.length === 0) return null;
   return deriveAgentBondInput(chain, data.map((r) => ({
     agentId: r.agent_id,
     kind: r.kind,
