@@ -4214,9 +4214,12 @@ export interface AgentBondView {
 
 export async function getAgentBond(contractId: string, agentId: number): Promise<AgentBondView> {
   const [bond, slashes] = await Promise.all([
-    supabase.from('agent_bonds').select('*')
+    // ::text keeps numeric(30,7) as exact 7-decimal strings, the API's contract;
+    // PostgREST would otherwise send JSON numbers ("5" instead of "5.0000000").
+    supabase.from('agent_bonds')
+      .select('chain, contract_id, agent_id, owner_wallet, bonded:bonded::text, unbonding:unbonding::text, unlock_at, slashed_total:slashed_total::text, first_deposit_at, last_ledger')
       .eq('chain', 'stellar-testnet').eq('contract_id', contractId).eq('agent_id', agentId).maybeSingle(),
-    supabase.from('agent_bond_events').select('amount, evidence, evidence_id, slasher, tx_hash, ledger_closed_at')
+    supabase.from('agent_bond_events').select('amount:amount::text, evidence, evidence_id, slasher, tx_hash, ledger_closed_at')
       .eq('chain', 'stellar-testnet').eq('contract_id', contractId).eq('agent_id', agentId).eq('kind', 'slashed')
       .order('ledger', { ascending: false }).limit(50),
   ]);
