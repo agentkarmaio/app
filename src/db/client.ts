@@ -4183,12 +4183,18 @@ export async function getAgentBondPriors(
   return out;
 }
 
-/** Every agent_id with a stored bond on this contract (reconcile input). */
+/** Every agent_id with a stored bond on this contract (reconcile input), paged. */
 export async function getAgentBondIds(contractId: string): Promise<number[]> {
-  const { data, error } = await supabase.from('agent_bonds').select('agent_id')
-    .eq('chain', 'stellar-testnet').eq('contract_id', contractId).limit(1000);
-  if (error) throw error;
-  return (data ?? []).map((r) => r.agent_id as number);
+  const PAGE = 500; // under PostgREST max_rows so a full page is never silently cut
+  const ids: number[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase.from('agent_bonds').select('agent_id')
+      .eq('chain', 'stellar-testnet').eq('contract_id', contractId)
+      .order('agent_id', { ascending: true }).range(from, from + PAGE - 1);
+    if (error) throw error;
+    ids.push(...(data ?? []).map((r) => r.agent_id as number));
+    if (!data || data.length < PAGE) return ids;
+  }
 }
 
 /** Distinct owners with a bond event in the last 31 days (seasoning still moving). */
@@ -4263,9 +4269,12 @@ export async function getAgentBondInput(
     if (atStart.error) throw atStart.error;
     if (inWindow.error) throw inWindow.error;
     if ((inWindow.data?.length ?? 0) > AGENT_BOND_WINDOW_EVENT_CAP) continue; // fail closed
+    // The current balance (agent_bonds, also restored by reconcile) is part of
+    // the window too: if events were lost, the count can never exceed it.
+    const current = usdcToUnits(bonds.find((b) => b.agent_id === agent_id)!.bonded);
     countedStroops += seasonedBalance(
       atStart.data?.[0] ? usdcToUnits(atStart.data[0].bonded) : 0n,
-      (inWindow.data ?? []).map((r) => usdcToUnits(r.bonded)),
+      [...(inWindow.data ?? []).map((r) => usdcToUnits(r.bonded)), current],
     );
   }
 

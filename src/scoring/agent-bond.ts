@@ -108,8 +108,10 @@ export function applyAgentBond(
 /**
  * Slash fields when slash EVENTS may have been lost to RPC retention: prefer the
  * last slash event; otherwise fall back to the contract's slashed_total (kept on
- * agent_bonds, restored by reconcile), estimating the stake before as current
- * stake + slashed_total. A lost event must never erase a penalty.
+ * agent_bonds, restored by reconcile). With the event gone the severity is
+ * unknown, so it is taken as MAXIMAL: deriving it from live balances would let
+ * the owner dilute the penalty by topping up. A lost event never erases or
+ * softens a penalty.
  */
 export function slashFieldsWithFallback(
   lastSlashEvent: AgentBondAmounts | undefined,
@@ -119,6 +121,5 @@ export function slashFieldsWithFallback(
   const slashed = bonds.filter((b) => b.slashedTotal > 0n);
   if (slashed.length === 0) return slashFields(undefined);
   const total = slashed.reduce((a, b) => a + b.slashedTotal, 0n);
-  const stake = slashed.reduce((a, b) => a + b.bonded + b.unbonding, 0n);
-  return slashFields({ amount: total, bonded: stake, unbonding: 0n });
+  return { slashedEver: true, lastSlashStroops: total, stakeBeforeLastSlashStroops: total };
 }

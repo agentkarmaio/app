@@ -26,6 +26,10 @@ describe('seasonedBalance (min balance over the trailing 30 days, in stroops)', 
   test('fresh money counts zero for 30 days', () => expect(seasonedBalance(0n, [1_000_000n * S])).toBe(0n));
   test('1 USDC then top-up counts only the 1 USDC', () => expect(seasonedBalance(S, [10_000n * S])).toBe(S));
   test('requesting unbond lowers the count at once', () => expect(seasonedBalance(1000n * S, [200n * S])).toBe(200n * S));
+  test('the current (reconciled) balance caps the count when window events were lost', () => {
+    // 1000 held at window start, no events left in the window, but chain says 100 now.
+    expect(seasonedBalance(1000n * S, [100n * S])).toBe(100n * S);
+  });
   test('stays exact beyond float precision', () => {
     const big = 2n ** 53n + 1n; // not representable as a JS number
     expect(seasonedBalance(big, [big + 1n])).toBe(big);
@@ -119,8 +123,11 @@ describe('slashFieldsWithFallback (slash events lost to RPC retention)', () => {
     expect(slashFieldsWithFallback({ amount: 250n * S, bonded: 250n * S, unbonding: 0n }, [])).toEqual(slashFields({ amount: 250n * S, bonded: 250n * S, unbonding: 0n }));
   });
   test('falls back to the contract slashed_total when no slash event survived', () => {
-    expect(slashFieldsWithFallback(undefined, [{ bonded: 250n * S, unbonding: 0n, slashedTotal: 250n * S }]))
-      .toEqual({ slashedEver: true, lastSlashStroops: 250n * S, stakeBeforeLastSlashStroops: 500n * S });
+    // Severity is unknown, so it is taken as maximal: the owner cannot dilute it by topping up.
+    const r = slashFieldsWithFallback(undefined, [{ bonded: 250n * S, unbonding: 0n, slashedTotal: 250n * S }]);
+    expect(r).toEqual({ slashedEver: true, lastSlashStroops: 250n * S, stakeBeforeLastSlashStroops: 250n * S });
+    const topped = slashFieldsWithFallback(undefined, [{ bonded: 1_000_000n * S, unbonding: 0n, slashedTotal: S }]);
+    expect(applyAgentBond(80, { chain: 'stellar-testnet', countedStroops: 0n, ...topped }).effect?.penalty).toBe(25);
   });
   test('no slash anywhere means no penalty', () => {
     expect(slashFieldsWithFallback(undefined, [{ bonded: S, unbonding: 0n, slashedTotal: 0n }]).slashedEver).toBe(false);
