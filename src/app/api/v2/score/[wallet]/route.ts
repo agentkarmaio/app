@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getWallet, getWalletsByAddressAnyChain, getTransactions, getFeedbackSummary,
-  getLatestSignalValues, getSignalEventsForWallet,
+  getLatestSignalValues, getSignalEventsForWallet, getAgentBondInput,
   getSuccession, getBondsForAgent, getUnderwriterPositions,
 } from '@/db/client';
 import { canonicalAddress, detectChain, resolveChainParam } from '@/lib/chain-detect';
@@ -15,6 +15,7 @@ import { deriveSuccessionLiveness } from '@/scoring/succession';
 import { readAttestation } from '@/integrations/attestation';
 import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
 import { resolveKarma, resolveKarmaEnrichment, type EnrichmentCore } from '@/lib/karma-resolver';
+import { STELLAR_TESTNET_AGENT_BOND } from '@/integrations/stellar-config';
 import { stellarAccountExists } from '@/integrations/stellar-flows';
 import { isStellarAccount } from '@/config/stellar-x402';
 import { CHAINS, isPublicChain, type Chain, type Wallet } from '@/db/schema';
@@ -118,10 +119,12 @@ export async function GET(
   let feedback = { deliveryRate: 0, total: 0 };
   try { feedback = await getFeedbackSummary(wallet, evidenceChain); } catch { /* ok */ }
 
-  const [attestation, manifestMap, signalEvents] = await Promise.all([
+  const [attestation, manifestMap, signalEvents, agentBond] = await Promise.all([
     evidenceChain === 'solana' ? readAttestation(wallet).catch(() => 0) : Promise.resolve(0),
     getLatestSignalValues([wallet], 'manifest', evidenceChain).catch(() => new Map<string, number>()),
     getSignalEventsForWallet(wallet, 200, evidenceChain).catch(() => [] as SignalEvent[]),
+    // Same input the rescore queue uses, so the live and stored scores agree.
+    getAgentBondInput(wallet, evidenceChain, STELLAR_TESTNET_AGENT_BOND.contractId),
   ]);
 
   const cadence = transactions.length > 0
@@ -144,6 +147,7 @@ export async function GET(
         manifestMap.get(wallet) ?? null,
         null,
         signalEvents,
+        agentBond,
       )
     : null;
 
@@ -164,6 +168,8 @@ export async function GET(
     txCount: live?.txCount ?? walletRow?.tx_count ?? 0,
     lastActive: live?.lastActive ?? walletRow?.last_seen ?? null,
   };
+  // Agent Bond (self-stake, testnet): additive, present only when it applies.
+  if (live?.agentBond) response.agentBond = { ...live.agentBond, operator: 'AgentKarma Labs' };
 
   // Provider face is computed regardless of `?face` — `explain` narrates it
   // even on a consumer-only read; it is only ATTACHED when the face was asked for.

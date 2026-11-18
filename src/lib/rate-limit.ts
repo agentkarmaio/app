@@ -29,7 +29,8 @@ export type RateLimitName =
   | 'collaboration'
   | 'manifest-refresh'
   | 'succession-get'
-  | 'payment-feed';
+  | 'payment-feed'
+  | 'agent-bond';
 
 type LimitSpec = { limit: number; window: `${number} s` | `${number} m` };
 
@@ -53,6 +54,8 @@ const LIMITS: Record<RateLimitName, LimitSpec> = {
   'succession-get': { limit: 60, window: '1 m' },
   // Cursor-paged feed polled by indexers (a few pages every ~30 s).
   'payment-feed': { limit: 60, window: '1 m' },
+  // Read-only Agent Bond state (testnet).
+  'agent-bond': { limit: 60, window: '1 m' },
 };
 
 type LimitResult = {
