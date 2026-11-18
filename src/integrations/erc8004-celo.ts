@@ -15,8 +15,7 @@
 
 import { createPublicClient, http, parseAbi } from 'viem';
 import { celo } from 'viem/chains';
-import { decodeDataUriJson } from '@/lib/data-uri';
-import { safeFetchJson } from '@/lib/ssrf-guard';
+import { fetchRegistration } from '@/lib/registration-fetch';
 
 export const IDENTITY_REGISTRY_CELO = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432' as const;
 export const REPUTATION_REGISTRY_CELO = '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63' as const;
@@ -141,7 +140,7 @@ export async function readAgent(agentId: bigint | number): Promise<CeloAgent | n
     // Fetch and parse registration JSON best-effort. Network errors don't
     // invalidate the agent — just attach the error and return.
     try {
-      const reg = await fetchRegistration(tokenURI as string);
+      const reg = (await fetchRegistration(tokenURI as string)) as AgentRegistrationFile | null;
       agent.registration = reg;
     } catch (err) {
       agent.registrationError = err instanceof Error ? err.message : String(err);
@@ -154,23 +153,6 @@ export async function readAgent(agentId: bigint | number): Promise<CeloAgent | n
     if (msg.includes('ERC721NonexistentToken') || msg.includes('invalid token ID')) return null;
     throw err;
   }
-}
-
-async function fetchRegistration(uri: string): Promise<AgentRegistrationFile | null> {
-  // data:application/json[;enc=gzip[;level=N]];base64,XXXX — fully on-chain
-  // encoded metadata. Gas-optimized agents commonly use this pattern. Parse
-  // inline rather than treating as unsupported.
-  if (uri.startsWith('data:application/json')) {
-    return decodeDataUriJson(uri) as AgentRegistrationFile;
-  }
-
-  if (!uri.startsWith('http://') && !uri.startsWith('https://')) {
-    // ipfs:// and ar:// can be added later when the demand shows up.
-    throw new Error(`unsupported URI scheme: ${uri.slice(0, 32)}…`);
-  }
-  // SSRF guard: uri is an attacker-controlled on-chain registration URL —
-  // validate the host (and every redirect hop) is public before fetching.
-  return (await safeFetchJson(uri, { timeoutMs: 8000 })) as AgentRegistrationFile;
 }
 
 // ─── ReputationRegistry reads ─────────────────────────────────────────────────
