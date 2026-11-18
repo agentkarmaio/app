@@ -15,6 +15,8 @@ import type { Chain } from '@/db/schema';
 export const AGENT_BOND_SCORING_CHAIN: Chain = 'stellar-testnet';
 /** Log-scale cap: 10k USDC reaches full strength. */
 export const AGENT_BOND_CAP_USDC = 10_000;
+/** USDC on Stellar has 7 decimals. */
+export const STROOPS_PER_USDC = 10_000_000n;
 /** Lift is at most this share of the distance to 100. */
 export const AGENT_BOND_WEIGHT = 0.10;
 /** Only the minimum balance held over this window counts. */
@@ -26,12 +28,12 @@ const EXCELLENT_FLOOR = 90;
 
 export interface AgentBondInput {
   chain: Chain;
-  /** Sum over the wallet's bonds of the min bonded balance in the window. */
-  countedUsdc: number;
+  /** Sum over the wallet's bonds of the min bonded balance in the window, in stroops. */
+  countedStroops: bigint;
   slashedEver: boolean;
-  lastSlashUsdc: number;
-  /** bonded + unbonding just before the last slash. */
-  stakeBeforeLastSlash: number;
+  lastSlashStroops: bigint;
+  /** bonded + unbonding just before the last slash, in stroops. */
+  stakeBeforeLastSlashStroops: bigint;
 }
 
 export interface AgentBondEffect {
@@ -40,11 +42,11 @@ export interface AgentBondEffect {
   penalty: number;
 }
 
-/** Post-state of one bond event, human USDC. */
+/** Post-state of one bond event, in stroops (7 decimals). */
 export interface AgentBondAmounts {
-  bonded: number;
-  unbonding: number;
-  amount: number;
+  bonded: bigint;
+  unbonding: bigint;
+  amount: bigint;
 }
 
 export const DAY_MS = 86_400_000;
@@ -55,17 +57,19 @@ export const DAY_MS = 86_400_000;
  */
 export const AGENT_BOND_WINDOW_EVENT_CAP = 500;
 
-/** Min of the balance at the window start and every post-event balance inside it. */
-export function seasonedBalance(atStartBonded: number, inWindowBonded: number[]): number {
-  return Math.max(0, Math.min(atStartBonded, ...inWindowBonded));
+/** Min of the balance at the window start and every post-event balance inside it (stroops, exact). */
+export function seasonedBalance(atStartBonded: bigint, inWindowBonded: bigint[]): bigint {
+  let min = atStartBonded;
+  for (const b of inWindowBonded) if (b < min) min = b;
+  return min > 0n ? min : 0n;
 }
 
 export function slashFields(last: AgentBondAmounts | undefined):
-  Pick<AgentBondInput, 'slashedEver' | 'lastSlashUsdc' | 'stakeBeforeLastSlash'> {
+  Pick<AgentBondInput, 'slashedEver' | 'lastSlashStroops' | 'stakeBeforeLastSlashStroops'> {
   return {
     slashedEver: last !== undefined,
-    lastSlashUsdc: last?.amount ?? 0,
-    stakeBeforeLastSlash: last ? last.bonded + last.unbonding + last.amount : 0,
+    lastSlashStroops: last?.amount ?? 0n,
+    stakeBeforeLastSlashStroops: last ? last.bonded + last.unbonding + last.amount : 0n,
   };
 }
 
@@ -76,14 +80,19 @@ export function applyAgentBond(
 ): { score: number; effect: AgentBondEffect | null } {
   if (!input || input.chain !== AGENT_BOND_SCORING_CHAIN) return { score, effect: null };
 
-  const size = Math.min(1, Math.log10(1 + Math.max(0, input.countedUsdc)) / Math.log10(1 + AGENT_BOND_CAP_USDC));
+  // Amounts stay exact stroops until here; the only float step is the log.
+  const capStroops = BigInt(AGENT_BOND_CAP_USDC) * STROOPS_PER_USDC;
+  const counted = input.countedStroops > capStroops ? capStroops : input.countedStroops > 0n ? input.countedStroops : 0n;
+  const countedUsdc = Number(counted) / Number(STROOPS_PER_USDC);
+  const size = Math.min(1, Math.log10(1 + countedUsdc) / Math.log10(1 + AGENT_BOND_CAP_USDC));
   const strength = input.slashedEver ? 0 : size;
   const lift = AGENT_BOND_WEIGHT * strength * (100 - score);
+  // Slash ratio in basis points, computed on integers.
+  const ratio = input.stakeBeforeLastSlashStroops > 0n
+    ? Number((input.lastSlashStroops * 10_000n) / input.stakeBeforeLastSlashStroops) / 10_000
+    : 1;
   const severity = input.slashedEver
-    ? Math.max(
-        AGENT_BOND_SLASH_MIN_SEVERITY,
-        Math.min(1, input.stakeBeforeLastSlash > 0 ? input.lastSlashUsdc / input.stakeBeforeLastSlash : 1),
-      )
+    ? Math.max(AGENT_BOND_SLASH_MIN_SEVERITY, Math.min(1, ratio))
     : 0;
   const penalty = AGENT_BOND_SLASH_MAX_POINTS * severity;
 

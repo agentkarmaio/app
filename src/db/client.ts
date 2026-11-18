@@ -41,6 +41,7 @@ import {
   seasonedBalance, slashFields, type AgentBondInput,
 } from '@/scoring/agent-bond';
 import type { AgentBondEventRow, AgentBondRow } from '@/indexer/stellar-agent-bond';
+import { usdcToUnits } from '@/lib/stellar-testnet-parity';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
 import {
   aggregateArcQuality,
@@ -4223,11 +4224,13 @@ export async function getAgentBondInput(
   nowMs: number = Date.now(),
 ): Promise<AgentBondInput | null> {
   if (chain !== AGENT_BOND_SCORING_CHAIN) return null;
+  // ::text keeps numeric(30,7) exact; PostgREST would otherwise send JSON numbers (floats).
   const base = () => supabase.from('agent_bond_events')
-    .select('agent_id, kind, ledger_closed_at, bonded, unbonding, amount')
+    .select('bonded:bonded::text, unbonding:unbonding::text, amount:amount::text')
     .eq('chain', chain).eq('contract_id', contractId);
-  const num = (r: { bonded: string; unbonding: string; amount: string }) =>
-    ({ bonded: Number(r.bonded), unbonding: Number(r.unbonding), amount: Number(r.amount) });
+  const stroops = (r: { bonded: string; unbonding: string; amount: string }) => ({
+    bonded: usdcToUnits(r.bonded), unbonding: usdcToUnits(r.unbonding), amount: usdcToUnits(r.amount),
+  });
 
   const { data: bonds, error } = await supabase.from('agent_bonds').select('agent_id')
     .eq('chain', chain).eq('contract_id', contractId).eq('owner_wallet', wallet);
@@ -4239,7 +4242,7 @@ export async function getAgentBondInput(
   if (lastSlash.error) throw lastSlash.error;
 
   const windowStart = new Date(nowMs - AGENT_BOND_SEASON_DAYS * DAY_MS).toISOString();
-  let countedUsdc = 0;
+  let countedStroops = 0n;
   for (const { agent_id } of bonds) {
     const [atStart, inWindow] = await Promise.all([
       base().eq('agent_id', agent_id).lte('ledger_closed_at', windowStart)
@@ -4251,11 +4254,11 @@ export async function getAgentBondInput(
     if (atStart.error) throw atStart.error;
     if (inWindow.error) throw inWindow.error;
     if ((inWindow.data?.length ?? 0) > AGENT_BOND_WINDOW_EVENT_CAP) continue; // fail closed
-    countedUsdc += seasonedBalance(
-      atStart.data?.[0] ? Number(atStart.data[0].bonded) : 0,
-      (inWindow.data ?? []).map((r) => Number(r.bonded)),
+    countedStroops += seasonedBalance(
+      atStart.data?.[0] ? usdcToUnits(atStart.data[0].bonded) : 0n,
+      (inWindow.data ?? []).map((r) => usdcToUnits(r.bonded)),
     );
   }
 
-  return { chain, countedUsdc, ...slashFields(lastSlash.data?.[0] ? num(lastSlash.data[0]) : undefined) };
+  return { chain, countedStroops, ...slashFields(lastSlash.data?.[0] ? stroops(lastSlash.data[0]) : undefined) };
 }

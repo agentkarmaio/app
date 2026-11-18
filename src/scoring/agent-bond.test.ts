@@ -12,25 +12,36 @@ function txs(wallet: string, n: number, cps: number, days: number, amt: number, 
   }));
 }
 
+const S = 10_000_000n; // stroops per USDC
 const input = (countedUsdc: number, slash?: { last: number; before: number }) => ({
   chain: 'stellar-testnet' as const,
-  countedUsdc,
+  countedStroops: BigInt(countedUsdc) * S,
   slashedEver: !!slash,
-  lastSlashUsdc: slash?.last ?? 0,
-  stakeBeforeLastSlash: slash?.before ?? 0,
+  lastSlashStroops: BigInt(slash?.last ?? 0) * S,
+  stakeBeforeLastSlashStroops: BigInt(slash?.before ?? 0) * S,
 });
 
-describe('seasonedBalance (min balance over the trailing 30 days)', () => {
-  test('a bond held all window counts in full', () => expect(seasonedBalance(500, [])).toBe(500));
-  test('fresh money counts zero for 30 days', () => expect(seasonedBalance(0, [1_000_000])).toBe(0));
-  test('1 USDC then top-up counts only the 1 USDC', () => expect(seasonedBalance(1, [10_000])).toBe(1));
-  test('requesting unbond lowers the count at once', () => expect(seasonedBalance(1000, [200])).toBe(200));
+describe('seasonedBalance (min balance over the trailing 30 days, in stroops)', () => {
+  test('a bond held all window counts in full', () => expect(seasonedBalance(500n * S, [])).toBe(500n * S));
+  test('fresh money counts zero for 30 days', () => expect(seasonedBalance(0n, [1_000_000n * S])).toBe(0n));
+  test('1 USDC then top-up counts only the 1 USDC', () => expect(seasonedBalance(S, [10_000n * S])).toBe(S));
+  test('requesting unbond lowers the count at once', () => expect(seasonedBalance(1000n * S, [200n * S])).toBe(200n * S));
+  test('stays exact beyond float precision', () => {
+    const big = 2n ** 53n + 1n; // not representable as a JS number
+    expect(seasonedBalance(big, [big + 1n])).toBe(big);
+  });
 });
 
 describe('slashFields', () => {
-  test('records the last slash and the stake before it', () => {
-    expect(slashFields({ amount: 250, bonded: 250, unbonding: 0 })).toEqual({ slashedEver: true, lastSlashUsdc: 250, stakeBeforeLastSlash: 500 });
-    expect(slashFields(undefined)).toEqual({ slashedEver: false, lastSlashUsdc: 0, stakeBeforeLastSlash: 0 });
+  test('records the last slash and the stake before it, in stroops', () => {
+    expect(slashFields({ amount: 250n * S, bonded: 250n * S, unbonding: 0n }))
+      .toEqual({ slashedEver: true, lastSlashStroops: 250n * S, stakeBeforeLastSlashStroops: 500n * S });
+    expect(slashFields(undefined)).toEqual({ slashedEver: false, lastSlashStroops: 0n, stakeBeforeLastSlashStroops: 0n });
+  });
+  test('1 stroop over a huge stake still reads as the minimum severity', () => {
+    const r = applyAgentBond(80, { chain: 'stellar-testnet', countedStroops: 0n, slashedEver: true,
+      lastSlashStroops: 1n, stakeBeforeLastSlashStroops: 2n ** 70n });
+    expect(r.effect?.penalty).toBe(12.5);
   });
 });
 

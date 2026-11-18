@@ -20,6 +20,7 @@ import { STELLAR_TESTNET_AGENT_BOND } from '@/integrations/stellar-config';
 import { networkTag } from '@/lib/api-only-chain';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 import { applyAgentBond, AGENT_BOND_SCORING_CHAIN } from '@/scoring/agent-bond';
+import { baseUnitsToUsdc } from '@/indexer/stellar-agent-bond';
 
 const MAX_INT32 = 2147483647;
 const ZERO = '0.0000000';
@@ -83,7 +84,7 @@ export async function GET(
         at: s.ledger_closed_at,
       })),
       scoreEffect: {
-        countedUsdc: input?.countedUsdc ?? 0,
+        countedUsdc: baseUnitsToUsdc(input?.countedStroops ?? 0n),
         strength: effect?.strength ?? 0,
         slashPenalty: effect?.penalty ?? 0,
       },

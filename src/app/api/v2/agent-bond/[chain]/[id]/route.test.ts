@@ -19,7 +19,8 @@ beforeEach(() => {
       evidence_id: 'cc'.repeat(32), slasher: 'GSLASHER', tx_hash: 'dd'.repeat(32), ledger_closed_at: '2026-11-10T00:00:00.000Z' }],
   });
   input = spyOn(db, 'getAgentBondInput').mockResolvedValue({
-    chain: 'stellar-testnet', countedUsdc: 450, slashedEver: true, lastSlashUsdc: 25, stakeBeforeLastSlash: 525,
+    chain: 'stellar-testnet', countedStroops: 4_500_000_000n, slashedEver: true,
+    lastSlashStroops: 250_000_000n, stakeBeforeLastSlashStroops: 5_250_000_000n,
   });
 });
 afterEach(() => { bond.mockRestore(); input.mockRestore(); });
@@ -38,7 +39,7 @@ describe('GET /api/v2/agent-bond/[chain]/[id]', () => {
       operator: 'AgentKarma Labs',
       bonded: '450.0000000', unbonding: '50.0000000', withdrawableNow: '50.0000000', slashedTotal: '25.0000000',
       slashes: [{ amount: '25.0000000', slasher: 'GSLASHER', evidence: { kind: 'assay', codeHash: 'aa'.repeat(32), recordDigest: 'bb'.repeat(32), id: 'cc'.repeat(32) } }],
-      scoreEffect: { countedUsdc: 450, strength: 0, slashPenalty: 12.5 },
+      scoreEffect: { countedUsdc: '450.0000000', strength: 0, slashPenalty: 12.5 },
     });
     expect(bond).toHaveBeenCalledWith(STELLAR_TESTNET_AGENT_BOND.contractId, 66);
     expect(input).toHaveBeenCalledWith(OWNER, 'stellar-testnet', STELLAR_TESTNET_AGENT_BOND.contractId);
