@@ -32,11 +32,13 @@ import {
   insertSignalEvents,
   getLatestSignalValues,
   getSignalEventsForWallet,
+  getAgentBondInput,
   upsertWallet,
   markWalletsDirty,
   DEFAULT_TX_WINDOW,
 } from '@/db/client';
 import { calculateScore } from '@/scoring';
+import { STELLAR_TESTNET_AGENT_BOND } from '@/integrations/stellar-config';
 import { isApiOnlyChain } from '@/db/schema';
 import { buildCadenceSignal, buildAutonomySignal } from '@/scoring/signals';
 import { computeCadence } from '@/scoring/cadence';
@@ -105,9 +107,11 @@ async function rescoreOne(
   if (autonomy) signalRows.push({ ...buildAutonomySignal(address, autonomy), chain });
   if (signalRows.length > 0) await insertSignalEvents(signalRows, { overwrite: true });
 
-  const [manifestScores, signalEvents] = await Promise.all([
+  const [manifestScores, signalEvents, agentBond] = await Promise.all([
     getLatestSignalValues([address], 'manifest', chain),
     getSignalEventsForWallet(address, 200, chain).catch(() => []),
+    // Not caught: a failed bond read must not silently drop a slash penalty.
+    getAgentBondInput(address, chain, STELLAR_TESTNET_AGENT_BOND.contractId),
   ]);
 
   const walletScore = calculateScore(
@@ -119,6 +123,7 @@ async function rescoreOne(
     manifestScores.get(address) ?? null,
     null,
     signalEvents,
+    agentBond,
   );
 
   await upsertWallet(address, walletScore.score, walletScore.trustTier, walletScore.txCount, {

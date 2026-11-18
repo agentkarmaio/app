@@ -17,6 +17,7 @@
 
 import type { ConfidenceBadge, SignalTier, SignalEvent } from '@/db/schema';
 import { SIGNAL_KINDS, PRESENCE_ONLY_KINDS } from './signals';
+import { applyAgentBond, type AgentBondEffect, type AgentBondInput } from './agent-bond';
 
 export type TrustTier = 'Unrated' | 'Poor' | 'Fair' | 'Good' | 'Very Good' | 'Excellent';
 
@@ -273,6 +274,8 @@ export interface WalletScore {
    * docs/superpowers/specs/2026-09-13-observed-liveness.md.
    */
   lastActive: Date;
+  /** Agent Bond effect on the Provider score; null when no bond input applies. */
+  agentBond?: AgentBondEffect | null;
 }
 
 export interface ConsumerFaceScore {
@@ -487,6 +490,8 @@ export function calculateScore(
   manifestScore?: number | null,
   payshRoutedCount?: number | null,
   signalEvents?: Pick<SignalEvent, 'kind' | 'tier' | 'face' | 'value' | 'payload'>[] | null,
+  /** Agent Bond (self-stake). No-op unless chain is stellar-testnet. */
+  agentBond?: AgentBondInput | null,
 ): WalletScore {
   if (transactions.length === 0) {
     throw new Error('calculateScore requires at least one transaction');
@@ -639,7 +644,14 @@ export function calculateScore(
   const daysSinceLastTx = (Date.now() - lastTs) / MS_PER_DAY;
   const decay = recencyDecay(daysSinceLastTx);
 
-  const tiered = calculateTieredScore(aggregates, { decay });
+  const tieredBase = calculateTieredScore(aggregates, { decay });
+  // Agent Bond moves the NUMERIC Provider score only: never tier1, the badge or
+  // the ceiling below (RFC §16.4). Applied before the evidence gate so a slash
+  // can drop the tier and a lift can never exceed the earned ceiling.
+  const bond = applyAgentBond(tieredBase.score, agentBond);
+  const tiered = bond.effect
+    ? { ...tieredBase, score: bond.score, trustTier: getTrustTier(bond.score) }
+    : tieredBase;
 
   // Evidence-gated tier progression. See evidenceGatedTier() for rationale —
   // numeric score is the floor, behavioral thickness + receipt strength set
@@ -722,6 +734,7 @@ export function calculateScore(
     consumerFace,
     txCount,
     lastActive: new Date(lastTs),
+    agentBond: bond.effect,
   };
 }
 

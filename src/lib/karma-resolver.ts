@@ -17,8 +17,10 @@ import {
   getFeedbackSummary,
   getLatestSignalValues,
   getSignalEventsForWallet,
+  getAgentBondInput,
   getArcMainnetReceiptEvents,
 } from '@/db/client';
+import { STELLAR_TESTNET_AGENT_BOND } from '@/integrations/stellar-config';
 import { calculateScore } from '@/scoring/index';
 import { hasProviderSignal, storedProviderHasSignal, storedConsumerHasSignal } from '@/lib/face-signal';
 import { computeCadence } from '@/scoring/cadence';
@@ -200,10 +202,11 @@ export async function resolveKarma(
   // because the generic DB helper defaults to the Solana composite key.
   const chain = network ?? (isStellarAccount(wallet) ? 'stellar' : 'solana');
   if (chain === 'arc-mainnet') return (await resolveArcMainnetProfile(wallet, opts.agentId))?.snapshot ?? null;
-  const [walletRow, transactions, signalEvents] = await Promise.all([
+  const [walletRow, transactions, signalEvents, agentBond] = await Promise.all([
     getWallet(wallet, chain),
     getTransactions(wallet, 1000, 0, chain),
     getSignalEventsForWallet(wallet, 200, chain).catch(() => [] as SignalEvent[]),
+    getAgentBondInput(wallet, chain, STELLAR_TESTNET_AGENT_BOND.contractId),
   ]);
 
   if (!walletRow && transactions.length === 0) return null;
@@ -241,6 +244,7 @@ export async function resolveKarma(
         manifestMap.get(wallet) ?? null,
         null,
         signalEvents,
+        agentBond,
       )
     : null;
 
