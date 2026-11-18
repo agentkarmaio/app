@@ -172,6 +172,7 @@ async function main() {
   assert(mine.map((e) => e.kind).join(',') === 'deposited,unbond_requested,slashed,withdrawn', `indexer saw all four events (${mine.map((e) => e.kind).join(',')})`);
   const slashRow = mine.find((e) => e.kind === 'slashed')!;
   assert(slashRow.evidence?.kind === 'assay' && slashRow.amount === '3.0000000', 'indexer decoded the Assay slash');
+  assert(slashRow.slasher === slasher.publicKey(), 'slash event names the slasher');
   const row = bonds.find((r) => r.agent_id === agentId);
   assert(row?.bonded === '6.0000000' && row.unbonding === '0.0000000' && row.slashed_total === '3.0000000', 'indexer state matches get_bond');
 

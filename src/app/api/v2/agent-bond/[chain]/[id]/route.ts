@@ -78,6 +78,7 @@ export async function GET(
       slashes: slashes.map((s) => ({
         amount: s.amount,
         evidence: s.evidence ? { ...s.evidence, id: s.evidence_id } : null,
+        slasher: s.slasher,
         txHash: s.tx_hash,
         at: s.ledger_closed_at,
       })),

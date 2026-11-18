@@ -809,12 +809,15 @@ export const agentBondEventsTable = pgTable('agent_bond_events', {
   evidence_kind:    text('evidence_kind').$type<'enactment' | 'assay'>(),
   evidence_id:      text('evidence_id'),
   evidence:         jsonb('evidence'),
+  /** Slasher that authorized a slash; null for every other kind. */
+  slasher:          text('slasher'),
   indexed_at:       timestamp('indexed_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.chain, table.contract_id, table.event_id], name: 'agent_bond_events_pkey' }),
   check('agent_bond_events_chain_check', sql`${table.chain} = 'stellar-testnet'`),
   check('agent_bond_events_kind_check', sql`${table.kind} IN ('deposited', 'unbond_requested', 'withdrawn', 'slashed')`),
   check('agent_bond_events_evidence_check', sql`(${table.kind} = 'slashed') = (${table.evidence_id} IS NOT NULL)`),
+  check('agent_bond_events_slasher_check', sql`(${table.kind} = 'slashed') = (${table.slasher} IS NOT NULL)`),
   index('idx_agent_bond_events_owner_ledger').on(table.chain, table.owner_wallet, table.ledger),
   index('idx_agent_bond_events_agent').on(table.chain, table.contract_id, table.agent_id, table.ledger),
 ]).enableRLS();

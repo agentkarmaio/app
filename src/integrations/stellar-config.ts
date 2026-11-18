@@ -87,9 +87,9 @@ export const STELLAR_TESTNET_IDENTITY_REGISTRY =
  * `e2e` is the 60-second-unbonding instance used only by the live E2E script.
  */
 export const STELLAR_TESTNET_AGENT_BOND = {
-  contractId: 'CDJCW763IQ2B2ZTZLMD4WNQPIXT45DVHBZBCDDXPL25VGDJF63EZOR2W',
-  deployLedger: 5801245,
-  e2e: { contractId: 'CCYAZCXPRXYPY4DQJHIRNEOP2EAODQSRPNOC7QSY2UNRMDPWIJSNSCO4', deployLedger: 5801247 },
+  contractId: 'CCJH6YRJ3W4NP7TIMYS7GENZFF4DUH2B7QHPBI2F6IUQUTVS5KOW7A24',
+  deployLedger: 5801916,
+  e2e: { contractId: 'CCVD5QIJCMUSPZJ7PNYIFE6ZTGJKZT4644NW6NTMQ2EDLL6DW36WSDE3', deployLedger: 5801917 },
 } as const;
 
 export interface StellarNetworkConfig {

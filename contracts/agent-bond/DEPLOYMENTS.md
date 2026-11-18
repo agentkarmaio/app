@@ -8,15 +8,15 @@ AgentKarma, the admin is a multisig, and the contract is externally audited.
 
 | Field | Production instance | E2E instance |
 |---|---|---|
-| Contract ID | `CDJCW763IQ2B2ZTZLMD4WNQPIXT45DVHBZBCDDXPL25VGDJF63EZOR2W` | `CCYAZCXPRXYPY4DQJHIRNEOP2EAODQSRPNOC7QSY2UNRMDPWIJSNSCO4` |
-| Deploy ledger | 5801245 | 5801247 |
+| Contract ID | `CCJH6YRJ3W4NP7TIMYS7GENZFF4DUH2B7QHPBI2F6IUQUTVS5KOW7A24` | `CCVD5QIJCMUSPZJ7PNYIFE6ZTGJKZT4644NW6NTMQ2EDLL6DW36WSDE3` |
+| Deploy ledger | 5801916 | 5801917 |
 | `unbonding_secs` | 604800 (7 days) | 60 (live E2E only) |
 
 Shared by both instances:
 
 | Field | Value |
 |---|---|
-| WASM sha256 | `ec6f2b9a8d16bdd20dac1661ff20991cf580bf2d67bb6c5fd3632855675900f2` |
+| WASM sha256 | `feca0a50cb596a669444ecc7e2753601efe548978672a64f5a9c14e18f31da94` |
 | admin | `GBTUWKBH5O7P4BHO772WF6HIYGQJBJQOGKRQMYTDP67FQKVG4IWMVUNH` (`ak-testnet-deployer`) |
 | slasher | `GCPGWN3ZYWGWOVDQHGSFYWJFJB6LAK4IDTIXO33F5NXIWHC6VSIJUIPA` (`ak-bond-slasher`, operator-held, separate from admin and all attestation keys) |
 | treasury | `GBP7PMBTCL7FX6HXQYHMTGFWXBEYVMBWSPGEPATIR5G7CEICEWRWWINN` (`ak-bond-treasury`, has a USDC trustline) |
@@ -49,6 +49,9 @@ stellar contract deploy --wasm target/wasm32v1-none/release/agent_bond.wasm --so
 - The keys live in the local stellar-cli keystore, never in this repo.
 - The indexer starts at the deploy ledger (pinned in `src/integrations/stellar-config.ts`). Soroban RPC keeps about 7 days of events.
 
-## Retired (never used)
+## Retired
+
+`CDJCW763IQ2B2ZTZLMD4WNQPIXT45DVHBZBCDDXPL25VGDJF63EZOR2W` and `CCYAZCXPRXYPY4DQJHIRNEOP2EAODQSRPNOC7QSY2UNRMDPWIJSNSCO4` (WASM `ec6f2b9a…`). Retired 2026-11-18 because their `bond_slashed` event did not name the slasher (REVIEW.md item 2). The production instance never held a deposit. The E2E instance holds only E2E test agents. Do not use them.
+
 
 `CAUIGPY4ZPYFDNRU7EEV45DZ6E7VKN32IW45XTXZCQI5MTT63UMVJHMU` and `CCWR77HVO7DQO4PYXXV7PSE7JXLDZGJYNUTSAFFWLIA56TOKJCKH5BLH` (WASM `a024c49b…`), deployed the same day. Retired before any deposit because the config delay could be shortcut by lowering the period first. Do not use them.

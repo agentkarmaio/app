@@ -4194,14 +4194,14 @@ export async function getAgentBondSeasoningOwners(contractId: string, nowMs: num
 
 export interface AgentBondView {
   bond: AgentBondRow | null;
-  slashes: Pick<AgentBondEventRow, 'amount' | 'evidence' | 'evidence_id' | 'tx_hash' | 'ledger_closed_at'>[];
+  slashes: Pick<AgentBondEventRow, 'amount' | 'evidence' | 'evidence_id' | 'slasher' | 'tx_hash' | 'ledger_closed_at'>[];
 }
 
 export async function getAgentBond(contractId: string, agentId: number): Promise<AgentBondView> {
   const [bond, slashes] = await Promise.all([
     supabase.from('agent_bonds').select('*')
       .eq('chain', 'stellar-testnet').eq('contract_id', contractId).eq('agent_id', agentId).maybeSingle(),
-    supabase.from('agent_bond_events').select('amount, evidence, evidence_id, tx_hash, ledger_closed_at')
+    supabase.from('agent_bond_events').select('amount, evidence, evidence_id, slasher, tx_hash, ledger_closed_at')
       .eq('chain', 'stellar-testnet').eq('contract_id', contractId).eq('agent_id', agentId).eq('kind', 'slashed')
       .order('ledger', { ascending: false }).limit(50),
   ]);

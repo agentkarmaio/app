@@ -183,6 +183,7 @@ impl AgentBond {
         storage::bump_instance(&env);
         BondSlashed {
             agent_id,
+            slasher: cfg.slasher.clone(),
             owner: bond.owner.clone(),
             amount,
             from_unbonding,

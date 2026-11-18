@@ -540,6 +540,7 @@ fn every_bond_entrypoint_emits_two_topic_post_state_event() {
         bond_events(&h),
         std::vec![BondSlashed {
             agent_id: AGENT,
+            slasher: h.slasher.clone(),
             owner: h.owner.clone(),
             amount: 50 * USDC,
             from_unbonding: 40 * USDC,
@@ -678,6 +679,22 @@ fn deposit_near_i128_max_is_checked() {
     let h = setup();
     h.bond.deposit(&AGENT, &USDC);
     assert_eq!(h.bond.try_deposit(&AGENT, &(i128::MAX - USDC + 1)), Err(Ok(Error::ArithmeticOverflow)));
+}
+
+#[test]
+fn slash_event_names_the_slasher() {
+    let h = setup();
+    h.bond.deposit(&AGENT, &(10 * USDC));
+    h.bond.slash(&AGENT, &USDC, &enactment(&h.env, 1));
+    let e = bond_events(&h).last().unwrap().clone();
+    let soroban_sdk::xdr::ContractEventBody::V0(body) = e.body;
+    let data = Val::try_from_val(&h.env, &body.data).unwrap();
+    let m: Map<Symbol, Val> = Map::try_from_val(&h.env, &data).unwrap();
+    let slasher = Address::try_from_val(&h.env, &m.get(Symbol::new(&h.env, "slasher")).unwrap()).unwrap();
+    assert_eq!(slasher, h.slasher);
+    for k in ["amount", "evidence", "evidence_id"] {
+        assert!(m.contains_key(Symbol::new(&h.env, k)), "missing {k}");
+    }
 }
 
 #[test]

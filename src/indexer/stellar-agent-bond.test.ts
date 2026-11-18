@@ -6,6 +6,7 @@ import {
   decodeAgentBondEvent,
   projectBondState,
   runAgentBondIndexer,
+  toEventRow,
   type AgentBondIndexerDeps,
   type RawAgentBondEvent,
 } from './stellar-agent-bond';
@@ -13,6 +14,7 @@ import {
 const CONTRACT = 'CDJCW763IQ2B2ZTZLMD4WNQPIXT45DVHBZBCDDXPL25VGDJF63EZOR2W';
 const OWNER = Keypair.random().publicKey();
 const TREASURY = Keypair.random().publicKey();
+const SLASHER = Keypair.random().publicKey();
 const U = 10_000_000n;
 
 const sym = (s: string) => xdr.ScVal.scvSymbol(s);
@@ -49,7 +51,7 @@ const unbond = (amount: bigint, bonded: bigint, unbonding: bigint, unlockAt: num
   raw('bond_unbond_requested', 7, struct({ owner: addr(OWNER), amount: i128(amount), bonded: i128(bonded), unbonding: i128(unbonding), unlock_at: nativeToScVal(unlockAt, { type: 'u64' }) }), ledger);
 const slashedAssay = (amount: bigint, bonded: bigint, unbonding: bigint, total: bigint, ledger = 102) =>
   raw('bond_slashed', 7, struct({
-    owner: addr(OWNER), amount: i128(amount), from_unbonding: i128(0n), from_bonded: i128(amount),
+    slasher: addr(SLASHER), owner: addr(OWNER), amount: i128(amount), from_unbonding: i128(0n), from_bonded: i128(amount),
     evidence: xdr.ScVal.scvVec([sym('AssayVerdict'), bytes(1), bytes(2)]),
     evidence_id: bytes(9), treasury: addr(TREASURY),
     bonded: i128(bonded), unbonding: i128(unbonding), slashed_total: i128(total),
@@ -71,11 +73,13 @@ describe('decodeAgentBondEvent', () => {
     const s = decodeAgentBondEvent(slashedAssay(2n * U, 8n * U, 0n, 2n * U))!;
     expect(s.evidence).toEqual({ kind: 'assay', codeHash: '01'.repeat(32), recordDigest: '02'.repeat(32) });
     expect(s.evidenceId).toBe('09'.repeat(32));
+    expect(s.slasher).toBe(SLASHER);
+    expect(toEventRow(s).slasher).toBe(SLASHER);
   });
 
   test('decodes Enactment evidence', () => {
     const r = raw('bond_slashed', 7, struct({
-      owner: addr(OWNER), amount: i128(U), from_unbonding: i128(0n), from_bonded: i128(U),
+      slasher: addr(SLASHER), owner: addr(OWNER), amount: i128(U), from_unbonding: i128(0n), from_bonded: i128(U),
       evidence: xdr.ScVal.scvVec([sym('Enactment'), bytes(3)]), evidence_id: bytes(4), treasury: addr(TREASURY),
       bonded: i128(0n), unbonding: i128(0n), slashed_total: i128(U),
     }));
@@ -85,6 +89,15 @@ describe('decodeAgentBondEvent', () => {
   test('ignores config events and failed calls', () => {
     expect(decodeAgentBondEvent(raw('cfg_proposed', null, struct({ activates_at: nativeToScVal(1, { type: 'u64' }) })))).toBeNull();
     expect(decodeAgentBondEvent({ ...deposited(U, U), inSuccessfulContractCall: false })).toBeNull();
+  });
+
+  test('a slash event without its slasher is shape drift', () => {
+    const r = raw('bond_slashed', 7, struct({
+      owner: addr(OWNER), amount: i128(U), from_unbonding: i128(0n), from_bonded: i128(U),
+      evidence: xdr.ScVal.scvVec([sym('Enactment'), bytes(3)]), evidence_id: bytes(4), treasury: addr(TREASURY),
+      bonded: i128(0n), unbonding: i128(0n), slashed_total: i128(U),
+    }));
+    expect(() => decodeAgentBondEvent(r)).toThrow('slasher');
   });
 
   test('fails loud on shape drift', () => {

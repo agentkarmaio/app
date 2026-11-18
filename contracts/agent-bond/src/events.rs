@@ -50,6 +50,9 @@ pub struct BondWithdrawn {
 pub struct BondSlashed {
     #[topic]
     pub agent_id: u32,
+    /// The slasher that authorized this slash (config at the time), so every
+    /// slash is auditable from its own event.
+    pub slasher: Address,
     pub owner: Address,
     pub amount: i128,
     pub from_unbonding: i128,

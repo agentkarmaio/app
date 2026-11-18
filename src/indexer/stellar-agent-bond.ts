@@ -55,6 +55,8 @@ export interface DecodedAgentBondEvent {
   unlockAt?: number;
   evidence?: AgentBondEvidence;
   evidenceId?: string;
+  /** Present on slashed: the slasher that authorized it. */
+  slasher?: string;
 }
 
 const TOPIC_KIND: Record<string, AgentBondEventKind> = {
@@ -131,6 +133,8 @@ export function decodeAgentBondEvent(raw: RawAgentBondEvent): DecodedAgentBondEv
   if (d.slashed_total !== undefined) out.slashedTotal = baseUnitsToUsdc(big(d.slashed_total, 'slashed_total'));
   if (kind === 'unbond_requested') out.unlockAt = Number(big(d.unlock_at, 'unlock_at'));
   if (kind === 'slashed') {
+    if (typeof d.slasher !== 'string') throw new Error(`agent-bond event ${name}: slasher missing`);
+    out.slasher = d.slasher;
     out.evidence = decodeEvidence(d.evidence);
     out.evidenceId = hex(d.evidence_id, 'evidence_id');
   }
@@ -168,6 +172,7 @@ export interface AgentBondEventRow {
   evidence_kind: 'enactment' | 'assay' | null;
   evidence_id: string | null;
   evidence: AgentBondEvidence | null;
+  slasher: string | null;
 }
 
 export function toEventRow(e: DecodedAgentBondEvent): AgentBondEventRow {
@@ -187,6 +192,7 @@ export function toEventRow(e: DecodedAgentBondEvent): AgentBondEventRow {
     evidence_kind: e.evidence?.kind ?? null,
     evidence_id: e.evidenceId ?? null,
     evidence: e.evidence ?? null,
+    slasher: e.slasher ?? null,
   };
 }
 

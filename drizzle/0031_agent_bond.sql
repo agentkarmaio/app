@@ -42,11 +42,13 @@ CREATE TABLE IF NOT EXISTS "agent_bond_events" (
 	"evidence_kind" text,
 	"evidence_id" text,
 	"evidence" jsonb,
+	"slasher" text,
 	"indexed_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "agent_bond_events_pkey" PRIMARY KEY ("chain", "contract_id", "event_id"),
 	CONSTRAINT "agent_bond_events_chain_check" CHECK ("chain" = 'stellar-testnet'),
 	CONSTRAINT "agent_bond_events_kind_check" CHECK ("kind" IN ('deposited', 'unbond_requested', 'withdrawn', 'slashed')),
-	CONSTRAINT "agent_bond_events_evidence_check" CHECK (("kind" = 'slashed') = ("evidence_id" IS NOT NULL))
+	CONSTRAINT "agent_bond_events_evidence_check" CHECK (("kind" = 'slashed') = ("evidence_id" IS NOT NULL)),
+	CONSTRAINT "agent_bond_events_slasher_check" CHECK (("kind" = 'slashed') = ("slasher" IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS "idx_agent_bond_events_owner_ledger" ON "agent_bond_events" USING btree ("chain", "owner_wallet", "ledger");
 CREATE INDEX IF NOT EXISTS "idx_agent_bond_events_agent" ON "agent_bond_events" USING btree ("chain", "contract_id", "agent_id", "ledger");
