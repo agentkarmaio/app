@@ -5,6 +5,11 @@ import { LiveFlow } from '@/components/karma/live-flow';
 import { TrustGraphMini } from '@/components/karma/trust-graph-mini';
 import { cachedStats } from '@/db/cached';
 import { AgentKarmaOnboarding } from '@/components/agentkarma-onboarding';
+import { ArrowUpRight } from 'lucide-react';
+
+// Agent Bond is a separate product operated by AgentKarma Labs (RFC §12.1),
+// testnet only, so the chip says both. Links to the public contract README.
+const AGENT_BOND_URL = 'https://github.com/agentkarmaio/app/tree/main/contracts/agent-bond';
 
 // Protocols only. The chains used to live here too, which duplicated the "Built
 // on" row directly below and forced a wrapped second line plus an asterisk
@@ -230,6 +235,24 @@ export async function Hero() {
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
             <LiveFlow initial={liveFlowInitial} />
           </div>
+
+          <a
+            href={AGENT_BOND_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="group mt-4 inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-2xl border border-[rgb(255_255_255/0.08)] bg-[rgb(255_255_255/0.02)] py-1 pl-1 pr-3 text-[12px] leading-5 text-[#8a8f98] transition-colors hover:border-[rgb(113_112_255/0.35)] hover:text-[#d0d6e0]"
+          >
+            <span className="rounded-full bg-[rgb(113_112_255/0.16)] px-2 text-[10.5px] font-[590] uppercase tracking-[0.12em] text-[#8a92ff]">
+              New
+            </span>
+            <span>
+              <span className="font-[510] text-[#f7f8f8]">Agent Bond</span>: stake USDC behind your reputation.
+            </span>
+            <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-[#62666d]">
+              Testnet, by AgentKarma Labs
+              <ArrowUpRight aria-hidden className="size-3.5 shrink-0 transition-colors group-hover:text-[#8a92ff]" />
+            </span>
+          </a>
 
           <h1
             data-tour="hero"
