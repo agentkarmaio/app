@@ -53,3 +53,5 @@ next-env.d.ts
 /contracts/agentkarma-settlement/test_snapshots/
 /contracts/agentkarma-bond-escrow/target/
 /contracts/agentkarma-bond-escrow/test_snapshots/
+/contracts/agent-bond/target/
+/contracts/agent-bond/test_snapshots/

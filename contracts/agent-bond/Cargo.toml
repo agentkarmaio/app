@@ -1,0 +1,42 @@
+# Agent Bond: slashable self-stake for AgentKarma agents on Soroban.
+#
+# Self-contained cargo workspace OUTSIDE the Next.js/bun project, like the other
+# crates under contracts/. Tests run natively via soroban-sdk `testutils`.
+#
+# Operated as a SEPARATE PRODUCT ("Agent Bond, operated by AgentKarma Labs"),
+# testnet only (RFC v0.3.4-draft §12.1 carve-out, ADR 0001). Has an admin (config
+# only, every change delayed 2x the unbonding period) and a slasher role.
+# No upgrade entrypoint. DO NOT DEPLOY TO MAINNET while AK holds `slasher`.
+
+[workspace]
+resolver = "2"
+members = ["."]
+
+[package]
+name = "agent-bond"
+version = "0.1.0"
+edition = "2021"
+description = "Slashable self-stake: an agent locks USDC behind its reputation; slashable on evidence of misconduct. Testnet only."
+license = "MIT"
+publish = false
+
+[lib]
+name = "agent_bond"
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = "26.0.1"
+
+[dev-dependencies]
+soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
