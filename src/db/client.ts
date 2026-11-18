@@ -36,7 +36,10 @@ import { AK_RATER_ADDRESSES, AK_METADATA_TAG1, AK_REVIEW_TAG1, AK_VALIDATOR } fr
 // bundle). Used by getAkConnectedFeedback to recompute the CURRENT (v0.2)
 // per-agent breakdown server-side for the /celo disclosure list.
 import { scoreMetadataQuality, type MetadataQualityResult } from '@/scoring/celo-metadata';
-import { AGENT_BOND_SCORING_CHAIN, deriveAgentBondInput, type AgentBondInput } from '@/scoring/agent-bond';
+import {
+  AGENT_BOND_SCORING_CHAIN, AGENT_BOND_SEASON_DAYS, AGENT_BOND_WINDOW_EVENT_CAP, DAY_MS,
+  seasonedBalance, slashFields, type AgentBondInput,
+} from '@/scoring/agent-bond';
 import type { AgentBondEventRow, AgentBondRow } from '@/indexer/stellar-agent-bond';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
 import {
@@ -4197,7 +4200,12 @@ export async function getAgentBond(contractId: string, agentId: number): Promise
   return { bond: (bond.data as AgentBondRow | null) ?? null, slashes: slashes.data ?? [] };
 }
 
-/** Scoring input for one wallet. Null off stellar-testnet or with no bond. */
+/**
+ * Scoring input for one wallet. Null off stellar-testnet or with no bond.
+ * Every read is bounded, and fails CLOSED: the last slash is one row (it can
+ * never fall out of a window), and a bond with more than
+ * AGENT_BOND_WINDOW_EVENT_CAP events in the seasoning window counts 0.
+ */
 export async function getAgentBondInput(
   wallet: string,
   chain: Chain,
@@ -4205,31 +4213,38 @@ export async function getAgentBondInput(
   nowMs: number = Date.now(),
 ): Promise<AgentBondInput | null> {
   if (chain !== AGENT_BOND_SCORING_CHAIN) return null;
-  // Read EVERY event, paged. A row cap would let an owner spam tiny deposits
-  // until a slash fell out of the window and its penalty vanished.
-  const PAGE = 1000;
-  const data: { agent_id: number; kind: AgentBondEventRow['kind']; ledger_closed_at: string; bonded: string; unbonding: string; amount: string }[] = [];
-  for (let from = 0; ; from += PAGE) {
-    const { data: page, error } = await supabase
-      .from('agent_bond_events')
-      .select('agent_id, kind, ledger_closed_at, bonded, unbonding, amount')
-      .eq('chain', chain)
-      .eq('contract_id', contractId)
-      .eq('owner_wallet', wallet)
-      .order('ledger', { ascending: true })
-      .order('event_id', { ascending: true })
-      .range(from, from + PAGE - 1);
-    if (error) throw error;
-    data.push(...(page ?? []));
-    if (!page || page.length < PAGE) break;
+  const base = () => supabase.from('agent_bond_events')
+    .select('agent_id, kind, ledger_closed_at, bonded, unbonding, amount')
+    .eq('chain', chain).eq('contract_id', contractId);
+  const num = (r: { bonded: string; unbonding: string; amount: string }) =>
+    ({ bonded: Number(r.bonded), unbonding: Number(r.unbonding), amount: Number(r.amount) });
+
+  const { data: bonds, error } = await supabase.from('agent_bonds').select('agent_id')
+    .eq('chain', chain).eq('contract_id', contractId).eq('owner_wallet', wallet);
+  if (error) throw error;
+  if (!bonds || bonds.length === 0) return null;
+
+  const lastSlash = await base().eq('owner_wallet', wallet).eq('kind', 'slashed')
+    .order('ledger', { ascending: false }).order('event_id', { ascending: false }).limit(1);
+  if (lastSlash.error) throw lastSlash.error;
+
+  const windowStart = new Date(nowMs - AGENT_BOND_SEASON_DAYS * DAY_MS).toISOString();
+  let countedUsdc = 0;
+  for (const { agent_id } of bonds) {
+    const [atStart, inWindow] = await Promise.all([
+      base().eq('agent_id', agent_id).lte('ledger_closed_at', windowStart)
+        .order('ledger', { ascending: false }).order('event_id', { ascending: false }).limit(1),
+      base().eq('agent_id', agent_id).gt('ledger_closed_at', windowStart)
+        .limit(AGENT_BOND_WINDOW_EVENT_CAP + 1),
+    ]);
+    if (atStart.error) throw atStart.error;
+    if (inWindow.error) throw inWindow.error;
+    if ((inWindow.data?.length ?? 0) > AGENT_BOND_WINDOW_EVENT_CAP) continue; // fail closed
+    countedUsdc += seasonedBalance(
+      atStart.data?.[0] ? Number(atStart.data[0].bonded) : 0,
+      (inWindow.data ?? []).map((r) => Number(r.bonded)),
+    );
   }
-  if (data.length === 0) return null;
-  return deriveAgentBondInput(chain, data.map((r) => ({
-    agentId: r.agent_id,
-    kind: r.kind,
-    ledgerClosedAt: r.ledger_closed_at,
-    bonded: Number(r.bonded),
-    unbonding: Number(r.unbonding),
-    amount: Number(r.amount),
-  })), nowMs);
+
+  return { chain, countedUsdc, ...slashFields(lastSlash.data?.[0] ? num(lastSlash.data[0]) : undefined) };
 }

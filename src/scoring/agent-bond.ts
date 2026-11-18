@@ -10,7 +10,7 @@
  *    would let anyone mint karma;
  *  - it is never what pushes a score past 90 (Excellent).
  */
-import type { AgentBondEventKind, Chain } from '@/db/schema';
+import type { Chain } from '@/db/schema';
 
 export const AGENT_BOND_SCORING_CHAIN: Chain = 'stellar-testnet';
 /** Log-scale cap: 10k USDC reaches full strength. */
@@ -40,43 +40,26 @@ export interface AgentBondEffect {
   penalty: number;
 }
 
-export interface AgentBondEventLite {
-  agentId: number;
-  kind: AgentBondEventKind;
-  ledgerClosedAt: string;
-  /** Post-state, human USDC. */
+/** Post-state of one bond event, human USDC. */
+export interface AgentBondAmounts {
   bonded: number;
   unbonding: number;
   amount: number;
 }
 
-const DAY_MS = 86_400_000;
+export const DAY_MS = 86_400_000;
+/** Above this many events inside the window for one bond, the lift fails closed to 0. */
+export const AGENT_BOND_WINDOW_EVENT_CAP = 2000;
 
-/** Pure. `events` are one wallet's bond events on the production contract. */
-export function deriveAgentBondInput(chain: Chain, events: AgentBondEventLite[], nowMs: number): AgentBondInput {
-  const windowStart = nowMs - AGENT_BOND_SEASON_DAYS * DAY_MS;
-  const sorted = [...events].sort((a, b) => Date.parse(a.ledgerClosedAt) - Date.parse(b.ledgerClosedAt));
+/** Min of the balance at the window start and every post-event balance inside it. */
+export function seasonedBalance(atStartBonded: number, inWindowBonded: number[]): number {
+  return Math.max(0, Math.min(atStartBonded, ...inWindowBonded));
+}
 
-  const byAgent = new Map<number, AgentBondEventLite[]>();
-  for (const e of sorted) byAgent.set(e.agentId, [...(byAgent.get(e.agentId) ?? []), e]);
-
-  let countedUsdc = 0;
-  for (const evs of byAgent.values()) {
-    let atStart = 0; // balance before any event is 0
-    let min = Infinity;
-    for (const e of evs) {
-      if (Date.parse(e.ledgerClosedAt) <= windowStart) atStart = e.bonded;
-      else min = Math.min(min, e.bonded);
-    }
-    countedUsdc += Math.max(0, Math.min(atStart, min));
-  }
-
-  const slashes = sorted.filter((e) => e.kind === 'slashed');
-  const last = slashes[slashes.length - 1];
+export function slashFields(last: AgentBondAmounts | undefined):
+  Pick<AgentBondInput, 'slashedEver' | 'lastSlashUsdc' | 'stakeBeforeLastSlash'> {
   return {
-    chain,
-    countedUsdc,
-    slashedEver: slashes.length > 0,
+    slashedEver: last !== undefined,
     lastSlashUsdc: last?.amount ?? 0,
     stakeBeforeLastSlash: last ? last.bonded + last.unbonding + last.amount : 0,
   };
