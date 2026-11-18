@@ -7,11 +7,12 @@ use soroban_sdk::{contracttype, Address, BytesN, Env};
 
 use crate::types::{BondState, Config, PendingConfig};
 
-const INSTANCE_BUMP: u32 = 864_000;
-const INSTANCE_THRESHOLD: u32 = INSTANCE_BUMP / 2;
-/// Pinned to pubnet persistent `max_entry_ttl` (about 1 year).
-const PERSISTENT_BUMP: u32 = 3_110_400;
-const PERSISTENT_THRESHOLD: u32 = PERSISTENT_BUMP / 2;
+pub(crate) const INSTANCE_BUMP: u32 = 864_000;
+pub(crate) const INSTANCE_THRESHOLD: u32 = INSTANCE_BUMP / 2;
+/// Pinned to pubnet persistent `max_entry_ttl`: 3,110,400 ledgers, about 180 days at ~5 s per ledger.
+/// Instance bump above is 864,000 ledgers, about 50 days.
+pub(crate) const PERSISTENT_BUMP: u32 = 3_110_400;
+pub(crate) const PERSISTENT_THRESHOLD: u32 = PERSISTENT_BUMP / 2;
 
 #[contracttype]
 #[derive(Clone)]
