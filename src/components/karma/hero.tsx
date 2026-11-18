@@ -254,7 +254,10 @@ export async function Hero() {
               </span>
               <ArrowUpRight aria-hidden className="size-3.5 shrink-0 transition-colors group-hover:text-[#8a92ff] motion-reduce:transition-none" />
             </a>
-            <LiveTicker />
+            {/* Reserve the ticker's line so its late mount does not shift the chart. */}
+            <div className="min-h-[18px]">
+              <LiveTicker />
+            </div>
           </div>
 
           <div className="mt-10 border-t border-[rgb(255_255_255/0.06)] pt-6">

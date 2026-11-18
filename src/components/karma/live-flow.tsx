@@ -150,11 +150,13 @@ export function LiveFlow({ initial }: { initial?: ActivityStats }) {
           }
         }}
       >
-        <summary aria-label={summaryLabel} className="flex min-h-10 cursor-pointer list-none items-center gap-2 whitespace-nowrap rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-[12px] font-[510] sm:gap-2.5 sm:px-3.5 text-muted-foreground backdrop-blur-sm transition-colors hover:border-white/[0.14] hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-open:border-white/[0.14] group-open:bg-white/[0.05] motion-reduce:transition-none [&::-webkit-details-marker]:hidden">
+        <summary aria-label={summaryLabel} className="flex min-h-10 cursor-pointer list-none items-center gap-2 whitespace-nowrap rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-[12px] font-[510] sm:gap-2.5 sm:px-3.5 lg:gap-2 lg:px-3 text-muted-foreground backdrop-blur-sm transition-colors hover:border-white/[0.14] hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-open:border-white/[0.14] group-open:bg-white/[0.05] motion-reduce:transition-none [&::-webkit-details-marker]:hidden">
           <StatusDot tone={tone} pulse={tone === 'ok' || tone === 'busy'} />
           {/* Phones get a one-word label so the counts never clip; a delay takes its place. */}
           <span aria-hidden="true" className={`sm:hidden ${delayed ? 'text-amber-300' : 'text-[#d0d6e0]'}`}>{delayed ? 'Delayed' : 'Indexed'}</span>
-          <span className="hidden text-[#d0d6e0] sm:inline">Indexed activity</span>
+          <span className="hidden text-[#d0d6e0] sm:inline lg:hidden">Indexed activity</span>
+          {/* Two-column hero (lg+) leaves the pill ~490px: the short label keeps it inside the column. */}
+          <span aria-hidden="true" className="hidden text-[#d0d6e0] lg:inline">Indexed</span>
           <span aria-hidden="true" className="h-3 w-px bg-white/[0.1]" />
           {stats ? (
             <span className="inline-flex items-center gap-1.5">

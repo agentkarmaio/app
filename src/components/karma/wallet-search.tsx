@@ -69,6 +69,9 @@ export function WalletSearch({ examples }: { examples?: Promise<SearchExample[]>
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
+  // The query `results` answer. Results go stale while the user keeps typing
+  // (debounce, in-flight fetch), so nothing acts on them unless this matches.
+  const [resultsFor, setResultsFor] = useState('');
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState(false);
@@ -81,10 +84,12 @@ export function WalletSearch({ examples }: { examples?: Promise<SearchExample[]>
   const optionId = (idx: number) => `${baseId}-option-${idx}`;
 
   const typedAddress = classifyTyped(query);
+  const settled = !loading && resultsFor === query.trim();
 
   const search = useCallback(async (q: string) => {
     if (q.length < 3) {
       setResults([]);
+      setResultsFor(q);
       setFailed(false);
       return;
     }
@@ -95,9 +100,11 @@ export function WalletSearch({ examples }: { examples?: Promise<SearchExample[]>
       if (!res.ok) throw new Error(`Search failed (${res.status})`);
       const data = await res.json();
       setResults(data.results ?? []);
+      setResultsFor(q);
       setFailed(false);
     } catch {
       setResults([]);
+      setResultsFor(q);
       setFailed(true);
     } finally {
       setLoading(false);
@@ -138,14 +145,15 @@ export function WalletSearch({ examples }: { examples?: Promise<SearchExample[]>
       navigateAddress(typedAddress.address);
     } else if (selectedIdx >= offset && results[selectedIdx - offset]) {
       navigateResult(results[selectedIdx - offset]);
-    } else if (results.length > 0) {
-      // Enter or "Look up" with nothing highlighted opens the best match.
+    } else if (settled && results.length > 0) {
+      // Enter or "Look up" with nothing highlighted opens the best match, but
+      // only once the results answer what is in the box now.
       navigateResult(results[0]);
     } else {
       inputRef.current?.focus();
       setOpen(true);
     }
-  }, [selectedIdx, results, typedAddress, navigateResult, navigateAddress]);
+  }, [selectedIdx, results, settled, typedAddress, navigateResult, navigateAddress]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     const totalItems = results.length + (typedAddress ? 1 : 0);
@@ -153,9 +161,10 @@ export function WalletSearch({ examples }: { examples?: Promise<SearchExample[]>
       e.preventDefault();
       setOpen(true);
       if (totalItems === 0) return;
-      setSelectedIdx((prev) =>
-        e.key === 'ArrowDown' ? (prev + 1) % totalItems : (prev - 1 + totalItems) % totalItems,
-      );
+      setSelectedIdx((prev) => {
+        if (e.key === 'ArrowDown') return (prev + 1) % totalItems;
+        return prev <= 0 ? totalItems - 1 : prev - 1;
+      });
     } else if (e.key === 'Enter') {
       e.preventDefault();
       handleSubmit();
@@ -177,15 +186,15 @@ export function WalletSearch({ examples }: { examples?: Promise<SearchExample[]>
 
   const showDropdown = open && (query.trim().length >= 3 || !!typedAddress);
   const hasOptions = !!typedAddress || results.length > 0;
-  const noMatches = !loading && !failed && results.length === 0 && !typedAddress && query.trim().length >= 3;
+  const noMatches = settled && !failed && results.length === 0 && !typedAddress && query.trim().length >= 3;
 
   // Spoken summary for screen readers; visible copy lives in the popup.
   const liveMessage = !showDropdown
     ? ''
-    : loading
+    : !settled
       ? 'Searching'
       : failed
-        ? 'Search is unavailable right now.'
+        ? 'Search is unavailable right now. Try again in a moment.'
         : noMatches
           ? `No agents found matching ${query.trim()}`
           : `${results.length + (typedAddress ? 1 : 0)} results available. Use up and down arrows to review.`;
@@ -249,7 +258,7 @@ export function WalletSearch({ examples }: { examples?: Promise<SearchExample[]>
                 role="option"
                 aria-selected={selectedIdx === 0}
                 className={`flex cursor-pointer items-center justify-between px-3 py-2.5 text-left transition-colors motion-reduce:transition-none ${
-                  selectedIdx === 0 ? 'bg-[rgb(255_255_255/0.06)]' : 'hover:bg-[rgb(255_255_255/0.03)]'
+                  selectedIdx === 0 ? 'bg-[rgb(255_255_255/0.06)] shadow-[inset_2px_0_0_#7170ff]' : 'hover:bg-[rgb(255_255_255/0.03)]'
                 }`}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => navigateAddress(typedAddress.address)}
@@ -282,7 +291,7 @@ export function WalletSearch({ examples }: { examples?: Promise<SearchExample[]>
                   role="option"
                   aria-selected={selectedIdx === idx}
                   className={`flex cursor-pointer items-center justify-between px-3 py-2 text-left transition-colors motion-reduce:transition-none ${
-                    selectedIdx === idx ? 'bg-[rgb(255_255_255/0.06)]' : 'hover:bg-[rgb(255_255_255/0.03)]'
+                    selectedIdx === idx ? 'bg-[rgb(255_255_255/0.06)] shadow-[inset_2px_0_0_#7170ff]' : 'hover:bg-[rgb(255_255_255/0.03)]'
                   }`}
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => navigateResult(r)}
@@ -306,7 +315,7 @@ export function WalletSearch({ examples }: { examples?: Promise<SearchExample[]>
             })}
           </ul>
 
-          {failed && !typedAddress && (
+          {failed && settled && !typedAddress && (
             <div className="flex items-center justify-between gap-3 px-3 py-3 text-[13px]">
               <span className="text-[#d0d6e0]">Search is unavailable right now. Try again in a moment.</span>
               <button
@@ -326,7 +335,7 @@ export function WalletSearch({ examples }: { examples?: Promise<SearchExample[]>
             </div>
           )}
 
-          {loading && !hasOptions && !failed && (
+          {!settled && !hasOptions && (
             <div className="px-3 py-4 text-center text-[13px] text-[#8a8f98]">Searching…</div>
           )}
         </div>

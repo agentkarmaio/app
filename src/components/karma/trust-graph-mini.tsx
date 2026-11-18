@@ -62,7 +62,7 @@ function shortAddr(a: string) {
 
 // Caption legend. Graph nodes are circles coloured by trust tier, so they never
 // read as the hero's confidence diamonds (green there means receipt-backed).
-const LEGEND_TIERS: TrustTier[] = ['Excellent', 'Very Good', 'Good', 'Fair'];
+const LEGEND_TIERS: TrustTier[] = ['Excellent', 'Very Good', 'Good', 'Fair', 'Poor', 'Unrated'];
 
 function hashAddr(s: string) {
   let h = 0;
@@ -209,6 +209,12 @@ export function TrustGraphMini() {
     const m = new Map<string, Positioned>();
     for (const p of positioned) m.set(agentKey(p.agent), p);
     return m;
+  }, [positioned]);
+
+  // Legend lists only the tiers actually drawn, in tier order.
+  const legendTiers = useMemo(() => {
+    const shown = new Set(positioned.map((p) => p.agent.trustTier));
+    return LEGEND_TIERS.filter((tier) => shown.has(tier));
   }, [positioned]);
 
   const hoveredAgent = hovered
@@ -468,9 +474,9 @@ export function TrustGraphMini() {
           />
           <text
             x={CX}
-            y={CY + 3.5}
+            y={CY + 4}
             textAnchor="middle"
-            className="fill-[#d0d6e0] text-[10px] font-[590] uppercase tracking-[0.08em]"
+            className="fill-[#d0d6e0] text-[12px] font-[590] uppercase tracking-[0.06em]"
             style={{ fontFamily: 'var(--font-mono)' }}
           >
             x402
@@ -570,9 +576,9 @@ export function TrustGraphMini() {
       )}
 
       <figcaption className="mt-1 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[12px] text-[#8a8f98]">
-        <span>Top agents around the x402 hub, coloured by trust tier</span>
+        <span>Top agents around the x402 hub, colored by trust tier</span>
         <span className="flex items-center gap-2.5">
-          {LEGEND_TIERS.map((tier) => (
+          {legendTiers.map((tier) => (
             <span key={tier} className="inline-flex items-center gap-1">
               <span aria-hidden className="inline-block size-2 rounded-full" style={{ background: TIER_FILL[tier] }} />
               {tier}
