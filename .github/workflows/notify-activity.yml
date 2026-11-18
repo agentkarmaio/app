@@ -1,0 +1,72 @@
+name: Notify on outside activity
+
+# Pages Telegram when someone outside the team opens an issue or PR, or comments
+# on one. Issue #28 (an Arc agent operator asking to be rated) sat unseen for
+# six weeks because nothing watched the tracker.
+#
+# Security: titles, bodies and logins are attacker-controlled. They only ever
+# reach the shell through env vars (never `${{ }}` inside `run:`), are
+# HTML-escaped for Telegram's parse mode, and the job never checks out PR code:
+# on pull_request_target, actions/checkout pulls the base branch, which is only
+# needed for the local telegram-alert action.
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    # Skip the team and bots (Dependabot PRs alone would flood the chat).
+    if: >-
+      github.event.sender.type != 'Bot' &&
+      !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+        github.event.comment.author_association ||
+        github.event.issue.author_association ||
+        github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build message
+        id: msg
+        env:
+          EVENT: ${{ github.event_name }}
+          SENDER: ${{ github.event.sender.login }}
+          TITLE: ${{ github.event.issue.title || github.event.pull_request.title }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          URL: ${{ github.event.comment.html_url || github.event.issue.html_url || github.event.pull_request.html_url }}
+          BODY: ${{ github.event.comment.body || github.event.issue.body || github.event.pull_request.body }}
+        run: |
+          esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+          case "$EVENT" in
+            issues) kind="New issue" ;;
+            issue_comment) kind="New comment" ;;
+            *) kind="New PR" ;;
+          esac
+          excerpt=$(printf '%s' "${BODY:0:400}" | esc)
+          [ "${#BODY}" -gt 400 ] && excerpt="${excerpt}…"
+          delim="EOF_$(openssl rand -hex 8)"
+          {
+            echo "text<<$delim"
+            echo "📬 <b>${kind} on agentkarmaio/app #${NUMBER}</b>"
+            printf '%s\n' "$TITLE" | esc
+            echo "by $(printf '%s' "$SENDER" | esc)"
+            echo
+            printf '%s\n' "$excerpt"
+            echo
+            echo "$URL"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/telegram-alert
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          text: ${{ steps.msg.outputs.text }}

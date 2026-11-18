@@ -105,9 +105,58 @@ export function indexingErrorCode(error: unknown): string {
 export function indexingErrorDetail(error: unknown): string | undefined {
   const causes = error instanceof AggregateError ? error.errors : [error];
   const codes = causes
-    .map((cause) => (cause instanceof Error ? cause.message : ''))
-    .filter((message) => /^[a-z][a-z0-9_]*$/.test(message));
+    .map((cause) => {
+      const phase = phaseOf(cause);
+      if (phase) return `${phase}:${(cause as Error).message}${safeSource((cause as Error).cause)}`;
+      return cause instanceof Error ? cause.message : '';
+    })
+    .filter((message) => /^[a-z][a-z0-9_]*(?::[a-z][a-z0-9_]*)*$/.test(message));
   return codes.length ? codes.join(',') : undefined;
+}
+
+const BARE_CODE = /^[a-z][a-z0-9_]*$/;
+const PHASE = Symbol('indexingPhase');
+function phaseOf(error: unknown): string | undefined {
+  const phase = error instanceof Error ? (error as Error & { [PHASE]?: unknown })[PHASE] : undefined;
+  return typeof phase === 'string' ? phase : undefined;
+}
+/**
+ * What produced a raw cause, in tokens that cannot carry a URL or a key: a
+ * bare code, a PostgREST/Postgres error code, or the error's type name.
+ */
+function safeSource(cause: unknown): string {
+  if (cause instanceof Error && BARE_CODE.test(cause.message)) return `:${cause.message}`;
+  const code = cause && typeof cause === 'object' ? (cause as { code?: unknown }).code : undefined;
+  if (typeof code === 'string' && /^(?:[0-9A-Z]{5}|PGRST\d{3})$/.test(code)) return `:pg_${code.toLowerCase()}`;
+  // supabase-js reports a failed request as a plain { message, code: '' }
+  // object, not an Error; classify its message into fixed tokens only.
+  if (cause && typeof cause === 'object' && !(cause instanceof Error)) {
+    const message = String((cause as { message?: unknown }).message ?? '');
+    if (/^\s*</.test(message)) return ':db_gateway_html';
+    if (/unable to connect|fetch failed|econn|socket|reset|disconnect/i.test(message)) return ':db_unreachable';
+    if (/timed? ?out|timeout/i.test(message)) return ':db_timeout';
+    return ':db_error';
+  }
+  const name = cause instanceof Error ? cause.name.toLowerCase() : '';
+  return /^[a-z][a-z0-9_]{0,63}$/.test(name) ? `:${name}` : '';
+}
+
+/**
+ * Throw the rejections among independently settled phases of one job. The
+ * error code stays the cause's own classification; the detail names which
+ * phase failed and on what, which a raw rethrow loses (2026-11-17/18 pages).
+ */
+export function throwPhaseFailures(
+  phases: ReadonlyArray<readonly [phase: string, result: PromiseSettledResult<unknown>]>,
+): void {
+  const failures = phases.flatMap(([phase, result]) => {
+    if (result.status !== 'rejected') return [];
+    const failure = new Error(indexingErrorCode(result.reason), { cause: result.reason });
+    Object.defineProperty(failure, PHASE, { value: phase });
+    return [failure];
+  });
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, failures[0].message, { cause: failures[0] });
 }
 /**
  * Leases this process holds right now. A run that ends — however it ends —

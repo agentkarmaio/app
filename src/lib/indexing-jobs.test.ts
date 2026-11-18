@@ -8,7 +8,7 @@ import * as mainnetTransfers from '@/indexer/arc-mainnet-transfers';
 import * as mainnetScores from '@/scoring/arc-mainnet-persistence';
 import * as mainnetWalk from '@/indexer/arc-mainnet-settlement-walk';
 import { markIndexingLeaseLost, runWithIndexingContext } from '@/db/indexing-context';
-import { indexingErrorCode } from './indexing-runner';
+import { indexingErrorCode, indexingErrorDetail } from './indexing-runner';
 import type { IndexingJob, ScanOutcome } from './indexing-runner';
 import type { IndexingState } from '@/db/indexing-state';
 const coverage = { complete: false, checked: 0, pending: 10, unresolved: 0 };
@@ -70,7 +70,9 @@ test('RPC failure still refreshes DB-only decay and preserves the original inges
   const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement').mockResolvedValue({ ...WALKED });
   const signal = new AbortController().signal;
   try {
-    await expect(createIndexingJob('arc-mainnet', 'transfers').run(signal)).rejects.toBe(failure);
+    const thrown = await createIndexingJob('arc-mainnet', 'transfers').run(signal).catch(error => error);
+    expect(thrown.cause).toBe(failure);
+    expect(indexingErrorDetail(thrown)).toBe('transfers:rpc_unavailable:rpc_unavailable');
     expect(refresh).toHaveBeenCalledWith({ signal });
   } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
@@ -83,9 +85,10 @@ test('simultaneous ingestion and scoring errors remain available with ingestion 
   try {
     const failure = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal).catch(error => error);
     expect(failure).toBeInstanceOf(AggregateError);
-    expect(failure.errors).toEqual([ingestionError, scoreError]);
-    expect(failure.cause).toBe(ingestionError);
+    expect(failure.errors.map((e: Error) => e.cause)).toEqual([ingestionError, scoreError]);
+    expect(failure.cause.cause).toBe(ingestionError);
     expect(indexingErrorCode(failure)).toBe('rpc_rate_limited');
+    expect(indexingErrorDetail(failure)).toBe('transfers:rpc_rate_limited:rpc_rate_limited,score_refresh:scan_failed:error');
   } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
 test('a scoring failure after successful ingestion fails the whole managed job', async () => {
@@ -95,7 +98,21 @@ test('a scoring failure after successful ingestion fails the whole managed job',
   const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockRejectedValue(failure);
   const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement').mockResolvedValue({ ...WALKED });
   try {
-    await expect(createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal)).rejects.toBe(failure);
+    const thrown = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal).catch(error => error);
+    expect(thrown.cause).toBe(failure);
+  } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
+});
+// 2026-11-17/18 pages: ingestion succeeded, a later phase rethrew a raw
+// PostgREST object, and the page said only `scan_failed`.
+test('a raw database error from score refresh pages with its phase and code', async () => {
+  const scan = spyOn(mainnetTransfers, 'runArcMainnetTransfersIndexer').mockResolvedValue({ fetched: 0, inserted: 0, cursors: new Map(),
+    coverage: { complete: true, checked: 1, pending: 0, unresolved: 0, checkpoint: '10', head: '10' } });
+  const refresh = spyOn(mainnetScores, 'refreshArcMainnetScores').mockRejectedValue({ code: 'PGRST002', message: 'schema cache' });
+  const walk = spyOn(mainnetWalk, 'walkArcMainnetSettlement').mockResolvedValue({ ...WALKED });
+  try {
+    const thrown = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal).catch(error => error);
+    expect(indexingErrorCode(thrown)).toBe('scan_failed');
+    expect(indexingErrorDetail(thrown)).toBe('score_refresh:scan_failed:pg_pgrst002');
   } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
 test.each(['abort', 'lease_lost'] as const)('%s during ingestion prevents the decay phase from starting', async mode => {
@@ -153,8 +170,8 @@ test('a settlement walk rejection joins the ingestion failure in the aggregate',
   try {
     const failure = await createIndexingJob('arc-mainnet', 'transfers').run(new AbortController().signal).catch(error => error);
     expect(failure).toBeInstanceOf(AggregateError);
-    expect(failure.errors).toEqual([ingestionError, walkError]);
-    expect(failure.cause).toBe(ingestionError);
+    expect(failure.errors.map((e: Error) => e.cause)).toEqual([ingestionError, walkError]);
+    expect(failure.cause.cause).toBe(ingestionError);
   } finally { scan.mockRestore(); refresh.mockRestore(); walk.mockRestore(); }
 });
 test('a first-window provider throttle is failed, not successful catch-up', () => {
