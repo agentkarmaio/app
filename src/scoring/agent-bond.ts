@@ -48,8 +48,12 @@ export interface AgentBondAmounts {
 }
 
 export const DAY_MS = 86_400_000;
-/** Above this many events inside the window for one bond, the lift fails closed to 0. */
-export const AGENT_BOND_WINDOW_EVENT_CAP = 2000;
+/**
+ * Above this many events inside the window for one bond, the lift fails closed
+ * to 0. Kept below PostgREST's max_rows (1000 by default) so `limit(CAP + 1)`
+ * is never silently truncated by the server, which would defeat the check.
+ */
+export const AGENT_BOND_WINDOW_EVENT_CAP = 500;
 
 /** Min of the balance at the window start and every post-event balance inside it. */
 export function seasonedBalance(atStartBonded: number, inWindowBonded: number[]): number {

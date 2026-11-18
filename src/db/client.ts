@@ -4235,6 +4235,7 @@ export async function getAgentBondInput(
       base().eq('agent_id', agent_id).lte('ledger_closed_at', windowStart)
         .order('ledger', { ascending: false }).order('event_id', { ascending: false }).limit(1),
       base().eq('agent_id', agent_id).gt('ledger_closed_at', windowStart)
+        .order('ledger', { ascending: true }).order('event_id', { ascending: true })
         .limit(AGENT_BOND_WINDOW_EVENT_CAP + 1),
     ]);
     if (atStart.error) throw atStart.error;
