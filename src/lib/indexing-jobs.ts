@@ -174,6 +174,11 @@ export function createIndexingJob(
         });
         return coverageOutcome(r.coverage, r.inserted);
       }
+      if (chain === 'stellar-testnet' && path === 'bonds') {
+        const { runStellarAgentBondIndexer } = await import('@/indexer/stellar-agent-bond');
+        const r = await runStellarAgentBondIndexer({ signal });
+        return coverageOutcome(r.coverage, r.inserted);
+      }
       if (chain === 'celo' && path === 'payments') {
         const { runCeloX402Indexer } = await import('@/indexer/celo-x402');
         const r = await runCeloX402Indexer({ signal });
@@ -403,6 +408,7 @@ export function apiOnlyInAppIntervalMs(path: string, env: Record<string, string 
   if (env.STELLAR_TESTNET_IN_APP !== '1') return undefined;
   if (path === 'transfers') return 120_000;
   if (path === 'registry') return 900_000;
+  if (path === 'bonds') return 120_000;
   return undefined;
 }
 

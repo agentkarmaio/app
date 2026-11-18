@@ -1,6 +1,6 @@
 import type { Chain } from '@/db/schema';
 
-export type IndexingPath = 'payments' | 'escrow' | 'transfers' | 'registry';
+export type IndexingPath = 'payments' | 'escrow' | 'transfers' | 'registry' | 'bonds';
 export const INDEXING_PATHS: ReadonlyArray<{
   chain: Chain;
   path: IndexingPath;
@@ -67,6 +67,7 @@ export const INDEXING_PATHS: ReadonlyArray<{
   // by the in-app workers, and absent from the public health projection below.
   { chain: 'stellar-testnet', path: 'registry', label: 'Agent registry', intervalMs: 3_600_000 },
   { chain: 'stellar-testnet', path: 'transfers', label: 'Agent transfers', intervalMs: 3_600_000 },
+  { chain: 'stellar-testnet', path: 'bonds', label: 'Agent bonds', intervalMs: 3_600_000 },
 ];
 export type IndexingStatus =
   | 'current'

@@ -36,6 +36,8 @@ import { AK_RATER_ADDRESSES, AK_METADATA_TAG1, AK_REVIEW_TAG1, AK_VALIDATOR } fr
 // bundle). Used by getAkConnectedFeedback to recompute the CURRENT (v0.2)
 // per-agent breakdown server-side for the /celo disclosure list.
 import { scoreMetadataQuality, type MetadataQualityResult } from '@/scoring/celo-metadata';
+import { AGENT_BOND_SCORING_CHAIN, deriveAgentBondInput, type AgentBondInput } from '@/scoring/agent-bond';
+import type { AgentBondEventRow, AgentBondRow } from '@/indexer/stellar-agent-bond';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
 import {
   aggregateArcQuality,
@@ -4125,4 +4127,100 @@ export async function getErc8004Feedback(
     rows.push(...page);
     if (page.length < pageSize) return rows;
   }
+}
+
+// --- Agent Bond (slashable self-stake, stellar-testnet) ----------------------
+// Written by src/indexer/stellar-agent-bond.ts; read by scoring and
+// /api/v2/agent-bond. Scoring reads the event log directly (not the 200-row
+// signal window) so an old slash can never fall out of the score.
+
+export async function insertAgentBondEvents(rows: AgentBondEventRow[]): Promise<number> {
+  if (rows.length === 0) return 0;
+  return withTransientDbRetry(async () => {
+    const { data, error } = await supabase
+      .from('agent_bond_events')
+      .upsert(rows, { onConflict: 'chain,contract_id,event_id', ignoreDuplicates: true })
+      .select('event_id');
+    if (error) throw error;
+    return data?.length ?? 0;
+  });
+}
+
+export async function upsertAgentBonds(rows: AgentBondRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  await withTransientDbRetry(async () => {
+    const { error } = await supabase
+      .from('agent_bonds')
+      .upsert(rows.map((r) => ({ ...r, updated_at: new Date().toISOString() })), { onConflict: 'chain,contract_id,agent_id' });
+    if (error) throw error;
+  });
+}
+
+export async function getAgentBondPriors(
+  contractId: string,
+  agentIds: number[],
+): Promise<Map<string, Pick<AgentBondRow, 'unlock_at' | 'slashed_total' | 'first_deposit_at'>>> {
+  const out = new Map<string, Pick<AgentBondRow, 'unlock_at' | 'slashed_total' | 'first_deposit_at'>>();
+  if (agentIds.length === 0) return out;
+  const { data, error } = await supabase
+    .from('agent_bonds')
+    .select('agent_id, unlock_at, slashed_total, first_deposit_at')
+    .eq('chain', 'stellar-testnet')
+    .eq('contract_id', contractId)
+    .in('agent_id', agentIds);
+  if (error) throw error;
+  for (const r of data ?? []) {
+    out.set(`${contractId}:${r.agent_id}`, {
+      unlock_at: r.unlock_at,
+      slashed_total: String(r.slashed_total),
+      first_deposit_at: r.first_deposit_at,
+    });
+  }
+  return out;
+}
+
+export interface AgentBondView {
+  bond: AgentBondRow | null;
+  slashes: Pick<AgentBondEventRow, 'amount' | 'evidence' | 'evidence_id' | 'tx_hash' | 'ledger_closed_at'>[];
+}
+
+export async function getAgentBond(contractId: string, agentId: number): Promise<AgentBondView> {
+  const [bond, slashes] = await Promise.all([
+    supabase.from('agent_bonds').select('*')
+      .eq('chain', 'stellar-testnet').eq('contract_id', contractId).eq('agent_id', agentId).maybeSingle(),
+    supabase.from('agent_bond_events').select('amount, evidence, evidence_id, tx_hash, ledger_closed_at')
+      .eq('chain', 'stellar-testnet').eq('contract_id', contractId).eq('agent_id', agentId).eq('kind', 'slashed')
+      .order('ledger', { ascending: false }).limit(50),
+  ]);
+  if (bond.error) throw bond.error;
+  if (slashes.error) throw slashes.error;
+  return { bond: (bond.data as AgentBondRow | null) ?? null, slashes: slashes.data ?? [] };
+}
+
+/** Scoring input for one wallet. Null off stellar-testnet or with no bond. */
+export async function getAgentBondInput(
+  wallet: string,
+  chain: Chain,
+  contractId: string,
+  nowMs: number = Date.now(),
+): Promise<AgentBondInput | null> {
+  if (chain !== AGENT_BOND_SCORING_CHAIN) return null;
+  const { data, error } = await supabase
+    .from('agent_bond_events')
+    .select('agent_id, kind, ledger_closed_at, bonded, unbonding, amount')
+    .eq('chain', chain)
+    .eq('contract_id', contractId)
+    .eq('owner_wallet', wallet)
+    .order('ledger', { ascending: true })
+    .limit(5000);
+  if (error) throw error;
+  if (!data || data.length === 0) return null;
+  return deriveAgentBondInput(chain, data.map((r) => ({
+    agentId: r.agent_id,
+    kind: r.kind,
+    ledgerClosedAt: r.ledger_closed_at,
+    bonded: Number(r.bonded),
+    unbonding: Number(r.unbonding),
+    amount: Number(r.amount),
+  })), nowMs);
 }

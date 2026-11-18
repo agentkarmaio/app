@@ -66,6 +66,18 @@ jobs:
           STELLAR_TESTNET_HORIZON_URL: ${{ secrets.STELLAR_TESTNET_HORIZON_URL }}
         run: bun run src/scripts/indexing-run.ts stellar-testnet transfers
 
+      # Agent Bond (contracts/agent-bond) events. Soroban RPC keeps ~7 days of
+      # events, so this hourly run (plus the 2-minute in-app worker when
+      # STELLAR_TESTNET_IN_APP=1) is the freshness guarantee.
+      - name: Index Agent Bond events
+        if: ${{ !cancelled() }}
+        id: bonds
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          STELLAR_TESTNET_RPC_URL: ${{ secrets.STELLAR_TESTNET_RPC_URL }}
+        run: bun run src/scripts/indexing-run.ts stellar-testnet bonds
+
       # Page only on the 2nd consecutive failed run: a one-off blip (a Cloudflare
       # 522 on the DB endpoint, 2026-10-19) self-heals by the next run and is
       # not worth a phone alert. Real outages still page one run later.
@@ -76,7 +88,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           workflow: stellar-testnet-refresh.yml
-          failed: ${{ steps.mirror.outcome != 'success' || steps.transfers.outcome != 'success' }}
+          failed: ${{ steps.mirror.outcome != 'success' || steps.transfers.outcome != 'success' || steps.bonds.outcome != 'success' }}
           min-consecutive: '2'
           reminder-every: '6'
 
@@ -89,5 +101,5 @@ jobs:
           suppress-if-db-down: 'true'
           text: |
             🛟 <b>AgentKarma stellar-testnet-refresh FAILED</b>
-            The API-only testnet mirror/transfers job crashed — stellar-testnet API data may stall.
+            The API-only testnet mirror/transfers/bonds job crashed — stellar-testnet API data may stall.
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

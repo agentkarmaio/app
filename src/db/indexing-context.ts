@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Chain } from './schema';
 
-export type IndexingPath = 'payments' | 'escrow' | 'transfers' | 'registry';
+export type IndexingPath = 'payments' | 'escrow' | 'transfers' | 'registry' | 'bonds';
 export interface IndexingContext {
   chain: Chain;
   path: IndexingPath;

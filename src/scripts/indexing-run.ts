@@ -9,7 +9,7 @@ const [chain, path] = process.argv.slice(2);
 const job = INDEXING_PATHS.find((p) => p.chain === chain && p.path === path);
 if (!job)
   throw Error(
-    'Usage: bun src/scripts/indexing-run.ts <chain> <payments|escrow|transfers|registry>',
+    'Usage: bun src/scripts/indexing-run.ts <chain> <payments|escrow|transfers|registry|bonds>',
   );
 function intFlag(name: string) {
   const i = process.argv.indexOf(name);

@@ -759,6 +759,66 @@ export const celoX402SettlementsTable = pgTable('celo_x402_settlements', {
   index('idx_celo_x402_settlements_block_time').on(table.block_time),
 ]);
 
+/**
+ * Agent Bond (slashable self-stake, contracts/agent-bond), stellar-testnet only.
+ * Current state per bond, SET from each event's post-state totals (idempotent).
+ * Distinct from the third-party surety `bonds` table. drizzle/0031_agent_bond.sql.
+ */
+export const agentBondsTable = pgTable('agent_bonds', {
+  chain:            text('chain').notNull().$type<Chain>(),
+  agent_id:         integer('agent_id').notNull(),
+  contract_id:      text('contract_id').notNull(),
+  owner_wallet:     text('owner_wallet').notNull(),
+  /** Human USDC (7 dp). */
+  bonded:           numeric('bonded', { precision: 30, scale: 7 }).notNull(),
+  unbonding:        numeric('unbonding', { precision: 30, scale: 7 }).notNull(),
+  unlock_at:        timestamp('unlock_at', { withTimezone: true }),
+  slashed_total:    numeric('slashed_total', { precision: 30, scale: 7 }).notNull().default('0'),
+  first_deposit_at: timestamp('first_deposit_at', { withTimezone: true }).notNull(),
+  last_ledger:      integer('last_ledger').notNull(),
+  updated_at:       timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.chain, table.contract_id, table.agent_id], name: 'agent_bonds_pkey' }),
+  check('agent_bonds_chain_check', sql`${table.chain} = 'stellar-testnet'`),
+  foreignKey({
+    columns: [table.chain, table.owner_wallet],
+    foreignColumns: [walletsTable.chain, walletsTable.address],
+    name: 'agent_bonds_owner_fkey',
+  }).onDelete('cascade'),
+  index('idx_agent_bonds_owner').on(table.chain, table.owner_wallet),
+]).enableRLS();
+
+export type AgentBondEventKind = 'deposited' | 'unbond_requested' | 'withdrawn' | 'slashed';
+
+/** Raw Agent Bond event log: slash history + the 30-day seasoning window. */
+export const agentBondEventsTable = pgTable('agent_bond_events', {
+  chain:            text('chain').notNull().$type<Chain>(),
+  contract_id:      text('contract_id').notNull(),
+  /** Soroban RPC event id (unique per contract event). */
+  event_id:         text('event_id').notNull(),
+  tx_hash:          text('tx_hash').notNull(),
+  ledger:           integer('ledger').notNull(),
+  ledger_closed_at: timestamp('ledger_closed_at', { withTimezone: true }).notNull(),
+  agent_id:         integer('agent_id').notNull(),
+  owner_wallet:     text('owner_wallet').notNull(),
+  kind:             text('kind').notNull().$type<AgentBondEventKind>(),
+  amount:           numeric('amount', { precision: 30, scale: 7 }).notNull(),
+  /** Post-state totals after this event. */
+  bonded:           numeric('bonded', { precision: 30, scale: 7 }).notNull(),
+  unbonding:        numeric('unbonding', { precision: 30, scale: 7 }).notNull(),
+  evidence_kind:    text('evidence_kind').$type<'enactment' | 'assay'>(),
+  evidence_id:      text('evidence_id'),
+  evidence:         jsonb('evidence'),
+  indexed_at:       timestamp('indexed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.chain, table.contract_id, table.event_id], name: 'agent_bond_events_pkey' }),
+  check('agent_bond_events_chain_check', sql`${table.chain} = 'stellar-testnet'`),
+  check('agent_bond_events_kind_check', sql`${table.kind} IN ('deposited', 'unbond_requested', 'withdrawn', 'slashed')`),
+  check('agent_bond_events_evidence_check', sql`(${table.kind} = 'slashed') = (${table.evidence_id} IS NOT NULL)`),
+  index('idx_agent_bond_events_owner_ledger').on(table.chain, table.owner_wallet, table.ledger),
+  index('idx_agent_bond_events_agent').on(table.chain, table.contract_id, table.agent_id, table.ledger),
+]).enableRLS();
+
 // --- TypeScript Types (for runtime Supabase queries) -------------------------
 
 export type TrustTier = 'Unrated' | 'Poor' | 'Fair' | 'Good' | 'Very Good' | 'Excellent';
@@ -1145,7 +1205,7 @@ export interface IndexerCursor {
 // progress; a failed run must not replace the last successful health checkpoint.
 export const indexingStateTable = pgTable('indexing_state', {
   chain: text('chain').notNull().$type<Chain>(),
-  path: text('path').notNull().$type<'payments' | 'escrow' | 'transfers' | 'registry'>(),
+  path: text('path').notNull().$type<'payments' | 'escrow' | 'transfers' | 'registry' | 'bonds'>(),
   enabled: boolean('enabled').notNull().default(true),
   status: text('status').$type<'caught_up' | 'catching_up' | 'dormant' | 'failed'>(),
   last_attempt_at: timestamp('last_attempt_at', { withTimezone: true }),
@@ -1166,7 +1226,7 @@ export const indexingStateTable = pgTable('indexing_state', {
 }, (table) => [
   primaryKey({ columns: [table.chain, table.path], name: 'indexing_state_pkey' }),
   check('indexing_state_chain_check', sql`${table.chain} IN ('solana', 'arc', 'celo', 'stellar', 'arc-mainnet', 'stellar-testnet')`),
-  check('indexing_state_path_check', sql`${table.path} IN ('payments', 'escrow', 'transfers', 'registry')`),
+  check('indexing_state_path_check', sql`${table.path} IN ('payments', 'escrow', 'transfers', 'registry', 'bonds')`),
   check('indexing_state_status_check', sql`${table.status} IS NULL OR ${table.status} IN ('caught_up', 'catching_up', 'dormant', 'failed')`),
   check('indexing_state_counts_check', sql`${table.checked_count} >= 0 AND ${table.pending_count} >= 0 AND ${table.inserted_count} >= 0 AND ${table.unresolved_count} >= 0 AND ${table.gaps_count} >= 0 AND ${table.generation} >= 0`),
   check('indexing_state_interval_check', sql`${table.interval_ms} BETWEEN 1000 AND 604800000`),
