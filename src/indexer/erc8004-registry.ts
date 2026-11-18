@@ -33,6 +33,7 @@ import { decodeDataUriJson } from '@/lib/data-uri';
 import { isExcludedRegistrationUri, type Erc8004RegistryConfig } from '@/config/erc8004-registries';
 import { ARC_MAINNET_CHAIN_ID, parseArcMainnetRpcUrl } from '@/config/arc-mainnet';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
+import { DEFAULT_IPFS_GATEWAY, ipfsGateway as ipfsGatewayUrl, registrationFetchUrl } from '@/lib/registration-fetch';
 import type { Erc8004RegistrationStatus } from '@/db/schema';
 import { scoreMetadataQuality } from '@/scoring/celo-metadata';
 import {
@@ -208,20 +209,9 @@ export function incrementalScanRange(
   return { from, to: currentTip };
 }
 
-/**
- * ipfs.io retired its path gateway on 2026-09-13 and now answers every request
- * with 429, which banked 1,949 agents across arc/celo/solana as `unreachable`
- * (48% of a sampled 52 were valid registrations). Filebase serves the same CIDs
- * in ~100ms. Overridable so a dedicated gateway can be swapped in without a
- * release.
- */
-export const DEFAULT_IPFS_GATEWAY = 'https://ipfs.filebase.io/ipfs/';
-
-function defaultIpfsGateway(): string {
-  const configured = process.env.IPFS_GATEWAY_URL?.trim();
-  if (!configured) return DEFAULT_IPFS_GATEWAY;
-  return configured.endsWith('/') ? configured : `${configured}/`;
-}
+// Gateway + scheme map live in @/lib/registration-fetch so the mirror and the
+// live read path can never disagree on which URIs resolve.
+export { DEFAULT_IPFS_GATEWAY };
 
 /**
  * Decode an ERC-8004 registration tokenURI. Handles every scheme seen in the
@@ -234,7 +224,7 @@ export async function decodeRegistration(
   opts: { fetchRemote?: boolean; timeoutMs?: number; ipfsGateway?: string; lookup?: DnsLookup; signal?: AbortSignal } = {},
 ): Promise<{ registration: AgentRegistrationFile | null; status: Erc8004RegistrationStatus; retryable?: boolean }> {
   opts.signal?.throwIfAborted();
-  const { fetchRemote = true, timeoutMs = 6000, ipfsGateway = defaultIpfsGateway(), lookup } = opts;
+  const { fetchRemote = true, timeoutMs = 6000, ipfsGateway = ipfsGatewayUrl(), lookup } = opts;
   if (!uri || uri.trim().length === 0) return { registration: null, status: 'empty' };
 
   // Inline, fully on-chain metadata: data:application/json[;base64][;enc=gzip],…
@@ -257,10 +247,8 @@ export async function decodeRegistration(
   }
 
   // Network schemes — only when fetchRemote is on.
-  let fetchUrl: string | null = null;
-  if (uri.startsWith('http://') || uri.startsWith('https://')) fetchUrl = uri;
-  else if (uri.startsWith('ipfs://')) fetchUrl = ipfsGateway + uri.slice('ipfs://'.length).replace(/^ipfs\//, '');
-  else return { registration: null, status: 'invalid' }; // ar:// etc — unsupported for now
+  const fetchUrl = registrationFetchUrl(uri, ipfsGateway);
+  if (!fetchUrl) return { registration: null, status: 'invalid' }; // ar:// etc — unsupported for now
 
   if (!fetchRemote) return { registration: null, status: 'pending' };
 

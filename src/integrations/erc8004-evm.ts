@@ -27,10 +27,9 @@ import {
 } from 'viem';
 import type { Chain } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { decodeDataUriJson } from '@/lib/data-uri';
+import { fetchRegistration } from '@/lib/registration-fetch';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
-import { safeFetchJson } from '@/lib/ssrf-guard';
 import { feeCeilingError } from '@/lib/attest-policy';
 
 // ─── Minimal ABIs (same reference deployment on every chain) ─────────────────
@@ -171,7 +170,7 @@ export function makeEvm8004Reads(config: Evm8004Config): Evm8004Reads {
       // Fetch and parse registration JSON best-effort. Network errors don't
       // invalidate the agent — just attach the error and return.
       try {
-        agent.registration = await fetchRegistration(tokenURI as string);
+        agent.registration = (await fetchRegistration(tokenURI as string)) as AgentRegistrationFile | null;
       } catch (err) {
         agent.registrationError = err instanceof Error ? err.message : String(err);
       }
@@ -253,22 +252,6 @@ export function makeEvm8004Reads(config: Evm8004Config): Evm8004Reads {
   }
 
   return { readAgent, readFeedbackSummary, aggregateFeedback, readAllFeedback };
-}
-
-async function fetchRegistration(uri: string): Promise<AgentRegistrationFile | null> {
-  // data:application/json[;enc=gzip[;level=N]];base64,XXXX — fully on-chain
-  // encoded metadata. Gas-optimized agents commonly use this pattern.
-  if (uri.startsWith('data:application/json')) {
-    return decodeDataUriJson(uri) as AgentRegistrationFile;
-  }
-
-  if (!uri.startsWith('http://') && !uri.startsWith('https://')) {
-    // ipfs:// and ar:// can be added later when the demand shows up.
-    throw new Error(`unsupported URI scheme: ${uri.slice(0, 32)}…`);
-  }
-  // SSRF guard: uri is an attacker-controlled on-chain registration URL —
-  // validate the host (and every redirect hop) is public before fetching.
-  return (await safeFetchJson(uri, { timeoutMs: 8000 })) as AgentRegistrationFile;
 }
 
 // ─── Fee account ─────────────────────────────────────────────────────────────

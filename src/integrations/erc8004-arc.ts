@@ -15,8 +15,7 @@
 
 import { createPublicClient, http, parseAbi } from "viem";
 import { arcTestnet } from "@/config/arc-chain";
-import { decodeDataUriJson } from "@/lib/data-uri";
-import { safeFetchJson } from "@/lib/ssrf-guard";
+import { fetchRegistration } from "@/lib/registration-fetch";
 
 export const IDENTITY_REGISTRY_ARC =
   "0x8004A818BFB912233c491871b3d84c89A494BD9e" as const;
@@ -145,7 +144,7 @@ export async function readAgent(
     // Fetch and parse registration JSON best-effort. Network errors don't
     // invalidate the agent — just attach the error and return.
     try {
-      const reg = await fetchRegistration(tokenURI as string);
+      const reg = (await fetchRegistration(tokenURI as string)) as AgentRegistrationFile | null;
       agent.registration = reg;
     } catch (err) {
       agent.registrationError =
@@ -163,27 +162,6 @@ export async function readAgent(
       return null;
     throw err;
   }
-}
-
-async function fetchRegistration(
-  uri: string,
-): Promise<AgentRegistrationFile | null> {
-  // data:application/json[;enc=gzip[;level=N]];base64,XXXX — fully on-chain
-  // encoded metadata. Gas-optimized agents commonly use this pattern. Parse
-  // inline rather than treating as unsupported.
-  if (uri.startsWith("data:application/json")) {
-    return decodeDataUriJson(uri) as AgentRegistrationFile;
-  }
-
-  if (!uri.startsWith("http://") && !uri.startsWith("https://")) {
-    // ipfs:// and ar:// can be added later when the demand shows up.
-    throw new Error(`unsupported URI scheme: ${uri.slice(0, 32)}…`);
-  }
-  // SSRF guard: uri is an attacker-controlled on-chain registration URL —
-  // validate the host (and every redirect hop) is public before fetching.
-  return (await safeFetchJson(uri, {
-    timeoutMs: 8000,
-  })) as AgentRegistrationFile;
 }
 
 // ─── ReputationRegistry reads ─────────────────────────────────────────────────
