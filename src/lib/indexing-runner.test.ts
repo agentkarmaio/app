@@ -3,6 +3,7 @@ import {
   executeIndexingJob,
   indexingErrorCode,
   releaseHeldIndexingLeases,
+  throwPhaseFailures,
   type LeaseDependencies,
   type IndexingJob,
 } from './indexing-runner';
@@ -251,4 +252,61 @@ test('an aggregate failure names every stable cause', async () => {
     d.value,
   );
   expect(r).toMatchObject({ errorDetail: 'arc_mainnet_seed_limit,arc_walk_batch_malformed' });
+});
+
+// 2026-11-17/18: arc-mainnet/transfers paged `scan_failed` and `rpc_unavailable`
+// with no detail. The raw cause came from a later phase (score refresh or the
+// settlement walk) rethrowing a PostgREST error object, which the detail filter
+// dropped, and DB faults read as RPC faults. Pages must name phase and source.
+function phasedJob(...results: Array<[string, PromiseSettledResult<unknown>]>): IndexingJob {
+  return { ...job, run: async () => { throwPhaseFailures(results); throw Error('unreachable'); } };
+}
+const ok = { status: 'fulfilled', value: undefined } as const;
+const fail = (reason: unknown) => ({ status: 'rejected', reason }) as const;
+test('a raw database error from a later phase names that phase and its SQLSTATE', async () => {
+  const r = await executeIndexingJob(phasedJob(
+    ['transfers', ok],
+    ['score_refresh', fail({ code: '57014', message: 'canceling statement due to statement timeout' })],
+    ['settlement_walk', ok],
+  ), deps().value);
+  expect(r).toMatchObject({ status: 'failed', errorCode: 'rpc_unavailable', errorDetail: 'score_refresh:rpc_unavailable:pg_57014' });
+});
+test('an unclassified PostgREST object no longer pages a bare scan_failed', async () => {
+  const r = await executeIndexingJob(phasedJob(
+    ['transfers', ok], ['score_refresh', ok],
+    ['settlement_walk', fail({ code: 'PGRST002', message: 'Could not query the database for the schema cache' })],
+  ), deps().value);
+  expect(r).toMatchObject({ errorCode: 'scan_failed', errorDetail: 'settlement_walk:scan_failed:pg_pgrst002' });
+});
+test('a transport error names its type, never its free-form message', async () => {
+  const r = await executeIndexingJob(phasedJob(
+    ['transfers', ok], ['score_refresh', ok],
+    ['settlement_walk', fail(new TypeError('fetch failed: https://db.test/?key=SECRET'))],
+  ), deps().value);
+  expect(r).toMatchObject({ errorCode: 'rpc_unavailable', errorDetail: 'settlement_walk:rpc_unavailable:typeerror' });
+  expect(JSON.stringify(r)).not.toContain('SECRET');
+});
+test('several failed phases keep the first cause as the code and name every phase', async () => {
+  const r = await executeIndexingJob(phasedJob(
+    ['transfers', fail(Error('rpc_rate_limited'))],
+    ['score_refresh', ok],
+    ['settlement_walk', fail({ code: '57014', message: 'timeout' })],
+  ), deps().value);
+  expect(r).toMatchObject({ errorCode: 'rpc_rate_limited',
+    errorDetail: 'transfers:rpc_rate_limited:rpc_rate_limited,settlement_walk:rpc_unavailable:pg_57014' });
+});
+test('all phases fulfilled throws nothing', () => {
+  expect(() => throwPhaseFailures([['transfers', ok], ['score_refresh', ok]])).not.toThrow();
+});
+// Shapes captured from supabase-js under Bun against a dead port and a gateway
+// returning HTML: plain objects with an empty code. The 2026-11-17 page
+// (scan_failed, no detail) is the first of these.
+test.each([
+  [{ message: 'Error: Unable to connect. Is the computer able to access the url?', details: '', hint: '', code: '' }, 'scan_failed', 'db_unreachable'],
+  [{ message: '<html>502 Bad Gateway</html>' }, 'scan_failed', 'db_gateway_html'],
+  [{ message: 'The operation timed out.', code: '' }, 'rpc_unavailable', 'db_timeout'],
+  [{ message: 'something else', code: '' }, 'scan_failed', 'db_error'],
+])('a supabase-js request failure names a fixed database token (%#)', async (reason, code, token) => {
+  const r = await executeIndexingJob(phasedJob(['score_refresh', fail(reason)]), deps().value);
+  expect(r).toMatchObject({ errorCode: code, errorDetail: `score_refresh:${code}:${token}` });
 });

@@ -19,7 +19,7 @@ import { INDEXING_PATHS, type IndexingPath } from './indexing-health';
 import { isIndexingStalled } from './indexing-exit';
 import {
   executeIndexingJob,
-  indexingErrorCode,
+  throwPhaseFailures,
   releaseHeldIndexingLeases,
   type IndexingJob,
   type ScanOutcome,
@@ -140,13 +140,7 @@ export function createIndexingJob(
             return walkArcMainnetSettlement({ signal });
           })(),
         ]);
-        const settled = [ingestion, refresh, walk];
-        const rejected = settled.filter(r => r.status === 'rejected') as Array<PromiseRejectedResult>;
-        if (rejected.length === 1) throw rejected[0].reason;
-        if (rejected.length > 1) {
-          throw new AggregateError(rejected.map(r => r.reason),
-            indexingErrorCode(rejected[0].reason), { cause: rejected[0].reason });
-        }
+        throwPhaseFailures([['transfers', ingestion], ['score_refresh', refresh], ['settlement_walk', walk]]);
         const result = ingestion as PromiseFulfilledResult<Awaited<ReturnType<typeof runArcMainnetTransfersIndexer>>>;
         const scores = (refresh as PromiseFulfilledResult<Awaited<ReturnType<typeof refreshArcMainnetScores>>>).value;
         const walkResult = (walk as PromiseFulfilledResult<Awaited<ReturnType<typeof walkArcMainnetSettlement>>>).value;
