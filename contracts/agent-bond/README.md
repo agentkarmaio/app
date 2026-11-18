@@ -23,11 +23,15 @@ Evidence is an audit pointer. The contract cannot check it, because Assay lives 
 
 The admin handles config only (slasher, treasury, unbonding period). Every change is announced and waits `max(2 × unbonding period, 14 days)`, so an agent can exit before a new slasher takes effect. The admin cannot move funds.
 
-## Trust assumptions (v1)
+## Trust assumptions
 
-- **Slasher.** It is one operator-held testnet key (`ak-bond-slasher`), and it can slash any bond on any evidence. On mainnet the slasher must not be AgentKarma.
-- **Admin.** It is the existing testnet deployer key. Through the delayed config path it can swap the slasher or treasury.
-- **Registry.** The stellar-8004 registry is trusted once, at first deposit, to map `agent_id` to a wallet.
+Agent Bond is a testnet product operated by AgentKarma Labs. Every key below is a single key held by the operator. None is a multisig.
+
+- **Slasher** (`ak-bond-slasher`). It can slash any bond, up to 100% of bonded + unbonding, in as many calls as it likes. It needs only an evidence value the contract cannot check. Slashed USDC goes to the treasury, not to the slasher. Every `bond_slashed` event names the slasher, the evidence, the amount and the agent. If this key is compromised, every bond can be emptied into the treasury immediately.
+- **Admin** (`ak-testnet-deployer`). It can change the slasher, the treasury and the unbonding period, and nothing else. It cannot slash or move funds itself. Every change is announced by a `cfg_proposed` event and takes effect only after max(2 × unbonding period, 14 days). If this key is compromised, the attacker can install themselves as slasher or treasury after that delay. Agents that see the announcement and request unbond within one unbonding period get out first. Agents that don't watch lose their bond.
+- **Treasury** (`ak-bond-treasury`). It receives every slash. If this key is compromised, slashed funds are stolen. Bonds are not.
+- **Evidence** is a pointer to an AgentEnact record or an Assay verdict. The contract does not verify it. Anyone can check it off-chain from the `bond_slashed` event.
+- **The Identity Registry** (stellar-8004) is trusted once, at first deposit, to say which wallet owns an `agent_id`.
 
 ## How it affects the score
 
