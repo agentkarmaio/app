@@ -250,6 +250,12 @@ export interface AgentBondIndexerDeps {
   insertEvents: (rows: AgentBondEventRow[]) => Promise<number>;
   upsertBonds: (rows: AgentBondRow[]) => Promise<void>;
   markDirty: (addresses: string[]) => Promise<void>;
+  /**
+   * Owners with a bond event in the last ~31 days. Their counted (seasoned)
+   * balance changes as days pass with no new event, so they are re-marked
+   * dirty every run; otherwise the stored score would never pick up the lift.
+   */
+  seasoningOwners: () => Promise<string[]>;
   signal?: AbortSignal;
   pageLimit?: number;
   maxPages?: number;
@@ -323,6 +329,9 @@ export async function runAgentBondIndexer(deps: AgentBondIndexerDeps): Promise<A
     }
   }
 
+  const seasoning = await deps.seasoningOwners();
+  if (seasoning.length > 0) await deps.markDirty(seasoning);
+
   return {
     inserted,
     pages,
@@ -385,5 +394,6 @@ export async function runStellarAgentBondIndexer(opts: { signal?: AbortSignal } 
     insertEvents: db.insertAgentBondEvents,
     upsertBonds: db.upsertAgentBonds,
     markDirty: (addresses) => db.markWalletsDirty(addresses.map((address) => ({ chain: AGENT_BOND_CHAIN, address }))),
+    seasoningOwners: () => db.getAgentBondSeasoningOwners(contractId),
   });
 }

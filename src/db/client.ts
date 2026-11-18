@@ -4182,6 +4182,16 @@ export async function getAgentBondPriors(
   return out;
 }
 
+/** Distinct owners with a bond event in the last 31 days (seasoning still moving). */
+export async function getAgentBondSeasoningOwners(contractId: string, nowMs: number = Date.now()): Promise<string[]> {
+  const since = new Date(nowMs - (AGENT_BOND_SEASON_DAYS + 1) * DAY_MS).toISOString();
+  const { data, error } = await supabase.from('agent_bond_events').select('owner_wallet')
+    .eq('chain', 'stellar-testnet').eq('contract_id', contractId).gt('ledger_closed_at', since)
+    .order('ledger', { ascending: false }).limit(1000);
+  if (error) throw error;
+  return [...new Set((data ?? []).map((r) => r.owner_wallet as string))];
+}
+
 export interface AgentBondView {
   bond: AgentBondRow | null;
   slashes: Pick<AgentBondEventRow, 'amount' | 'evidence' | 'evidence_id' | 'tx_hash' | 'ledger_closed_at'>[];

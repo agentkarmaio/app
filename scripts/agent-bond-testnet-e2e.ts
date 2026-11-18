@@ -27,7 +27,7 @@ import {
 import { STELLAR_TESTNET_AGENT_BOND, STELLAR_TESTNET_IDENTITY_REGISTRY } from '../src/integrations/stellar-config';
 import { USDC_ISSUER } from '../src/config/stellar-x402';
 import {
-  projectBondState, runAgentBondIndexer, type AgentBondRow, type AgentBondEventRow,
+  runAgentBondIndexer, type AgentBondRow, type AgentBondEventRow,
 } from '../src/indexer/stellar-agent-bond';
 
 if (process.env.STELLAR_TESTNET_LIVE !== '1') {
@@ -164,8 +164,9 @@ async function main() {
     loadPrior: async () => new Map(),
     ensureWallets: async () => {},
     insertEvents: async (rows) => { events.push(...rows); return rows.length; },
-    upsertBonds: async (rows) => { bonds = projectBondState([], new Map()).concat(rows); },
+    upsertBonds: async (rows) => { bonds = rows; },
     markDirty: async () => {},
+    seasoningOwners: async () => [],
   });
   const mine = events.filter((e) => e.agent_id === agentId);
   assert(mine.map((e) => e.kind).join(',') === 'deposited,unbond_requested,slashed,withdrawn', `indexer saw all four events (${mine.map((e) => e.kind).join(',')})`);

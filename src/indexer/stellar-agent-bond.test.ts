@@ -141,6 +141,7 @@ describe('runAgentBondIndexer', () => {
       insertEvents: async (rows) => { calls.rows += rows.length; return rows.length; },
       upsertBonds: async (rows) => { calls.bonds += rows.length; },
       markDirty: async (a) => { calls.dirty.push(a); },
+      seasoningOwners: async () => [],
       ...over,
     };
     return { deps, calls };
@@ -174,6 +175,12 @@ describe('runAgentBondIndexer', () => {
     expect(r.coverage.gaps).toBe(1);
     expect(r.coverage.reason).toBe('retention_gap');
     expect(r.coverage.complete).toBe(false);
+  });
+
+  test('re-marks owners whose 30-day seasoning window is still moving', async () => {
+    const { deps, calls } = fakeDeps([[]], { seasoningOwners: async () => ['GSEASON'] });
+    await runAgentBondIndexer(deps);
+    expect(calls.dirty).toContainEqual(['GSEASON']);
   });
 
   test('ignores events from any other contract', async () => {
