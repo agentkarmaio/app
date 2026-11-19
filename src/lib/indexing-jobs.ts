@@ -163,9 +163,24 @@ export function createIndexingJob(
       if ((chain === 'stellar' || chain === 'stellar-testnet') && path === 'transfers') {
         const { runStellarTransfersIndexer } =
           await import('@/indexer/stellar-transfers');
-        const r = await runStellarTransfersIndexer({
-          signal, network: chain === 'stellar-testnet' ? 'testnet' : 'pubnet',
-        });
+        if (chain === 'stellar-testnet') {
+          // Testnet scores through the rescore queue (markDirty), unchanged.
+          const r = await runStellarTransfersIndexer({ signal, network: 'testnet' });
+          return coverageOutcome(r.coverage, r.inserted);
+        }
+        // Pubnet never enqueues rescoring (that path would rewrite Karma/badge),
+        // so display metrics are recomputed from the stored ledger under the same
+        // lease. Attempted even when ingestion fails: stored receipts are still
+        // valid and must reach the columns (spec 2026-11-19).
+        const { refreshStellarDisplayMetrics } = await import('@/scoring/stellar-display-metrics');
+        const [ingestion] = await Promise.allSettled([runStellarTransfersIndexer({ signal, network: 'pubnet' })]);
+        const [refresh] = await Promise.allSettled([(async () => {
+          signal.throwIfAborted();
+          assertIndexingLease();
+          return refreshStellarDisplayMetrics({ signal });
+        })()]);
+        throwPhaseFailures([['transfers', ingestion], ['display_metrics', refresh]]);
+        const r = (ingestion as PromiseFulfilledResult<Awaited<ReturnType<typeof runStellarTransfersIndexer>>>).value;
         return coverageOutcome(r.coverage, r.inserted);
       }
       if (chain === 'stellar-testnet' && path === 'bonds') {

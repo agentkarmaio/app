@@ -311,7 +311,7 @@ const CONSUMER_TIER2_METRIC_WEIGHTS = {
   // +10% cadence blend (same behavior as provider face) → sums to 0.90
 } as const;
 
-const NORMALIZE = {
+export const NORMALIZE = {
   diversityMax: 10,
   activityMax: 500,
   /** USDC saturation point for avg-deal-size log scaling. Matches the existing

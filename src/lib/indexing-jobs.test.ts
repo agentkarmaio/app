@@ -367,3 +367,48 @@ test('the recovery workflow outlives every job deadline, so runs end through fin
     expect(minutes * 60_000).toBeGreaterThan(deadline);
   }
 });
+
+test('stellar pubnet transfers tick refreshes display metrics under the same run', async () => {
+  const stellarTransfers = await import('@/indexer/stellar-transfers');
+  const stellarDisplay = await import('@/scoring/stellar-display-metrics');
+  const scan = spyOn(stellarTransfers, 'runStellarTransfersIndexer').mockResolvedValue({
+    fetched: 0, inserted: 0, cursors: new Map(), absent: [], failed: [], walked: 1,
+    coverage: { complete: true, checked: 1, pending: 0, unresolved: 0 },
+  } as unknown as Awaited<ReturnType<typeof stellarTransfers.runStellarTransfersIndexer>>);
+  const refresh = spyOn(stellarDisplay, 'refreshStellarDisplayMetrics').mockResolvedValue({ wallets: 1, updated: 1 });
+  const signal = new AbortController().signal;
+  try {
+    const outcome = await createIndexingJob('stellar', 'transfers').run(signal);
+    expect(scan).toHaveBeenCalledWith({ signal, network: 'pubnet' });
+    expect(refresh).toHaveBeenCalledWith({ signal });
+    expect(outcome).toMatchObject({ status: 'caught_up', insertedCount: 0 });
+  } finally { scan.mockRestore(); refresh.mockRestore(); }
+});
+
+test('stellar ingestion failure still refreshes stored receipts and keeps the ingestion error', async () => {
+  const stellarTransfers = await import('@/indexer/stellar-transfers');
+  const stellarDisplay = await import('@/scoring/stellar-display-metrics');
+  const failure = new Error('horizon_unavailable');
+  const scan = spyOn(stellarTransfers, 'runStellarTransfersIndexer').mockRejectedValue(failure);
+  const refresh = spyOn(stellarDisplay, 'refreshStellarDisplayMetrics').mockResolvedValue({ wallets: 1, updated: 0 });
+  try {
+    const thrown = await createIndexingJob('stellar', 'transfers').run(new AbortController().signal).catch(error => error);
+    expect(thrown.cause).toBe(failure);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  } finally { scan.mockRestore(); refresh.mockRestore(); }
+});
+
+test('stellar-testnet transfers keep the rescore-queue path and never run the pubnet refresh', async () => {
+  const stellarTransfers = await import('@/indexer/stellar-transfers');
+  const stellarDisplay = await import('@/scoring/stellar-display-metrics');
+  const scan = spyOn(stellarTransfers, 'runStellarTransfersIndexer').mockResolvedValue({
+    fetched: 0, inserted: 0, cursors: new Map(), absent: [], failed: [], walked: 1,
+    coverage: { complete: true, checked: 1, pending: 0, unresolved: 0 },
+  } as unknown as Awaited<ReturnType<typeof stellarTransfers.runStellarTransfersIndexer>>);
+  const refresh = spyOn(stellarDisplay, 'refreshStellarDisplayMetrics').mockResolvedValue({ wallets: 0, updated: 0 });
+  try {
+    await createIndexingJob('stellar-testnet', 'transfers').run(new AbortController().signal);
+    expect(scan).toHaveBeenCalledWith(expect.objectContaining({ network: 'testnet' }));
+    expect(refresh).not.toHaveBeenCalled();
+  } finally { scan.mockRestore(); refresh.mockRestore(); }
+});

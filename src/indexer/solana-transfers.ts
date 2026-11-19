@@ -842,8 +842,8 @@ export interface RunSolanaTransfersOptions {
 }
 
 /**
- * Production run. MANUAL AND UNSCHEDULED, matching how arc-transfers and
- * stellar-transfers were left after their dry runs. Wiring this into the Solana
+ * Production run. MANUAL AND UNSCHEDULED. (stellar-transfers is no longer a
+ * precedent: it runs as the stellar/transfers indexing path.) Wiring this into the Solana
  * adapter or the ingest floor is a separate, evidence-backed decision — and it
  * requires re-scoping `/api/cron/indexer`'s freshness probe first, which reads
  * `max(timestamp)` across all facilitators and would otherwise stay green on

@@ -1,8 +1,8 @@
 /**
  * Manual runner for the Solana plain-USDC transfer indexer.
  *
- * MANUAL AND UNSCHEDULED, matching how arc-transfers and stellar-transfers were
- * left after their dry runs. Before this is ever put on a schedule,
+ * MANUAL AND UNSCHEDULED. (stellar-transfers is no longer a precedent: it runs
+ * as the stellar/transfers indexing path.) Before this is ever put on a schedule,
  * `/api/cron/indexer`'s freshness probe must be scoped to x402 facilitators —
  * it reads `max(timestamp)` across all of them and would otherwise stay green
  * on these rows while x402 ingest was dead, which is the shape of both prior

@@ -4290,3 +4290,111 @@ export async function getAgentBondInput(
     ),
   };
 }
+
+// --- Stellar receipt display metrics ------------------------------------------
+//
+// Txs / Active / Diversity for chain 'stellar', read from BOTH directions of the
+// transactions ledger (spec 2026-11-19-stellar-inbound-receipt-metrics-design).
+// The whole Stellar ledger is small (48 rows on 2026-11-19), so these read it in
+// full, keyset-paged. The hard cap fails loudly instead of silently scoring a
+// truncated history once the chain grows; at that point this moves to per-wallet
+// windowed reads like getRecentTransactionsForWallet.
+
+const STELLAR_RECEIPT_PAGE = 1000;
+export const STELLAR_RECEIPT_ROW_CAP = 50_000;
+
+export interface StellarReceiptLedgerRow {
+  tx_signature: string;
+  wallet_address: string;
+  counterparty: string | null;
+  timestamp: string;
+}
+
+export async function getStellarReceiptRows(): Promise<StellarReceiptLedgerRow[]> {
+  const out: StellarReceiptLedgerRow[] = [];
+  let after: string | null = null;
+  for (;;) {
+    const page = await withTransientDbRetry(async () => {
+      let q = supabase
+        .from('transactions')
+        .select('id, tx_signature, wallet_address, counterparty, timestamp')
+        .eq('chain', 'stellar')
+        .order('id', { ascending: true })
+        .limit(STELLAR_RECEIPT_PAGE);
+      if (after != null) q = q.gt('id', after);
+      const { data, error } = await q;
+      if (error) throw error;
+      return (data ?? []) as Array<StellarReceiptLedgerRow & { id: string }>;
+    });
+    for (const { id: _id, ...row } of page) out.push(row);
+    if (out.length > STELLAR_RECEIPT_ROW_CAP) throw new Error('stellar_receipt_rows_over_cap');
+    if (page.length < STELLAR_RECEIPT_PAGE) return out;
+    after = page[page.length - 1].id;
+  }
+}
+
+export async function getStellarRegistryOwners(): Promise<Array<{ owner: string; agent_wallet: string | null }>> {
+  return withTransientDbRetry(async () => {
+    const { data, error } = await supabase
+      .from('erc8004_agents')
+      .select('owner, agent_wallet')
+      .eq('chain', 'stellar');
+    if (error) throw error;
+    return (data ?? []) as Array<{ owner: string; agent_wallet: string | null }>;
+  });
+}
+
+export interface StellarWalletDisplayRow {
+  address: string;
+  tx_count: number | null;
+  last_seen: string | null;
+  metric_diversity: number | string | null;
+  metric_success_rate: number | string | null;
+}
+
+export async function getStellarWalletDisplayRows(): Promise<StellarWalletDisplayRow[]> {
+  const out: StellarWalletDisplayRow[] = [];
+  let after = '';
+  for (;;) {
+    const page = await withTransientDbRetry(async () => {
+      const { data, error } = await supabase
+        .from('wallets')
+        .select('address, tx_count, last_seen, metric_diversity, metric_success_rate')
+        .eq('chain', 'stellar')
+        .gt('address', after)
+        .order('address', { ascending: true })
+        .limit(STELLAR_RECEIPT_PAGE);
+      if (error) throw error;
+      return (data ?? []) as StellarWalletDisplayRow[];
+    });
+    out.push(...page);
+    if (page.length < STELLAR_RECEIPT_PAGE) return out;
+    after = page[page.length - 1].address;
+  }
+}
+
+/**
+ * Targeted UPDATE of the display columns only. Never score / provider_score /
+ * trust_tier / confidence_badge (upsertWallet writes those). The registry view
+ * keeps Stellar declared, and the profile, badge and v2 score routes read those
+ * columns from `wallets`. Exactly one row must match; zero means the wallet row
+ * is gone, which is reported, not swallowed.
+ */
+export async function updateStellarDisplayMetrics(
+  address: string,
+  patch: { tx_count: number; last_seen: string | null; metric_diversity: number | null; metric_success_rate: null },
+): Promise<void> {
+  // Idempotent absolute write, so a transient retry is safe; one DB blip must not
+  // fail the whole transfers tick.
+  const data = await withTransientDbRetry(async () => {
+    const { data, error } = await supabase
+      .from('wallets')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('chain', 'stellar')
+      .eq('address', address)
+      .select('address');
+    if (error) throw error;
+    return data ?? [];
+  });
+  if (data.length !== 1) throw new Error(`stellar_display_update_matched_${data.length}`);
+}
