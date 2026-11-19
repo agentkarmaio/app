@@ -13,6 +13,7 @@ import {
   isAgentPath,
   agentChainFromPath,
   activeChainFromPath,
+  registryExplorerLink,
 } from './chain-meta';
 
 describe('chain-meta', () => {
@@ -111,5 +112,30 @@ describe('activeChainFromPath — what the header switcher reads on browse pages
 
   test('a path that merely starts with a chain href string is not a match', () => {
     expect(activeChainFromPath('/solanaphobia')).toBe(UI_DEFAULT_CHAIN);
+  });
+});
+
+describe('registryExplorerLink', () => {
+  // Formats verified against the live explorers on 2026-11-19 by page CONTENT
+  // (8004scan answers 200 for any path): AgentKarma is celo/9058, arc/228 and
+  // stellar8004 #66. The old `8004scan.io/agent/{id}` form 404s for every chain.
+  test('celo and arc mainnet use 8004scan network-scoped paths', () => {
+    expect(registryExplorerLink('celo', 9058)).toEqual({ url: 'https://8004scan.io/agents/celo/9058', label: '8004scan.io/agents/celo/9058' });
+    expect(registryExplorerLink('arc-mainnet', 228)).toEqual({ url: 'https://8004scan.io/agents/arc/228', label: '8004scan.io/agents/arc/228' });
+  });
+
+  test('stellar uses the stellar-8004 explorer — 8004scan does not index Soroban', () => {
+    expect(registryExplorerLink('stellar', 66)).toEqual({ url: 'https://stellar8004.com/agents/66', label: 'stellar8004.com/agents/66' });
+  });
+
+  test('chains without a verified explorer page return null instead of a dead link', () => {
+    expect(registryExplorerLink('solana', 1)).toBeNull();
+    expect(registryExplorerLink('arc', 1)).toBeNull();
+    expect(registryExplorerLink('stellar-testnet', 1)).toBeNull();
+  });
+
+  test('rejects a non-integer agentId', () => {
+    expect(registryExplorerLink('celo', Number.NaN)).toBeNull();
+    expect(registryExplorerLink('celo', -1)).toBeNull();
   });
 });

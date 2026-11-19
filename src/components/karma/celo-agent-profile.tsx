@@ -26,6 +26,7 @@ import { resolveRaters, getFeedbackComments, type RaterInfo } from '@/db/client'
 import type { Wallet, TrustTier, ConfidenceBadge as ConfidenceBadgeValue } from '@/db/schema';
 import { categoryLabel } from '@/lib/agent-category';
 import { safeHref } from '@/lib/safe-url';
+import { registryExplorerLink } from '@/lib/chain-meta';
 import { EvmClaimBanner } from '@/components/wallet/evm-claim-banner';
 import { GiveFeedbackCard } from '@/components/karma/give-feedback-card';
 import { FeedbackRecordsCard } from '@/components/karma/feedback-records-card';
@@ -246,7 +247,7 @@ async function CeloOnchainSections({
   const score = Number(walletRow.provider_score ?? walletRow.score ?? 0);
   const tier = (walletRow.trust_tier ?? 'Unrated') as TrustTier;
   const confidenceBadge: ConfidenceBadgeValue = walletRow.confidence_badge ?? 'declared';
-  const eightthousandfourUrl = `https://8004scan.io/agent/${agentId}`;
+  const explorer = registryExplorerLink('celo', agentId);
 
   return (
     <>
@@ -299,15 +300,19 @@ async function CeloOnchainSections({
             <Row
               label="Profile"
               value={
+                explorer ? (
                 <a
-                  href={eightthousandfourUrl}
+                  href={explorer.url}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 text-[#828fff] hover:underline underline-offset-2"
                 >
-                  8004scan.io/agent/{agentId}
+                  {explorer.label}
                   <ExternalLink className="size-3" />
                 </a>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )
               }
             />
           </CardContent>

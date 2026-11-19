@@ -113,3 +113,28 @@ export function activeChainFromPath(pathname: string): Chain {
   }
   return best;
 }
+
+/** Third-party ERC-8004 explorer page for a registry agent. */
+export interface RegistryExplorerLink {
+  url: string;
+  /** Display text: the URL without the scheme. */
+  label: string;
+}
+
+/**
+ * Explorer page for a registry agentId, or null when no verified page exists.
+ * 8004scan scopes agents by network slug (`/agents/{slug}/{id}`); the old
+ * `/agent/{id}` form 404s. 8004scan does not index Soroban, so Stellar links to
+ * the stellar-8004 explorer. Arc testnet (archived) and stellar-testnet have no
+ * verified page: a missing link beats a dead one.
+ */
+export function registryExplorerLink(chain: Chain, agentId: number): RegistryExplorerLink | null {
+  if (!Number.isSafeInteger(agentId) || agentId < 0) return null;
+  const host = chain === 'celo' ? '8004scan.io/agents/celo'
+    : chain === 'arc-mainnet' ? '8004scan.io/agents/arc'
+    : chain === 'stellar' ? 'stellar8004.com/agents'
+    : null;
+  if (!host) return null;
+  const label = `${host}/${agentId}`;
+  return { url: `https://${label}`, label };
+}

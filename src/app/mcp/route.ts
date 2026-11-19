@@ -56,6 +56,7 @@ import {
   toSuretyPosition,
 } from '@/lib/succession-view';
 import type { Chain, Wallet } from '@/db/schema';
+import { registryExplorerLink } from '@/lib/chain-meta';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -561,7 +562,7 @@ function registerTools(server: McpServer): void {
           : null,
         explorerUrls: {
           celoscan: `https://celoscan.io/token/0x8004A169FB4a3325136EB29fA0ceB6D2e539a432?a=${agentId}`,
-          eightthousandfourscan: `https://8004scan.io/agent/${agentId}`,
+          eightthousandfourscan: registryExplorerLink('celo', agentId)?.url ?? null,
           agentkarma: `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io'}/api/v2/celo/${agentId}`,
         },
       });

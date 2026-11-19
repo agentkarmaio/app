@@ -13,6 +13,7 @@
  * never followed.
  */
 
+import { registryExplorerLink } from '@/lib/chain-meta';
 import { AK_METADATA_TAG1, AK_RATER_ADDRESSES } from '@/config/ak-validator';
 import {
   METADATA_RUBRIC,
@@ -259,7 +260,7 @@ export function buildRegistryBlock(
       services,
       explorer: {
         agentkarma: `${appOrigin()}/agent/${displayAddress(row)}?agentId=${id}&chain=${chain}`,
-        eightthousandfourscan: chain === 'celo' ? `https://8004scan.io/agent/${id}` : null,
+        eightthousandfourscan: chain === 'celo' ? registryExplorerLink('celo', id)?.url ?? null : null,
       },
     };
   });

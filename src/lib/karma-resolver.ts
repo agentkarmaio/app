@@ -10,6 +10,7 @@
  * can compose it without duplicating the score recipe.
  */
 
+import { registryExplorerLink } from '@/lib/chain-meta';
 import {
   getWallet,
   getErc8004Agent,
@@ -716,7 +717,7 @@ export async function resolveEvmKarma(
     claimed: walletRow.claimed ?? false,
     explorerUrls: {
       evmscan,
-      eightthousandfourscan: agentId != null ? `https://8004scan.io/agent/${agentId}` : null,
+      eightthousandfourscan: agentId != null ? registryExplorerLink(chain, agentId)?.url ?? null : null,
       agentkarma: profileUrlFor(address, chain, agentId),
     },
   };

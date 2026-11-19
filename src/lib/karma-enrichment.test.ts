@@ -89,7 +89,7 @@ describe('buildRegistryBlock', () => {
       { name: 'MCP', endpoint: 'https://api.toppa.cc/.well-known/mcp.json' },
       { name: 'web', endpoint: 'https://www.toppa.cc' },
     ]);
-    expect(a.explorer.eightthousandfourscan).toBe('https://8004scan.io/agent/1870');
+    expect(a.explorer.eightthousandfourscan).toBe('https://8004scan.io/agents/celo/1870');
     expect(a.explorer.agentkarma).toContain('/agent/');
     expect(a.explorer.agentkarma).toContain('agentId=1870');
   });

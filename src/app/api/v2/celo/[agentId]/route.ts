@@ -12,6 +12,7 @@
 import { NextResponse } from 'next/server';
 import { readAgent, aggregateFeedback } from '@/integrations/erc8004-celo';
 import { getErc8004Agent } from '@/db/client';
+import { registryExplorerLink } from '@/lib/chain-meta';
 
 interface RouteParams {
   params: Promise<{ agentId: string }>;
@@ -91,7 +92,7 @@ export async function GET(_req: Request, { params }: RouteParams) {
           : null,
         explorer: {
           celoscan: `https://celoscan.io/token/0x8004A169FB4a3325136EB29fA0ceB6D2e539a432?a=${parsed}`,
-          eightthousandfourscan: `https://8004scan.io/agent/${parsed}`,
+          eightthousandfourscan: registryExplorerLink('celo', parsed)?.url ?? null,
         },
       },
       {

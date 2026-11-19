@@ -31,6 +31,13 @@ import { getErc8004Agent } from '@/db/client';
 import { getTrustTier } from '@/scoring/index';
 import { scoreMetadataQuality } from '@/scoring/celo-metadata';
 import type { Chain } from '@/db/schema';
+import { registryExplorerLink } from '@/lib/chain-meta';
+
+function explorerUrlsFor(chain: Chain, agentId: number): Record<string, string> {
+  const link = registryExplorerLink(chain, agentId);
+  if (!link) return {};
+  return chain === 'stellar' ? { stellar8004: link.url } : { eightthousandfourscan: link.url };
+}
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -401,7 +408,8 @@ function registryAgentJson(row: Record<string, unknown>, chain: Chain, agentId: 
     onChainFeedback: { count: feedbackCount, average: avg != null ? Number(avg) : null },
     services: Array.isArray(reg.services) ? reg.services : [],
     profileUrl: `${APP_URL}/agent/${address}?agentId=${agentId}&chain=${chain}`,
-    explorerUrls: { eightthousandfourscan: `https://8004scan.io/agent/${agentId}` },
+    // Stellar agents live on stellar-8004, which 8004scan does not index.
+    explorerUrls: explorerUrlsFor(chain, agentId),
   };
 }
 

@@ -75,7 +75,7 @@ export default async function CeloPage() {
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-xl font-semibold">AK&apos;s on-chain identity</h2>
             <a
-              href="https://8004scan.io/agent/9058"
+              href="https://8004scan.io/agents/celo/9058"
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
