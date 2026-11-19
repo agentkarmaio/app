@@ -692,8 +692,10 @@ export interface WalletSearchRow {
 /**
  * Search wallets by address OR display_name substring (case-insensitive). A
  * purely-numeric query additionally matches an exact ERC-8004 agentId across the
- * per-chain agentId columns, so typing `9058` surfaces Celo agent #9058. Ranked
- * by score descending. Returns the chain + matched agentId so callers can render
+ * per-chain agentId columns, so typing `9058` surfaces Celo agent #9058. Also
+ * matches ERC-8004 registry agents by registration name / agentId via the
+ * `explore_agents` view. Exact-id hits rank first, then name hits, then address
+ * substring hits; score breaks ties within each group. Returns the chain + matched agentId so callers can render
  * a chain badge and build a chain-aware /agent link. Powers the homepage search
  * box and the MCP `search_agents` tool — one place for the escaping + name logic.
  */
@@ -715,21 +717,35 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
     ...idClauses,
   ].join(',');
 
-  const { data, error } = await publicChainsOnly(supabase
-    .from('wallets')
-    .select('address, chain, display_name, score, trust_tier, tx_count, celo_agent_id, arc_agent_id, stellar_agent_id'))
-    .or(orFilter)
-    .order('score', { ascending: false })
-    .limit(Math.max(1, Math.min(50, limit)));
+  const cap = Math.max(1, Math.min(50, limit));
+  const columns = 'address, chain, display_name, score, trust_tier, tx_count, celo_agent_id, arc_agent_id, stellar_agent_id';
 
-  if (error) throw error;
+  // `wallets` names only claimed/curated rows; every ERC-8004 registry agent's
+  // registration name lives in `explore_agents` (same address + score the
+  // Explore page shows). Solana's half of the view IS `wallets`, so skip it.
+  const [walletsRes, registryRes] = await Promise.all([
+    publicChainsOnly(supabase.from('wallets').select(columns))
+      .or(orFilter)
+      .order('score', { ascending: false })
+      .limit(cap),
+    publicChainsOnly(supabase.from('explore_agents').select(columns))
+      .neq('chain', 'solana')
+      .or([`display_name.ilike.%${term}%`, ...idClauses].join(','))
+      .order('score', { ascending: false })
+      .limit(cap),
+  ]);
+  if (walletsRes.error) throw walletsRes.error;
+  if (registryRes.error) throw registryRes.error;
 
-  return ((data ?? []) as Array<{
+  type Row = {
     address: string; chain: Chain; display_name: string | null;
     score: number; trust_tier: TrustTier; tx_count: number;
     celo_agent_id: number | null; arc_agent_id: number | null; stellar_agent_id: number | null;
-  }>).map((w) => {
-    const col = agentIdColumn(w.chain);
+  };
+  const toResult = (w: Row): WalletSearchRow => {
+    // The view projects arc-mainnet ids into arc_agent_id; `wallets` has no
+    // arc-mainnet column, so fall back to it for that chain only.
+    const col = agentIdColumn(w.chain) ?? (w.chain === 'arc-mainnet' ? 'arc_agent_id' : null);
     return {
       address: w.address,
       chain: w.chain,
@@ -739,7 +755,28 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
       txCount: w.tx_count,
       agentId: col ? (w[col] ?? null) : null,
     };
-  });
+  };
+
+  // `wallets` first so a duplicate keeps its real activity (tx_count).
+  const seen = new Set<string>();
+  const merged: WalletSearchRow[] = [];
+  for (const w of [...(walletsRes.data ?? []), ...(registryRes.data ?? [])] as Row[]) {
+    const r = toResult(w);
+    const key = `${r.chain}:${r.address.toLowerCase()}:${r.agentId ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(r);
+  }
+
+  // A name or id hit is what the user typed for; an address that merely
+  // contains the characters is noise. Each relevance group ranks by score.
+  // An exact agentId outranks a name hit, which outranks everything else.
+  const needle = term.toLowerCase();
+  const relevance = (r: WalletSearchRow) =>
+    r.agentId != null && r.agentId === asId ? 2 : r.displayName?.toLowerCase().includes(needle) ? 1 : 0;
+  return merged
+    .sort((a, b) => relevance(b) - relevance(a) || b.score - a.score)
+    .slice(0, cap);
 }
 
 /**

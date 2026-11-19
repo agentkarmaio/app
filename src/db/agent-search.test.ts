@@ -84,6 +84,88 @@ describe('searchWallets agentId matching', () => {
   });
 });
 
+describe('searchWallets registry names', () => {
+  // Per-table rows: `wallets` holds address-keyed rows (few carry a name);
+  // `explore_agents` carries every ERC-8004 registry agent's registration name.
+  function tableFake(byTable: Record<string, unknown[]>, recorder: Recorded[]) {
+    return {
+      from(table: string) {
+        const rec: Recorded = { table, eqs: [], orders: [] };
+        recorder.push(rec);
+        const builder: Record<string, unknown> = {};
+        builder.select = (sel: string) => { rec.select = sel; return builder; };
+        builder.neq = (col: string, val: unknown) => { rec.eqs.push([`neq:${col}`, val]); return builder; };
+        builder.or = (f: string) => { rec.or = f; return builder; };
+        builder.order = (col: string) => { rec.orders.push(col); return builder; };
+        builder.limit = (n: number) => {
+          rec.limit = n;
+          return Promise.resolve({ data: byTable[table] ?? [], error: null });
+        };
+        return builder;
+      },
+    };
+  }
+  let rec: Recorded[];
+  beforeEach(() => { rec = []; });
+
+  // Solana base58 addresses contain "apex" case-insensitively, out-score the
+  // named registry agents, and filled all 8 slots — named agents never showed.
+  const addressHit = (n: number) => ({
+    address: `So1${n}ApeXaddr`, chain: 'solana', display_name: null, score: '38', trust_tier: 'Poor',
+    tx_count: 1, celo_agent_id: null, arc_agent_id: null, stellar_agent_id: null,
+  });
+
+  test('a registry agent name match surfaces above address-substring matches', async () => {
+    __setSupabaseForTest(tableFake({
+      wallets: Array.from({ length: 8 }, (_, i) => addressHit(i)),
+      explore_agents: [{
+        address: '0x024b', chain: 'celo', display_name: 'APEX Faucet', score: '90',
+        trust_tier: 'Very Good', tx_count: 0, celo_agent_id: 9886, arc_agent_id: null, stellar_agent_id: null,
+      }],
+    }, rec));
+
+    const out = await searchWallets('apex', 8);
+
+    expect(out).toHaveLength(8);
+    expect(out[0]).toMatchObject({ displayName: 'APEX Faucet', chain: 'celo', address: '0x024b', agentId: 9886 });
+  });
+
+  test('registry query matches names only, on non-Solana public chains', async () => {
+    __setSupabaseForTest(tableFake({}, rec));
+    await searchWallets('apex');
+    const reg = rec.find((r) => r.table === 'explore_agents');
+    expect(reg?.or).toBe('display_name.ilike.%apex%');
+    expect(reg?.eqs).toContainEqual(['neq:chain', 'solana']);
+    expect(reg?.eqs).toContainEqual(['neq:chain', 'arc']);
+  });
+
+  test('numeric query also matches registry agentIds, ranked above address hits', async () => {
+    __setSupabaseForTest(tableFake({
+      wallets: [{ ...addressHit(0), address: '0x9058aa', chain: 'arc-mainnet', score: '5' }],
+      explore_agents: [{
+        address: '0xak', chain: 'celo', display_name: 'AgentKarma', score: '0', trust_tier: 'Unrated',
+        tx_count: 0, celo_agent_id: 9058, arc_agent_id: null, stellar_agent_id: null,
+      }],
+    }, rec));
+    const out = await searchWallets('9058');
+    expect(rec.find((r) => r.table === 'explore_agents')?.or).toBe(
+      'display_name.ilike.%9058%,celo_agent_id.eq.9058,arc_agent_id.eq.9058,stellar_agent_id.eq.9058',
+    );
+    expect(out[0]).toMatchObject({ address: '0xak', agentId: 9058 });
+  });
+
+  test('the same agent from both sources appears once', async () => {
+    const row = {
+      address: '0xak', chain: 'celo', display_name: 'AgentKarma', score: '80', trust_tier: 'Good',
+      tx_count: 3, celo_agent_id: 9058, arc_agent_id: null, stellar_agent_id: null,
+    };
+    __setSupabaseForTest(tableFake({ wallets: [row], explore_agents: [{ ...row, tx_count: 0 }] }, rec));
+    const out = await searchWallets('agentkarma');
+    expect(out).toHaveLength(1);
+    expect(out[0].txCount).toBe(3); // the wallets row (real activity) wins
+  });
+});
+
 describe('getWalletByAgentId chain→column resolution', () => {
   let rec: Recorded[];
   const seed = (rows: unknown[]) => __setSupabaseForTest(fakeSupabase(rows, rec));
