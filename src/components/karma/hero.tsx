@@ -246,8 +246,11 @@ export async function Hero() {
               rel="noopener noreferrer"
               className="group inline-flex max-w-full items-center gap-1.5 whitespace-nowrap rounded-sm text-[13px] text-[#8a8f98] transition-colors hover:text-[#d0d6e0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7170ff] focus-visible:ring-offset-2 focus-visible:ring-offset-[#08090a] motion-reduce:transition-none"
             >
+              <span className="shrink-0 rounded-full border border-[rgb(113_112_255/0.35)] bg-[rgb(113_112_255/0.14)] px-2 py-px text-[11px] font-[590] leading-[18px] text-[#a5abff]">
+                New
+              </span>
               <span>
-                <span className="font-[510] text-[#d0d6e0]">Agent Bond</span>
+                <span className="font-[510] text-[#f7f8f8]">Agent Bond</span>
                 <span className="sm:hidden">, on testnet by AgentKarma Labs</span>
                 <span className="hidden sm:inline">: stake USDC on your reputation. Testnet, by AgentKarma Labs</span>
                 <span className="sr-only"> (opens GitHub in a new tab)</span>
