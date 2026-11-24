@@ -44,18 +44,20 @@ export interface MetadataAssessment {
   schemeVersion: string;
 }
 
-type RecordsChain = 'celo' | 'arc' | 'arc-mainnet';
+type RecordsChain = 'celo' | 'arc' | 'arc-mainnet' | 'robinhood';
 
 const EXPLORER_ADDR: Record<RecordsChain, string> = {
   celo: 'https://celoscan.io/address/',
   arc: 'https://testnet.arcscan.app/address/',
   'arc-mainnet': 'https://explorer.arc.io/address/',
+  robinhood: 'https://robinhoodchain.blockscout.com/address/',
 };
 
 const SUBTITLE: Record<RecordsChain, string> = {
   celo: 'Every record from the Celo ReputationRegistry — independent and portable.',
   arc: 'Saved Arc testnet records. The archive may have incomplete historical coverage.',
   'arc-mainnet': 'Every record from the Arc ReputationRegistry — attestations and reviews, independent and portable.',
+  robinhood: 'Records mirrored from the Robinhood Chain ReputationRegistry (refreshed hourly), independent and portable.',
 };
 
 /** How many records render before "Show more", and the reveal increment. */

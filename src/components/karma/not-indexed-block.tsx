@@ -114,14 +114,20 @@ function copyFor(chain: SupportedChain): CopyVariant {
         ),
       };
 
+    case 'robinhood':
+      return {
+        title: 'Pick an agent on Robinhood Chain',
+        body: <><p>Robinhood Chain agents are ERC-8004 registry identities, so a profile is one agentId, not a wallet. Open the agent from the Robinhood Chain list to see its record.</p><p><Link href="/robinhood" className="underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Browse Robinhood Chain agents</Link></p></>,
+      };
+
     case 'evm-ambiguous':
       return {
         title: 'Not indexed yet',
         body: (
           <p>
-            This is an EVM address. AgentKarma supports Celo and Arc; neither
-            chain currently has a record for it. If this is a registered agent
-            on either ERC-8004 IdentityRegistry, it will appear after the next
+            This is an EVM address. AgentKarma supports Celo, Arc and Robinhood
+            Chain; none currently has a record for it. If this is a registered
+            agent on an ERC-8004 IdentityRegistry, it will appear after the next
             index pass.
           </p>
         ),

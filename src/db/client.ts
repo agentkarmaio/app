@@ -862,7 +862,7 @@ export interface RaterInfo {
  */
 export async function resolveRaters(
   addresses: string[],
-  chain: 'celo' | 'arc' | 'arc-mainnet',
+  chain: 'celo' | 'arc' | 'arc-mainnet' | 'robinhood',
 ): Promise<Map<string, RaterInfo>> {
   const out = new Map<string, RaterInfo>();
   const unique = [...new Set(addresses.map((a) => a.toLowerCase()))];
@@ -3575,7 +3575,7 @@ export async function upsertErc8004Feedback(chain: string, feedback: ScannedFeed
  * that has at least one agent row.
  */
 export async function getRegistryStats(
-  chains: string[] = ['celo', 'stellar', 'arc-mainnet'],
+  chains: string[] = ['celo', 'stellar', 'arc-mainnet', 'robinhood'],
 ): Promise<{ chain: string; agents: number; feedbacks: number }[]> {
   const out: { chain: string; agents: number; feedbacks: number }[] = [];
   for (const chain of chains) {

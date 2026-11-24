@@ -41,7 +41,8 @@ function short(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-6)}`;
 }
 
-function ownsAddress(row: Record<string, unknown> | null, lc: string): boolean {
+/** True when `lc` (lowercased) owns or is the bound wallet of a registry row. */
+export function ownsAddress(row: Record<string, unknown> | null, lc: string): boolean {
   return (
     !!row &&
     (String(row.owner ?? '').toLowerCase() === lc ||
@@ -90,6 +91,16 @@ export async function resolveAgentCardFields(
     // A missing/mismatched archive pin cannot inherit another agent's identity.
     return { name: `Agent ${short(wallet)}`, score: 0, tier: 'Unrated', badge: 'declared',
       txCount: 0, chain: 'arc', claimed: false, isRegistry: false };
+  }
+  if (opts.chain === 'robinhood') {
+    // Registry-only: identity is the agentId the address owns, nothing else.
+    const row = opts.agentId != null ? await getErc8004Agent('robinhood', opts.agentId).catch(() => null) : null;
+    if (ownsAddress(row, wallet.toLowerCase())) {
+      return { ...fromRegistry(row!, 'robinhood', wallet),
+        profileUrl: agentHref({ chain: 'robinhood', address: wallet, agentId: opts.agentId }) };
+    }
+    return { name: `Agent ${short(wallet)}`, score: 0, tier: 'Unrated', badge: 'declared',
+      txCount: 0, chain: 'robinhood', claimed: false, isRegistry: false };
   }
   if (opts.chain === 'arc-mainnet') {
     const snapshot = await resolveKarma(wallet, 'arc-mainnet', { agentId: opts.agentId });

@@ -239,7 +239,7 @@ export interface EvmAgentOnchain {
  * the fallback for Arc when its public RPC is unreachable.
  */
 async function mirroredEvmAgentOnchain(
-  chain: 'arc' | 'arc-mainnet',
+  chain: 'arc' | 'arc-mainnet' | 'robinhood',
   agentId: number,
 ): Promise<EvmAgentOnchain> {
   const [row, savedFeedback] = await Promise.all([
@@ -277,12 +277,14 @@ async function mirroredEvmAgentOnchain(
 }
 
 export async function getCachedEvmAgentOnchain(
-  chain: 'celo' | 'arc' | 'arc-mainnet',
+  chain: 'celo' | 'arc' | 'arc-mainnet' | 'robinhood',
   agentId: number,
 ): Promise<EvmAgentOnchain> {
   // Retirement freezes the mirror. Never refresh this identity/feedback from
   // the former RPC or registration URL, even if the archive is missing.
   if (chain === 'arc') return mirroredEvmAgentOnchain('arc', agentId);
+  // Registry-only: the hourly registry scan is the source; no live RPC read.
+  if (chain === 'robinhood') return mirroredEvmAgentOnchain('robinhood', agentId);
   let raw: EvmOnchainJson;
   try {
     raw = await cachedEvmAgentOnchainJson(chain, agentId);

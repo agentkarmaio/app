@@ -12,6 +12,7 @@ import {
   ADDRESS_IN_CHUNK, getStats, getArcDashboardStats, normalizeCounterparty, getAgents,
   getLeaderboard,
   getWalletByAgentId,
+  getRegistryStats,
   getTransactionsForWallets,
   getAllTransactions,
   markAllWalletsDirty,
@@ -1485,6 +1486,14 @@ describe('liveness status filters read observed activity', () => {
   }
 
   const lastSeenPreds = (preds: Pred[]) => preds.filter((p) => p.column === 'last_seen');
+
+  test('registry stats include robinhood by default', async () => {
+    const fake = makePredicateRecordingFake();
+    __setSupabaseForTest(fake);
+    await getRegistryStats();
+    const chains = fake.__preds.filter(p => p.method === 'eq' && p.column === 'chain').map(p => p.value);
+    expect(new Set(chains)).toEqual(new Set(['celo', 'stellar', 'arc-mainnet', 'robinhood']));
+  });
 
   test('getWalletByAgentId(robinhood) reads the registry view by robinhood_agent_id, including zero', async () => {
     const fake = makePredicateRecordingFake();

@@ -61,6 +61,8 @@ import { NotIndexedBlock, type NotIndexedChain } from '@/components/karma/not-in
 import { CeloAgentProfile } from '@/components/karma/celo-agent-profile';
 import { ArcAgentProfile } from '@/components/karma/arc-agent-profile';
 import { ArcMainnetAgentProfile } from '@/components/karma/arc-mainnet-agent-profile';
+import { RobinhoodAgentProfile } from '@/components/karma/robinhood-agent-profile';
+import { ownsAddress } from '@/lib/agent-card-fields';
 import { StellarAgentProfile } from '@/components/karma/stellar-agent-profile';
 import { AgentProfileShell } from '@/components/karma/agent-profile-shell';
 import { CardSkeleton } from '@/components/karma/card-skeleton';
@@ -82,8 +84,9 @@ async function synthesizeRegistryWalletRow(
   chain: Chain,
   agentId: number,
   address: string,
+  prefetched?: Record<string, unknown> | null,
 ): Promise<Wallet> {
-  const row = await getErc8004Agent(chain, agentId).catch(() => null);
+  const row = prefetched !== undefined ? prefetched : await getErc8004Agent(chain, agentId).catch(() => null);
   const score = row ? Number(row.metadata_score ?? 0) : 0;
   // `image` rides along with name/description: the EVM profile shells now paint
   // the avatar from walletRow alone (the on-chain read is streamed), so without
@@ -131,15 +134,12 @@ async function probeRegistryChainByAgentId(address: string, agentId: number): Pr
     !!row &&
     (String(row.owner ?? '').toLowerCase() === lc ||
       String(row.agent_wallet ?? '').toLowerCase() === lc);
-  const [celo, arcMainnet] = await Promise.all([
-    getErc8004Agent('celo', agentId).catch(() => null),
-    getErc8004Agent('arc-mainnet', agentId).catch(() => null),
-  ]);
-  const celoOwns = owns(celo);
-  const arcOwns = owns(arcMainnet);
-  if (celoOwns && !arcOwns) return 'celo';
-  if (arcOwns && !celoOwns) return 'arc-mainnet';
-  return null;
+  const chains = ['celo', 'arc-mainnet', 'robinhood'] as const;
+  const rows = await Promise.all(chains.map((chain) => getErc8004Agent(chain, agentId).catch(() => null)));
+  // Exactly one network's agentId N must belong to this address; two is a real
+  // conflict that still needs an explicit ?chain=.
+  const owned = chains.filter((_, i) => owns(rows[i]));
+  return owned.length === 1 ? owned[0] : null;
 }
 
 const SITE_URL = 'https://agentkarma.io';
@@ -353,7 +353,7 @@ export async function generateMetadata(
     : f.badge === 'behavior-inferred'
       ? 'Behavior-inferred'
       : 'Declared';
-  const chainLabel = f.chain.charAt(0).toUpperCase() + f.chain.slice(1);
+  const chainLabel = f.chain === 'robinhood' ? 'Robinhood Chain' : f.chain.charAt(0).toUpperCase() + f.chain.slice(1);
 
   const mainnetUnrated = chainHint === 'arc-mainnet' && f.tier === 'Unrated';
   const title = mainnetUnrated ? `${f.name} — Unrated · Arc` : `${f.name} — Karma ${f.score.toFixed(0)}/100 · ${f.tier}`;
@@ -728,6 +728,21 @@ export default async function AgentProfilePage({
     // agentId N on BOTH Celo and Arc) stays ambiguous and still needs ?chain=.
     if (evmChain == null && agentIdNum != null) {
       evmChain = await probeRegistryChainByAgentId(wallet, agentIdNum);
+    }
+    if (evmChain === 'robinhood') {
+      // Registry-only: the page is the agentId the address owns. A missing,
+      // excluded (bulk registrar, never mirrored) or foreign agentId 404s rather
+      // than rendering another identity under this address.
+      if (agentIdMalformed || agentIdNum == null) return <UnindexedAgentStub wallet={wallet} chain="robinhood" />;
+      const row = await getErc8004Agent('robinhood', agentIdNum).catch(() => null);
+      if (!row || !ownsAddress(row, wallet.toLowerCase())) notFound();
+      const walletRow = await synthesizeRegistryWalletRow('robinhood', agentIdNum, wallet, row);
+      const dms = deadMansSwitch ?? (
+        <Suspense fallback={null}>
+          <DeadMansSwitchSection wallet={wallet} chain="robinhood" />
+        </Suspense>
+      );
+      return <RobinhoodAgentProfile wallet={wallet} walletRow={walletRow} agentId={agentIdNum} deadMansSwitch={dms} />;
     }
     if (evmChain === 'arc-mainnet') {
       // resolved.chain was null on this probe path, so `deadMansSwitch` above is

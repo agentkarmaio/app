@@ -25,7 +25,7 @@ describe('GET indexing status', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
-    expect(result.chains.map((chain: { chain: string }) => chain.chain)).toEqual(['solana', 'arc', 'celo', 'stellar', 'arc-mainnet']);
+    expect(result.chains.map((chain: { chain: string }) => chain.chain)).toEqual(['solana', 'arc', 'celo', 'stellar', 'arc-mainnet', 'robinhood']);
     expect(result.status).toBe('unknown');
     expect(result.chains[0].paths[0].lastSuccessAt).toBeNull();
   });

@@ -59,7 +59,7 @@ describe('Arc testnet retirement data boundaries', () => {
     const queries = recordQueries();
     await db.getRegistryStats();
     const chains = queries.flatMap(q => q.predicates.filter(p => p[0] === 'eq' && p[1] === 'chain').map(p => p[2]));
-    expect(new Set(chains)).toEqual(new Set(['celo', 'stellar', 'arc-mainnet']));
+    expect(new Set(chains)).toEqual(new Set(['celo', 'stellar', 'arc-mainnet', 'robinhood']));
   });
 
   test('archived successions cannot crowd the active heartbeat batch', async () => {

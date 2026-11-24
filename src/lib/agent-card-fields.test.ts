@@ -84,3 +84,32 @@ describe('network-pinned unfurl fields', () => {
     } finally { read.mockRestore(); }
   });
 });
+
+describe('robinhood unfurl fields', () => {
+  test('a pinned robinhood agent resolves its own mirrored identity with an exact profile link', async () => {
+    const wallet = spyOn(db, 'getWallet').mockResolvedValue(null);
+    const registry = spyOn(db, 'getErc8004Agent').mockResolvedValue({ owner: address, agent_wallet: address,
+      metadata_score: 82, registration: { name: 'Hood agent' } });
+    try {
+      expect(await resolveAgentCardFields(address, { chain: 'robinhood', agentId: 0 })).toEqual({
+        name: 'Hood agent', score: 82, tier: 'Very Good', badge: 'declared', txCount: 0, chain: 'robinhood',
+        claimed: false, isRegistry: true, profileUrl: `/agent/${address}?chain=robinhood&agentId=0`,
+      });
+      expect(registry).toHaveBeenCalledWith('robinhood', 0);
+    } finally { wallet.mockRestore(); registry.mockRestore(); }
+  });
+
+  test('an agentId the address does not own, or no agentId, never borrows another identity', async () => {
+    const wallet = spyOn(db, 'getWallet').mockResolvedValue(null);
+    const registry = spyOn(db, 'getErc8004Agent').mockResolvedValue({ owner: `0x${'2'.repeat(40)}`,
+      agent_wallet: `0x${'2'.repeat(40)}`, metadata_score: 95, registration: { name: 'Someone else' } });
+    try {
+      for (const agentId of [5, null]) {
+        expect(await resolveAgentCardFields(address, { chain: 'robinhood', agentId })).toMatchObject({
+          score: 0, tier: 'Unrated', chain: 'robinhood', isRegistry: false,
+        });
+      }
+    } finally { wallet.mockRestore(); registry.mockRestore(); }
+  });
+});
+

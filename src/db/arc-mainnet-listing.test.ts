@@ -22,7 +22,7 @@ test('mainnet listing filters and sorts persisted scores before pagination',asyn
   expect(calls[0].table).toBe('explore_agents');
   expect(calls[0].filters).toContainEqual(['eq','chain','arc-mainnet']);
   expect(calls[0].filters).toContainEqual(['gte','provider_score',5]);
-  expect(calls[0].orders).toEqual(['rank_score','chain','address','celo_agent_id','arc_agent_id','stellar_agent_id']);
+  expect(calls[0].orders).toEqual(['rank_score','chain','address','celo_agent_id','arc_agent_id','stellar_agent_id','robinhood_agent_id']);
 });
 test('mainnet ID zero resolves exact registry identity from the ranking projection',async()=>{
   const calls=recorder([{chain:'arc-mainnet',address:'0xagent',arc_agent_id:0}]);
