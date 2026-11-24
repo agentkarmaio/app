@@ -57,6 +57,7 @@ import {
 } from '@/lib/arc-dashboard-stats';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
 import { withRetry, type RetryOpts } from '@/lib/retry';
+import { feedbackIneligibility, onePerPayer } from '@/lib/feedback-eligibility';
 import { statsFromSnapshot, type StatsSnapshotPayload, type StatsSnapshotRow } from '@/lib/stats-snapshot';
 
 // Every DB helper that takes a wallet address optionally takes a chain. The
@@ -2881,6 +2882,36 @@ export async function insertFeedback(
   if (error) throw error;
 }
 
+/**
+ * Keep only feedback rows whose referenced transaction paid the rated agent
+ * from the rating consumer (src/lib/feedback-eligibility.ts). Rows written
+ * before /api/feedback checked the payee, or by the demo seeder, stay in the
+ * table but never reach a summary or a score.
+ */
+async function keepPayeeVerifiedFeedback<
+  T extends { agent_wallet: string; consumer_wallet: string; tx_signature: string },
+>(rows: T[], chain: Chain): Promise<T[]> {
+  if (rows.length === 0) return rows;
+  const sigs = [...new Set(rows.map((r) => r.tx_signature))];
+  const txs = new Map<string, { wallet_address: string; counterparty: string | null }>();
+  for (let i = 0; i < sigs.length; i += SIGNATURE_IN_CHUNK) {
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('tx_signature, wallet_address, counterparty')
+      .eq('chain', chain)
+      .in('tx_signature', sigs.slice(i, i + SIGNATURE_IN_CHUNK));
+    if (error) throw error;
+    for (const tx of (data ?? []) as { tx_signature: string; wallet_address: string; counterparty: string | null }[]) {
+      txs.set(tx.tx_signature, tx);
+    }
+  }
+  return rows.filter((r) => {
+    const tx = txs.get(r.tx_signature);
+    return tx != null
+      && feedbackIneligibility(tx, { agentWallet: r.agent_wallet, consumerWallet: r.consumer_wallet }) == null;
+  });
+}
+
 export async function getFeedbackForAgent(
   agentWallet: string,
   limit = 50,
@@ -2895,7 +2926,7 @@ export async function getFeedbackForAgent(
     .limit(limit);
 
   if (error) throw error;
-  return (data ?? []) as Feedback[];
+  return keepPayeeVerifiedFeedback((data ?? []) as Feedback[], chain);
 }
 
 export async function getFeedbackSummary(
@@ -2904,13 +2935,16 @@ export async function getFeedbackSummary(
 ): Promise<{ total: number; delivered: number; failed: number; deliveryRate: number }> {
   const { data, error } = await supabase
     .from('feedback')
-    .select('rating')
+    .select('rating, agent_wallet, consumer_wallet, tx_signature, created_at')
     .eq('chain', chain)
     .eq('agent_wallet', agentWallet);
 
   if (error) throw error;
 
-  const rows = (data ?? []) as { rating: string }[];
+  const rows = onePerPayer(await keepPayeeVerifiedFeedback(
+    (data ?? []) as { rating: string; agent_wallet: string; consumer_wallet: string; tx_signature: string; created_at: string }[],
+    chain,
+  ));
   const total = rows.length;
   const delivered = rows.filter((r) => r.rating === 'delivered').length;
   const failed = total - delivered;
@@ -2930,12 +2964,16 @@ export async function getFeedbackRatingsForSignatures(
     const chunk = txSignatures.slice(i, i + SIGNATURE_IN_CHUNK);
     const { data, error } = await supabase
       .from('feedback')
-      .select('tx_signature, rating')
+      .select('tx_signature, rating, agent_wallet, consumer_wallet')
       .eq('chain', chain)
       .in('tx_signature', chunk);
 
     if (error) throw error;
-    for (const row of (data ?? []) as { tx_signature: string; rating: string }[]) {
+    const verified = await keepPayeeVerifiedFeedback(
+      (data ?? []) as { tx_signature: string; rating: string; agent_wallet: string; consumer_wallet: string }[],
+      chain,
+    );
+    for (const row of verified) {
       if (row.rating === 'delivered' || row.rating === 'failed') {
         out.set(row.tx_signature, row.rating);
       }
@@ -2955,12 +2993,16 @@ export async function getFeedbackSummariesForWallets(
     const chunk = agentWallets.slice(i, i + ADDRESS_IN_CHUNK);
     const { data, error } = await supabase
       .from('feedback')
-      .select('agent_wallet, rating')
+      .select('agent_wallet, rating, consumer_wallet, tx_signature, created_at')
       .eq('chain', chain)
       .in('agent_wallet', chunk);
 
     if (error) throw error;
-    for (const row of (data ?? []) as { agent_wallet: string; rating: string }[]) {
+    const verified = onePerPayer(await keepPayeeVerifiedFeedback(
+      (data ?? []) as { agent_wallet: string; rating: string; consumer_wallet: string; tx_signature: string; created_at: string }[],
+      chain,
+    ));
+    for (const row of verified) {
       const current = out.get(row.agent_wallet) ?? { total: 0, delivered: 0, failed: 0, deliveryRate: 0 };
       current.total++;
       if (row.rating === 'delivered') current.delivered++;

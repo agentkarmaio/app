@@ -6,8 +6,7 @@
  * refresh, on-chain publish) used to assemble `calculateScore` inputs by hand.
  * They drifted: different tx windows (1000 / 5000 / 10000), signal events and
  * Agent Bond missing from the profile, transactions-only on the publish path.
- * (Write paths still leave feedback out on purpose — see excludeFeedback.) The same wallet had several
- * "current" scores and the on-chain one matched none of them.
+ * The same wallet had several "current" scores and the on-chain one matched none of them.
  *
  * Two layers, so the math stays pure and recomputable:
  *   gatherScoreInputs — reads every input (injectable deps)
@@ -157,26 +156,17 @@ export async function gatherScoreInputs(
   };
 }
 
-export interface ScoreFromInputsOptions {
-  asOf?: Date;
-  /**
-   * Score as if no local feedback existed. Write paths (stored leaderboard
-   * score, on-chain publish) set this: /api/feedback does not yet verify that
-   * the referenced transaction paid the rated agent, so a payer can rate any
-   * wallet. Remove once feedback is payee-verified at write and read.
-   */
-  excludeFeedback?: boolean;
-}
-
-/** Pure: same inputs + same options → same score. Null when there is nothing to score. */
-export function scoreFromInputs(inputs: ScoreInputs, opts: ScoreFromInputsOptions = {}): WalletScore | null {
+/**
+ * Pure: same inputs + same asOf → same score. Null when there is nothing to score.
+ * Feedback here is payee-verified at read (src/lib/feedback-eligibility.ts).
+ */
+export function scoreFromInputs(inputs: ScoreInputs, opts: { asOf?: Date } = {}): WalletScore | null {
   if (inputs.transactions.length === 0) return null;
-  const feedback = opts.excludeFeedback ? undefined : inputs.feedback;
   return calculateScore(
     inputs.transactions,
     inputs.attestation,
-    feedback?.deliveryRate,
-    feedback?.total,
+    inputs.feedback.deliveryRate,
+    inputs.feedback.total,
     inputs.cadence?.automationScore ?? null,
     inputs.manifestValue,
     null,

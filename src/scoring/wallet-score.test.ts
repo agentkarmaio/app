@@ -120,13 +120,6 @@ describe('scoreFromInputs', () => {
     expect(got!.tierAggregates.tier1).not.toBe(noFeedback.tierAggregates.tier1);
   });
 
-  test('excludeFeedback scores as if no feedback existed (write paths, until feedback is payee-verified)', async () => {
-    const inputs = await gatherScoreInputs('W', 'solana', { asOf: AS_OF }, deps());
-    const got = scoreFromInputs(inputs, { asOf: AS_OF, excludeFeedback: true });
-    const want = calculateScore(TXS, 0.8, undefined, undefined, inputs.cadence?.automationScore ?? null, 0.6, null, [], null, { asOf: AS_OF });
-    expect(got).toEqual(want);
-  });
-
   test('is deterministic for a fixed asOf', async () => {
     const inputs = await gatherScoreInputs('W', 'solana', { asOf: AS_OF }, deps());
     expect(scoreFromInputs(inputs, { asOf: AS_OF })).toEqual(scoreFromInputs(inputs, { asOf: AS_OF }));
