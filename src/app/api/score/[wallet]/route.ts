@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { resolveChainParam, isRecognizedAddress, canonicalAddress } from '@/lib/chain-detect';
 import { DEFAULT_CHAIN, isApiOnlyChain } from '@/db/schema';
-import { getWallet, getTransactions, getLatestSignalValues, enqueueWalletScan } from '@/db/client';
-import { calculateScore } from '@/scoring/index';
-import { computeCadence } from '@/scoring/cadence';
-import { computeAutonomy } from '@/scoring/autonomy';
+import { getWallet, enqueueWalletScan } from '@/db/client';
+import { gatherScoreInputs, scoreFromInputs } from '@/scoring/wallet-score';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
 export async function OPTIONS() {
@@ -52,10 +50,13 @@ export async function GET(
 
   const retired = chainParam === 'arc';
   const archiveChain = retired ? 'arc' : DEFAULT_CHAIN;
-  const [walletRow, transactions] = await Promise.all([
+  // Shared score assembly — the legacy endpoint serves the same score as v2.
+  // A retired archive is served from its stored row only; nothing to score.
+  const [walletRow, inputs] = await Promise.all([
     getWallet(wallet, archiveChain),
-    getTransactions(wallet, 1000, 0, archiveChain),
+    retired ? null : gatherScoreInputs(wallet, archiveChain),
   ]);
+  const transactions = inputs?.transactions ?? [];
 
   if (retired && !walletRow) {
     return NextResponse.json({ error: 'Wallet not found' }, { status: 404, headers: { ...gate.headers, ...corsHeaders() } });
@@ -177,19 +178,9 @@ export async function GET(
     });
   }
 
-  const cadence = computeCadence(transactions.map((tx) => new Date(tx.timestamp)));
-  const autonomy = computeAutonomy(
-    transactions.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
-  );
-  const manifestMap = await getLatestSignalValues([wallet], 'manifest').catch(() => new Map<string, number>());
-  const score = calculateScore(
-    transactions,
-    0,
-    undefined,
-    undefined,
-    cadence?.automationScore ?? null,
-    manifestMap.get(wallet) ?? null,
-  );
+  // Non-retired with transactions (the branch above returned otherwise).
+  const { autonomy } = inputs!;
+  const score = scoreFromInputs(inputs!)!;
   return NextResponse.json({
     ...score,
     providerScore: score.providerScore,

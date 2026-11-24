@@ -155,7 +155,7 @@ async function main() {
         console.log('[keep-fresh] arc: retired — historical records are read-only');
         return { fetched: 0, inserted: 0 };
       },
-      drainOnce: () => drainOnce(drainLimit, 5000),
+      drainOnce: () => drainOnce(drainLimit),
       readLastTxIso: readLatestSolanaTransaction,
       readIndexerLastFinishedIso: async () => {
         const states = await readIndexingStates();

@@ -8,8 +8,8 @@ describe('POST /api/cron/publish chain routing', () => {
     process.env.CRON_SECRET = 'secret';
     __setPublishDepsForTest({
       getLeaderboard: async () => ({ wallets: [{ address: 'GW' }], total: 1 }),
-      getTransactions: async () => [{ tx_signature: 'x' }],
-      calculateScore: () => ({ score: 80, trustTier: 'Good' }),
+      gatherScoreInputs: async () => ({ transactions: [{ tx_signature: 'x' }], degraded: [] }),
+      scoreFromInputs: () => ({ score: 80, trustTier: 'Good' }),
       getAdapter: (chain: string) => ({
         chain, async readAttestation() { return 0; },
         async publishAttestation(address: string) { return { address, dryRun: false, skipped: false, txId: `${chain}_tx` }; },

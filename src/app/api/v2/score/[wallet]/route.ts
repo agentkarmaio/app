@@ -1,21 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  getWallet, getWalletsByAddressAnyChain, getTransactions, getFeedbackSummary,
-  getLatestSignalValues, getSignalEventsForWallet, getAgentBondInput,
+  getWallet, getWalletsByAddressAnyChain,
   getSuccession, getBondsForAgent, getUnderwriterPositions,
 } from '@/db/client';
 import { canonicalAddress, detectChain, resolveChainParam } from '@/lib/chain-detect';
 import { hasProviderSignal, storedProviderHasSignal, storedConsumerHasSignal } from '@/lib/face-signal';
-import type { SignalEvent } from '@/db/schema';
-import { calculateScore } from '@/scoring/index';
-import { computeCadence } from '@/scoring/cadence';
-import { computeAutonomy } from '@/scoring/autonomy';
 import { computeSurety } from '@/scoring/surety';
+import { gatherScoreInputs, scoreFromInputs } from '@/scoring/wallet-score';
 import { deriveSuccessionLiveness } from '@/scoring/succession';
-import { readAttestation } from '@/integrations/attestation';
 import { corsHeaders, corsPreflight } from '@/lib/rate-limit';
 import { resolveKarma, resolveKarmaEnrichment, type EnrichmentCore } from '@/lib/karma-resolver';
-import { STELLAR_TESTNET_AGENT_BOND } from '@/integrations/stellar-config';
 import { stellarAccountExists } from '@/integrations/stellar-flows';
 import { isStellarAccount } from '@/config/stellar-x402';
 import { CHAINS, isPublicChain, type Chain, type Wallet } from '@/db/schema';
@@ -100,7 +94,10 @@ export async function GET(
       headers: { ...corsHeaders(), 'Cache-Control': 'public, max-age=60' },
     });
   }
-  const transactions = await getTransactions(wallet, 1000, 0, evidenceChain);
+  // The shared assembly every surface uses, so this response, the stored
+  // leaderboard score and the published on-chain score agree.
+  const inputs = await gatherScoreInputs(wallet, evidenceChain);
+  const { transactions, autonomy } = inputs;
 
   if (!walletRow && transactions.length === 0) {
     // We hold no rows for this address — but for Stellar that is expected even
@@ -116,40 +113,7 @@ export async function GET(
     }
   }
 
-  let feedback = { deliveryRate: 0, total: 0 };
-  try { feedback = await getFeedbackSummary(wallet, evidenceChain); } catch { /* ok */ }
-
-  const [attestation, manifestMap, signalEvents, agentBond] = await Promise.all([
-    evidenceChain === 'solana' ? readAttestation(wallet).catch(() => 0) : Promise.resolve(0),
-    getLatestSignalValues([wallet], 'manifest', evidenceChain).catch(() => new Map<string, number>()),
-    getSignalEventsForWallet(wallet, 200, evidenceChain).catch(() => [] as SignalEvent[]),
-    // Same input the rescore queue uses, so the live and stored scores agree.
-    getAgentBondInput(wallet, evidenceChain, STELLAR_TESTNET_AGENT_BOND.contractId),
-  ]);
-
-  const cadence = transactions.length > 0
-    ? computeCadence(transactions.map((tx) => new Date(tx.timestamp)))
-    : null;
-
-  const autonomy = transactions.length > 0
-    ? computeAutonomy(
-        transactions.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
-      )
-    : null;
-
-  const live = transactions.length > 0
-    ? calculateScore(
-        transactions,
-        attestation,
-        feedback.deliveryRate,
-        feedback.total,
-        cadence?.automationScore ?? null,
-        manifestMap.get(wallet) ?? null,
-        null,
-        signalEvents,
-        agentBond,
-      )
-    : null;
+  const live = scoreFromInputs(inputs);
 
   const identity = walletRow?.claimed ? {
     displayName: walletRow.display_name ?? null,

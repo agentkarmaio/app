@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { drainOnce } from '@/scripts/rescore-dirty';
-import { DEFAULT_TX_WINDOW } from '@/db/client';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -13,9 +12,10 @@ export const maxDuration = 300;
  * autonomy / karma score recomputed.
  *
  * Auth: `Authorization: Bearer ${CRON_SECRET}`.
- * Body (optional): `{ "limit": number, "txWindow": number }`
+ * Body (optional): `{ "limit": number }`
  *   limit:    max wallets to score this invocation (default 200, max 1000)
- *   txWindow: recent-tx rows per wallet fed to scoring (default 5000, max 10000)
+ *   The tx window is fixed (SCORE_TX_WINDOW): a different window is a
+ *   different score, so it is not a per-call knob.
  *
  * Returns: { claimed, scored, skipped, errors, remaining, elapsedMs }
  *
@@ -42,24 +42,19 @@ export async function POST(request: NextRequest) {
   }
 
   let limit = 200;
-  let txWindow = DEFAULT_TX_WINDOW;
   try {
     const body = (await request.json().catch(() => ({}))) as {
       limit?: unknown;
-      txWindow?: unknown;
     };
     if (typeof body.limit === 'number' && body.limit > 0) {
       limit = Math.min(Math.floor(body.limit), 1000);
-    }
-    if (typeof body.txWindow === 'number' && body.txWindow > 0) {
-      txWindow = Math.min(Math.floor(body.txWindow), 10000);
     }
   } catch {
     // ignore — use defaults
   }
 
   try {
-    const result = await drainOnce(limit, txWindow);
+    const result = await drainOnce(limit);
     const status = result.errors.length > 0 ? 207 : 200;
     return NextResponse.json(result, { status });
   } catch (err) {

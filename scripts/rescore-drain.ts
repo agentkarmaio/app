@@ -14,13 +14,12 @@
  * Flags:
  *   --batch=N     wallets per batch (default 200)
  *   --batches=N   stop after N batches (default: until the queue is empty)
- *   --tx-window=N tx history rows per wallet (default DEFAULT_TX_WINDOW)
  *
  * Usage:
  *   bun run scripts/rescore-drain.ts --batches=1        # measure one batch
  *   bun run scripts/rescore-drain.ts                    # drain it all
  */
-import { drainOnce, RESCORE_DEFAULT_BATCH_SIZE, RESCORE_DEFAULT_TX_WINDOW } from '../src/scripts/rescore-dirty';
+import { drainOnce, RESCORE_DEFAULT_BATCH_SIZE } from '../src/scripts/rescore-dirty';
 
 const num = (name: string, fallback: number): number => {
   const raw = process.argv.find((a) => a.startsWith(`--${name}=`))?.split('=')[1];
@@ -29,7 +28,6 @@ const num = (name: string, fallback: number): number => {
 };
 
 const batchSize = num('batch', RESCORE_DEFAULT_BATCH_SIZE);
-const txWindow = num('tx-window', RESCORE_DEFAULT_TX_WINDOW);
 const maxBatches = num('batches', Number.POSITIVE_INFINITY);
 
 const started = Date.now();
@@ -39,7 +37,7 @@ let totalErrors = 0;
 let batches = 0;
 
 while (batches < maxBatches) {
-  const r = await drainOnce(batchSize, txWindow);
+  const r = await drainOnce(batchSize);
   if (r.claimed === 0) {
     console.log('[drain] queue empty');
     break;

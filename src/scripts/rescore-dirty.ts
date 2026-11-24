@@ -27,22 +27,15 @@ import {
   claimDirtyWallets,
   type DirtyWallet,
   countDirtyWallets,
-  getRecentTransactionsForWallet,
   insertScoreSnapshot,
   insertSignalEvents,
-  getLatestSignalValues,
-  getSignalEventsForWallet,
-  getAgentBondInput,
   upsertWallet,
   markWalletsDirty,
-  DEFAULT_TX_WINDOW,
 } from '@/db/client';
-import { calculateScore } from '@/scoring';
-import { STELLAR_TESTNET_AGENT_BOND } from '@/integrations/stellar-config';
+import { gatherScoreInputs, scoreFromInputs } from '@/scoring/wallet-score';
+import type { WalletScore } from '@/scoring/index';
 import { isApiOnlyChain } from '@/db/schema';
 import { buildCadenceSignal, buildAutonomySignal } from '@/scoring/signals';
-import { computeCadence } from '@/scoring/cadence';
-import { computeAutonomy } from '@/scoring/autonomy';
 import { readAttestationsDetailed } from '@/integrations/attestation';
 
 const DEFAULT_BATCH_SIZE = 200;
@@ -69,12 +62,18 @@ export interface RescoreResult {
   attestationsUnavailable: boolean;
 }
 
-async function rescoreOne(
+/**
+ * Score one wallet through the shared assembly and persist it. Returns the
+ * stored score, or null when there is nothing to (re)score. Throws when an
+ * input was unreadable, so the caller keeps the wallet queued.
+ *
+ * `attestation` is the batch read for drainOnce; omitted, it is read per wallet.
+ */
+export async function rescoreWallet(
   wallet: DirtyWallet,
-  txWindow: number,
-  attestations: Map<string, number>,
-  attestationsUnavailable = false,
-): Promise<boolean> {
+  asOf: Date = new Date(),
+  attestation?: { score: number; unavailable: boolean },
+): Promise<WalletScore | null> {
   // Every read and write below is scoped to the wallet's own chain. Omitting it
   // is not a smaller bug than getting it wrong: the client helpers default to
   // 'solana', so an arc wallet read 0 transactions, returned "skipped", and was
@@ -83,48 +82,33 @@ async function rescoreOne(
   // Mainnet native movements use the shared receipt model under their own
   // managed transfer lease. Never overwrite them with legacy payment scoring,
   // even if a stale queue implementation returns a mainnet wallet.
-  if (chain === 'arc-mainnet' || chain === 'arc') return false;
+  if (chain === 'arc-mainnet' || chain === 'arc') return null;
   // Solana scores blend an on-chain 8004 attestation. When no endpoint would
   // serve that read, the honest move is to leave the wallet queued: writing a
   // score now would bake "no attestation" into a wallet that may well have one.
   // Other chains do not read it, so they are unaffected.
-  if (attestationsUnavailable && chain === 'solana') return false;
-  const txs = await getRecentTransactionsForWallet(address, txWindow, chain);
-  if (txs.length === 0) {
-    // Wallet has no txs yet — claimed but nothing to score. Leave defaults.
-    return false;
-  }
+  if (attestation?.unavailable && chain === 'solana') return null;
 
-  const timestamps = txs.map((tx) => new Date(tx.timestamp));
-  const cadence = computeCadence(timestamps);
-  const autonomy = computeAutonomy(
-    txs.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
-  );
+  // The same assembly every read surface uses, so the stored score is the
+  // served score (feedback included — it used to be dropped here).
+  const inputs = await gatherScoreInputs(address, chain, { asOf, attestation });
+  // A persisted score built from an input we could not read would overwrite a
+  // good one. Throw so drainOnce re-queues the wallet for the next tick.
+  if (inputs.degraded.length > 0) {
+    throw new Error(`unreadable score input(s): ${inputs.degraded.join(', ')}`);
+  }
+  const walletScore = scoreFromInputs(inputs, { asOf });
+  if (!walletScore) {
+    // Wallet has no txs yet — claimed but nothing to score. Leave defaults.
+    return null;
+  }
+  const { cadence, autonomy } = inputs;
 
   // Persist Tier-2 cadence + autonomy signal rows (overwrite keeps latest).
   const signalRows = [];
   if (cadence) signalRows.push({ ...buildCadenceSignal(address, cadence), chain });
   if (autonomy) signalRows.push({ ...buildAutonomySignal(address, autonomy), chain });
   if (signalRows.length > 0) await insertSignalEvents(signalRows, { overwrite: true });
-
-  const [manifestScores, signalEvents, agentBond] = await Promise.all([
-    getLatestSignalValues([address], 'manifest', chain),
-    getSignalEventsForWallet(address, 200, chain).catch(() => []),
-    // Not caught: a failed bond read must not silently drop a slash penalty.
-    getAgentBondInput(address, chain, STELLAR_TESTNET_AGENT_BOND.contractId),
-  ]);
-
-  const walletScore = calculateScore(
-    txs,
-    attestations.get(address) ?? 0,
-    undefined,
-    undefined,
-    cadence?.automationScore ?? null,
-    manifestScores.get(address) ?? null,
-    null,
-    signalEvents,
-    agentBond,
-  );
 
   await upsertWallet(address, walletScore.score, walletScore.trustTier, walletScore.txCount, {
     // Observed activity, not this run's clock (spec 2026-09-13-observed-liveness).
@@ -151,12 +135,11 @@ async function rescoreOne(
     chain,
   );
 
-  return true;
+  return walletScore;
 }
 
 export async function drainOnce(
   batchSize = DEFAULT_BATCH_SIZE,
-  txWindow = DEFAULT_TX_WINDOW,
 ): Promise<RescoreResult> {
   const start = Date.now();
   const claimed = await claimDirtyWallets(batchSize);
@@ -172,6 +155,8 @@ export async function drainOnce(
         .map((w) => w.address),
     );
 
+  // One evaluation instant per drain, so the batch is reproducible together.
+  const asOf = new Date();
   const errors: { address: string; message: string }[] = [];
   let scored = 0;
   let skipped = 0;
@@ -180,7 +165,9 @@ export async function drainOnce(
   for (let i = 0; i < claimed.length; i += CONCURRENCY) {
     const slice = claimed.slice(i, i + CONCURRENCY);
     const results = await Promise.allSettled(
-      slice.map((w) => rescoreOne(w, txWindow, attestations, attestationsUnavailable)),
+      slice.map((w) => rescoreWallet(w, asOf, {
+        score: attestations.get(w.address) ?? 0, unavailable: attestationsUnavailable,
+      })),
     );
     for (let j = 0; j < results.length; j++) {
       const r = results[j];
@@ -226,4 +213,3 @@ export async function drainOnce(
 }
 
 export const RESCORE_DEFAULT_BATCH_SIZE = DEFAULT_BATCH_SIZE;
-export const RESCORE_DEFAULT_TX_WINDOW = DEFAULT_TX_WINDOW;

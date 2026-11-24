@@ -14,18 +14,11 @@ import { registryExplorerLink } from '@/lib/chain-meta';
 import {
   getWallet,
   getErc8004Agent,
-  getTransactions,
-  getFeedbackSummary,
-  getLatestSignalValues,
   getSignalEventsForWallet,
-  getAgentBondInput,
   getArcMainnetReceiptEvents,
 } from '@/db/client';
-import { STELLAR_TESTNET_AGENT_BOND } from '@/integrations/stellar-config';
-import { calculateScore } from '@/scoring/index';
+import { gatherScoreInputs, scoreFromInputs } from '@/scoring/wallet-score';
 import { hasProviderSignal, storedProviderHasSignal, storedConsumerHasSignal } from '@/lib/face-signal';
-import { computeCadence } from '@/scoring/cadence';
-import { computeAutonomy } from '@/scoring/autonomy';
 import { arcMainnetBundleFromWindow, computeAgentLiveBundle } from '@/scoring/live-agent-score';
 import { ARC_MAINNET_RECEIPT_LIMIT, collectArcMainnetReceipts, type ArcMainnetReceiptScore } from '@/scoring/arc-mainnet-receipts';
 import { buildProfileActivity, trimProfileActivity, PROFILE_RECEIPT_LIMIT, type ProfileActivitySummary } from '@/lib/arc-mainnet-profile';
@@ -203,51 +196,16 @@ export async function resolveKarma(
   // because the generic DB helper defaults to the Solana composite key.
   const chain = network ?? (isStellarAccount(wallet) ? 'stellar' : 'solana');
   if (chain === 'arc-mainnet') return (await resolveArcMainnetProfile(wallet, opts.agentId))?.snapshot ?? null;
-  const [walletRow, transactions, signalEvents, agentBond] = await Promise.all([
+  // The shared assembly every surface uses (v2 route, rescore, publish).
+  const [walletRow, inputs] = await Promise.all([
     getWallet(wallet, chain),
-    getTransactions(wallet, 1000, 0, chain),
-    getSignalEventsForWallet(wallet, 200, chain).catch(() => [] as SignalEvent[]),
-    getAgentBondInput(wallet, chain, STELLAR_TESTNET_AGENT_BOND.contractId),
+    gatherScoreInputs(wallet, chain),
   ]);
+  const { transactions, autonomy: autonomyRaw } = inputs;
 
   if (!walletRow && transactions.length === 0) return null;
 
-  let feedback = { deliveryRate: 0, total: 0 };
-  try { feedback = await getFeedbackSummary(wallet, chain); } catch { /* ok */ }
-
-  const [attestation, manifestMap] = await Promise.all([
-    // Stellar's aggregate is AK's own published score, not receipt provenance.
-    // Expose that readback separately in MCP/A2A; never recycle it into Tier 1.
-    // Verified receipt signal events still enter calculateScore independently.
-    chain !== 'solana'
-      ? Promise.resolve(0)
-      : readAttestation(wallet).catch(() => 0),
-    getLatestSignalValues([wallet], 'manifest', chain).catch(() => new Map<string, number>()),
-  ]);
-
-  const cadence = transactions.length > 0
-    ? computeCadence(transactions.map((tx) => new Date(tx.timestamp)))
-    : null;
-
-  const autonomyRaw = transactions.length > 0
-    ? computeAutonomy(
-        transactions.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
-      )
-    : null;
-
-  const live = transactions.length > 0
-    ? calculateScore(
-        transactions,
-        attestation,
-        feedback.deliveryRate,
-        feedback.total,
-        cadence?.automationScore ?? null,
-        manifestMap.get(wallet) ?? null,
-        null,
-        signalEvents,
-        agentBond,
-      )
-    : null;
+  const live = scoreFromInputs(inputs);
 
   const identity: KarmaIdentity = walletRow?.claimed
     ? {

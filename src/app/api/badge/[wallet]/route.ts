@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getTransactions, getFeedbackSummary, getLatestSignalValues } from '@/db/client';
+import { getFeedbackSummary } from '@/db/client';
 import { resolveAgentChain } from '@/app/agent/[wallet]/resolve-chain';
-import { calculateScore } from '@/scoring/index';
-import { computeCadence } from '@/scoring/cadence';
-import { computeAutonomy } from '@/scoring/autonomy';
+import { gatherScoreInputs, scoreFromInputs } from '@/scoring/wallet-score';
 import { getLivenessStatus } from '@/db/schema';
 import type { TrustTier, LivenessStatus, ConfidenceBadge } from '@/db/schema';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
@@ -78,39 +76,25 @@ export async function GET(
   }
 
   // Receipt-based live scoring only applies to Solana — the only chain with
-  // indexed x402 transactions. Other chains render off the stored row.
-  const transactions = resolved.chain === 'solana'
-    ? await getTransactions(wallet, 1000, 0, resolved.chain)
-    : [];
+  // indexed x402 transactions. Other chains render off the stored row. The
+  // live path is the shared assembly, so the badge matches the API.
+  const inputs = resolved.chain === 'solana' ? await gatherScoreInputs(wallet, 'solana') : null;
+  const transactions = inputs?.transactions ?? [];
 
   if (!walletRow && transactions.length === 0) {
     return NextResponse.json({ error: 'Wallet not found' }, { status: 404 });
   }
 
-  let feedback = { deliveryRate: 0, total: 0 };
-  try { feedback = await getFeedbackSummary(wallet, resolved.chain ?? 'solana'); } catch { /* ok */ }
+  let feedback = inputs?.feedback ?? { deliveryRate: 0, total: 0 };
+  if (!inputs) {
+    try { feedback = await getFeedbackSummary(wallet, resolved.chain ?? 'solana'); } catch { /* ok */ }
+  }
 
-  const cadence = transactions.length > 0
-    ? computeCadence(transactions.map((tx) => new Date(tx.timestamp)))
-    : null;
-  const autonomy = transactions.length > 0
-    ? computeAutonomy(
-        transactions.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
-      )
-    : null;
+  const autonomy = inputs?.autonomy ?? null;
   const autonomyScore = autonomy?.score
     ?? (walletRow?.autonomy_score != null ? Number(walletRow.autonomy_score) : null);
   const autonomyLabel = autonomy?.label ?? walletRow?.autonomy_label ?? null;
-  const manifestMap = await getLatestSignalValues([wallet], 'manifest', resolved.chain ?? 'solana')
-    .catch(() => new Map<string, number>());
-  const liveScore = transactions.length > 0
-    ? calculateScore(
-        transactions, 0, feedback.deliveryRate, feedback.total,
-        cadence?.automationScore ?? null,
-        manifestMap.get(wallet) ?? null,
-        null,
-      )
-    : null;
+  const liveScore = inputs ? scoreFromInputs(inputs) : null;
 
   const score = liveScore?.score ?? Number(walletRow?.score ?? 0);
   const providerScore = liveScore?.providerScore

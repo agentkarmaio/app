@@ -1,6 +1,6 @@
 /**
- * Live full-history score bundle for a single agent — the same math
- * /api/score/refresh uses (cap 10000 txs, same tier gating), extracted from
+ * Live score bundle for a single agent — the shared wallet-score assembly
+ * (src/scoring/wallet-score.ts), extracted from
  * the /agent/[wallet] route so the cache layer (src/db/cached.ts) can wrap it
  * per-wallet. Every consumer of this bundle (header chips, score ring,
  * breakdown, summary) reads the SAME computation, so they can never disagree.
@@ -9,11 +9,10 @@
  * ISO string so the result can cross the unstable_cache boundary intact.
  */
 
-import { getTransactions, getFeedbackSummary, getLatestSignalValues, getArcMainnetReceiptEvents } from '@/db/client';
-import { calculateScore, type WalletScore } from '@/scoring/index';
-import { computeCadence } from '@/scoring/cadence';
+import { getArcMainnetReceiptEvents } from '@/db/client';
+import type { WalletScore } from '@/scoring/index';
 import { computeAutonomy, type AutonomyResult } from '@/scoring/autonomy';
-import { readAttestation } from '@/integrations/attestation';
+import { gatherScoreInputs, scoreFromInputs } from './wallet-score';
 import type { Chain, SignalEvent } from '@/db/schema';
 import { ARC_MAINNET_RECEIPT_LIMIT, computeArcMainnetReceiptScore, type ArcMainnetReceiptScore } from './arc-mainnet-receipts';
 
@@ -57,33 +56,21 @@ export async function computeAgentLiveBundle(wallet: string, chain: Chain = 'sol
   if (chain === 'arc-mainnet') {
     return arcMainnetBundleFromWindow(wallet, await getArcMainnetReceiptEvents(wallet, ARC_MAINNET_RECEIPT_LIMIT));
   }
-  const [feedback, txs, attestation, manifestMap] = await Promise.all([
-    getFeedbackSummary(wallet, chain).catch(() => EMPTY_FEEDBACK),
-    getTransactions(wallet, 10000, 0, chain),
-    chain === 'solana' ? readAttestation(wallet).catch(() => 0) : Promise.resolve(0),
-    getLatestSignalValues([wallet], 'manifest', chain).catch(() => new Map<string, number>()),
-  ]);
-  const manifestValue = manifestMap.get(wallet) ?? null;
-
-  if (txs.length === 0) {
+  // The shared assembly every surface uses — the profile shows the same score
+  // the API serves and the leaderboard stores (signal events + Agent Bond were
+  // missing here, and the 10000-tx window differed from everyone else's).
+  const inputs = await gatherScoreInputs(wallet, chain);
+  const { feedback, manifestValue, autonomy } = inputs;
+  const live = scoreFromInputs(inputs);
+  if (!live) {
     return { feedback, live: null, manifestValue, txCount: 0, autonomy: null };
   }
-
-  const cadence = computeCadence(txs.map((tx) => new Date(tx.timestamp)));
-  const autonomy = computeAutonomy(
-    txs.map((tx) => ({ timestamp: tx.timestamp, counterparty: tx.facilitator })),
-  );
-  const live = calculateScore(
-    txs, attestation, feedback.deliveryRate, feedback.total,
-    cadence?.automationScore ?? null,
-    manifestValue,
-  );
 
   return {
     feedback,
     live: { ...live, lastActive: live.lastActive.toISOString() },
     manifestValue,
-    txCount: txs.length,
+    txCount: inputs.transactions.length,
     autonomy,
   };
 }

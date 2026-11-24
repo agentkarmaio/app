@@ -11,8 +11,11 @@
 
 import type { Chain } from '@/db/schema';
 import { DEFAULT_CHAIN } from '@/db/schema';
-import { getLeaderboard as dbGetLeaderboard, getTransactions as dbGetTransactions } from '../db/client';
-import { calculateScore as scoringCalculateScore } from '../scoring/index';
+import { getLeaderboard as dbGetLeaderboard } from '../db/client';
+import {
+  gatherScoreInputs as scoringGatherInputs,
+  scoreFromInputs as scoringScoreFromInputs,
+} from '../scoring/wallet-score';
 import { getAdapter as registryGetAdapter } from '@/chain-adapters/registry';
 
 export interface PublishRunResult {
@@ -37,8 +40,8 @@ const RATE_LIMIT_MS = 200;
 // testable without DB or chain. Production uses the real imports.
 interface PublishDeps {
   getLeaderboard: typeof dbGetLeaderboard;
-  getTransactions: typeof dbGetTransactions;
-  calculateScore: typeof scoringCalculateScore;
+  gatherScoreInputs: (wallet: string, chain: Chain, opts: { asOf: Date }) => ReturnType<typeof scoringGatherInputs>;
+  scoreFromInputs: typeof scoringScoreFromInputs;
   getAdapter: typeof registryGetAdapter;
 }
 let _deps: PublishDeps | null = null;
@@ -46,8 +49,8 @@ export function __setPublishDepsForTest(deps: unknown): void { _deps = deps as P
 function deps(): PublishDeps {
   return _deps ?? {
     getLeaderboard: dbGetLeaderboard,
-    getTransactions: dbGetTransactions,
-    calculateScore: scoringCalculateScore,
+    gatherScoreInputs: (wallet, chain, opts) => scoringGatherInputs(wallet, chain, opts),
+    scoreFromInputs: scoringScoreFromInputs,
     getAdapter: registryGetAdapter,
   };
 }
@@ -56,22 +59,33 @@ export async function publishTopScores(
   limit = 50,
   chain: Chain = DEFAULT_CHAIN,
 ): Promise<PublishRunResult> {
-  const { getLeaderboard, getTransactions, calculateScore, getAdapter } = deps();
+  const { getLeaderboard, gatherScoreInputs, scoreFromInputs, getAdapter } = deps();
   const adapter = getAdapter(chain);
+  // One evaluation instant for the whole run, so every published score is
+  // reproducible from its inputs "as of" the same moment.
+  const asOf = new Date();
 
   const { wallets } = await getLeaderboard(limit, 0, { chain });
   const result: PublishRunResult = { published: 0, skipped: 0, errors: 0, dryRun: false, details: [] };
 
   for (const wallet of wallets) {
     try {
-      const transactions = await getTransactions(wallet.address, 1000, 0, chain);
-      if (transactions.length === 0) {
+      // The same assembly every read surface uses — publish what we serve.
+      const inputs = await gatherScoreInputs(wallet.address, chain, { asOf });
+      if (inputs.degraded.length > 0) {
+        result.skipped++;
+        result.details.push({
+          address: wallet.address, status: 'skipped', score: 0,
+          reason: `unreadable input(s): ${inputs.degraded.join(', ')}`,
+        });
+        continue;
+      }
+      const score = scoreFromInputs(inputs, { asOf });
+      if (!score) {
         result.skipped++;
         result.details.push({ address: wallet.address, status: 'skipped', score: 0, reason: 'no transactions' });
         continue;
       }
-
-      const score = calculateScore(transactions);
 
       // Idempotency: skip if on-chain score hasn't drifted past the threshold.
       let onChainScore: number | null = null;

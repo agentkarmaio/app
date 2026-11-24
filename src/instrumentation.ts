@@ -13,7 +13,6 @@
  * Tuning:
  *   SCORING_WORKER_INTERVAL_MS       default 60_000
  *   SCORING_WORKER_BATCH             default 200   (wallets per tick)
- *   SCORING_WORKER_TX_WINDOW         default 5000  (recent tx rows per wallet)
  *   SCORING_WORKER_DISABLED          set to "1" to skip registering the loop
  *   WALLET_SCAN_WORKER_INTERVAL_MS   default 30_000
  *   WALLET_SCAN_WORKER_BATCH         default 1     (wallets per tick — bounds Helius load)
@@ -52,7 +51,6 @@ async function registerScoringWorker() {
 
   const intervalMs = Number(process.env.SCORING_WORKER_INTERVAL_MS) || 60_000;
   const batch      = Number(process.env.SCORING_WORKER_BATCH)       || 200;
-  const txWindow   = Number(process.env.SCORING_WORKER_TX_WINDOW)   || 5000;
 
   // Lazy-import so Next's build/edge compilers don't pull scoring deps into
   // the client bundle or try to resolve server-only modules at build time.
@@ -64,7 +62,7 @@ async function registerScoringWorker() {
     if (running) return; // skip if previous tick still draining
     running = true;
     try {
-      const result = await drainOnce(batch, txWindow);
+      const result = await drainOnce(batch);
       if (result.claimed > 0 || result.errors.length > 0) {
         console.log(
           `[scoring-worker] claimed=${result.claimed} scored=${result.scored} ` +
@@ -83,8 +81,7 @@ async function registerScoringWorker() {
   if (typeof timer.unref === 'function') timer.unref();
 
   console.log(
-    `[scoring-worker] registered · interval=${intervalMs}ms batch=${batch} ` +
-    `tx_window=${txWindow}`,
+    `[scoring-worker] registered · interval=${intervalMs}ms batch=${batch}`,
   );
   void tick();
 }
