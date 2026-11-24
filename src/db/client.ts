@@ -27,6 +27,7 @@ import type { CeloX402Settlement } from '@/indexer/celo-x402-relayer';
 // Pure predicate (no React/browser deps) — names the chains whose agent
 // population is the erc8004_agents mirror rather than the wallets table.
 import { isRegistryMirrorChain } from '@/lib/chain-meta';
+import { registryRowAgentId } from '@/lib/agent-href';
 // Viem-free constants only — keeps the EVM write path's viem deps out of this
 // server DB bundle. Used by getAkConnectedFeedback (the /celo "feedback AK made"
 // list) to scope the mirror read to AK's schemes + rater wallets.
@@ -727,8 +728,12 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
     ...idClauses,
   ].join(',');
 
+  // Robinhood ids exist only in the view (registry-only chain, no `wallets` column).
+  const registryIdClauses = idClauses.length ? [...idClauses, `robinhood_agent_id.eq.${asId}`] : [];
+
   const cap = Math.max(1, Math.min(50, limit));
   const columns = 'address, chain, display_name, score, trust_tier, tx_count, celo_agent_id, arc_agent_id, stellar_agent_id';
+  const registryColumns = `${columns}, robinhood_agent_id`;
 
   // `wallets` names only claimed/curated rows; every ERC-8004 registry agent's
   // registration name lives in `explore_agents` (same address + score the
@@ -738,9 +743,9 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
       .or(orFilter)
       .order('score', { ascending: false })
       .limit(cap),
-    publicChainsOnly(supabase.from('explore_agents').select(columns))
+    publicChainsOnly(supabase.from('explore_agents').select(registryColumns))
       .neq('chain', 'solana')
-      .or([`display_name.ilike.%${term}%`, ...idClauses].join(','))
+      .or([`display_name.ilike.%${term}%`, ...registryIdClauses].join(','))
       .order('score', { ascending: false })
       .limit(cap),
   ]);
@@ -751,11 +756,13 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
     address: string; chain: Chain; display_name: string | null;
     score: number; trust_tier: TrustTier; tx_count: number;
     celo_agent_id: number | null; arc_agent_id: number | null; stellar_agent_id: number | null;
+    robinhood_agent_id?: number | null;
   };
   const toResult = (w: Row): WalletSearchRow => {
-    // The view projects arc-mainnet ids into arc_agent_id; `wallets` has no
-    // arc-mainnet column, so fall back to it for that chain only.
-    const col = agentIdColumn(w.chain) ?? (w.chain === 'arc-mainnet' ? 'arc_agent_id' : null);
+    // The view projects arc-mainnet ids into arc_agent_id and robinhood ids into
+    // robinhood_agent_id; `wallets` has neither, so those come from the row helper.
+    const col = agentIdColumn(w.chain);
+    const registryId = registryRowAgentId(w);
     return {
       address: w.address,
       chain: w.chain,
@@ -763,7 +770,7 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
       score: Number(w.score),
       trustTier: w.trust_tier,
       txCount: w.tx_count,
-      agentId: col ? (w[col] ?? null) : null,
+      agentId: registryId !== undefined ? registryId : col ? (w[col] ?? null) : null,
     };
   };
 

@@ -13,6 +13,7 @@ import {
   getLeaderboard,
   getWalletByAgentId,
   getRegistryStats,
+  searchWallets,
   getTransactionsForWallets,
   getAllTransactions,
   markAllWalletsDirty,
@@ -1420,6 +1421,48 @@ describe('registry-chain search matches the declared name, not just addresses', 
     await getAgents(25, 0, { chain: 'celo', search: '%%%' }, SORT);
 
     expect(fake.__orFilters.some((f) => f.includes('ilike'))).toBe(false);
+  });
+});
+
+// Robinhood agents exist only in explore_agents (agentId in robinhood_agent_id).
+describe('searchWallets robinhood registry agents', () => {
+  function makeSearchWalletsFake(registryRows: unknown[]) {
+    const calls: { table: string; select: string; or: string[] }[] = [];
+    return {
+      __calls: calls,
+      from(table: string) {
+        const call = { table, select: '', or: [] as string[] };
+        calls.push(call);
+        const b: Record<string, unknown> = {};
+        for (const m of ['neq', 'eq', 'in', 'not', 'order', 'limit']) b[m] = () => b;
+        b.select = (cols: string) => { call.select = cols; return b; };
+        b.or = (f: string) => { call.or.push(f); return b; };
+        b.then = (resolve: (v: unknown) => void) => resolve({ data: table === 'explore_agents' ? registryRows : [], error: null });
+        return b;
+      },
+    };
+  }
+  const owner = '0x823638645f65ad589ea5484a0952b971b20ee0ec';
+  const row = (id: number, name: string) => ({ address: owner, chain: 'robinhood', display_name: name, score: 80,
+    trust_tier: 'Very Good', tx_count: 0, celo_agent_id: null, arc_agent_id: null, stellar_agent_id: null, robinhood_agent_id: id });
+
+  test('each robinhood hit carries its own agentId, and one owner\'s agents stay distinct', async () => {
+    const fake = makeSearchWalletsFake([row(0, 'Hood one'), row(7, 'Hood two')]);
+    __setSupabaseForTest(fake);
+    const out = await searchWallets('Hood');
+    expect(out.map(r => [r.chain, r.agentId])).toEqual([['robinhood', 0], ['robinhood', 7]]);
+    expect(fake.__calls.find(c => c.table === 'explore_agents')!.select).toContain('robinhood_agent_id');
+    // `wallets` has no robinhood column: it must never be selected there.
+    expect(fake.__calls.find(c => c.table === 'wallets')!.select).not.toContain('robinhood_agent_id');
+  });
+
+  test('a numeric query matches robinhood agent ids on the registry view only', async () => {
+    const fake = makeSearchWalletsFake([row(123, 'Numbered')]);
+    __setSupabaseForTest(fake);
+    const out = await searchWallets('123');
+    expect(out[0]).toMatchObject({ chain: 'robinhood', agentId: 123 });
+    expect(fake.__calls.find(c => c.table === 'explore_agents')!.or.join(',')).toContain('robinhood_agent_id.eq.123');
+    expect(fake.__calls.find(c => c.table === 'wallets')!.or.join(',')).not.toContain('robinhood_agent_id');
   });
 });
 
