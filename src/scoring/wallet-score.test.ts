@@ -94,6 +94,12 @@ describe('gatherScoreInputs', () => {
     expect(inputs.degraded.sort()).toEqual(['feedback', 'signalEvents']);
   });
 
+  test('a failed Agent Bond read throws — a missing slash penalty would inflate the score', async () => {
+    await expect(gatherScoreInputs('W', 'stellar-testnet', {}, deps({
+      getAgentBond: async () => { throw new Error('bond rpc down'); },
+    }))).rejects.toThrow('bond rpc down');
+  });
+
   test('a failed transaction read throws — there is no score without it', async () => {
     await expect(gatherScoreInputs('W', 'solana', {}, deps({
       getTransactions: async () => { throw new Error('db down'); },
@@ -112,6 +118,13 @@ describe('scoreFromInputs', () => {
     // Feedback moved the Tier-1 aggregate — it is not silently dropped.
     const noFeedback = calculateScore(TXS, 0.8, undefined, undefined, inputs.cadence?.automationScore ?? null, 0.6, null, [], null, { asOf: AS_OF });
     expect(got!.tierAggregates.tier1).not.toBe(noFeedback.tierAggregates.tier1);
+  });
+
+  test('excludeFeedback scores as if no feedback existed (write paths, until feedback is payee-verified)', async () => {
+    const inputs = await gatherScoreInputs('W', 'solana', { asOf: AS_OF }, deps());
+    const got = scoreFromInputs(inputs, { asOf: AS_OF, excludeFeedback: true });
+    const want = calculateScore(TXS, 0.8, undefined, undefined, inputs.cadence?.automationScore ?? null, 0.6, null, [], null, { asOf: AS_OF });
+    expect(got).toEqual(want);
   });
 
   test('is deterministic for a fixed asOf', async () => {

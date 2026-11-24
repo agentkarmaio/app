@@ -80,7 +80,8 @@ export async function publishTopScores(
         });
         continue;
       }
-      const score = scoreFromInputs(inputs, { asOf });
+      // Feedback is not yet payee-verified (see ScoreFromInputsOptions).
+      const score = scoreFromInputs(inputs, { asOf, excludeFeedback: true });
       if (!score) {
         result.skipped++;
         result.details.push({ address: wallet.address, status: 'skipped', score: 0, reason: 'no transactions' });

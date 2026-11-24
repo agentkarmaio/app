@@ -4,9 +4,9 @@
  * Every surface that shows, stores or publishes a wallet's karma (v2 API, MCP /
  * A2A resolver, profile page, badge, legacy score route, rescore queue, manual
  * refresh, on-chain publish) used to assemble `calculateScore` inputs by hand.
- * They drifted: different tx windows (1000 / 5000 / 10000), feedback missing
- * from the persisted score, signal events and Agent Bond missing from the
- * profile, transactions-only on the publish path. The same wallet had several
+ * They drifted: different tx windows (1000 / 5000 / 10000), signal events and
+ * Agent Bond missing from the profile, transactions-only on the publish path.
+ * (Write paths still leave feedback out on purpose — see excludeFeedback.) The same wallet had several
  * "current" scores and the on-chain one matched none of them.
  *
  * Two layers, so the math stays pure and recomputable:
@@ -49,7 +49,7 @@ export interface FeedbackSummary {
   deliveryRate: number;
 }
 
-export type ScoreInput = 'attestation' | 'feedback' | 'manifest' | 'signalEvents' | 'agentBond';
+export type ScoreInput = 'attestation' | 'feedback' | 'manifest' | 'signalEvents';
 
 export interface ScoreInputs {
   wallet: string;
@@ -133,7 +133,9 @@ export async function gatherScoreInputs(
     soft('feedback', () => deps.getFeedbackSummary(wallet, chain), EMPTY_FEEDBACK),
     soft('manifest', () => deps.getManifestValue(wallet, chain), null),
     soft('signalEvents', () => deps.getSignalEvents(wallet, SCORE_SIGNAL_EVENT_LIMIT, chain), [] as SignalEvent[]),
-    soft('agentBond', () => deps.getAgentBond(wallet, chain, nowMs), null),
+    // Not soft: a failed bond read would silently drop a slash penalty and
+    // serve an inflated score. No score beats a wrong one here.
+    deps.getAgentBond(wallet, chain, nowMs),
   ]);
   if (attestationRead.unavailable && !degraded.includes('attestation')) degraded.push('attestation');
 
@@ -155,14 +157,26 @@ export async function gatherScoreInputs(
   };
 }
 
-/** Pure: same inputs + same asOf → same score. Null when there is nothing to score. */
-export function scoreFromInputs(inputs: ScoreInputs, opts: { asOf?: Date } = {}): WalletScore | null {
+export interface ScoreFromInputsOptions {
+  asOf?: Date;
+  /**
+   * Score as if no local feedback existed. Write paths (stored leaderboard
+   * score, on-chain publish) set this: /api/feedback does not yet verify that
+   * the referenced transaction paid the rated agent, so a payer can rate any
+   * wallet. Remove once feedback is payee-verified at write and read.
+   */
+  excludeFeedback?: boolean;
+}
+
+/** Pure: same inputs + same options → same score. Null when there is nothing to score. */
+export function scoreFromInputs(inputs: ScoreInputs, opts: ScoreFromInputsOptions = {}): WalletScore | null {
   if (inputs.transactions.length === 0) return null;
+  const feedback = opts.excludeFeedback ? undefined : inputs.feedback;
   return calculateScore(
     inputs.transactions,
     inputs.attestation,
-    inputs.feedback.deliveryRate,
-    inputs.feedback.total,
+    feedback?.deliveryRate,
+    feedback?.total,
     inputs.cadence?.automationScore ?? null,
     inputs.manifestValue,
     null,

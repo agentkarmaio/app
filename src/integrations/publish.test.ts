@@ -76,7 +76,8 @@ describe('publishTopScores', () => {
     const asOfA = (gathered[0][2] as { asOf: Date }).asOf;
     expect(asOfA).toBeInstanceOf(Date);
     expect((gathered[1][2] as { asOf: Date }).asOf).toBe(asOfA);
-    expect(scored[0]).toEqual([full, { asOf: asOfA }]);
+    // Feedback stays out of on-chain scores until /api/feedback verifies the payee.
+    expect(scored[0]).toEqual([full, { asOf: asOfA, excludeFeedback: true }]);
   });
 
   test('never publishes a score built from an unreadable input', async () => {
