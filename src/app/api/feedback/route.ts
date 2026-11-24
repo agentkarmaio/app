@@ -7,6 +7,7 @@ import {
   getTransactionBySig,
 } from '@/db/client';
 import type { FeedbackRating } from '@/db/schema';
+import { feedbackIneligibility } from '@/lib/feedback-eligibility';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
 export async function OPTIONS() {
@@ -19,7 +20,8 @@ const VALID_RATINGS: FeedbackRating[] = ['delivered', 'failed'];
  * POST /api/feedback
  *
  * Submit delivery feedback for an agent after an x402 payment.
- * Consumer must prove they are the sender of the referenced transaction.
+ * Consumer must prove they are the sender of the referenced transaction, and
+ * the transaction must have paid `agentWallet` (403 otherwise).
  *
  * Body:
  *   agentWallet:  string — the agent's wallet address
@@ -91,14 +93,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Transaction not found in our records' }, { status: 404 });
     }
 
-    // Verify the tx belongs to the claimed agent
-    if (tx.wallet_address !== agentWallet) {
-      // The wallet_address in our tx table is the sender (consumer), not the agent.
-      // For x402, the sender pays the facilitator on behalf of consuming an agent's service.
-      // So tx.wallet_address is the consumer wallet.
-    }
-
+    // tx.wallet_address is the payer (the consumer); tx.counterparty is the
+    // payee. Only the payer may rate, and only the wallet the tx paid.
     consumerWallet = tx.wallet_address;
+    const reason = feedbackIneligibility(tx, { agentWallet, consumerWallet });
+    if (reason) {
+      return NextResponse.json(
+        { error: 'Transaction does not pay this agent from the rating wallet', reason },
+        { status: 403 },
+      );
+    }
 
     // Verify the signature was made by the consumer wallet
     const consumerPubkey = new PublicKey(consumerWallet);

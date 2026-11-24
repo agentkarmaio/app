@@ -89,15 +89,15 @@ export async function rescoreWallet(
   // Other chains do not read it, so they are unaffected.
   if (attestation?.unavailable && chain === 'solana') return null;
 
-  // The same assembly every read surface uses. Feedback stays out of the stored
-  // score until it is payee-verified (see ScoreFromInputsOptions).
+  // The same assembly every read surface uses, so the stored score is the
+  // served score (payee-verified feedback included).
   const inputs = await gatherScoreInputs(address, chain, { asOf, attestation });
   // A persisted score built from an input we could not read would overwrite a
   // good one. Throw so drainOnce re-queues the wallet for the next tick.
   if (inputs.degraded.length > 0) {
     throw new Error(`unreadable score input(s): ${inputs.degraded.join(', ')}`);
   }
-  const walletScore = scoreFromInputs(inputs, { asOf, excludeFeedback: true });
+  const walletScore = scoreFromInputs(inputs, { asOf });
   if (!walletScore) {
     // Wallet has no txs yet — claimed but nothing to score. Leave defaults.
     return null;
