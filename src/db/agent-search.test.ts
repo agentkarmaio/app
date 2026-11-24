@@ -149,7 +149,7 @@ describe('searchWallets registry names', () => {
     }, rec));
     const out = await searchWallets('9058');
     expect(rec.find((r) => r.table === 'explore_agents')?.or).toBe(
-      'display_name.ilike.%9058%,celo_agent_id.eq.9058,arc_agent_id.eq.9058,stellar_agent_id.eq.9058',
+      'display_name.ilike.%9058%,celo_agent_id.eq.9058,arc_agent_id.eq.9058,stellar_agent_id.eq.9058,robinhood_agent_id.eq.9058',
     );
     expect(out[0]).toMatchObject({ address: '0xak', agentId: 9058 });
   });
