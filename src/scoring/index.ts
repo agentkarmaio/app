@@ -481,6 +481,15 @@ export function aggregateSignalEvents(
   };
 }
 
+/**
+ * Evaluation context for a score. `asOf` is the instant age and recency are
+ * measured against; pin it to make a score reproducible (same inputs + same
+ * asOf → same output, whenever it runs). Defaults to now.
+ */
+export interface ScoreOptions {
+  asOf?: Date;
+}
+
 export function calculateScore(
   transactions: ScoringTransaction[],
   attestation = 0,
@@ -492,6 +501,7 @@ export function calculateScore(
   signalEvents?: Pick<SignalEvent, 'kind' | 'tier' | 'face' | 'value' | 'payload'>[] | null,
   /** Agent Bond (self-stake). No-op unless chain is stellar-testnet. */
   agentBond?: AgentBondInput | null,
+  opts: ScoreOptions = {},
 ): WalletScore {
   if (transactions.length === 0) {
     throw new Error('calculateScore requires at least one transaction');
@@ -499,6 +509,7 @@ export function calculateScore(
 
   const address = transactions[0].wallet_address;
   const txCount = transactions.length;
+  const asOfMs = (opts.asOf ?? new Date()).getTime();
 
   const successCount = transactions.filter((tx) => tx.success).length;
   const successRate = txCount > 0 ? successCount / txCount : 0;
@@ -545,7 +556,7 @@ export function calculateScore(
   const timestamps = transactions.map((tx) => new Date(tx.timestamp).getTime());
   const firstTs = Math.min(...timestamps);
   const lastTs = Math.max(...timestamps);
-  const daysActive = (Date.now() - firstTs) / MS_PER_DAY;
+  const daysActive = (asOfMs - firstTs) / MS_PER_DAY;
   const age = cap(daysActive, NORMALIZE.ageMax);
 
   // Loyalty redistributes its weight when absent (no counterparty data) so the
@@ -641,7 +652,7 @@ export function calculateScore(
 
   const aggregates: TierAggregates = { tier1, tier2: tier2WithHeartbeat, tier3, tier4: null };
 
-  const daysSinceLastTx = (Date.now() - lastTs) / MS_PER_DAY;
+  const daysSinceLastTx = (asOfMs - lastTs) / MS_PER_DAY;
   const decay = recencyDecay(daysSinceLastTx);
 
   const tieredBase = calculateTieredScore(aggregates, { decay });

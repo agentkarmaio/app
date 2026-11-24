@@ -32,6 +32,8 @@ export interface OperatorScoreInput {
   uniquePayerCount: number;
   /** Most recent observed_at timestamp across this operator's signals. */
   lastSeen?: Date | string | null;
+  /** Instant recency is measured against; pin for reproducible scores. Defaults to now. */
+  asOf?: Date;
 }
 
 export interface OperatorScore {
@@ -77,7 +79,7 @@ export function calculateOperatorScore(input: OperatorScoreInput): OperatorScore
 
   // Recency multiplier — 1.0 if active in last 7d, decaying linearly to
   // 0.75 by 90d, then floor.
-  const recency = recencyMultiplier(input.lastSeen ?? null);
+  const recency = recencyMultiplier(input.lastSeen ?? null, (input.asOf ?? new Date()).getTime());
   const score = clamp(raw * recency, 0, 100);
 
   const confidenceBadge: ConfidenceBadge = receiptCount >= 3
@@ -91,11 +93,11 @@ export function calculateOperatorScore(input: OperatorScoreInput): OperatorScore
   };
 }
 
-function recencyMultiplier(lastSeen: Date | string | null): number {
+function recencyMultiplier(lastSeen: Date | string | null, asOfMs: number): number {
   if (!lastSeen) return 0.75;
   const ts = typeof lastSeen === 'string' ? new Date(lastSeen).getTime() : lastSeen.getTime();
   if (!Number.isFinite(ts)) return 0.75;
-  const daysSince = (Date.now() - ts) / MS_PER_DAY;
+  const daysSince = (asOfMs - ts) / MS_PER_DAY;
   if (daysSince <= 7) return 1.0;
   if (daysSince >= 90) return 0.75;
   return 1.0 - (0.25 * (daysSince - 7) / (90 - 7));
