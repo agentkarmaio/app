@@ -8,7 +8,7 @@
  * Run: bun test src/lib/feedback-eligibility.test.ts
  */
 import { describe, expect, test } from 'bun:test';
-import { feedbackIneligibility } from './feedback-eligibility';
+import { feedbackIneligibility, onePerPayer } from './feedback-eligibility';
 
 const PAYER = 'PAYER111';
 const AGENT = 'AGENT111';
@@ -38,5 +38,19 @@ describe('feedbackIneligibility', () => {
     const self = { wallet_address: AGENT, counterparty: AGENT };
     expect(feedbackIneligibility(self, { agentWallet: AGENT, consumerWallet: AGENT }))
       .toBe('self_feedback');
+  });
+});
+
+describe('onePerPayer', () => {
+  test('a payer counts once per agent — its latest rating wins', () => {
+    const rows = [
+      { agent_wallet: 'A', consumer_wallet: 'P', rating: 'failed', created_at: '2026-11-01T00:00:00Z' },
+      { agent_wallet: 'A', consumer_wallet: 'P', rating: 'delivered', created_at: '2026-11-03T00:00:00Z' },
+      { agent_wallet: 'A', consumer_wallet: 'P', rating: 'delivered', created_at: '2026-11-02T00:00:00Z' },
+      { agent_wallet: 'A', consumer_wallet: 'Q', rating: 'failed', created_at: '2026-11-01T00:00:00Z' },
+      { agent_wallet: 'B', consumer_wallet: 'P', rating: 'failed', created_at: '2026-11-01T00:00:00Z' },
+    ];
+    const kept = onePerPayer(rows).map((r) => `${r.agent_wallet}:${r.consumer_wallet}:${r.rating}`).sort();
+    expect(kept).toEqual(['A:P:delivered', 'A:Q:failed', 'B:P:failed']);
   });
 });

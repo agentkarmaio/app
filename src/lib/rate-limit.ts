@@ -22,6 +22,7 @@ export type RateLimitName =
   | 'graph'
   | 'search'
   | 'feedback-get'
+  | 'feedback-post'
   | 'agent-history'
   | 'score-refresh'
   | 'wallet-scan-enqueue'
@@ -43,6 +44,7 @@ const LIMITS: Record<RateLimitName, LimitSpec> = {
   graph: { limit: 30, window: '1 m' },
   search: { limit: 30, window: '1 m' },
   'feedback-get': { limit: 30, window: '1 m' },
+  'feedback-post': { limit: 10, window: '1 m' },
   'agent-history': { limit: 30, window: '1 m' },
   'score-refresh': { limit: 5, window: '1 m' },
   'wallet-scan-enqueue': { limit: 3, window: '1 m' },

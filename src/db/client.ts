@@ -56,7 +56,7 @@ import {
 } from '@/lib/arc-dashboard-stats';
 import { ERC8183_SETTLED_KIND } from '@/scoring/settlement-quality';
 import { withRetry, type RetryOpts } from '@/lib/retry';
-import { feedbackIneligibility } from '@/lib/feedback-eligibility';
+import { feedbackIneligibility, onePerPayer } from '@/lib/feedback-eligibility';
 import { statsFromSnapshot, type StatsSnapshotPayload, type StatsSnapshotRow } from '@/lib/stats-snapshot';
 
 // Every DB helper that takes a wallet address optionally takes a chain. The
@@ -2915,16 +2915,16 @@ export async function getFeedbackSummary(
 ): Promise<{ total: number; delivered: number; failed: number; deliveryRate: number }> {
   const { data, error } = await supabase
     .from('feedback')
-    .select('rating, agent_wallet, consumer_wallet, tx_signature')
+    .select('rating, agent_wallet, consumer_wallet, tx_signature, created_at')
     .eq('chain', chain)
     .eq('agent_wallet', agentWallet);
 
   if (error) throw error;
 
-  const rows = await keepPayeeVerifiedFeedback(
-    (data ?? []) as { rating: string; agent_wallet: string; consumer_wallet: string; tx_signature: string }[],
+  const rows = onePerPayer(await keepPayeeVerifiedFeedback(
+    (data ?? []) as { rating: string; agent_wallet: string; consumer_wallet: string; tx_signature: string; created_at: string }[],
     chain,
-  );
+  ));
   const total = rows.length;
   const delivered = rows.filter((r) => r.rating === 'delivered').length;
   const failed = total - delivered;
@@ -2973,15 +2973,15 @@ export async function getFeedbackSummariesForWallets(
     const chunk = agentWallets.slice(i, i + ADDRESS_IN_CHUNK);
     const { data, error } = await supabase
       .from('feedback')
-      .select('agent_wallet, rating, consumer_wallet, tx_signature')
+      .select('agent_wallet, rating, consumer_wallet, tx_signature, created_at')
       .eq('chain', chain)
       .in('agent_wallet', chunk);
 
     if (error) throw error;
-    const verified = await keepPayeeVerifiedFeedback(
-      (data ?? []) as { agent_wallet: string; rating: string; consumer_wallet: string; tx_signature: string }[],
+    const verified = onePerPayer(await keepPayeeVerifiedFeedback(
+      (data ?? []) as { agent_wallet: string; rating: string; consumer_wallet: string; tx_signature: string; created_at: string }[],
       chain,
-    );
+    ));
     for (const row of verified) {
       const current = out.get(row.agent_wallet) ?? { total: 0, delivered: 0, failed: 0, deliveryRate: 0 };
       current.total++;

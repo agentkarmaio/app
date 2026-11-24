@@ -31,6 +31,9 @@ const VALID_RATINGS: FeedbackRating[] = ['delivered', 'failed'];
  *   message:      string — the signed message (must match expected format)
  */
 export async function POST(request: NextRequest) {
+  const gate = await enforceRateLimit('feedback-post', request);
+  if (!gate.ok) return gate.response;
+
   let body: Record<string, unknown>;
   try {
     body = await request.json();

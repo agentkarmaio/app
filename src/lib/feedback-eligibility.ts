@@ -30,3 +30,21 @@ export function feedbackIneligibility(
   if (tx.counterparty !== rating.agentWallet) return 'tx_not_paid_to_agent';
   return null;
 }
+
+/**
+ * One vote per payer per agent: a payer's latest rating stands for all of its
+ * receipts with that agent. Repeat payments from one wallet are loyalty (Tier
+ * 2), not independent attestations; counting each would let a single payer
+ * buy a rating majority with many small payments.
+ */
+export function onePerPayer<T extends { agent_wallet: string; consumer_wallet: string; created_at: string }>(
+  rows: T[],
+): T[] {
+  const latest = new Map<string, T>();
+  for (const r of rows) {
+    const key = `${r.agent_wallet}\u0000${r.consumer_wallet}`;
+    const prev = latest.get(key);
+    if (!prev || r.created_at > prev.created_at) latest.set(key, r);
+  }
+  return [...latest.values()];
+}

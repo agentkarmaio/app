@@ -23,9 +23,12 @@ const FEEDBACK = [
   { agent_wallet: AGENT, consumer_wallet: 'demo-counterparty-x', rating: 'failed', tx_signature: 'sig-own', created_at: '2026-11-03T00:00:00Z' },
   // tx unknown to us
   { agent_wallet: AGENT, consumer_wallet: PAYER, rating: 'failed', tx_signature: 'sig-missing', created_at: '2026-11-04T00:00:00Z' },
+  // same payer, second genuine paid tx — counts once in summaries (older, so sig-ok's rating wins)
+  { agent_wallet: AGENT, consumer_wallet: PAYER, rating: 'failed', tx_signature: 'sig-ok-2', created_at: '2026-10-01T00:00:00Z' },
 ];
 const TXS = [
   { tx_signature: 'sig-ok', wallet_address: PAYER, counterparty: AGENT },
+  { tx_signature: 'sig-ok-2', wallet_address: PAYER, counterparty: AGENT },
   { tx_signature: 'sig-other', wallet_address: PAYER, counterparty: 'ELSEWHERE' },
   { tx_signature: 'sig-own', wallet_address: AGENT, counterparty: 'VENDOR' },
 ];
@@ -61,12 +64,13 @@ describe('payee-verified feedback reads', () => {
 
   test('getFeedbackForAgent lists only verified rows', async () => {
     fakeDb();
-    expect((await db.getFeedbackForAgent(AGENT)).map((r) => r.tx_signature)).toEqual(['sig-ok']);
+    // Listing shows every verified receipt; only summaries collapse per payer.
+    expect((await db.getFeedbackForAgent(AGENT)).map((r) => r.tx_signature)).toEqual(['sig-ok', 'sig-ok-2']);
   });
 
   test('getFeedbackRatingsForSignatures returns only verified ratings', async () => {
     fakeDb();
-    const m = await db.getFeedbackRatingsForSignatures(['sig-ok', 'sig-other', 'sig-own']);
-    expect([...m.keys()]).toEqual(['sig-ok']);
+    const m = await db.getFeedbackRatingsForSignatures(['sig-ok', 'sig-ok-2', 'sig-other', 'sig-own']);
+    expect([...m.keys()].sort()).toEqual(['sig-ok', 'sig-ok-2']);
   });
 });
