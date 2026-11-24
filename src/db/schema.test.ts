@@ -5,14 +5,20 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
-  CHAINS, DEFAULT_CHAIN, isChain, indexerCursorsTable, walletsTable,
+  CHAINS, DEFAULT_CHAIN, isChain, isPublicChain, isApiOnlyChain, indexerCursorsTable, walletsTable,
   LIVENESS_STATUSES, getLivenessStatus,
 } from './schema';
 import type { IndexerCursor, Wallet } from './schema';
 
 describe('CHAINS dimension', () => {
-  test('includes arc alongside solana, celo and stellar, plus API-only stellar-testnet', () => {
-    expect([...CHAINS]).toEqual(['solana', 'celo', 'stellar', 'arc', 'arc-mainnet', 'stellar-testnet']);
+  test('includes arc alongside solana, celo and stellar, plus API-only stellar-testnet and robinhood', () => {
+    expect([...CHAINS]).toEqual(['solana', 'celo', 'stellar', 'arc', 'arc-mainnet', 'stellar-testnet', 'robinhood']);
+  });
+
+  test('robinhood is a public chain, not API-only', () => {
+    expect(isChain('robinhood')).toBe(true);
+    expect(isPublicChain('robinhood')).toBe(true);
+    expect(isApiOnlyChain('robinhood')).toBe(false);
   });
 
   test('isChain accepts stellar, rejects unknown', () => {

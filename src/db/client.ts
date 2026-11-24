@@ -404,8 +404,15 @@ export interface LeaderboardFilters {
   chain?: Chain;
 }
 
+/**
+ * A row of the `explore_agents` view: the `wallets` projection plus the
+ * view-only registry agentId column for Robinhood Chain (registry-only, so it
+ * has no `wallets.*_agent_id` column).
+ */
+export type ExploreWallet = Wallet & { robinhood_agent_id?: number | null };
+
 export interface LeaderboardPage {
-  wallets: Wallet[];
+  wallets: ExploreWallet[];
   total: number;
 }
 
@@ -448,7 +455,9 @@ export async function getLeaderboard(
   if (isHiddenChain(filters.chain)) return { wallets: [], total: 0 };
   // count: 'exact' over 86k+ wallets is the slow path. Skip when caller doesn't
   // need the total (e.g. homepage cache, where only the page rows are used).
-  if (filters.chain === 'arc-mainnet') {
+  // Arc mainnet and registry-only Robinhood Chain have no score-bearing
+  // `wallets` population; their agents live in the unified view.
+  if (filters.chain === 'arc-mainnet' || filters.chain === 'robinhood') {
     return getUnifiedAgentsPage(limit, offset, { chain: filters.chain, status: filters.status,
       tiers: filters.tier ? [filters.tier] : undefined }, { field: 'provider_score', direction: 'desc' });
   }
@@ -575,6 +584,7 @@ async function getUnifiedAgentsPage(
     .order('celo_agent_id', { ascending: true })
     .order('arc_agent_id', { ascending: true })
     .order('stellar_agent_id', { ascending: true })
+    .order('robinhood_agent_id', { ascending: true })
     .range(offset, offset + limit - 1);
 
   if (error) throw error;
@@ -787,13 +797,16 @@ export async function searchWallets(query: string, limit = 8): Promise<WalletSea
  * highest-scored match deterministically rather than risk a multi-row throw.
  */
 export async function getWalletByAgentId(chain: Chain, agentId: number): Promise<Wallet | null> {
-  if (chain === 'arc-mainnet' || isApiOnlyChain(chain)) {
+  if (chain === 'arc-mainnet' || chain === 'robinhood' || isApiOnlyChain(chain)) {
     if (!Number.isSafeInteger(agentId) || agentId < 0 || agentId > MAX_INT32) return null;
     // Registry identity is per agentId in the view (owner-collapsed `wallets`
-    // rows can't carry it). Testnet projects its id into stellar_agent_id.
+    // rows can't carry it). Testnet projects its id into stellar_agent_id;
+    // registry-only Robinhood has its own view column.
     const [view, col] = chain === 'arc-mainnet'
       ? ['explore_agents', 'arc_agent_id'] as const
-      : ['stellar_testnet_agents', 'stellar_agent_id'] as const;
+      : chain === 'robinhood'
+        ? ['explore_agents', 'robinhood_agent_id'] as const
+        : ['stellar_testnet_agents', 'stellar_agent_id'] as const;
     const { data, error } = await supabase.from(view).select('*')
       .eq('chain', chain).eq(col, agentId).limit(1);
     if (error) throw error;

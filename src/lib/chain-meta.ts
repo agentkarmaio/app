@@ -36,6 +36,9 @@ export const CHAIN_META: Record<Chain, ChainMeta> = {
   // API-only (served to partner explorers, never on agentkarma.io). It has no
   // page of its own; activeChainFromPath skips it so /stellar stays mainnet.
   'stellar-testnet': { label: 'Stellar testnet', logo: '/logos/stellar.svg', href: '/stellar' },
+  // Robinhood Chain (EVM, chainId 4663). Registry-only: ERC-8004 identity +
+  // feedback mirror, declared Provider score, no payment indexer.
+  robinhood: { label: 'Robinhood Chain', logo: '/logos/robinhood-chain.svg', href: '/robinhood' },
 };
 
 /** Public networks only, with the UI default first and the remaining networks
@@ -47,7 +50,7 @@ export function chainOptions(): Chain[] {
 
 /** EVM chains share the same injected-wallet (EIP-1193) connection path. */
 export function isEvmChain(chain: Chain): boolean {
-  return chain === 'celo' || chain === 'arc' || chain === 'arc-mainnet';
+  return chain === 'celo' || chain === 'arc' || chain === 'arc-mainnet' || chain === 'robinhood';
 }
 
 /**
@@ -61,7 +64,7 @@ export function isEvmChain(chain: Chain): boolean {
  * EIP-1193 connect flow.
  */
 export function isRegistryMirrorChain(chain: Chain | null | undefined): chain is Chain {
-  return chain === 'celo' || chain === 'arc' || chain === 'stellar';
+  return chain === 'celo' || chain === 'arc' || chain === 'stellar' || chain === 'robinhood';
 }
 
 /**
@@ -132,6 +135,7 @@ export function registryExplorerLink(chain: Chain, agentId: number): RegistryExp
   if (!Number.isSafeInteger(agentId) || agentId < 0) return null;
   const host = chain === 'celo' ? '8004scan.io/agents/celo'
     : chain === 'arc-mainnet' ? '8004scan.io/agents/arc'
+    : chain === 'robinhood' ? '8004scan.io/agents/robinhood-chain'
     : chain === 'stellar' ? 'stellar8004.com/agents'
     : null;
   if (!host) return null;

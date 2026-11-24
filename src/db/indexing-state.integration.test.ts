@@ -634,6 +634,47 @@ test('active listing and transaction aggregates exclude archived testnet without
   expect(query("SELECT amount::numeric FROM transactions WHERE chain='arc';")).toBe('100.000000000000000000');
 });
 
+describe('robinhood (registry-only) at the database', () => {
+  test('migration 0032 widens the chain check, seeds the registry path launch-dark, and is re-runnable', () => {
+    const migration = readFileSync(resolve('drizzle/0032_robinhood_chain.sql'), 'utf8');
+    query(migration); query(migration);
+    expect(query("SELECT path || ':' || enabled || ':' || interval_ms FROM indexing_state WHERE chain='robinhood';"))
+      .toBe('registry:false:3600000');
+    // Disabled until an operator flips it: no lease is granted.
+    expect(acquire(ownerA, 'robinhood', 'registry')).toBe('');
+  });
+
+  test('a lost state row is recreated disabled, never enabled by the first worker', () => {
+    expect(acquire(ownerA, 'robinhood', 'registry')).toBe('');
+    expect(query("SELECT enabled FROM indexing_state WHERE chain='robinhood' AND path='registry';")).toBe('f');
+  });
+
+  test('the public view lists robinhood agents with declared scores and hides bulk registrars', () => {
+    query(readFileSync(resolve('src/db/sql/explore-agents-view.sql'), 'utf8'));
+    query(readFileSync(resolve('src/db/sql/aggregate-functions.sql'), 'utf8'));
+    query(`INSERT INTO erc8004_agents(chain,agent_id,owner,agent_wallet,metadata_score,registration,token_uri) VALUES
+      ('robinhood',0,'0xowner','0x0000000000000000000000000000000000000000',82,'{"name":"Real"}','https://a-identity.xyz/.well-known/agent-card.json'),
+      ('robinhood',1,'0xbulk','0xbulk',90,'{"name":"Template"}','https://bv7x.ai/a/abc'),
+      ('robinhood',2,'0xbulk','0xbulk',90,'{"name":"Sub"}','https://app.bv7x.ai/a/abc'),
+      ('robinhood',3,'0xprobe','0xprobe',71,'{"name":"Canary"}','https://hoodai.fly.dev/api/agent/3'),
+      ('robinhood',4,'0xipfs','0xipfs',95,'{"name":"Pinned"}','ipfs://bafy'),
+      ('celo',1,'0xceloowner','0xceloowner',70,'{"name":"Celo"}','https://bv7x.ai/a/celo');`);
+    const rows = JSON.parse(query(`SELECT json_agg(t ORDER BY robinhood_agent_id) FROM (SELECT chain,address,display_name,
+      robinhood_agent_id,celo_agent_id,provider_score,consumer_score,trust_tier,confidence_badge,rank_score
+      FROM explore_agents WHERE chain='robinhood') t;`));
+    expect(rows).toEqual([
+      { chain: 'robinhood', address: '0xowner', display_name: 'Real', robinhood_agent_id: 0, celo_agent_id: null,
+        provider_score: 82, consumer_score: null, trust_tier: 'Very Good', confidence_badge: 'declared', rank_score: 57.4 },
+      { chain: 'robinhood', address: '0xipfs', display_name: 'Pinned', robinhood_agent_id: 4, celo_agent_id: null,
+        provider_score: 95, consumer_score: null, trust_tier: 'Excellent', confidence_badge: 'declared', rank_score: 66.5 },
+    ]);
+    // The exclusion is scoped to robinhood: the same host on Celo is untouched.
+    expect(query("SELECT count(*) FROM explore_agents WHERE chain='celo';")).toBe('1');
+    // Totals count the same population the list shows.
+    expect(query('SELECT sum(count) FROM get_tier_distribution();')).toBe(query('SELECT count(*) FROM explore_agents;'));
+  });
+});
+
 describe('stellar-testnet (API-only) at the database', () => {
   test('migration 0026 widens the chain check, registers both paths, and is re-runnable', () => {
     const migration = readFileSync(resolve('drizzle/0026_stellar_testnet.sql'), 'utf8');

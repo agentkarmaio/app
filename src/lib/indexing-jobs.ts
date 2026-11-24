@@ -97,7 +97,7 @@ export function registryScanReason(
 }
 
 /** Well inside the registry job deadline, so a catching-up run ends through `finish`. */
-const ARC_MAINNET_REGISTRY_BUDGET_MS = 600_000;
+const REGISTRY_BUDGET_MS = 600_000;
 
 export interface JobOptions {
   limit?: number;
@@ -193,7 +193,7 @@ export function createIndexingJob(
         const r = await runCeloX402Indexer({ signal });
         return coverageOutcome(r.coverage, r.inserted);
       }
-      if ((chain === 'celo' || chain === 'arc-mainnet') && path === 'registry') {
+      if ((chain === 'celo' || chain === 'arc-mainnet' || chain === 'robinhood') && path === 'registry') {
         const { getRegistryConfig } =
           await import('@/config/erc8004-registries');
         const { runIncrementalRegistryScan } =
@@ -207,14 +207,17 @@ export function createIndexingJob(
           (c) => getRegistryCursorTip(c as Chain),
           (c, tip) => setRegistryCursorTip(c as Chain, tip),
           { rescanWindow: options.rescanWindow ?? 100, signal,
-            ...(chain === 'arc-mainnet' ? { timeBudgetMs: ARC_MAINNET_REGISTRY_BUDGET_MS, refreshCursor: {
+            // Large or fast-growing registries bank progress inside a budget and
+            // rotate a second window over older members (owner, wallet and
+            // feedback changes outside the recent rescan window).
+            ...(chain === 'arc-mainnet' || chain === 'robinhood' ? { timeBudgetMs: REGISTRY_BUDGET_MS, refreshCursor: {
               load: async () => {
-                const row = await getCursor('arc-mainnet-registry-refresh', chain);
+                const row = await getCursor(`${chain}-registry-refresh`, chain);
                 if (!row) return 0;
                 if (!/^\d+$/.test(row.last_signature)) throw new Error('configuration_invalid');
                 return Number(row.last_signature);
               },
-              save: async (nextId: number) => upsertCursor('arc-mainnet-registry-refresh', String(nextId), undefined, chain),
+              save: async (nextId: number) => upsertCursor(`${chain}-registry-refresh`, String(nextId), undefined, chain),
             } } : {}),
           },
         );

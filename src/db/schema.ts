@@ -17,11 +17,11 @@ import {
 // this union and feeds the composite primary key on `wallets` plus every
 // foreign key that references it. NEVER reuse a value across chains — Solana/
 // Stellar are format-disjoint, but Celo and Arc are BOTH EVM (0x40hex) and
-// indistinguishable by address alone, so the composite (chain, address) PK is
-// the durable correctness guarantee — never auto-detect an EVM chain from the
-// address (see lib/chain-detect.ts).
+// indistinguishable by address alone (as is Robinhood Chain, chainId 4663), so
+// the composite (chain, address) PK is the durable correctness guarantee —
+// never auto-detect an EVM chain from the address (see lib/chain-detect.ts).
 
-export const CHAINS = ['solana', 'celo', 'stellar', 'arc', 'arc-mainnet', 'stellar-testnet'] as const;
+export const CHAINS = ['solana', 'celo', 'stellar', 'arc', 'arc-mainnet', 'stellar-testnet', 'robinhood'] as const;
 export type Chain = (typeof CHAINS)[number];
 export const DEFAULT_CHAIN: Chain = 'solana';
 
@@ -1228,7 +1228,7 @@ export const indexingStateTable = pgTable('indexing_state', {
   generation: integer('generation').notNull().default(0),
 }, (table) => [
   primaryKey({ columns: [table.chain, table.path], name: 'indexing_state_pkey' }),
-  check('indexing_state_chain_check', sql`${table.chain} IN ('solana', 'arc', 'celo', 'stellar', 'arc-mainnet', 'stellar-testnet')`),
+  check('indexing_state_chain_check', sql`${table.chain} IN ('solana', 'arc', 'celo', 'stellar', 'arc-mainnet', 'stellar-testnet', 'robinhood')`),
   check('indexing_state_path_check', sql`${table.path} IN ('payments', 'escrow', 'transfers', 'registry', 'bonds')`),
   check('indexing_state_status_check', sql`${table.status} IS NULL OR ${table.status} IN ('caught_up', 'catching_up', 'dormant', 'failed')`),
   check('indexing_state_counts_check', sql`${table.checked_count} >= 0 AND ${table.pending_count} >= 0 AND ${table.inserted_count} >= 0 AND ${table.unresolved_count} >= 0 AND ${table.gaps_count} >= 0 AND ${table.generation} >= 0`),

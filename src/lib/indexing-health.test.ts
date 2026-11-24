@@ -218,3 +218,10 @@ describe('coverage counts are reported separately', () => {
     expect(path?.gaps).toBe(0);
   });
 });
+
+test('robinhood registry is a public health path', () => {
+  expect(INDEXING_PATHS).toContainEqual(expect.objectContaining({ chain: 'robinhood', path: 'registry' }));
+  const result = buildIndexingHealth(INDEXING_PATHS.map(def => row(def.chain, def.path, { enabled: def.chain !== 'arc' })), now);
+  expect(result.chains.map(c => c.chain)).toContain('robinhood');
+});
+

@@ -25,6 +25,7 @@ describe('explorerAddressUrl', () => {
     ['celo', '0xW', 'https://celoscan.io/address/0xW'],
     ['arc', '0xW', 'https://testnet.arcscan.app/address/0xW'],
     ['arc-mainnet', '0xW', 'https://explorer.arc.io/address/0xW'],
+    ['robinhood', '0xW', 'https://robinhoodchain.blockscout.com/address/0xW'],
     ['stellar', 'G', 'https://stellar.expert/explorer/public/account/G'],
   ] as const)('%s', (chain, addr, expected) => {
     expect(explorerAddressUrl(chain, addr)).toBe(expected);

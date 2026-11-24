@@ -32,6 +32,7 @@ import {
 import { decodeDataUriJson } from '@/lib/data-uri';
 import { isExcludedRegistrationUri, type Erc8004RegistryConfig } from '@/config/erc8004-registries';
 import { ARC_MAINNET_CHAIN_ID, parseArcMainnetRpcUrl } from '@/config/arc-mainnet';
+import { parseRobinhoodRpcUrl } from '@/config/robinhood-chain';
 import type { AgentRegistrationFile } from '@/integrations/erc8004-celo';
 import { DEFAULT_IPFS_GATEWAY, ipfsGateway as ipfsGatewayUrl, registrationFetchUrl } from '@/lib/registration-fetch';
 import type { Erc8004RegistrationStatus } from '@/db/schema';
@@ -318,7 +319,9 @@ export function aggregateAgentFeedback(records: ScannedFeedback[]): FeedbackAgg 
 export function makeRegistryClient(config: Erc8004RegistryConfig): PublicClient {
   const rpcUrl = config.chain === 'arc-mainnet'
     ? parseArcMainnetRpcUrl(process.env.ARC_MAINNET_RPC_URL)
-    : process.env[config.rpcEnvVar];
+    : config.chain === 'robinhood'
+      ? parseRobinhoodRpcUrl(process.env.ROBINHOOD_RPC_URL)
+      : process.env[config.rpcEnvVar];
   return createPublicClient({
     chain: config.viemChain,
     transport: http(rpcUrl, { batch: true, retryCount: 3, retryDelay: 400 }),
@@ -337,8 +340,12 @@ async function admittedRegistryClient(config: Erc8004RegistryConfig, opts: Regis
       throw new Error('configuration_invalid');
     }
   }
+  if (config.chain === 'robinhood') parseRobinhoodRpcUrl(process.env.ROBINHOOD_RPC_URL);
   const client = opts.client ?? makeRegistryClient(config);
-  if (config.chain !== 'arc-mainnet') return client;
+  const isArcMainnet = config.chain === 'arc-mainnet';
+  if (!isArcMainnet && !config.verifyAdmission) return client;
+  const expectedChainId = isArcMainnet ? ARC_MAINNET_CHAIN_ID : config.viemChain.id;
+  const mismatch = isArcMainnet ? 'arc_mainnet_chain_mismatch' : 'rpc_chain_mismatch';
   const rpc = async <T>(read: () => Promise<T>): Promise<T> => {
     const result = await withRateLimitRetry(() => { opts.signal?.throwIfAborted(); return read(); });
     opts.signal?.throwIfAborted();
@@ -346,7 +353,7 @@ async function admittedRegistryClient(config: Erc8004RegistryConfig, opts: Regis
   };
   try {
     if (!client.getChainId || !client.getBytecode) throw new Error('registry_read_failure');
-    if (await rpc(() => client.getChainId!()) !== ARC_MAINNET_CHAIN_ID) throw new Error('arc_mainnet_chain_mismatch');
+    if (await rpc(() => client.getChainId!()) !== expectedChainId) throw new Error(mismatch);
     const multicall = config.viemChain.contracts?.multicall3?.address;
     if (!multicall) throw new Error('registry_read_failure');
     for (const address of [config.identityRegistry, config.reputationRegistry, multicall]) {
@@ -361,7 +368,7 @@ async function admittedRegistryClient(config: Erc8004RegistryConfig, opts: Regis
     }
   } catch (error) {
     opts.signal?.throwIfAborted();
-    if (error instanceof Error && ['arc_mainnet_chain_mismatch', 'registry_read_failure'].includes(error.message)) throw error;
+    if (error instanceof Error && ['arc_mainnet_chain_mismatch', 'rpc_chain_mismatch', 'registry_read_failure'].includes(error.message)) throw error;
     // Provider errors can carry credential-bearing URLs. Emit only stable codes.
     const seen = new Set<unknown>();
     let current = error;

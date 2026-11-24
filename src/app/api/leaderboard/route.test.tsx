@@ -57,3 +57,26 @@ test('mainnet table renders an absent score and distinct links for a shared wall
   expect(html).toContain('chain=arc-mainnet&amp;agentId=1');
   expect(html).not.toContain('>0.0<');
 });
+
+// Robinhood Chain is registry-only: declared scores, no Solana delivery/history.
+const robinhood = (id: number): Partial<Wallet> => ({ chain: 'robinhood', address, robinhood_agent_id: id,
+  score: 82, provider_score: 82, consumer_score: null as unknown as number, tx_count: 0,
+  trust_tier: 'Very Good', confidence_badge: 'declared', last_seen: null } as Partial<Wallet>);
+
+test('robinhood rows keep declared scores, carry their agentId and skip legacy enrichment', async () => {
+  const state = setup([robinhood(0), robinhood(7)]);
+  const body = await (await GET(new NextRequest('http://localhost/api/leaderboard?chain=robinhood'))).json();
+  expect(body.wallets.map((w: {agentId:number}) => w.agentId)).toEqual([0, 7]);
+  expect(body.wallets[0]).toMatchObject({ chain: 'robinhood', score: 82, providerScore: 82, confidenceBadge: 'declared', delivery: null, trend: [] });
+  expect(state.delivery).not.toHaveBeenCalled();
+  expect(state.history).not.toHaveBeenCalled();
+});
+
+test('robinhood table rows link to the exact registry identity', () => {
+  const entries = [0, 1].map(agentId => ({ rank: agentId + 1, chain: 'robinhood', address,
+    agentId, score: 82, trustTier: 'Very Good', txCount: 0, lastSeen: null })) as LeaderboardEntry[];
+  const html = renderToStaticMarkup(LeaderboardTable({ entries }));
+  expect(html).toContain('chain=robinhood&amp;agentId=0');
+  expect(html).toContain('chain=robinhood&amp;agentId=1');
+});
+

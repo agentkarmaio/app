@@ -68,3 +68,16 @@ describe('GET /api/explore/agents payment totals', () => {
     expect(agents.mock.calls[0][0]).toBe(100);
   });
 });
+
+describe('GET /api/explore/agents robinhood rows', () => {
+  test('a robinhood registry row links by its own agentId, including agent zero', async () => {
+    const evm = { ...base, address: '0x823638645f65ad589ea5484a0952b971b20ee0ec', stellar_agent_id: null };
+    agents.mockResolvedValue({ total: 2, wallets: [
+      { ...evm, chain: 'robinhood', robinhood_agent_id: 0 },
+      { ...evm, chain: 'robinhood', robinhood_agent_id: 26457 },
+    ] as unknown as Wallet[] });
+    const out = await rows(await get('?chain=robinhood'));
+    expect(out.map(r => [r.chain, r.agentId])).toEqual([['robinhood', 0], ['robinhood', 26457]]);
+    expect(agents.mock.calls[0][2]).toMatchObject({ chain: 'robinhood' });
+  });
+});

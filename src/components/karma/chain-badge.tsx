@@ -73,6 +73,17 @@ function ArcMark({ className = 'size-3 shrink-0' }: { className?: string }) {
   );
 }
 
+// Robinhood Chain: neutral rounded-square glyph until the chain's own network
+// icon is sourced (its brand-use terms must be read first).
+function RobinhoodChainMark({ className = 'size-3 shrink-0' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 12 12" aria-hidden className={className}>
+      <rect x="1" y="1" width="10" height="10" rx="2.5" fill="none" stroke="#b6e86a" strokeWidth="1.6" />
+      <circle cx="6" cy="6" r="1.8" fill="#b6e86a" />
+    </svg>
+  );
+}
+
 const MARKS: Record<Chain, ChainMark> = {
   solana: {
     label: 'Solana',
@@ -122,6 +133,11 @@ const MARKS: Record<Chain, ChainMark> = {
     testnet: true,
     tint: { bg: 'rgb(207_233_255/0.08)', border: 'rgb(207_233_255/0.18)', fg: '#cfe9ff' },
     Mark: StellarMark,
+  },
+  robinhood: {
+    label: 'Robinhood Chain',
+    tint: { bg: 'rgb(182_232_106/0.10)', border: 'rgb(182_232_106/0.22)', fg: '#cdeea0' },
+    Mark: RobinhoodChainMark,
   },
 };
 

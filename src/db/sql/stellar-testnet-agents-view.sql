@@ -150,7 +150,9 @@ CREATE OR REPLACE VIEW stellar_testnet_agents AS
     p.last_at                            AS payments_last_received_at,
     COALESCE(s.sent, 0)                  AS payments_sent,
     COALESCE(s.usdc, 0)::text            AS payments_usdc_sent,
-    s.last_at                            AS payments_last_sent_at
+    s.last_at                            AS payments_last_sent_at,
+    -- Appended last to keep the projection aligned with explore_agents.
+    NULL::bigint                         AS robinhood_agent_id
   FROM erc8004_agents r
   LEFT JOIN wallets w ON w.chain = r.chain
     AND w.address = COALESCE(r.agent_wallet, r.owner)

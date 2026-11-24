@@ -16,10 +16,11 @@ import { ARC_MAINNET_EXCLUDED_REGISTRATION_HOSTS } from '@/config/arc-mainnet';
 import type { Chain } from '@/db/schema';
 import { IDENTITY_REGISTRY_CELO, REPUTATION_REGISTRY_CELO } from '@/integrations/erc8004-celo';
 import { IDENTITY_REGISTRY_ARC, REPUTATION_REGISTRY_ARC } from '@/integrations/erc8004-arc';
+import { ROBINHOOD_EXCLUDED_REGISTRATION_HOSTS, robinhoodChain } from '@/config/robinhood-chain';
 
 export interface Erc8004RegistryConfig {
   /** AK chain key (matches the `chain` column + the `wallets` PK dimension). */
-  chain: Extract<Chain, 'celo' | 'arc' | 'arc-mainnet'>;
+  chain: Extract<Chain, 'celo' | 'arc' | 'arc-mainnet' | 'robinhood'>;
   /** viem chain definition the scanner builds its public client from. */
   viemChain: ViemChain;
   identityRegistry: `0x${string}`;
@@ -37,6 +38,12 @@ export interface Erc8004RegistryConfig {
    * read 48k ids/min with no failures (measured 2026-11-04).
    */
   identityMulticallBatchBytes?: number;
+  /**
+   * Admit the RPC before any read: chainId must equal `viemChain.id`, the two
+   * registries and Multicall3 must have bytecode, and Reputation must point at
+   * Identity. Arc mainnet runs its own (older) form of this gate.
+   */
+  verifyAdmission?: boolean;
 }
 
 /** True when the URI's host is, or is a subdomain of, an excluded host. */
@@ -47,7 +54,7 @@ export function isExcludedRegistrationUri(uri: string, hosts: readonly string[] 
   return hosts.some(host => hostname === host || hostname.endsWith(`.${host}`));
 }
 
-export const ERC8004_REGISTRIES: Record<'celo' | 'arc' | 'arc-mainnet', Erc8004RegistryConfig> = {
+export const ERC8004_REGISTRIES: Record<'celo' | 'arc' | 'arc-mainnet' | 'robinhood', Erc8004RegistryConfig> = {
   celo: {
     chain: 'celo',
     viemChain: celo,
@@ -72,6 +79,17 @@ export const ERC8004_REGISTRIES: Record<'celo' | 'arc' | 'arc-mainnet', Erc8004R
     firstAgentId: 0,
     excludedRegistrationHosts: ARC_MAINNET_EXCLUDED_REGISTRATION_HOSTS,
     identityMulticallBatchBytes: 0,
+  },
+  robinhood: {
+    chain: 'robinhood',
+    viemChain: robinhoodChain,
+    // Verified on chain 4663 2026-11-24: v2.0.0, implementations identical to Celo's.
+    identityRegistry: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432',
+    reputationRegistry: '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63',
+    rpcEnvVar: 'ROBINHOOD_RPC_URL',
+    firstAgentId: 0,
+    excludedRegistrationHosts: ROBINHOOD_EXCLUDED_REGISTRATION_HOSTS,
+    verifyAdmission: true,
   },
 };
 

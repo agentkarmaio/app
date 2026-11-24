@@ -50,8 +50,8 @@ export async function GET(
 
   const agentId = Number(id);
   const isMainnet = chain === 'arc-mainnet';
-  // Registry-view chains resolve agentId 0 (stellar-8004 ids start at 0).
-  const allowsZero = isMainnet || isApiOnlyChain(chain);
+  // Registry-view chains resolve agentId 0 (stellar-8004 and Robinhood ids start at 0).
+  const allowsZero = isMainnet || chain === 'robinhood' || isApiOnlyChain(chain);
   if (!Number.isInteger(agentId) || agentId < (allowsZero ? 0 : 1) || agentId > MAX_INT32 || (allowsZero && !/^\d+$/.test(id))) {
     return NextResponse.json(
       { error: `agentId must be a ${allowsZero ? 'nonnegative' : 'positive'} integer within int32 range` },

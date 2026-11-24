@@ -35,7 +35,7 @@ import { readAgent, aggregateFeedback } from '@/integrations/erc8004-celo';
 import { getAdapter } from '@/chain-adapters/registry';
 import { resolveAgentChain } from '@/app/agent/[wallet]/resolve-chain';
 import { canonicalAddress } from '@/lib/chain-detect';
-import { agentHref } from '@/lib/agent-href';
+import { agentHref, registryRowAgentId } from '@/lib/agent-href';
 import {
   getScoreHistory,
   getLeaderboard,
@@ -107,9 +107,9 @@ const walletShape: { wallet: typeof walletSchema; chain: typeof chainSchema } = 
  * to span every chain.
  */
 export const chainFilterSchema = z
-  .enum(['solana', 'celo', 'stellar', 'arc', 'arc-mainnet'])
+  .enum(['solana', 'celo', 'stellar', 'arc', 'arc-mainnet', 'robinhood'])
   .optional()
-  .describe('Restrict results to solana / celo / stellar / arc (testnet) / arc-mainnet. Omit to span all networks.');
+  .describe('Restrict results to solana / celo / stellar / arc (testnet) / arc-mainnet / robinhood (Robinhood Chain). Omit to span all networks.');
 
 /**
  * Coercing integer param. LLM clients and test playgrounds routinely pass
@@ -767,7 +767,7 @@ function registerTools(server: McpServer): void {
     async ({ chain, limit }) => runTool('get_leaderboard', async () => {
       const take = limit ?? 10;
       const { wallets, total } = await getLeaderboard(take, 0, { chain });
-      const deliveries = new Map(await Promise.all([...new Set(wallets.filter(w => w.chain !== 'arc-mainnet').map(w => w.chain))].map(async network =>
+      const deliveries = new Map(await Promise.all([...new Set(wallets.filter(w => registryRowAgentId(w) === undefined).map(w => w.chain))].map(async network =>
         [network, await getFeedbackSummariesForWallets(wallets.filter(w => w.chain === network).map(w => w.address), network)] as const)));
       return jsonResult({
         chain: chain ?? null,
@@ -775,14 +775,15 @@ function registerTools(server: McpServer): void {
         count: wallets.length,
         agents: wallets.map((w, i) => {
           const mainnet = w.chain === 'arc-mainnet';
-          const delivery = mainnet ? null : deliveries.get(w.chain)?.get(w.address) ?? null;
+          const agentId = registryRowAgentId(w);
+          const delivery = agentId === undefined ? deliveries.get(w.chain)?.get(w.address) ?? null : null;
           const providerScore = w.provider_score != null ? Number(w.provider_score) : mainnet ? null : Number(w.score);
           return {
             rank: i + 1,
             address: w.address,
             chain: w.chain,
             displayName: w.display_name ?? null,
-            ...(mainnet ? { agentId: w.arc_agent_id ?? null } : {}),
+            ...(agentId !== undefined ? { agentId } : {}),
             score: mainnet ? providerScore : Number(w.score),
             providerScore,
             consumerScore: w.consumer_score != null ? Number(w.consumer_score) : null,
@@ -793,7 +794,7 @@ function registerTools(server: McpServer): void {
             delivery: delivery
               ? { total: delivery.total, deliveryRate: delivery.deliveryRate }
               : null,
-            profileUrl: profileUrl(w.address, w.chain, mainnet ? w.arc_agent_id : undefined),
+            profileUrl: profileUrl(w.address, w.chain, agentId ?? undefined),
           };
         }),
       });
@@ -962,7 +963,7 @@ function faceJson(b: { score: number; trustTier: string; confidenceBadge: string
 
 function profileUrl(addr: string, chain?: Chain, agentId?: number | null): string {
   const origin = process.env.NEXT_PUBLIC_APP_URL ?? 'https://agentkarma.io';
-  const path = chain === 'arc-mainnet' || chain === 'arc'
+  const path = chain === 'arc-mainnet' || chain === 'arc' || chain === 'robinhood'
     ? agentHref({ chain, address: canonicalAddress(addr, chain), agentId }) : `/agent/${addr}`;
   return `${origin}${path}`;
 }

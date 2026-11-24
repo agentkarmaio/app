@@ -63,6 +63,8 @@ export const INDEXING_PATHS: ReadonlyArray<{
   },
   { chain: 'arc-mainnet', path: 'transfers', label: 'Agent transfers', intervalMs: 300_000 },
   { chain: 'arc-mainnet', path: 'registry', label: 'Agent registry', intervalMs: 900_000 },
+  // Registry-only chain: identity + feedback mirror, no payment path.
+  { chain: 'robinhood', path: 'registry', label: 'Agent registry', intervalMs: 3_600_000 },
   // API-only network: run by .github/workflows/stellar-testnet-refresh.yml, never
   // by the in-app workers, and absent from the public health projection below.
   { chain: 'stellar-testnet', path: 'registry', label: 'Agent registry', intervalMs: 3_600_000 },
@@ -160,7 +162,7 @@ function publicIssue(row: HealthStateRow | undefined, now: number): IndexingIssu
 }
 /** A small explicit projection: never serialize the private worker row. */
 export function buildIndexingHealth(rows: HealthStateRow[], now = Date.now()) {
-  const chains = (['solana', 'arc', 'celo', 'stellar', 'arc-mainnet'] as Chain[]).map(
+  const chains = (['solana', 'arc', 'celo', 'stellar', 'arc-mainnet', 'robinhood'] as Chain[]).map(
     (chain) => {
       const paths = INDEXING_PATHS.filter((p) => p.chain === chain).map(
         (def) => {

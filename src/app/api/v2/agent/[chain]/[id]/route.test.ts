@@ -86,3 +86,19 @@ describe('stellar-testnet agent ID API (API-only)', () => {
     expect(body.profileUrl).toBe(`/agent/${G}`);
   });
 });
+
+describe('robinhood agent ID API (registry-only)', () => {
+  test('agent 0 resolves from the registry view with its declared score and an exact profile link', async () => {
+    projected.mockResolvedValue({ chain: 'robinhood', address, display_name: 'a-identity', score: 82, provider_score: 82,
+      consumer_score: null, confidence_badge: 'declared', trust_tier: 'Very Good' } as unknown as Wallet);
+    const response = await get('0', 'robinhood');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ chain: 'robinhood', agentId: 0, address, displayName: 'a-identity',
+      score: 82, providerScore: 82, consumerScore: null, trustTier: 'Very Good', confidenceBadge: 'declared',
+      profileUrl: `/agent/${address}?chain=robinhood&agentId=0` });
+    expect(projected).toHaveBeenCalledWith('robinhood', 0);
+    expect(registry).not.toHaveBeenCalled();
+    expect(receipts).not.toHaveBeenCalled();
+  });
+});
+

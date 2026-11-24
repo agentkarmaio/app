@@ -11,6 +11,7 @@ import {
   getStellarAgentId, setStellarAgentId, claimDirtyWallets, markWalletsDirty,
   ADDRESS_IN_CHUNK, getStats, getArcDashboardStats, normalizeCounterparty, getAgents,
   getLeaderboard,
+  getWalletByAgentId,
   getTransactionsForWallets,
   getAllTransactions,
   markAllWalletsDirty,
@@ -1485,7 +1486,27 @@ describe('liveness status filters read observed activity', () => {
 
   const lastSeenPreds = (preds: Pred[]) => preds.filter((p) => p.column === 'last_seen');
 
-  for (const chain of ['celo', 'stellar'] as const) {
+  test('getWalletByAgentId(robinhood) reads the registry view by robinhood_agent_id, including zero', async () => {
+    const fake = makePredicateRecordingFake();
+    __setSupabaseForTest(fake);
+    await getWalletByAgentId('robinhood', 0);
+    expect(fake.__preds[0]).toEqual({ method: 'from', column: 'explore_agents', value: null });
+    expect(fake.__preds).toContainEqual({ method: 'eq', column: 'chain', value: 'robinhood' });
+    expect(fake.__preds).toContainEqual({ method: 'eq', column: 'robinhood_agent_id', value: 0 });
+  });
+
+  // Robinhood Chain is registry-only: no `wallets` rows exist, so a leaderboard
+  // read from `wallets` would always be empty. It reads the unified view.
+  test('getLeaderboard(chain=robinhood) reads the explore_agents view, not wallets', async () => {
+    const fake = makePredicateRecordingFake();
+    __setSupabaseForTest(fake);
+    await getLeaderboard(25, 0, { chain: 'robinhood' });
+    expect(fake.__preds[0]).toEqual({ method: 'from', column: 'explore_agents', value: null });
+    expect(fake.__preds).toContainEqual({ method: 'eq', column: 'chain', value: 'robinhood' });
+    expect(fake.__preds).toContainEqual({ method: 'order', column: 'robinhood_agent_id', value: { ascending: true } });
+  });
+
+  for (const chain of ['celo', 'stellar', 'robinhood'] as const) {
     for (const status of ['Active', 'Recent', 'Dormant', 'Inactive', 'Unobserved'] as const) {
       test(`${chain} ${status} filters measured liveness instead of short-circuiting`, async () => {
         const fake = makePredicateRecordingFake();

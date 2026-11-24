@@ -14,6 +14,8 @@ import {
   agentChainFromPath,
   activeChainFromPath,
   registryExplorerLink,
+  isEvmChain,
+  isRegistryMirrorChain,
 } from './chain-meta';
 
 describe('chain-meta', () => {
@@ -41,7 +43,7 @@ describe('chain-meta', () => {
   test('chainOptions() lists active networks and preserves the historical schema', () => {
     const opts = chainOptions();
     expect(opts[0]).toBe(UI_DEFAULT_CHAIN);
-    expect(opts).toEqual(['stellar', 'solana', 'celo', 'arc-mainnet']);
+    expect(opts).toEqual(['stellar', 'solana', 'celo', 'arc-mainnet', 'robinhood']);
     expect(CHAINS).toContain('arc');
     expect(opts).not.toContain('arc');
     expect(new Set(opts).size).toBe(opts.length); // no dupes
@@ -57,6 +59,18 @@ describe('chain-meta', () => {
     for (const c of chainOptions()) {
       expect(CHAIN_META[c].logo).toMatch(/^\/logos\/.+\.svg$/);
     }
+  });
+});
+
+describe('robinhood chain classification', () => {
+  test('is EVM (0x addresses, injected-wallet path) and a registry-mirror chain', () => {
+    expect(isEvmChain('robinhood')).toBe(true);
+    expect(isRegistryMirrorChain('robinhood')).toBe(true);
+  });
+
+  test('owns /robinhood as its context page', () => {
+    expect(CHAIN_META.robinhood.href).toBe('/robinhood');
+    expect(activeChainFromPath('/robinhood')).toBe('robinhood');
   });
 });
 
@@ -122,6 +136,13 @@ describe('registryExplorerLink', () => {
   test('celo and arc mainnet use 8004scan network-scoped paths', () => {
     expect(registryExplorerLink('celo', 9058)).toEqual({ url: 'https://8004scan.io/agents/celo/9058', label: '8004scan.io/agents/celo/9058' });
     expect(registryExplorerLink('arc-mainnet', 228)).toEqual({ url: 'https://8004scan.io/agents/arc/228', label: '8004scan.io/agents/arc/228' });
+  });
+
+  // Verified 2026-11-24 by content: /agents/robinhood-chain/26469 renders
+  // "Agent #26469"; a missing id renders "Agent Not Found". Other slugs 404.
+  test('robinhood uses the 8004scan robinhood-chain slug', () => {
+    expect(registryExplorerLink('robinhood', 26469)).toEqual({ url: 'https://8004scan.io/agents/robinhood-chain/26469', label: '8004scan.io/agents/robinhood-chain/26469' });
+    expect(registryExplorerLink('robinhood', 0)).toEqual({ url: 'https://8004scan.io/agents/robinhood-chain/0', label: '8004scan.io/agents/robinhood-chain/0' });
   });
 
   test('stellar uses the stellar-8004 explorer — 8004scan does not index Soroban', () => {

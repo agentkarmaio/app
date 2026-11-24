@@ -7,6 +7,7 @@ import {
 import type { LivenessStatus, TrustTier } from '@/db/schema';
 import { LIVENESS_STATUSES } from '@/db/schema';
 import { parseChain } from '@/lib/leaderboard-params';
+import { registryRowAgentId } from '@/lib/agent-href';
 import { corsHeaders, corsPreflight, enforceRateLimit } from '@/lib/rate-limit';
 
 export async function OPTIONS() {
@@ -35,8 +36,9 @@ export async function GET(request: NextRequest) {
   const chain = parseChain(searchParams.get('chain'));
 
   const { wallets, total } = await getLeaderboard(limit, offset, { status, tier, chain });
-  // Mainnet native movements do not describe legacy service delivery/history.
-  const addresses = wallets.filter((w) => w.chain !== 'arc-mainnet').map((w) => w.address);
+  // Mainnet native movements and registry-only agents carry no legacy service
+  // delivery/history.
+  const addresses = wallets.filter((w) => registryRowAgentId(w) === undefined).map((w) => w.address);
 
   const [deliveryMap, historyMap] = await Promise.all([
     addresses.length ? getFeedbackSummariesForWallets(addresses) : Promise.resolve(null),
@@ -50,15 +52,17 @@ export async function GET(request: NextRequest) {
     limit,
     wallets: wallets.map((w, i) => {
       const mainnet = w.chain === 'arc-mainnet';
-      const delivery = mainnet ? null : deliveryMap?.get(w.address) ?? null;
-      const history = mainnet ? [] : historyMap?.get(w.address) ?? [];
+      const agentId = registryRowAgentId(w);
+      const legacy = agentId === undefined;
+      const delivery = legacy ? deliveryMap?.get(w.address) ?? null : null;
+      const history = legacy ? historyMap?.get(w.address) ?? [] : [];
       const providerScore = w.provider_score != null ? Number(w.provider_score)
         : mainnet ? null : Number(w.score);
       return {
         rank: offset + i + 1,
         address: w.address,
         chain: w.chain,
-        ...(mainnet ? { agentId: w.arc_agent_id ?? null } : {}),
+        ...(agentId !== undefined ? { agentId } : {}),
         displayName: w.display_name ?? null,
         imageUrl: w.image_url ?? null,
         score: mainnet ? providerScore : Number(w.score),

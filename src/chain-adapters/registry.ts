@@ -9,6 +9,7 @@ import { makeCeloAdapter } from './celo';
 import { makeStellarAdapter, makeStellarTestnetAdapter } from './stellar';
 import { makeArcAdapter } from './arc';
 import { makeArcMainnetAdapter } from './arc-mainnet';
+import { makeRobinhoodAdapter } from './robinhood';
 
 const _adapters: Map<Chain, ChainAdapter> = new Map([
   ['solana',  makeSolanaAdapter()],
@@ -17,6 +18,7 @@ const _adapters: Map<Chain, ChainAdapter> = new Map([
   ['arc',     makeArcAdapter()],
   ['arc-mainnet', makeArcMainnetAdapter()],
   ['stellar-testnet', makeStellarTestnetAdapter()],
+  ['robinhood', makeRobinhoodAdapter()],
 ]);
 
 export function getAdapter(chain: Chain): ChainAdapter {

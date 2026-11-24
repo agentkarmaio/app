@@ -68,8 +68,15 @@ test('hides retired Arc testnet without changing the remaining network order', a
   const { buildIndexingHealth } = await import('@/lib/indexing-health');
   const health = buildIndexingHealth([]);
   expect(activeActivityChains(health.chains).map((chain) => chain.chain)).toEqual([
-    'solana', 'celo', 'stellar', 'arc-mainnet',
+    'solana', 'celo', 'stellar', 'arc-mainnet', 'robinhood',
   ]);
+});
+
+test('accepts the server health projection, including robinhood', async () => {
+  const { buildIndexingHealth } = await import('@/lib/indexing-health');
+  // Round-trip through JSON like the API does; the client must not reject it.
+  const wire = JSON.parse(JSON.stringify(buildIndexingHealth([])));
+  expect(parseActivityHealth(wire).chains.map((chain) => chain.chain)).toContain('robinhood');
 });
 
 test('delayed updates always read as a warning regardless of chain health', () => {

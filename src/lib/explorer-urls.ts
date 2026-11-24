@@ -50,6 +50,10 @@ const EXPLORERS: Record<Chain, ExplorerPaths> = {
     tx: 'https://stellar.expert/explorer/testnet/tx/',
     address: 'https://stellar.expert/explorer/testnet/account/',
   },
+  robinhood: {
+    tx: 'https://robinhoodchain.blockscout.com/tx/',
+    address: 'https://robinhoodchain.blockscout.com/address/',
+  },
 };
 
 /**

@@ -53,7 +53,9 @@ CREATE OR REPLACE VIEW explore_agents AS
     image_url,
     rank_score,
     -- Appended for registry-owner search when the payment wallet differs.
-    NULL::text AS registry_owner
+    NULL::text AS registry_owner,
+    -- Appended last (CREATE OR REPLACE only adds trailing columns).
+    NULL::bigint AS robinhood_agent_id
   FROM wallets
   WHERE chain = 'solana' AND score > 0
   UNION ALL
@@ -92,11 +94,18 @@ CREATE OR REPLACE VIEW explore_agents AS
     r.registration->>'image'             AS image_url,
     -- This score remains declared even when orthogonal wallet metrics exist.
     (r.metadata_score::numeric * 0.7)    AS rank_score,
-    r.owner AS registry_owner
+    r.owner AS registry_owner,
+    CASE WHEN r.chain = 'robinhood' THEN r.agent_id END AS robinhood_agent_id
   FROM erc8004_agents r
   LEFT JOIN wallets w ON w.chain = r.chain
     AND w.address = COALESCE(NULLIF(r.agent_wallet, '0x0000000000000000000000000000000000000000'), r.owner)
-  WHERE r.chain IN ('celo', 'stellar')
+  -- Robinhood Chain is registry-only (no payment indexer), so it takes the
+  -- declared-metadata branch, not Arc's observed-only one.
+  WHERE r.chain IN ('celo', 'stellar', 'robinhood')
+    -- Robinhood bulk registrars (ROBINHOOD_EXCLUDED_REGISTRATION_HOSTS, host or
+    -- any subdomain). The scanner never mirrors them; this hides any row that
+    -- predates the exclusion.
+    AND NOT (r.chain = 'robinhood' AND COALESCE(r.token_uri, '') ~* '^https?://([^/]*\.)?(hoodai\.fly\.dev|bv7x\.ai|musegod\.org|api\.alpharc\.app|ohmies\.squareapes\.com|launch\.fomo4nft\.com|api\.synths\.lol|api\.meshgateway\.co)([/:?#]|$)')
   UNION ALL
   -- Mainnet metadata identifies agents; only observed transfers supply Karma.
   -- Join on the composite wallet key so testnet scores cannot leak across.
@@ -109,7 +118,8 @@ CREATE OR REPLACE VIEW explore_agents AS
     w.autonomy_score, w.autonomy_label, COALESCE(w.tx_count, 0), w.last_seen,
     w.metric_success_rate, w.metric_diversity, w.metric_volume, w.metric_age, w.metric_cadence,
     NULL::bigint, r.agent_id, NULL::bigint,
-    COALESCE(w.score, 0), r.registration->>'image', COALESCE(w.rank_score, 0), r.owner
+    COALESCE(w.score, 0), r.registration->>'image', COALESCE(w.rank_score, 0), r.owner,
+    NULL::bigint
   FROM erc8004_agents r
   LEFT JOIN wallets w ON w.chain = r.chain
     AND w.address = COALESCE(NULLIF(r.agent_wallet, '0x0000000000000000000000000000000000000000'), r.owner)

@@ -82,6 +82,27 @@ describe('excluded registration hosts', () => {
     const view = readFileSync(join(import.meta.dir, '../db/sql/explore-agents-view.sql'), 'utf8');
     for (const host of hosts) expect(view).toContain(`'https://${host}/%'`);
   });
+
+  test('robinhood excludes its bulk registrars in the scanner and in the public view', () => {
+    const hosts = ERC8004_REGISTRIES.robinhood.excludedRegistrationHosts ?? [];
+    expect(hosts.length).toBe(8);
+    const view = readFileSync(join(import.meta.dir, '../db/sql/explore-agents-view.sql'), 'utf8');
+    const match = /r\.chain = 'robinhood' AND COALESCE\(r\.token_uri, ''\) ~\* '([^']+)'/.exec(view);
+    expect(match).not.toBeNull();
+    const pattern = new RegExp(match![1], 'i');
+    // Every configured host, and its subdomains, is hidden; neighbours are not.
+    for (const host of hosts) {
+      expect(pattern.test(`https://${host}/a/1`)).toBe(true);
+      expect(pattern.test(`https://app.${host}/a/1`)).toBe(true);
+      expect(pattern.test(`https://${host}`)).toBe(true);
+      expect(pattern.test(`https://not${host}/a/1`)).toBe(false);
+    }
+    expect(pattern.test('https://priors.trade/agent/1')).toBe(false);
+    expect(pattern.test('ipfs://bafy')).toBe(false);
+    // The SQL list and the config list are the same set.
+    const sqlHosts = /\(([^()]+)\)\(\[/.exec(match![1])![1].split('|').map(h => h.replace(/\\\./g, '.'));
+    expect([...sqlHosts].sort()).toEqual([...hosts].sort());
+  });
 });
 
 describe('a scan far behind its tip', () => {

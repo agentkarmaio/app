@@ -13,7 +13,7 @@ import type { IndexingJob, ScanOutcome } from './indexing-runner';
 import type { IndexingState } from '@/db/indexing-state';
 const coverage = { complete: false, checked: 0, pending: 10, unresolved: 0 };
 
-test.each(['celo', 'arc-mainnet'] as const)('%s managed registry job uses incremental discovery with chain-bound persistence', async chain => {
+test.each(['celo', 'arc-mainnet', 'robinhood'] as const)('%s managed registry job uses incremental discovery with chain-bound persistence', async chain => {
   const get = spyOn(db, 'getRegistryCursorTip').mockResolvedValue(7);
   const set = spyOn(db, 'setRegistryCursorTip').mockResolvedValue(undefined);
   const scan = spyOn(registry, 'runIncrementalRegistryScan').mockImplementation(async (config, agents, feedback, getCursor, setCursor, opts) => {
@@ -37,7 +37,7 @@ test.each(['celo', 'arc-mainnet'] as const)('%s managed registry job uses increm
   } finally { scan.mockRestore(); get.mockRestore(); set.mockRestore(); }
 });
 
-test.each(['celo', 'arc-mainnet'] as const)('%s partial registry run must not publish the discovered tip as its checkpoint', async chain => {
+test.each(['celo', 'arc-mainnet', 'robinhood'] as const)('%s partial registry run must not publish the discovered tip as its checkpoint', async chain => {
   const scan = spyOn(registry, 'runIncrementalRegistryScan').mockResolvedValue({
     chain, tip: 9, agentsScanned: 1, agentsPersisted: 1, feedbackScanned: 0, feedbackPersisted: 0, errors: 1, registrationUnreachable: 0,
   });
@@ -357,6 +357,25 @@ test('the arc-mainnet registry job carries a budget that ends well inside its de
     expect(budget).toBeLessThan(job.timeoutMs ?? 0);
   } finally { scan.mockRestore(); }
 });
+test('robinhood registry runs inside a budget and rotates a chain-scoped refresh cursor', async () => {
+  const getCursor = spyOn(db, 'getCursor').mockResolvedValue({ last_signature: '40' } as never);
+  const upsert = spyOn(db, 'upsertCursor').mockResolvedValue(undefined as never);
+  const scan = spyOn(registry, 'runIncrementalRegistryScan').mockImplementation(async (_c, _a, _f, _g, _s, opts) => {
+    expect(await opts?.refreshCursor?.load()).toBe(40);
+    await opts?.refreshCursor?.save(140);
+    return { chain: 'robinhood', tip: 1, agentsScanned: 1, agentsPersisted: 1, feedbackScanned: 0, feedbackPersisted: 0, errors: 0, registrationUnreachable: 0 };
+  });
+  try {
+    const job = createIndexingJob('robinhood', 'registry');
+    await job.run(new AbortController().signal);
+    const budget = scan.mock.calls[0][5]?.timeBudgetMs ?? 0;
+    expect(budget).toBeGreaterThan(0);
+    expect(budget).toBeLessThan(job.timeoutMs ?? 0);
+    expect(getCursor).toHaveBeenCalledWith('robinhood-registry-refresh', 'robinhood');
+    expect(upsert).toHaveBeenCalledWith('robinhood-registry-refresh', '140', undefined, 'robinhood');
+  } finally { scan.mockRestore(); getCursor.mockRestore(); upsert.mockRestore(); }
+});
+
 test('the recovery workflow outlives every job deadline, so runs end through finish rather than a kill', () => {
   const yml = readFileSync(join(import.meta.dir, '../../.github/workflows/indexing-recovery.yml'), 'utf8');
   const minutes = Number(/timeout-minutes:\s*(\d+)/.exec(yml)?.[1]);

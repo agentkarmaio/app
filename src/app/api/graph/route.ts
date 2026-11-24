@@ -22,6 +22,7 @@ const CHAIN_SLOTS: Record<Chain, number> = {
   arc: 2,
   'arc-mainnet': 2,
   'stellar-testnet': 0, // API-only — never part of the public hero graph
+  robinhood: 0, // registry-only: agents live in erc8004_agents, never in `wallets`
 };
 const CHAIN_ORDER: Chain[] = ['solana', 'celo', 'stellar', 'arc', 'arc-mainnet'];
 const PER_CHAIN_FETCH = 12; // headroom for redistribution
@@ -60,9 +61,10 @@ export async function GET(request: NextRequest) {
     arc: perChainPages[3].wallets,
     'arc-mainnet': mainnetWallets,
     'stellar-testnet': [],
+    robinhood: [],
   };
 
-  const take: Record<Chain, number> = { solana: 0, celo: 0, stellar: 0, arc: 0, 'arc-mainnet': 0, 'stellar-testnet': 0 };
+  const take: Record<Chain, number> = { solana: 0, celo: 0, stellar: 0, arc: 0, 'arc-mainnet': 0, 'stellar-testnet': 0, robinhood: 0 };
   let remaining = TARGET_NODES;
   // Pass 1: take up to each chain's base allocation.
   for (const chain of CHAIN_ORDER) {

@@ -19,7 +19,7 @@ BEGIN
   -- Mainnet activation is explicit; retired testnet cannot restart after state loss.
   -- ON CONFLICT preserves an operator-enabled existing mainnet row.
   INSERT INTO public.indexing_state(chain, path, enabled, interval_ms)
-  VALUES (p_chain, p_path, CASE WHEN p_chain IN ('arc', 'arc-mainnet') THEN false ELSE p_enabled END, p_interval_ms)
+  VALUES (p_chain, p_path, CASE WHEN p_chain IN ('arc', 'arc-mainnet', 'robinhood') THEN false ELSE p_enabled END, p_interval_ms)
   ON CONFLICT (chain, path) DO NOTHING;
   SELECT * INTO state FROM public.indexing_state
     WHERE chain = p_chain AND path = p_path FOR UPDATE;

@@ -17,3 +17,17 @@ export function agentHref(a: { chain: Chain; address: string; agentId?: number |
   }
   return base;
 }
+
+/**
+ * Registry agentId carried by a leaderboard/explore row on a chain whose agents
+ * are keyed by agentId rather than wallet (Arc mainnet, Robinhood Chain), else
+ * undefined. Celo/Stellar rows link by address for back-compat.
+ */
+export function registryRowAgentId(w: {
+  chain: Chain; arc_agent_id?: number | null; robinhood_agent_id?: number | null;
+}): number | null | undefined {
+  if (w.chain === 'arc-mainnet') return w.arc_agent_id ?? null;
+  if (w.chain === 'robinhood') return w.robinhood_agent_id ?? null;
+  return undefined;
+}
+

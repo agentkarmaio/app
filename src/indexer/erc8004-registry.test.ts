@@ -375,6 +375,115 @@ describe('Arc registry admission', () => {
   });
 });
 
+async function withRobinhoodRpc<T>(raw: string | undefined, fn: () => Promise<T> | T): Promise<T> {
+  const previous = process.env.ROBINHOOD_RPC_URL;
+  if (raw === undefined) delete process.env.ROBINHOOD_RPC_URL;
+  else process.env.ROBINHOOD_RPC_URL = raw;
+  try { return await fn(); }
+  finally {
+    if (previous === undefined) delete process.env.ROBINHOOD_RPC_URL;
+    else process.env.ROBINHOOD_RPC_URL = previous;
+  }
+}
+
+describe('Robinhood Chain registry', () => {
+  const config = ERC8004_REGISTRIES.robinhood;
+  const robinhoodFixture = () => {
+    const f = registryFixture(config);
+    f.client.getChainId.mockImplementation(async () => 4663);
+    return f;
+  };
+
+  test('config pins chain 4663, the canonical registry pair, agent zero and the bulk exclusions', () => {
+    expect(config.chain).toBe('robinhood');
+    expect(config.viemChain.id).toBe(4663);
+    expect(config.viemChain.contracts?.multicall3?.address).toBeDefined();
+    expect(config.identityRegistry).toBe('0x8004A169FB4a3325136EB29fA0ceB6D2e539a432');
+    expect(config.reputationRegistry).toBe('0x8004BAa17C55a88189AE136b182e5fdA19dE9b63');
+    expect(config.rpcEnvVar).toBe('ROBINHOOD_RPC_URL');
+    expect(config.firstAgentId).toBe(0);
+    expect(config.verifyAdmission).toBe(true);
+    expect(config.excludedRegistrationHosts).toEqual([
+      'hoodai.fly.dev', 'bv7x.ai', 'musegod.org', 'api.alpharc.app',
+      'ohmies.squareapes.com', 'launch.fomo4nft.com', 'api.synths.lol', 'api.meshgateway.co',
+    ]);
+  });
+
+  test('an unset RPC falls back to the public endpoint; a set one must be https', async () => {
+    await withRobinhoodRpc(undefined, () => { expect(() => makeRegistryClient(config)).not.toThrow(); });
+    for (const bad of ['http://rpc.example.invalid', 'rpc.example.invalid', 'https://user:pw@rpc.example.invalid']) {
+      await withRobinhoodRpc(bad, async () => {
+        expect(() => makeRegistryClient(config)).toThrow('configuration_invalid');
+        const f = robinhoodFixture();
+        await expect(f.run()).rejects.toThrow('configuration_invalid');
+        expect(f.persistAgents).not.toHaveBeenCalled();
+      });
+    }
+  });
+
+  test.each(['incremental', 'bounded', 'explicit'] as const)('%s scans reject an RPC serving another chain before any write', async mode => {
+    await withRobinhoodRpc(undefined, async () => {
+      const f = registryFixture(config); // fixture default chain id is 5042 (Arc)
+      const scan = mode === 'incremental' ? f.run() : runRegistryScan(config, f.persistAgents, f.persistFeedback, {
+        client: f.client, ...(mode === 'bounded' ? { toId: 2 } : { agentIds: [1] }),
+      });
+      await expect(scan).rejects.toThrow('rpc_chain_mismatch');
+      expect(f.getCursor).not.toHaveBeenCalled();
+      expect(f.persistAgents).not.toHaveBeenCalled();
+      expect(f.persistFeedback).not.toHaveBeenCalled();
+      expect(f.setCursor).not.toHaveBeenCalled();
+    });
+  });
+
+  test.each(['identity', 'reputation', 'multicall', 'linkage'] as const)('rejects an undeployed or unrelated %s contract', async stage => {
+    await withRobinhoodRpc(undefined, async () => {
+      const f = robinhoodFixture();
+      if (stage === 'linkage') {
+        const read = f.client.readContract as (params: { functionName: string; args?: readonly unknown[] }) => Promise<unknown>;
+        f.client.readContract = (async (params: Parameters<typeof read>[0]) => params.functionName === 'getIdentityRegistry' ? OWNER : read(params)) as never;
+      } else {
+        const missing = stage === 'identity' ? config.identityRegistry : stage === 'reputation'
+          ? config.reputationRegistry : config.viemChain.contracts!.multicall3!.address;
+        f.client.getBytecode = mock(async ({ address }: { address: string }) => address === missing ? '0x' : '0x6000') as typeof f.client.getBytecode;
+      }
+      await expect(f.run()).rejects.toThrow();
+      expect(f.persistAgents).not.toHaveBeenCalled();
+      expect(f.setCursor).not.toHaveBeenCalled();
+    });
+  });
+
+  test('an admitted scan mirrors agent zero under the robinhood chain key', async () => {
+    await withRobinhoodRpc(undefined, async () => {
+      const f = robinhoodFixture();
+      const result = await runRegistryScan(config, f.persistAgents, f.persistFeedback, { client: f.client, toId: 2 });
+      expect(result.errors).toBe(0);
+      expect(result.chain).toBe('robinhood');
+      expect(f.writes.every(w => w.chain === 'robinhood')).toBe(true);
+      expect([...f.agents.keys()].sort()).toContain(0);
+    });
+  });
+
+  test('a bulk-registrar tokenURI (including a subdomain) is never mirrored', async () => {
+    await withRobinhoodRpc(undefined, async () => {
+      const f = robinhoodFixture();
+      const uris: Record<number, string> = {
+        0: 'https://hoodai.fly.dev/api/agent/0',
+        1: 'https://app.bv7x.ai/a/abc',
+        2: 'data:application/json,' + encodeURIComponent(JSON.stringify(SAMPLE_REG)),
+      };
+      f.client.multicall = (async ({ contracts }: { contracts: { functionName: string; args: readonly unknown[] }[] }) => contracts.map(c => ({
+        status: 'success', result: c.functionName === 'readAllFeedback'
+          ? [[OWNER], [1n], [85n], [0], ['quality'], [''], [false]]
+          : c.functionName === 'tokenURI' ? uris[Number(c.args[0])] : OWNER,
+      }))) as never;
+      f.agents.clear();
+      const result = await runRegistryScan(config, f.persistAgents, f.persistFeedback, { client: f.client, toId: 2, fetchRemote: false });
+      expect(result.excludedRegistrations).toBe(2);
+      expect([...f.agents.keys()]).toEqual([2]);
+    });
+  });
+});
+
 describe('decodeRegistration', () => {
   test('data: base64 json', async () => {
     const uri = 'data:application/json;base64,' + Buffer.from(JSON.stringify(SAMPLE_REG)).toString('base64');

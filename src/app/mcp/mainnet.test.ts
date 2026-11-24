@@ -146,3 +146,22 @@ test('MCP mixed leaderboard preserves legacy chains while retaining mainnet abse
     expect(feedback).toHaveBeenCalledWith([address], 'celo');
   } finally { leaderboard.mockRestore(); feedback.mockRestore(); }
 });
+
+test('MCP robinhood leaderboard links each registry identity, including ID zero', async () => {
+  const rows = [
+    { chain: 'robinhood', address, robinhood_agent_id: 0, score: 82, provider_score: 82, consumer_score: null,
+      display_name: 'Registry agent', confidence_badge: 'declared', trust_tier: 'Very Good', tx_count: 0 },
+    { chain: 'robinhood', address, robinhood_agent_id: 5, score: 40, provider_score: 40, consumer_score: null,
+      display_name: 'Second agent', confidence_badge: 'declared', trust_tier: 'Fair', tx_count: 0 },
+  ] as unknown as Wallet[];
+  const leaderboard = spyOn(db, 'getLeaderboard').mockResolvedValue({ wallets: rows, total: 2 });
+  const feedback = spyOn(db, 'getFeedbackSummariesForWallets').mockResolvedValue(new Map());
+  try {
+    const result = await tool('get_leaderboard', { chain: 'robinhood' });
+    expect(result.agents[0]).toMatchObject({ chain: 'robinhood', agentId: 0, score: 82, providerScore: 82, delivery: null });
+    expect(result.agents[0].profileUrl).toEndWith(`/agent/${address}?chain=robinhood&agentId=0`);
+    expect(result.agents[1].profileUrl).toEndWith(`/agent/${address}?chain=robinhood&agentId=5`);
+    expect(feedback).not.toHaveBeenCalled();
+  } finally { leaderboard.mockRestore(); feedback.mockRestore(); }
+});
+
