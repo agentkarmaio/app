@@ -14,7 +14,7 @@ afterEach(() => __setPublishDepsForTest(null));
 function inputs(over: Partial<ScoreInputs> = {}): ScoreInputs {
   return {
     wallet: 'W', chain: 'solana', transactions: [{ tx_signature: 'x' }] as never,
-    attestation: 0, feedback: { total: 0, delivered: 0, failed: 0, deliveryRate: 0 },
+    feedback: { total: 0, delivered: 0, failed: 0, deliveryRate: 0 },
     manifestValue: null, signalEvents: [], agentBond: null, cadence: null, autonomy: null,
     degraded: [], ...over,
   };
@@ -83,14 +83,14 @@ describe('publishTopScores', () => {
     const published: string[] = [];
     __setPublishDepsForTest({
       getLeaderboard: async () => ({ wallets: [{ address: 'A' }], total: 1 }),
-      gatherScoreInputs: async () => inputs({ degraded: ['attestation'] }),
+      gatherScoreInputs: async () => inputs({ degraded: ['feedback'] }),
       scoreFromInputs: () => ({ score: 80, trustTier: 'Good' }),
       getAdapter: (chain: string) => adapter(chain, published),
     });
     const r = await publishTopScores(1, 'solana');
     expect(published).toEqual([]);
     expect(r.skipped).toBe(1);
-    expect(r.details[0].reason).toContain('attestation');
+    expect(r.details[0].reason).toContain('feedback');
   });
 });
 

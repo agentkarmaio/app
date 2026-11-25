@@ -27,7 +27,6 @@ import {
   getRecentTransactionsForWallet,
   getSignalEventsForWallet,
 } from '@/db/client';
-import { readAttestationsDetailed } from '@/integrations/attestation';
 import { STELLAR_TESTNET_AGENT_BOND } from '@/integrations/stellar-config';
 import type { AgentBondInput } from './agent-bond';
 import { computeAutonomy, type AutonomyResult } from './autonomy';
@@ -48,14 +47,12 @@ export interface FeedbackSummary {
   deliveryRate: number;
 }
 
-export type ScoreInput = 'attestation' | 'feedback' | 'manifest' | 'signalEvents';
+export type ScoreInput = 'feedback' | 'manifest' | 'signalEvents';
 
 export interface ScoreInputs {
   wallet: string;
   chain: Chain;
   transactions: Transaction[];
-  /** 8004 attestation, normalized 0–1. Solana only; 0 elsewhere. */
-  attestation: number;
   feedback: FeedbackSummary;
   manifestValue: number | null;
   signalEvents: SignalEvent[];
@@ -68,7 +65,6 @@ export interface ScoreInputs {
 
 export interface ScoreInputDeps {
   getTransactions: (wallet: string, limit: number, chain: Chain) => Promise<Transaction[]>;
-  readAttestation: (wallet: string) => Promise<{ score: number; unavailable: boolean }>;
   getFeedbackSummary: (wallet: string, chain: Chain) => Promise<FeedbackSummary>;
   getManifestValue: (wallet: string, chain: Chain) => Promise<number | null>;
   getSignalEvents: (wallet: string, limit: number, chain: Chain) => Promise<SignalEvent[]>;
@@ -77,10 +73,6 @@ export interface ScoreInputDeps {
 
 export const defaultScoreInputDeps: ScoreInputDeps = {
   getTransactions: (wallet, limit, chain) => getRecentTransactionsForWallet(wallet, limit, chain),
-  readAttestation: async (wallet) => {
-    const batch = await readAttestationsDetailed([wallet]);
-    return { score: batch.scores.get(wallet) ?? 0, unavailable: batch.unavailable };
-  },
   getFeedbackSummary: (wallet, chain) => getFeedbackSummary(wallet, chain),
   getManifestValue: async (wallet, chain) =>
     (await getLatestSignalValues([wallet], 'manifest', chain)).get(wallet) ?? null,
@@ -94,8 +86,6 @@ const EMPTY_FEEDBACK: FeedbackSummary = { total: 0, delivered: 0, failed: 0, del
 export interface GatherOptions {
   /** Instant the score is evaluated at (also bounds the Agent Bond window). */
   asOf?: Date;
-  /** Pre-read attestation (batch callers); skips the per-wallet read. */
-  attestation?: { score: number; unavailable: boolean };
 }
 
 export async function gatherScoreInputs(
@@ -116,19 +106,15 @@ export async function gatherScoreInputs(
     }
   };
 
-  // Only Solana carries a Tier-1 8004 attestation input. Elsewhere AK's own
-  // published aggregate is readable but must never be recycled into Tier 1.
-  const readAttestation = (): Promise<{ score: number; unavailable: boolean }> =>
-    chain !== 'solana'
-      ? Promise.resolve({ score: 0, unavailable: false })
-      : opts.attestation
-        ? Promise.resolve(opts.attestation)
-        : deps.readAttestation(wallet);
+  // No 8004 feedback input on any chain (decision 2026-11-25). Solana records
+  // are mostly unreceipted uptime probes and third-party ratings; as Tier 1
+  // they would flip a badge to Receipt-backed with no receipt behind it. AK's
+  // own published score must never feed back in either. Choosing a tier for
+  // third-party 8004 feedback is an open RFC question, not a read to restore.
 
   // Transactions are the score; a failed read is an error, not a degraded input.
-  const [transactions, attestationRead, feedback, manifestValue, signalEvents, agentBond] = await Promise.all([
+  const [transactions, feedback, manifestValue, signalEvents, agentBond] = await Promise.all([
     deps.getTransactions(wallet, SCORE_TX_WINDOW, chain),
-    soft('attestation', readAttestation, { score: 0, unavailable: true }),
     soft('feedback', () => deps.getFeedbackSummary(wallet, chain), EMPTY_FEEDBACK),
     soft('manifest', () => deps.getManifestValue(wallet, chain), null),
     soft('signalEvents', () => deps.getSignalEvents(wallet, SCORE_SIGNAL_EVENT_LIMIT, chain), [] as SignalEvent[]),
@@ -136,14 +122,12 @@ export async function gatherScoreInputs(
     // serve an inflated score. No score beats a wrong one here.
     deps.getAgentBond(wallet, chain, nowMs),
   ]);
-  if (attestationRead.unavailable && !degraded.includes('attestation')) degraded.push('attestation');
 
   const hasTxs = transactions.length > 0;
   return {
     wallet,
     chain,
     transactions,
-    attestation: attestationRead.score,
     feedback,
     manifestValue,
     signalEvents,
@@ -164,7 +148,7 @@ export function scoreFromInputs(inputs: ScoreInputs, opts: { asOf?: Date } = {})
   if (inputs.transactions.length === 0) return null;
   return calculateScore(
     inputs.transactions,
-    inputs.attestation,
+    0, // no 8004 attestation input — see gatherScoreInputs
     inputs.feedback.deliveryRate,
     inputs.feedback.total,
     inputs.cadence?.automationScore ?? null,

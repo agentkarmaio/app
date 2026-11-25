@@ -3833,6 +3833,23 @@ export async function getMaxErc8004AgentId(chain: string): Promise<number> {
 }
 
 /** Read a single cached registry agent row (used by the agent-resolve route). */
+/**
+ * Solana 8004 agent assets a wallet controls (the mirror's agent_wallet, which
+ * falls back to the owner when no agent wallet is set). 8004-solana keys every
+ * feedback read and write on the asset, never on the wallet.
+ */
+export async function getSolanaAgentAssets(wallet: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('erc8004_agents')
+    .select('asset_address')
+    .eq('chain', 'solana')
+    .eq('agent_wallet', wallet);
+  if (error) throw error;
+  return ((data ?? []) as { asset_address: string | null }[])
+    .map((r) => r.asset_address)
+    .filter((a): a is string => typeof a === 'string' && a.length > 0);
+}
+
 export async function getErc8004Agent(
   chain: string, agentId: number,
 ): Promise<Record<string, unknown> | null> {

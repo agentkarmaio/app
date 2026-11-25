@@ -20,3 +20,44 @@ describe('makeSolanaAdapter', () => {
     expect(a.explorerAddressUrl(GOOD)).toBe(`https://solscan.io/account/${GOOD}`);
   });
 });
+
+describe('solana publish targets the agent asset', () => {
+  const SCORE = { score: 81, trustTier: 'Very Good' } as never;
+
+  test('a wallet with no 8004 agent identity is skipped, nothing is written', async () => {
+    const writes: string[] = [];
+    const adapter = makeSolanaAdapter({
+      findAgentAssets: async () => [],
+      writeFeedback: async (asset) => { writes.push(asset); return { signature: 'x', dryRun: false }; },
+      readAgentFeedback: async () => [],
+    });
+    const r = await adapter.publishAttestation(GOOD, SCORE);
+    expect(r.skipped).toBe(true);
+    expect(r.reason).toContain('no 8004 agent');
+    expect(writes).toEqual([]);
+  });
+
+  test('writes karma_score to the asset the wallet controls — never to the wallet', async () => {
+    const writes: string[] = [];
+    const adapter = makeSolanaAdapter({
+      findAgentAssets: async () => ['ASSET1'],
+      writeFeedback: async (asset) => { writes.push(asset); return { signature: 'sig1', dryRun: false }; },
+      readAgentFeedback: async () => [],
+    });
+    const r = await adapter.publishAttestation(GOOD, SCORE);
+    expect(writes).toEqual(['ASSET1']);
+    expect(r).toMatchObject({ skipped: false, txId: 'sig1' });
+  });
+
+  test("readAttestation is AK's own last published score on the asset (drift check)", async () => {
+    const adapter = makeSolanaAdapter({
+      findAgentAssets: async () => ['ASSET1'],
+      writeFeedback: async () => ({ dryRun: true }),
+      readAgentFeedback: async () => [
+        { tag1: 'karma_score', score: 77, revoked: false, feedbackIndex: 2n },
+        { tag1: 'reachable', score: 10, revoked: false, feedbackIndex: 5n },
+      ],
+    });
+    expect(await adapter.readAttestation(GOOD)).toBe(77);
+  });
+});

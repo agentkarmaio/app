@@ -89,7 +89,6 @@ function verdictLine(outcome: KeepFreshOutcome): string {
     outcome.indexerDegraded ? `degraded=${outcome.indexerDegraded}` : '',
     ix ? `fetched=${ix.fetched} inserted=${ix.inserted} queued=${ix.queued} unresolved=${ix.unresolved}` : 'indexer=no-summary',
     `drained=${outcome.drained} drainErrors=${outcome.drainErrors}`,
-    outcome.attestationsUnavailable ? 'attestations=unavailable' : '',
     f ? `freshness=${f.severity}(${f.ageMs != null ? Math.round(f.ageMs / 3_600_000) : '?'}h)` : 'freshness=unreadable',
   ].filter(Boolean).join(' ');
 }

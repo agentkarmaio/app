@@ -40,7 +40,6 @@ function deps(over: Partial<ScoreInputDeps> = {}): ScoreInputDeps & { calls: Rec
   return {
     calls,
     getTransactions: rec('getTransactions', async () => TXS),
-    readAttestation: rec('readAttestation', async () => ({ score: 0.8, unavailable: false })),
     getFeedbackSummary: rec('getFeedbackSummary', async () => ({ total: 5, delivered: 4, failed: 1, deliveryRate: 0.8 })),
     getManifestValue: rec('getManifestValue', async () => 0.6),
     getSignalEvents: rec('getSignalEvents', async () => []),
@@ -56,32 +55,19 @@ describe('gatherScoreInputs', () => {
     expect(d.calls.getTransactions).toEqual(['W', SCORE_TX_WINDOW, 'solana']);
     expect(d.calls.getFeedbackSummary).toEqual(['W', 'solana']);
     expect(d.calls.getAgentBond).toEqual(['W', 'solana', AS_OF.getTime()]);
-    expect(inputs.attestation).toBe(0.8);
     expect(inputs.feedback.total).toBe(5);
     expect(inputs.manifestValue).toBe(0.6);
     expect(inputs.degraded).toEqual([]);
   });
 
-  test('non-Solana chains never read or use an attestation', async () => {
-    const d = deps();
-    const inputs = await gatherScoreInputs('W', 'celo', { asOf: AS_OF }, d);
-    expect(d.calls.readAttestation).toBeUndefined();
-    expect(inputs.attestation).toBe(0);
-    expect(inputs.degraded).toEqual([]);
-  });
-
-  test('a supplied batch attestation is used instead of a per-wallet read', async () => {
-    const d = deps();
-    const inputs = await gatherScoreInputs('W', 'solana', { attestation: { score: 0.3, unavailable: false } }, d);
-    expect(d.calls.readAttestation).toBeUndefined();
-    expect(inputs.attestation).toBe(0.3);
-  });
-
-  test('an unreadable attestation is reported as degraded, not as zero-and-clean', async () => {
-    const inputs = await gatherScoreInputs('W', 'solana', {}, deps({
-      readAttestation: async () => ({ score: 0, unavailable: true }),
-    }));
-    expect(inputs.degraded).toEqual(['attestation']);
+  test('8004 feedback is not a score input on any chain (2026-11-25 decision)', async () => {
+    // Solana 8004 records are mostly unreceipted uptime probes; as Tier 1 they
+    // would flip badges to Receipt-backed without a receipt. Kept out until a
+    // tier is chosen for them.
+    const inputs = await gatherScoreInputs('W', 'solana', { asOf: AS_OF }, deps());
+    expect('attestation' in inputs).toBe(false);
+    expect(scoreFromInputs(inputs, { asOf: AS_OF })!.tierAggregates.tier1)
+      .toBe(calculateScore(TXS, 0, 0.8, 5, inputs.cadence?.automationScore ?? null, 0.6, null, [], null, { asOf: AS_OF }).tierAggregates.tier1);
   });
 
   test('failed soft reads degrade to absent and are named', async () => {
@@ -112,11 +98,11 @@ describe('scoreFromInputs', () => {
     const inputs = await gatherScoreInputs('W', 'solana', { asOf: AS_OF }, deps());
     const got = scoreFromInputs(inputs, { asOf: AS_OF });
     const want = calculateScore(
-      TXS, 0.8, 0.8, 5, inputs.cadence?.automationScore ?? null, 0.6, null, [], null, { asOf: AS_OF },
+      TXS, 0, 0.8, 5, inputs.cadence?.automationScore ?? null, 0.6, null, [], null, { asOf: AS_OF },
     );
     expect(got).toEqual(want);
     // Feedback moved the Tier-1 aggregate — it is not silently dropped.
-    const noFeedback = calculateScore(TXS, 0.8, undefined, undefined, inputs.cadence?.automationScore ?? null, 0.6, null, [], null, { asOf: AS_OF });
+    const noFeedback = calculateScore(TXS, 0, undefined, undefined, inputs.cadence?.automationScore ?? null, 0.6, null, [], null, { asOf: AS_OF });
     expect(got!.tierAggregates.tier1).not.toBe(noFeedback.tierAggregates.tier1);
   });
 

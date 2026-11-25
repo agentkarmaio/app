@@ -34,9 +34,7 @@ import {
 } from '@/db/client';
 import { gatherScoreInputs, scoreFromInputs } from '@/scoring/wallet-score';
 import type { WalletScore } from '@/scoring/index';
-import { isApiOnlyChain } from '@/db/schema';
 import { buildCadenceSignal, buildAutonomySignal } from '@/scoring/signals';
-import { readAttestationsDetailed } from '@/integrations/attestation';
 
 const DEFAULT_BATCH_SIZE = 200;
 const CONCURRENCY = 8;
@@ -48,31 +46,16 @@ export interface RescoreResult {
   errors: { address: string; message: string }[];
   remaining: number;
   elapsedMs: number;
-  /**
-   * No Solana read endpoint would serve 8004 attestations for this batch.
-   *
-   * REQUIRED, deliberately: an optional flag would be silently satisfied by a
-   * producer that never sets it, and the whole point is that a run which could
-   * not read a Tier-1 signal must not report clean. Solana wallets are left
-   * queued rather than scored from a signal we know we could not read — the
-   * SDK returns a valid-looking zero on failure, and `calculateScore` treats a
-   * zero attestation as ABSENT, so persisting one silently rewrites the wallet
-   * as having no on-chain feedback.
-   */
-  attestationsUnavailable: boolean;
 }
 
 /**
  * Score one wallet through the shared assembly and persist it. Returns the
  * stored score, or null when there is nothing to (re)score. Throws when an
  * input was unreadable, so the caller keeps the wallet queued.
- *
- * `attestation` is the batch read for drainOnce; omitted, it is read per wallet.
  */
 export async function rescoreWallet(
   wallet: DirtyWallet,
   asOf: Date = new Date(),
-  attestation?: { score: number; unavailable: boolean },
 ): Promise<WalletScore | null> {
   // Every read and write below is scoped to the wallet's own chain. Omitting it
   // is not a smaller bug than getting it wrong: the client helpers default to
@@ -83,15 +66,10 @@ export async function rescoreWallet(
   // managed transfer lease. Never overwrite them with legacy payment scoring,
   // even if a stale queue implementation returns a mainnet wallet.
   if (chain === 'arc-mainnet' || chain === 'arc') return null;
-  // Solana scores blend an on-chain 8004 attestation. When no endpoint would
-  // serve that read, the honest move is to leave the wallet queued: writing a
-  // score now would bake "no attestation" into a wallet that may well have one.
-  // Other chains do not read it, so they are unaffected.
-  if (attestation?.unavailable && chain === 'solana') return null;
 
   // The same assembly every read surface uses, so the stored score is the
   // served score (payee-verified feedback included).
-  const inputs = await gatherScoreInputs(address, chain, { asOf, attestation });
+  const inputs = await gatherScoreInputs(address, chain, { asOf });
   // A persisted score built from an input we could not read would overwrite a
   // good one. Throw so drainOnce re-queues the wallet for the next tick.
   if (inputs.degraded.length > 0) {
@@ -144,16 +122,8 @@ export async function drainOnce(
   const start = Date.now();
   const claimed = await claimDirtyWallets(batchSize);
   if (claimed.length === 0) {
-    return { claimed: 0, scored: 0, skipped: 0, errors: [], remaining: 0, elapsedMs: Date.now() - start, attestationsUnavailable: false };
+    return { claimed: 0, scored: 0, skipped: 0, errors: [], remaining: 0, elapsedMs: Date.now() - start };
   }
-
-  const { scores: attestations, unavailable: attestationsUnavailable } =
-    await readAttestationsDetailed(
-      claimed
-        // API-only testnet carries no 8004 attestations to read.
-        .filter((w) => w.chain !== 'arc-mainnet' && w.chain !== 'arc' && !isApiOnlyChain(w.chain))
-        .map((w) => w.address),
-    );
 
   // One evaluation instant per drain, so the batch is reproducible together.
   const asOf = new Date();
@@ -165,9 +135,7 @@ export async function drainOnce(
   for (let i = 0; i < claimed.length; i += CONCURRENCY) {
     const slice = claimed.slice(i, i + CONCURRENCY);
     const results = await Promise.allSettled(
-      slice.map((w) => rescoreWallet(w, asOf, {
-        score: attestations.get(w.address) ?? 0, unavailable: attestationsUnavailable,
-      })),
+      slice.map((w) => rescoreWallet(w, asOf)),
     );
     for (let j = 0; j < results.length; j++) {
       const r = results[j];
@@ -188,18 +156,6 @@ export async function drainOnce(
     await markWalletsDirty(claimed.filter((w) => failed.has(w.address)));
   }
 
-  // Claiming clears the dirty flag, so wallets skipped for an unreadable
-  // attestation have to be put back explicitly or they are simply dropped.
-  if (attestationsUnavailable) {
-    const solana = claimed.filter((w) => w.chain === 'solana');
-    if (solana.length > 0) {
-      await markWalletsDirty(solana);
-      console.warn(
-        `[rescore] re-queued ${solana.length} Solana wallet(s): no 8004 read endpoint available`,
-      );
-    }
-  }
-
   const remaining = await countDirtyWallets();
   return {
     claimed: claimed.length,
@@ -208,7 +164,6 @@ export async function drainOnce(
     errors,
     remaining,
     elapsedMs: Date.now() - start,
-    attestationsUnavailable,
   };
 }
 

@@ -27,9 +27,11 @@
  */
 
 import { SolanaSDK } from '8004-solana';
-import { PublicKey, Keypair } from '@solana/web3.js';
+import { Keypair } from '@solana/web3.js';
 import type { Cluster } from '8004-solana';
 import { solanaReadRpcUrls } from '@/lib/solana-rpc';
+import { getSolanaAgentAssets } from '@/db/client';
+import { readAgentFeedbackVia, thirdPartyFeedbackScore, type AgentFeedback } from './solana-agent-feedback';
 
 const CLUSTER: Cluster = 'mainnet-beta';
 /** The SDK read has no timeout of its own; a wedged RPC would block live pages. */
@@ -144,24 +146,40 @@ export async function readAttestation(walletAddress: string): Promise<number> {
   return readVia(endpoint, walletAddress);
 }
 
-async function readVia(endpoint: Endpoint, walletAddress: string): Promise<number> {
+function withTimeout<T>(p: Promise<T>, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`8004 ${what} timed out`)), READ_TIMEOUT_MS);
+    }),
+  ]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
+/**
+ * Tier-1 attestation for a wallet: third-party 8004 feedback on the agent
+ * assets it controls, AK's own karma_score excluded (solana-agent-feedback.ts).
+ * A wallet with no registered agent has no 8004 feedback — 0 without an RPC.
+ */
+async function readVia(endpoint: Endpoint, walletAddress: string): Promise<number> {
   try {
-    const pubkey = new PublicKey(walletAddress);
-    const summary = await Promise.race([
-      sdkFor(endpoint).getSummary(pubkey),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('8004 summary read timed out')), READ_TIMEOUT_MS);
-      }),
-    ]);
-    if (!summary || summary.averageScore == null) return 0;
-    // 8004 scores are 0–100; normalize to 0–1.
-    return Math.min(summary.averageScore / 100, 1);
+    const assets = await getSolanaAgentAssets(walletAddress);
+    if (assets.length === 0) return 0;
+    const records: AgentFeedback[] = [];
+    for (const asset of assets) {
+      records.push(...await withTimeout(readAgentFeedbackVia(sdkFor(endpoint), asset), 'feedback read'));
+    }
+    return thirdPartyFeedbackScore(records);
   } catch {
     return 0;
-  } finally {
-    if (timer) clearTimeout(timer);
   }
+}
+
+/** All 8004 feedback records on one Solana agent asset, via a probed endpoint. */
+export async function readAgentFeedback(asset: string): Promise<AgentFeedback[]> {
+  const endpoint = await pickEndpoint(defaultProbe, Date.now());
+  if (!endpoint) throw new Error('no Solana read endpoint available');
+  return withTimeout(readAgentFeedbackVia(sdkFor(endpoint), asset), 'feedback read');
 }
 
 /**
@@ -204,13 +222,3 @@ export async function readAttestationsDetailed(
   return { scores, unavailable: false };
 }
 
-/**
- * Batch-read attestation scores. Map of address → normalized score (0–1),
- * omitting wallets with no score. Availability is not reported here; use
- * `readAttestationsDetailed` when the result will be persisted.
- */
-export async function readAttestations(
-  walletAddresses: string[],
-): Promise<Map<string, number>> {
-  return (await readAttestationsDetailed(walletAddresses)).scores;
-}

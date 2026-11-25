@@ -109,8 +109,6 @@ export interface KeepFreshOutcome {
   drained: number;
   drainBatchesRun: number;
   drainErrors: number;
-  /** No endpoint could serve 8004 reads, so scored wallets were left queued. */
-  attestationsUnavailable: boolean;
   freshness: FreshnessReport | null;
   /** Why this run pages, in priority order. Empty ⇒ ok. */
   pageReasons: string[];
@@ -243,7 +241,6 @@ export async function runKeepFresh(
   let drained = 0;
   let drainBatchesRun = 0;
   let drainErrors = 0;
-  let attestationsUnavailable = false;
   let drainRemaining = 0;
   await step('drain', async () => {
     for (let i = 0; i < maxDrainBatches; i++) {
@@ -251,7 +248,6 @@ export async function runKeepFresh(
       drained += r.scored;
       drainErrors += r.errors.length;
       drainRemaining = r.remaining;
-      if (r.attestationsUnavailable) attestationsUnavailable = true;
       drainBatchesRun++;
       if (r.claimed > 0 || r.errors.length > 0) {
         console.log(
@@ -264,8 +260,7 @@ export async function runKeepFresh(
   });
   console.log(
     `[keep-fresh] drain: scored=${drained} over ${drainBatchesRun} batch(es)` +
-    ` · remaining=${drainRemaining} errors=${drainErrors}` +
-    (attestationsUnavailable ? ' · attestation endpoints unavailable' : ''),
+    ` · remaining=${drainRemaining} errors=${drainErrors}`,
   );
   // A backlog that claims work and completes none is stuck. `drainOnce` collects
   // per-wallet failures instead of throwing, so without this the scoring half of
@@ -311,7 +306,6 @@ export async function runKeepFresh(
     drained,
     drainBatchesRun,
     drainErrors,
-    attestationsUnavailable,
     freshness,
     pageReasons,
     ok: pageReasons.length === 0,

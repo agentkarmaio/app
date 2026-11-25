@@ -39,7 +39,7 @@ function completedScan(over: Partial<IndexerStepResult> = {}): IndexerStepResult
 function drain(over: Partial<RescoreResult> = {}): RescoreResult {
   return {
     claimed: 0, scored: 0, skipped: 0, errors: [], remaining: 0, elapsedMs: 1,
-    attestationsUnavailable: false, ...over,
+    ...over,
   };
 }
 
@@ -264,13 +264,6 @@ describe('the floor pages when it could not do its job', () => {
     expect(out.drainErrors).toBe(1);
   });
 
-  test('attestation unavailability is carried out of the drain', async () => {
-    const { deps } = makeDeps({
-      drainOnce: async () => drain({ claimed: 2, scored: 0, skipped: 2, remaining: 2, attestationsUnavailable: true }),
-    });
-    const out = await runKeepFresh(deps, { drainBatches: 1 });
-    expect(out.attestationsUnavailable).toBe(true);
-  });
 });
 
 describe('completing is not the same as succeeding', () => {
