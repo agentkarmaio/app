@@ -353,7 +353,7 @@ export async function generateMetadata(
     : f.badge === 'behavior-inferred'
       ? 'Behavior-inferred'
       : 'Declared';
-  const chainLabel = f.chain === 'robinhood' ? 'Robinhood Chain' : f.chain.charAt(0).toUpperCase() + f.chain.slice(1);
+  const chainLabel = f.chain === 'robinhood' ? 'Robinhood' : f.chain.charAt(0).toUpperCase() + f.chain.slice(1);
 
   const mainnetUnrated = chainHint === 'arc-mainnet' && f.tier === 'Unrated';
   const title = mainnetUnrated ? `${f.name} — Unrated · Arc` : `${f.name} — Karma ${f.score.toFixed(0)}/100 · ${f.tier}`;

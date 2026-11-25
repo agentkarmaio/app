@@ -15,7 +15,7 @@ function compact(value: number): string {
   return COMPACT.format(value);
 }
 
-const CHAIN_LABELS: Record<string, string> = { solana: 'Solana', 'arc-mainnet': 'Arc', celo: 'Celo', stellar: 'Stellar', robinhood: 'Robinhood Chain' };
+const CHAIN_LABELS: Record<string, string> = { solana: 'Solana', 'arc-mainnet': 'Arc', celo: 'Celo', stellar: 'Stellar', robinhood: 'Robinhood' };
 
 const TONE_DOT: Record<StatusTone, string> = {
   ok: 'bg-emerald-400',

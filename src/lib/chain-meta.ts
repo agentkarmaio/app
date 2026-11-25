@@ -38,7 +38,7 @@ export const CHAIN_META: Record<Chain, ChainMeta> = {
   'stellar-testnet': { label: 'Stellar testnet', logo: '/logos/stellar.svg', href: '/stellar' },
   // Robinhood Chain (EVM, chainId 4663). Registry-only: ERC-8004 identity +
   // feedback mirror, declared Provider score, no payment indexer.
-  robinhood: { label: 'Robinhood Chain', logo: '/logos/robinhood-chain.svg', href: '/robinhood' },
+  robinhood: { label: 'Robinhood', logo: '/logos/robinhood-chain.svg', href: '/robinhood' },
 };
 
 /** Public networks only, with the UI default first and the remaining networks

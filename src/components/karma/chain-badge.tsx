@@ -137,7 +137,7 @@ const MARKS: Record<Chain, ChainMark> = {
     Mark: StellarMark,
   },
   robinhood: {
-    label: 'Robinhood Chain',
+    label: 'Robinhood',
     tint: { bg: 'rgb(204_255_0/0.08)', border: 'rgb(204_255_0/0.22)', fg: '#e6ff80' },
     Mark: RobinhoodChainMark,
   },
