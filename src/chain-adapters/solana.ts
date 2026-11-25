@@ -8,33 +8,34 @@ import type { ChainAdapter, IndexRunResult, PublishResult } from './types';
 import { explorerAddressUrl, explorerTxUrl } from '@/lib/explorer-urls';
 import type { WalletScore } from '@/scoring/index';
 import { readAgentFeedback } from '@/integrations/attestation';
-import { initSDKFromEnv, writeFeedback } from '@/integrations/erc8004';
+import { akSolanaPublisher, initSDKFromEnv, writeFeedback } from '@/integrations/erc8004';
 import { ownPublishedScore, type AgentFeedback } from '@/integrations/solana-agent-feedback';
-import { getSolanaAgentAssets } from '@/db/client';
+import { getSolanaAgentAsset } from '@/db/client';
 import { runIndexer } from '@/indexer';
 
 export interface SolanaAdapterDeps {
-  /** 8004 agent assets the wallet controls (erc8004_agents mirror). */
-  findAgentAssets: (wallet: string) => Promise<string[]>;
+  /** The wallet's canonical 8004 agent asset (erc8004_agents mirror). */
+  findAgentAsset: (wallet: string) => Promise<string | null>;
   writeFeedback: (asset: string, score: WalletScore) => Promise<{ signature?: string; dryRun: boolean }>;
   readAgentFeedback: (asset: string) => Promise<AgentFeedback[]>;
+  /** AK's publisher pubkey; identifies AK's own records by client. */
+  publisher: () => string | null;
 }
 
 const defaultDeps: SolanaAdapterDeps = {
-  findAgentAssets: getSolanaAgentAssets,
+  findAgentAsset: getSolanaAgentAsset,
   writeFeedback: (asset, score) => writeFeedback(initSDKFromEnv(), asset, score),
   readAgentFeedback,
+  publisher: akSolanaPublisher,
 };
 
 export function makeSolanaAdapter(deps: SolanaAdapterDeps = defaultDeps): ChainAdapter {
-  // AK's own last published karma_score across the wallet's agent assets —
+  // AK's own last published karma_score on the wallet's canonical asset —
   // the publish drift check, same contract as the Stellar adapter.
   const readOwn = async (address: string): Promise<number> => {
-    for (const asset of await deps.findAgentAssets(address)) {
-      const own = ownPublishedScore(await deps.readAgentFeedback(asset));
-      if (own != null) return own;
-    }
-    return 0;
+    const asset = await deps.findAgentAsset(address);
+    if (!asset) return 0;
+    return ownPublishedScore(await deps.readAgentFeedback(asset), deps.publisher()) ?? 0;
   };
 
   return {
@@ -65,18 +66,12 @@ export function makeSolanaAdapter(deps: SolanaAdapterDeps = defaultDeps): ChainA
       // Solana 8004 feedback targets the agent's Core asset. A wallet with no
       // registered agent has nowhere to receive a karma_score — writing to the
       // wallet as if it were an asset is what kept every publish from landing.
-      const assets = await deps.findAgentAssets(address);
-      if (assets.length === 0) {
+      const asset = await deps.findAgentAsset(address);
+      if (!asset) {
         return { address, dryRun: false, skipped: true, reason: 'no 8004 agent identity for this wallet' };
       }
-      const txIds: string[] = [];
-      let dryRun = false;
-      for (const asset of assets) {
-        const r = await deps.writeFeedback(asset, score);
-        if (r.dryRun) dryRun = true;
-        if (r.signature) txIds.push(r.signature);
-      }
-      return { address, dryRun, skipped: false, txId: txIds.join(',') || undefined };
+      const r = await deps.writeFeedback(asset, score);
+      return { address, dryRun: r.dryRun, skipped: false, txId: r.signature };
     },
 
     explorerTxUrl: (txId) => explorerTxUrl('solana', txId),

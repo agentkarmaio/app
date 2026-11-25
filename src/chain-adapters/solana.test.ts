@@ -27,9 +27,10 @@ describe('solana publish targets the agent asset', () => {
   test('a wallet with no 8004 agent identity is skipped, nothing is written', async () => {
     const writes: string[] = [];
     const adapter = makeSolanaAdapter({
-      findAgentAssets: async () => [],
+      findAgentAsset: async () => null,
       writeFeedback: async (asset) => { writes.push(asset); return { signature: 'x', dryRun: false }; },
       readAgentFeedback: async () => [],
+      publisher: () => 'AK',
     });
     const r = await adapter.publishAttestation(GOOD, SCORE);
     expect(r.skipped).toBe(true);
@@ -37,12 +38,13 @@ describe('solana publish targets the agent asset', () => {
     expect(writes).toEqual([]);
   });
 
-  test('writes karma_score to the asset the wallet controls — never to the wallet', async () => {
+  test('writes karma_score to the ONE canonical asset the wallet controls — never to the wallet', async () => {
     const writes: string[] = [];
     const adapter = makeSolanaAdapter({
-      findAgentAssets: async () => ['ASSET1'],
+      findAgentAsset: async () => 'ASSET1',
       writeFeedback: async (asset) => { writes.push(asset); return { signature: 'sig1', dryRun: false }; },
       readAgentFeedback: async () => [],
+      publisher: () => 'AK',
     });
     const r = await adapter.publishAttestation(GOOD, SCORE);
     expect(writes).toEqual(['ASSET1']);
@@ -51,12 +53,14 @@ describe('solana publish targets the agent asset', () => {
 
   test("readAttestation is AK's own last published score on the asset (drift check)", async () => {
     const adapter = makeSolanaAdapter({
-      findAgentAssets: async () => ['ASSET1'],
+      findAgentAsset: async () => 'ASSET1',
       writeFeedback: async () => ({ dryRun: true }),
       readAgentFeedback: async () => [
-        { tag1: 'karma_score', score: 77, revoked: false, feedbackIndex: 2n },
-        { tag1: 'reachable', score: 10, revoked: false, feedbackIndex: 5n },
+        { client: 'AK', tag1: 'karma_score', score: 77, revoked: false, feedbackIndex: 2n },
+        { client: 'X', tag1: 'karma_score', score: 99, revoked: false, feedbackIndex: 4n },
+        { client: 'X', tag1: 'reachable', score: 10, revoked: false, feedbackIndex: 5n },
       ],
+      publisher: () => 'AK',
     });
     expect(await adapter.readAttestation(GOOD)).toBe(77);
   });

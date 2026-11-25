@@ -30,7 +30,8 @@ import { SolanaSDK } from '8004-solana';
 import { Keypair } from '@solana/web3.js';
 import type { Cluster } from '8004-solana';
 import { solanaReadRpcUrls } from '@/lib/solana-rpc';
-import { getSolanaAgentAssets } from '@/db/client';
+import { getSolanaAgentAsset } from '@/db/client';
+import { akSolanaPublisher } from './erc8004';
 import { readAgentFeedbackVia, thirdPartyFeedbackScore, type AgentFeedback } from './solana-agent-feedback';
 
 const CLUSTER: Cluster = 'mainnet-beta';
@@ -157,19 +158,16 @@ function withTimeout<T>(p: Promise<T>, what: string): Promise<T> {
 }
 
 /**
- * Tier-1 attestation for a wallet: third-party 8004 feedback on the agent
- * assets it controls, AK's own karma_score excluded (solana-agent-feedback.ts).
- * A wallet with no registered agent has no 8004 feedback — 0 without an RPC.
+ * Third-party 8004 feedback on the wallet's canonical agent asset, AK's own
+ * records excluded (solana-agent-feedback.ts). Display only — not a score
+ * input (wallet-score.ts). No registered agent → 0 without an RPC.
  */
 async function readVia(endpoint: Endpoint, walletAddress: string): Promise<number> {
   try {
-    const assets = await getSolanaAgentAssets(walletAddress);
-    if (assets.length === 0) return 0;
-    const records: AgentFeedback[] = [];
-    for (const asset of assets) {
-      records.push(...await withTimeout(readAgentFeedbackVia(sdkFor(endpoint), asset), 'feedback read'));
-    }
-    return thirdPartyFeedbackScore(records);
+    const asset = await getSolanaAgentAsset(walletAddress);
+    if (!asset) return 0;
+    const records = await withTimeout(readAgentFeedbackVia(sdkFor(endpoint), asset), 'feedback read');
+    return thirdPartyFeedbackScore(records, akSolanaPublisher());
   } catch {
     return 0;
   }

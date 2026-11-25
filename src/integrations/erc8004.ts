@@ -64,6 +64,20 @@ export function initSDKFromEnv(cluster: Cluster = 'mainnet-beta'): SolanaSDK | n
   }
 }
 
+/**
+ * AK's Solana publisher pubkey (base58), derived from SOLANA_PRIVATE_KEY.
+ * Null in dry-run (no key). Public by nature; the secret never leaves here.
+ */
+export function akSolanaPublisher(): string | null {
+  const rawKey = process.env.SOLANA_PRIVATE_KEY;
+  if (!rawKey) return null;
+  try {
+    return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(rawKey))).publicKey.toBase58();
+  } catch {
+    return null;
+  }
+}
+
 // ─── Feedback Write ───────────────────────────────────────────────────────────
 
 /**

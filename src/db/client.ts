@@ -3834,20 +3834,23 @@ export async function getMaxErc8004AgentId(chain: string): Promise<number> {
 
 /** Read a single cached registry agent row (used by the agent-resolve route). */
 /**
- * Solana 8004 agent assets a wallet controls (the mirror's agent_wallet, which
- * falls back to the owner when no agent wallet is set). 8004-solana keys every
- * feedback read and write on the asset, never on the wallet.
+ * The ONE canonical Solana 8004 agent asset for a wallet: its oldest
+ * registration (lowest agent_id) among agents whose agent_wallet — owner when
+ * none is set — is the wallet. One asset, not all of them: a wallet can be
+ * handed any number of agent NFTs, and each would be another AK write and read.
+ * 8004-solana keys feedback on the asset, never on the wallet.
  */
-export async function getSolanaAgentAssets(wallet: string): Promise<string[]> {
+export async function getSolanaAgentAsset(wallet: string): Promise<string | null> {
   const { data, error } = await supabase
     .from('erc8004_agents')
     .select('asset_address')
     .eq('chain', 'solana')
-    .eq('agent_wallet', wallet);
+    .eq('agent_wallet', wallet)
+    .not('asset_address', 'is', null)
+    .order('agent_id', { ascending: true })
+    .limit(1);
   if (error) throw error;
-  return ((data ?? []) as { asset_address: string | null }[])
-    .map((r) => r.asset_address)
-    .filter((a): a is string => typeof a === 'string' && a.length > 0);
+  return ((data ?? []) as { asset_address: string | null }[])[0]?.asset_address ?? null;
 }
 
 export async function getErc8004Agent(
